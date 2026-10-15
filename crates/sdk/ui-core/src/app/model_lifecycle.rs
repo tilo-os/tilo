@@ -310,12 +310,12 @@ impl super::App {
         self.root_widget.sync(&self.state.doc, &self.state.root);
         // A sync reads the document only. What it took up is written now,
         // through actions, and shown in this same frame.
-        let before = crate::widget::settle_mark(&self.state.doc);
+        let before = crate::doc::settle_mark(&self.state.doc);
         self.root_widget.settle(
             &mut crate::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
-        let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        let settled = crate::doc::settle_mark(&self.state.doc) != before;
         // The record's durability changed and the root synced with it: a
         // frame presents it. Nothing about the tree changed, so it is not a
         // rebuild (which would repaint the whole window for a save bubble).

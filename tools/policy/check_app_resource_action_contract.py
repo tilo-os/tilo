@@ -19,7 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source import line_number  # noqa: E402
+from rust_source import blank_test_items, line_number  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -151,7 +151,7 @@ RATCHETS = {
 # edits go through the framework `Dispatcher`, it launches as a `ResourceApp`,
 # its durable state is the resource's document, and nothing beside
 # `Action::apply` writes that document. These count production code only (test
-# files and the trailing `#[cfg(test)]` module are exempt) and may only go down.
+# files and `#[cfg(test)]` items are exempt) and may only go down.
 MODEL_RATCHETS = {
     "app_action_host": (
         re.compile(r"\bActionHost\b"),
@@ -336,7 +336,6 @@ RATCHET_REASONS = {
     **{rule: reason for rule, (_, reason) in WORKSPACE_RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in LEGACY_API_RATCHETS.items()},
 }
-TEST_MODULE_START = re.compile(r"^\s*#\[cfg\((?:test|all\(test)", re.MULTILINE)
 
 
 def is_test_source(relative: str) -> bool:
@@ -350,11 +349,8 @@ def is_test_source(relative: str) -> bool:
 
 
 def production_code(text: str) -> str:
-    """Code up to the conventional trailing test module, without comments or literals."""
-    found = TEST_MODULE_START.search(text)
-    if found:
-        text = text[: found.start()]
-    return rust_code_only(text)
+    """Code without comments, literals or test-only items."""
+    return blank_test_items(rust_code_only(text))
 
 
 @dataclass(frozen=True)

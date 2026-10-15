@@ -873,11 +873,11 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return;
                     };
-                    let before = crate::widget::settle_mark(document);
+                    let before = crate::doc::settle_mark(document);
                     root.settle(&mut crate::widget::Edits::lend(document), record_root);
                     let _ = binding.drain_owned_tree(root, document);
                     // What it wrote shows in this same frame.
-                    if crate::widget::settle_mark(document) != before {
+                    if crate::doc::settle_mark(document) != before {
                         root.update(document, record_root);
                         root.sync(document, record_root);
                     }

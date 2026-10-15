@@ -51,6 +51,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import blank_test_items  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("shell_layers_baseline.toml")
@@ -150,9 +153,6 @@ MODULE_GROUPS = (
 )
 
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
-CFG_TEST = re.compile(
-    r"#\s*\[\s*cfg\s*\(\s*(?:test\s*|all\s*\(\s*test\b[^\]]*)\)\s*\]"
-)
 CFG_TEST_INNER = re.compile(r"^\s*#!\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 INLINE_MOD = re.compile(rf"\bmod\s+({IDENT})\s*\{{")
 USE = re.compile(r"(?<![\w$])use\s")
@@ -273,19 +273,6 @@ def item_end(text: str, start: int) -> int:
     return i
 
 
-def strip_test_items(text: str) -> str:
-    """Blank every item behind ``#[cfg(test)]`` or ``#[cfg(all(test, …))]``."""
-    out = list(text)
-    position = 0
-    while match := CFG_TEST.search(text, position):
-        end = item_end(text, match.end())
-        for k in range(match.start(), end):
-            if out[k] != "\n":
-                out[k] = " "
-        position = end
-    return "".join(out)
-
-
 def module_path(relative: str) -> list[str]:
     """``src/shell/state/apply.rs`` -> ``['crate', 'shell', 'state', 'apply']``."""
     parts = Path(relative).with_suffix("").parts[1:]  # drop "src"
@@ -372,7 +359,7 @@ def referenced_paths(text: str, relative: str) -> list[tuple[list[str], int]]:
     clean = sanitize(text)
     if CFG_TEST_INNER.match(clean):
         return []
-    source = strip_test_items(clean)
+    source = blank_test_items(clean)
     base = module_path(relative)
     spans = inline_modules(source)
     found: list[tuple[list[str], int]] = []
