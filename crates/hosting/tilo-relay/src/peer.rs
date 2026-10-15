@@ -66,8 +66,8 @@ pub use session::{run_peer, run_peer_until};
 use state::{
     FanoutStamp, LiveEnvelope, PreparedRecipients, SelectedPublication, SessionLease, SessionLives,
     StateCommit, authorized_state_source, captured_live_current, gated_checkpoint_channel,
-    handle_delta, handle_delta_prefix, live_audience, prepare_recipients, union_session_lives,
-    unpublished,
+    handle_delta, handle_delta_prefix, live_audience, prepare_recipients, steward_audience,
+    steward_only_delta, union_session_lives, unpublished,
 };
 pub(crate) use state::{Lag, StateDelivery, StateSession, StateSource};
 #[cfg(feature = "test-support")]

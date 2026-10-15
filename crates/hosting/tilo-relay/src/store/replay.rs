@@ -47,6 +47,14 @@ pub(crate) struct CaptureLeases {
     /// The store's owner, woken when the last lease ends so what waited is
     /// collected without waiting for its next job.
     wake: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// This host governs the store's room, and so stewards its channels:
+    /// captures leave out what only the steward reads
+    /// ([`WorkspaceStore::replay_without_steward_only`]).
+    steward_here: std::sync::atomic::AtomicBool,
+    /// Whether each retained lineage a capture looked at holds what only a
+    /// channel's steward reads. A lineage's route names its kind of message
+    /// for good, so the answer never changes: each is read once.
+    steward_only: std::sync::Mutex<std::collections::HashMap<std::ffi::OsString, bool>>,
 }
 impl CaptureLeases {
     /// The leases of the store at `root`, shared by every handle on it.
@@ -101,6 +109,66 @@ impl WorkspaceStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(owner);
     }
+    /// From now on, leave the lineages of what only a channel's steward
+    /// reads (access requests, acknowledgements:
+    /// [`crate::payloads::ShellPayloads::steward_only`]) out of every
+    /// capture: this host governs the room, so it stewards the room's
+    /// channels itself, and no member replaying needs them. They stay
+    /// retained.
+    pub(crate) fn replay_without_steward_only(&self) {
+        self.capture_leases
+            .steward_here
+            .store(true, Ordering::SeqCst);
+    }
+
+    /// Whether a capture leaves the retained lineage `name` at `lineage`
+    /// out. A lineage is classified by its checkpoint once, then from
+    /// memory: no capture reads it again.
+    fn leaves_out(&self, name: &std::ffi::OsStr, lineage: &Path) -> Result<bool, StoreError> {
+        /// A larger checkpoint is no access request or acknowledgement.
+        const MAX_CLASSIFIED_BYTES: u64 = 1024 * 1024;
+        if !self.capture_leases.steward_here.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        let known = self
+            .capture_leases
+            .steward_only
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .copied();
+        if let Some(known) = known {
+            return Ok(known);
+        }
+        // A lineage with no generation yet is not classified: its first
+        // frame is still being retained.
+        let Some(active) = retained::current(lineage)? else {
+            return Ok(false);
+        };
+        let checkpoint = active.join("checkpoint.delta");
+        let steward_only = match fs::symlink_metadata(&checkpoint) {
+            Ok(meta) if meta.is_file() && meta.len() <= MAX_CLASSIFIED_BYTES => {
+                let bytes = fs::read(&checkpoint)?;
+                matches!(
+                    retained::payload(&bytes, self.workspace_id),
+                    Some((_, crate::coedit::CoeditPayload::Checkpoint { body, .. }))
+                        if self.payloads.steward_only(&body)
+                )
+            }
+            // What only a steward reads is a checkpoint that stands alone:
+            // a lineage of deltas never holds it.
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        self.capture_leases
+            .steward_only
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name.to_owned(), steward_only);
+        Ok(steward_only)
+    }
+
     fn lease_capture(&self) -> CaptureLease {
         self.capture_leases.held.fetch_add(1, Ordering::SeqCst);
         CaptureLease(Arc::clone(&self.capture_leases))
@@ -927,7 +995,10 @@ impl WorkspaceStore {
                     let kind = entry.file_type()?;
                     match build.phase {
                         2 if kind.is_dir() => {
-                            if let Some(active) = retained::current(&entry.path())? {
+                            let lineage = entry.path();
+                            if !self.leaves_out(&name, &lineage)?
+                                && let Some(active) = retained::current(&lineage)?
+                            {
                                 build.child = Some((name, active.clone(), fs::read_dir(active)?));
                             }
                             None

@@ -201,9 +201,11 @@ pub(super) enum LiveEnvelope {
 // This is delivery policy, not authority: callers must first revalidate the
 // current authenticated source and retain all recipient/session fences.
 /// The devices a retained message goes to live when only they can use it
-/// ([`crate::payloads::ShellPayloads::audience`]); `None` for everyone.
+/// ([`crate::payloads::ShellPayloads::audience`]); `None` for everyone. In a
+/// room this relay governs, what only a channel's steward reads goes to the
+/// governor alone ([`steward_audience`]).
 pub(super) fn live_audience(
-    payloads: &dyn crate::payloads::ShellPayloads,
+    runtime: &crate::workspace::WorkspaceRuntime,
     envelope: &LiveEnvelope,
 ) -> Option<std::collections::BTreeSet<[u8; 32]>> {
     let LiveEnvelope::Original(original) = envelope else {
@@ -217,7 +219,38 @@ pub(super) fn live_audience(
     else {
         return None;
     };
-    payloads.audience(&body)
+    let payloads = &**runtime.store.payloads();
+    payloads
+        .audience(&body)
+        .or_else(|| steward_audience(runtime, payloads.steward_only(&body)))
+}
+
+/// Who a change goes to, live or into a catch-up, when it is what only a
+/// channel's steward reads (`steward_only`) and this relay governs the room:
+/// the governor, which stewards the room's channels and takes such changes
+/// in itself. A member device ignores them, so a crowd's requests and
+/// acknowledgements cost no member a delivery. `None` otherwise: everyone.
+pub(super) fn steward_audience(
+    runtime: &crate::workspace::WorkspaceRuntime,
+    steward_only: bool,
+) -> Option<std::collections::BTreeSet<[u8; 32]>> {
+    runtime
+        .room_authority
+        .as_ref()
+        .filter(|_| steward_only)
+        .map(|authority| std::collections::BTreeSet::from([*authority.governor()]))
+}
+
+/// Whether `delta` is a checkpoint of what only a channel's steward reads
+/// ([`crate::payloads::ShellPayloads::steward_only`]).
+pub(super) fn steward_only_delta(
+    payloads: &dyn crate::payloads::ShellPayloads,
+    delta: &[u8],
+) -> bool {
+    matches!(
+        crate::coedit::CoeditPayload::decode(delta),
+        Some(crate::coedit::CoeditPayload::Checkpoint { body, .. }) if payloads.steward_only(&body)
+    )
 }
 
 pub(super) fn gated_checkpoint_channel(
