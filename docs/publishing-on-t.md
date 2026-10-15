@@ -155,7 +155,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 ### Not publishing
 
 These only build or test and become ordinary or `default = false` checks (several already are,
-see `t.toml`): `check.yml`, `lint.yml`, `app-sdk.yml`, `browser-auth-e2e.yml`, `ci-filesystem.yml`
+see `t.toml`): `check.yml`, `lint.yml`, `browser-auth-e2e.yml`, `ci-filesystem.yml`
 (its live cloud tests use credentials for test servers: secrets on `main` without `nodes`),
 `ci-legacy-apps.yml`, `ci-nightly.yml`, `ci-staging-loop.yml`,
 `ci-weekly-quality.yml`, `ci-development-signing.yml`, `dev-*.yml`, `inspect-rpm-signing.yml`,

@@ -266,39 +266,6 @@ class CheckAggregateTests(unittest.TestCase):
                 # Skipped native work cannot turn a failed security gate green.
                 self.assertNotEqual(self.aggregate(security="failure", affected="skipped")[0], 0)
 
-        sdk = (ROOT / ".forgejo/workflows/app-sdk.yml").read_text()
-        for name in ("linux", "web", "web-size"):
-            with self.subTest(sdk_job=name):
-                job = section(sdk, name, 2)
-                self.assertIn("needs: [builder, policy]", job)
-                self.assertTrue(admitted(job))
-                for event in ("pull_request", "push"):
-                    self.assertTrue(admitted(job, **{"github.event_name": event,
-                                                     "github.event.inputs.lanes": "linux"}))
-                for lanes in ("all", "", "linux"):
-                    self.assertEqual(
-                        admitted(job, **{"github.event_name": "workflow_dispatch",
-                                         "github.event.inputs.lanes": lanes}),
-                        name == "linux" or lanes != "linux",
-                    )
-                for status in ("failure", "cancelled", "skipped", "", "running"):
-                    self.assertFalse(admitted(job, **{"needs.policy.result": status}))
-                    self.assertTrue(admitted(job, **{"github.event_name": "push",
-                                                     "needs.policy.result": status}))
-                self.assertFalse(admitted(job, cancelled=True))
-                self.assertFalse(admitted(job, **{"needs.builder.outputs.affected": "false",
-                                                 "needs.builder.outputs.linux_affected": "false"}))
-                selected = "linux_affected" if name == "linux" else "affected"
-                other = "affected" if name == "linux" else "linux_affected"
-                for value in ("false", "", "invalid"):
-                    self.assertFalse(admitted(job, **{f"needs.builder.outputs.{selected}": value}))
-                # A lane can be inapplicable without suppressing another lane.
-                self.assertTrue(admitted(job, **{f"needs.builder.outputs.{other}": "false"}))
-                for event in ("pull_request", "push"):
-                    for status in ("failure", "cancelled", "skipped", ""):
-                        self.assertFalse(admitted(job, **{"github.event_name": event,
-                                                         "needs.builder.result": status}))
-
     def test_aggregate_passes_only_explained_skips_and_fails_every_other_outcome(self):
         with self.subTest(phase='intentional design skip passes with explanation'):
             self.doCleanups()
