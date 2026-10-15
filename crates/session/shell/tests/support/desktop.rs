@@ -401,17 +401,66 @@ impl Desktop {
         }
     }
 
-    /// Sleep, failing early if the loop stalls meanwhile.
+    /// Wait for viewport transitions and content layout to finish before
+    /// using geometry. Repaint-only animation need not settle.
     #[track_caller]
-    pub fn pause(&self, duration: Duration) {
-        let until = Instant::now()
-            .checked_add(duration)
-            .unwrap_or_else(Instant::now);
-        while Instant::now() < until {
-            self.check();
-            std::thread::sleep(POLL.min(duration));
-        }
-        self.check();
+    pub fn wait_for_layout(&self) {
+        self.wait_for_with(
+            "desktop viewport transitions and content layout to settle",
+            || format!("chrome: {}", self.chrome()),
+            || {
+                let chrome = self.chrome();
+                chrome["geometry_pending"] == false
+            },
+        );
+    }
+
+    /// Open and search the palette, observing both focusable visibility and
+    /// the production query fan-out before moving on.
+    #[track_caller]
+    pub fn search_palette(&self, query: &str) {
+        self.chord("Super", "Space");
+        self.wait_for("the palette to open", || {
+            self.chrome()["palette"]["visible"] == true
+        });
+        self.wait_for_layout();
+        self.type_text(query);
+        self.wait_for_with(
+            "the palette query and its results",
+            || format!("palette: {}", self.chrome()["palette"]),
+            || {
+                let chrome = self.chrome();
+                let palette = &chrome["palette"];
+                palette["visible"] == true
+                    && palette["query"] == query
+                    && palette["query_ready"] == true
+                    && palette["rows"]
+                        .as_array()
+                        .is_some_and(|rows| !rows.is_empty())
+            },
+        );
+        self.wait_for_layout();
+    }
+
+    /// Unlock only once the lock controller has received every password
+    /// byte. Enter must not race the lock transition or an authentication job.
+    #[track_caller]
+    pub fn unlock(&self) {
+        self.wait_for("the lock controller to accept input", || {
+            let chrome = self.chrome();
+            chrome["session_locked"] == true
+                && chrome["lock_auth"]["verifying"] == false
+                && chrome["lock_auth"]["password_len"] == 0
+        });
+        self.type_text(UNLOCK_PASSWORD);
+        self.wait_for("the lock controller to receive the password", || {
+            self.chrome()["lock_auth"]["password_len"] == UNLOCK_PASSWORD.len()
+        });
+        self.key("Enter");
+        self.wait_for("the session to unlock", || {
+            self.chrome()["session_locked"] == false
+        });
+        self.wait_for_layout();
     }
 
     // Protocol helpers
@@ -434,12 +483,12 @@ impl Desktop {
         self.ok(&json!({"op": "key", "key": key}));
     }
 
-    /// Press and release `key` with Control held.
+    /// Press and release `key` with `modifier` held.
     #[track_caller]
-    pub fn chord_ctrl(&self, key: &str) {
-        self.ok(&json!({"op": "key_down", "key": "Control"}));
+    pub fn chord(&self, modifier: &str, key: &str) {
+        self.ok(&json!({"op": "key_down", "key": modifier}));
         self.key(key);
-        self.ok(&json!({"op": "key_up", "key": "Control"}));
+        self.ok(&json!({"op": "key_up", "key": modifier}));
     }
 
     /// Click at `(x, y)`.
@@ -591,30 +640,6 @@ impl Desktop {
             .unwrap_or_default()
     }
 
-    /// CPU the compositor process used, in milliseconds, per `/proc`.
-    fn compositor_cpu_ms(&self) -> u64 {
-        let pid = self.child.lock().map_or(0, |child| child.id());
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-        let ticks: u64 = stat
-            .rsplit_once(')')
-            .map(|(_, rest)| rest.split_whitespace().skip(11).take(2))
-            .into_iter()
-            .flatten()
-            .filter_map(|field| field.parse::<u64>().ok())
-            .sum();
-        // The kernel's clock tick is 100 Hz on every platform the suite runs on.
-        ticks.saturating_mul(10)
-    }
-
-    /// The share of one core the compositor used over `window` of doing nothing.
-    #[track_caller]
-    pub fn idle_cpu_share(&self, window: Duration) -> f64 {
-        let before = self.compositor_cpu_ms();
-        self.pause(window);
-        let used = self.compositor_cpu_ms().saturating_sub(before);
-        f64::from(u32::try_from(used).unwrap_or(u32::MAX)) / (window.as_secs_f64() * 1000.0)
-    }
-
     /// Main-loop iterations that ran long while working, with stacks.
     pub fn jank(&self) -> Vec<String> {
         self.watch
@@ -624,12 +649,38 @@ impl Desktop {
             .unwrap_or_default()
     }
 
-    /// `(heartbeats acknowledged, slowest)` as the monitor saw them.
-    pub fn heartbeat_summary(&self) -> (u64, Duration) {
-        (
-            self.watch.beats.load(Ordering::Relaxed),
-            Duration::from_micros(self.watch.worst_latency_us.load(Ordering::Relaxed)),
-        )
+    /// Force and acknowledge ordered main-loop wakes. Only the tick count
+    /// decides success; socket deadlines diagnose a hang, not performance.
+    #[track_caller]
+    pub fn assert_loop_turns(&self) {
+        let stream = UnixStream::connect(shell::compositor::liveness::socket_path(&self.control))
+            .expect("connect to liveness socket");
+        stream.set_read_timeout(Some(CALL_DEADLINE)).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut previous = None;
+        for _ in 0..2 {
+            let request = json!({
+                "op": "heartbeat",
+                "budget_ms": HEARTBEAT_BUDGET.as_millis(),
+            });
+            writeln!(writer, "{request}").unwrap();
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .expect("read loop acknowledgement");
+            let answer: Answer = serde_json::from_str(&line).expect("liveness reply");
+            let Answer::Alive { ticks, .. } = answer else {
+                panic!(
+                    "main loop did not acknowledge the forced wake: {}",
+                    render(&answer)
+                );
+            };
+            if let Some(before) = previous {
+                assert!(ticks > before, "a second forced wake must advance the loop");
+            }
+            previous = Some(ticks);
+        }
     }
 
     fn wait_until_serving(&self) {

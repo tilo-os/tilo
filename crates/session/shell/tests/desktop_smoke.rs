@@ -22,12 +22,11 @@
 //! devices.
 
 use std::path::Path;
-use std::time::Duration;
 
 use serde_json::{Value, json};
 use shell::shell::state::{DesktopTree, Tab, WindowGroup, WindowWidth, WorkspaceTree};
 
-use crate::support::desktop::{Desktop, Pressure, UNLOCK_PASSWORD};
+use crate::support::desktop::{Desktop, Pressure};
 
 const SCREEN: (i32, i32) = (1280, 800);
 
@@ -164,10 +163,13 @@ fn close_overlays(desktop: &Desktop) {
         let chrome = desktop.chrome();
         OVERLAYS
             .iter()
-            .any(|name| chrome["overlays"][name].as_bool() == Some(true))
+            .filter(|name| chrome["overlays"][**name].as_bool() == Some(true))
+            .count()
     };
-    for _ in 0..4 {
-        if !open(desktop) {
+    for _ in OVERLAYS {
+        let before = open(desktop);
+        if before == 0 {
+            desktop.wait_for_layout();
             return;
         }
         eprintln!(
@@ -176,9 +178,12 @@ fn close_overlays(desktop: &Desktop) {
             desktop.chrome()["overlays"]
         );
         desktop.key("Escape");
-        desktop.pause(Duration::from_millis(100));
+        desktop.wait_for("Escape to dismiss a corner overlay", || {
+            open(desktop) < before
+        });
     }
-    desktop.wait_for("the corner overlays to close", || !open(desktop));
+    desktop.wait_for("the corner overlays to close", || open(desktop) == 0);
+    desktop.wait_for_layout();
 }
 
 /// A click as a person makes it: on the desktop, not on whatever the pointer's
@@ -222,7 +227,7 @@ fn scenario(desktop: &Desktop) {
         painted_clients(desktop).len() == 2
     });
     desktop.ok(&json!({"op": "set_group_width", "permille": 190}));
-    desktop.pause(Duration::from_millis(300));
+    desktop.wait_for_layout();
 
     // Pointer: the whole screen, then in and out of each client window.
     sweep(desktop);
@@ -236,6 +241,11 @@ fn scenario(desktop: &Desktop) {
         cross(desktop, *rect);
     }
     for client in &clients {
+        desktop.wait_for_with(
+            "the client to receive the pointer crossings",
+            || client.output(),
+            || client.count("EVENT:ENTER") >= 2 && client.count("EVENT:LEAVE") >= 2,
+        );
         assert!(
             client.count("EVENT:ENTER") >= 2 && client.count("EVENT:LEAVE") >= 2,
             "the client should have seen the pointer enter and leave it; it reported:\n{}",
@@ -324,7 +334,7 @@ fn scenario(desktop: &Desktop) {
     // Resize and maximize.
     for permille in [260, 340, 220] {
         desktop.ok(&json!({"op": "set_group_width", "permille": permille}));
-        desktop.pause(Duration::from_millis(150));
+        desktop.wait_for_layout();
         sweep_edges(desktop);
     }
 
@@ -335,12 +345,13 @@ fn scenario(desktop: &Desktop) {
     sweep_edges(desktop);
 
     // Palette: open, search, close.
-    desktop.chord_ctrl("k");
-    desktop.pause(Duration::from_millis(200));
-    desktop.type_text("notes");
-    desktop.pause(Duration::from_millis(400));
+    desktop.search_palette("notes");
     sweep_edges(desktop);
     desktop.key("Escape");
+    desktop.wait_for("the palette to close", || {
+        desktop.chrome()["palette"]["visible"] == false
+    });
+    desktop.wait_for_layout();
 
     // Workspaces.
     // Away and back, as a person pressing the keys would.
@@ -364,13 +375,7 @@ fn scenario(desktop: &Desktop) {
         desktop.chrome()["session_locked"].as_bool() == Some(true)
     });
     sweep_edges(desktop);
-    // (A rejected password is the lock suite's: its verification is
-    // asynchronous and has no signal to wait on here.)
-    desktop.type_text(UNLOCK_PASSWORD);
-    desktop.key("Enter");
-    desktop.wait_for("the session to unlock", || {
-        desktop.chrome()["session_locked"].as_bool() == Some(false)
-    });
+    desktop.unlock();
 
     // The clients' windows are still there and the desktop still answers. The
     // tiles are laid out again by the frame after the unlock, so ask for them
@@ -387,22 +392,6 @@ fn scenario(desktop: &Desktop) {
             )
         },
         || painted_clients(desktop).len() == 2,
-    );
-}
-
-/// Left alone, the desktop is idle. A widget that reports a wake deadline
-/// nothing can satisfy makes the loop pump every app on every pass: the Files
-/// app did, while its nearby-transfer snapshot went unanswered. Measured on a
-/// machine nothing else is loading, after the backlog the scenario left has
-/// drained.
-fn assert_idle(desktop: &Desktop) {
-    desktop.pause(Duration::from_secs(2));
-    let share = desktop.idle_cpu_share(Duration::from_secs(2));
-    assert!(
-        share < 0.25,
-        "an untouched desktop used {:.0}% of a core; it is spinning on a wake deadline that \
-         never clears",
-        share * 100.0
     );
 }
 
@@ -427,19 +416,14 @@ fn sweep_edges(desktop: &Desktop) {
 
 fn run(desktop: &Desktop, pressure: Option<Pressure>) {
     scenario(desktop);
-    // The pressure ends with the scenario: idleness is judged without it.
     drop(pressure);
-    assert_idle(desktop);
-    let (beats, worst) = desktop.heartbeat_summary();
-    eprintln!(
-        "[desktop-smoke] {beats} heartbeats acknowledged; the slowest wake took {worst:?} \
-         (a stall is anything over {:?})",
-        crate::support::desktop::HEARTBEAT_BUDGET
-    );
+    // Ask for two ordered loop turns, rather than racing the background
+    // monitor's sample count. Idle work is asserted at controlled instants by
+    // native_idle_work_tests and Files' unanswered-snapshot hosted-pump test.
+    desktop.assert_loop_turns();
     for slow in desktop.jank() {
         eprintln!("[desktop-smoke] SLOW (not hung): {slow}");
     }
-    assert!(beats > 0, "the heartbeat monitor never saw the loop turn");
 }
 
 #[test]
@@ -553,12 +537,10 @@ mod burst {
 // blank windows is a desktop the person cannot use. One lock cycle failed to
 // bring the clients back about one run in fifteen, so this repeats it.
 mod lock_cycle {
-    use std::path::Path;
-    use std::time::Duration;
-
     use serde_json::json;
+    use std::path::Path;
 
-    use super::{CLIENT, CLIENT_APP_ID, SCREEN, UNLOCK_PASSWORD, painted_clients, smoke_tree};
+    use super::{CLIENT, CLIENT_APP_ID, SCREEN, painted_clients, smoke_tree};
     use crate::support::desktop::Desktop;
 
     #[test]
@@ -574,16 +556,13 @@ mod lock_cycle {
             painted_clients(&desktop).len() == 2
         });
         desktop.ok(&json!({"op": "set_group_width", "permille": 190}));
+        desktop.wait_for_layout();
         for cycle in 0..25 {
             desktop.invoke_action("session", "lock");
             desktop.wait_for("the session to lock", || {
                 desktop.chrome()["session_locked"].as_bool() == Some(true)
             });
-            desktop.type_text(UNLOCK_PASSWORD);
-            desktop.key("Enter");
-            desktop.wait_for("the session to unlock", || {
-                desktop.chrome()["session_locked"].as_bool() == Some(false)
-            });
+            desktop.unlock();
             desktop.wait_for_with(
                 &format!("both clients to be painted again after unlock {cycle}"),
                 || {
@@ -596,7 +575,7 @@ mod lock_cycle {
                 },
                 || painted_clients(&desktop).len() == 2,
             );
-            desktop.pause(Duration::from_millis(100));
+            desktop.wait_for_layout();
         }
     }
 }
@@ -610,11 +589,12 @@ mod workspace_cycle {
     fn next_then_previous_returns_to_the_first_workspace_every_time() {
         let desktop = Desktop::start(SCREEN, &smoke_tree());
         // As the scenario does first: open the palette, search, close it.
-        desktop.chord_ctrl("k");
-        desktop.pause(std::time::Duration::from_millis(200));
-        desktop.type_text("notes");
-        desktop.pause(std::time::Duration::from_millis(400));
+        desktop.search_palette("notes");
         desktop.key("Escape");
+        desktop.wait_for("the palette to close", || {
+            desktop.chrome()["palette"]["visible"] == false
+        });
+        desktop.wait_for_layout();
         for cycle in 0..40 {
             desktop.invoke_action("actions", "workspace.next");
             desktop.wait_for_with(
@@ -622,12 +602,14 @@ mod workspace_cycle {
                 || format!("showing {:?}", desktop.active_workspace()),
                 || desktop.active_workspace() != "Smoke desktop",
             );
+            desktop.wait_for_layout();
             desktop.invoke_action("actions", "workspace.previous");
             desktop.wait_for_with(
                 &format!("the first workspace to show again (cycle {cycle})"),
                 || format!("showing {:?}", desktop.active_workspace()),
                 || desktop.active_workspace() == "Smoke desktop",
             );
+            desktop.wait_for_layout();
         }
     }
 }

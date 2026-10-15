@@ -3944,6 +3944,8 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "expiry": format!("{:?}", chrome.ws_grant_draft.expiry),
             },
             "palette": palette_json(self.fb),
+            // Geometry demand excludes repaint-only application animation.
+            "geometry_pending": self.fb.host().geometry_pending(),
             // Where along each strip the user is looking — two frames with an
             // identical tree can show different windows.
             "strip_scroll": self
@@ -3990,6 +3992,8 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
     serde_json::json!({
         "visible": visible,
         "query": query,
+        "query_ready": fb.host().palette_query_ready(),
+        "layout_pending": fb.host().structure_dirty(),
         "selected_id": selected,
         // Which kind chips are lit — "filtered to apps" and "query that only apps
         // matched" give the same row list, but only the chip filter survives typing.

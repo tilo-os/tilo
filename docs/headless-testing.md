@@ -865,7 +865,28 @@ through the control socket the way a person drives it: the pointer over every
 window, edge, corner and the top bar and in and out of each client, typing into
 each window, resize, a new window, the palette and a search, workspace
 switches, lock and unlock. A second test runs the same scenario under CPU and
-memory pressure. Both take seconds once the shell tests are built.
+memory pressure. All five scenarios remain required, including the silent
+Wayland burst, 25 lock cycles and 40 workspace round trips. Geometry waits
+observe viewport/layout transitions, not repaint-only animation such as a
+caret. Palette queries and lock input wait for their actual production state.
+
+Idle correctness is a work-count contract, not a sampled CPU threshold:
+`native_idle_work_tests` counts app updates, layouts and draws through the real
+native scheduler at controlled instants, and Files'
+`unanswered_nearby_snapshot_does_not_repeat_hosted_files_work` drives the real
+hosted Files pump with an unanswered broker request, then delivers its reply.
+The latter detects the original retained poll-deadline regression directly.
+`app-state`'s
+`accepting_a_stored_document_syncs_on_the_stores_thread_not_the_openers`
+asserts that record opening never synchronizes storage on the compositor's
+thread. Both regressions used to be detected indirectly by elapsed time here.
+Actual idle CPU and wakeup measurements remain in `Perf / scheduled`
+(`tools/perf/run.py`, `idle.shell_cpu_pct` and `idle.*` budgets).
+
+The smoke finishes by explicitly requesting two ordered main-loop wakes and
+asserting that their acknowledgement count advances. It does not require a
+background monitor sample to have arrived by then. Socket deadlines and the
+liveness monitor below remain hang diagnostics, not performance assertions.
 
 ```bash
 cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture

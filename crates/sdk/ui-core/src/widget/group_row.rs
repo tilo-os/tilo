@@ -2080,6 +2080,22 @@ impl GroupRow {
             .all(|(group, usable)| (group.strip_usable_px() - usable).abs() <= 0.5)
     }
 
+    /// Whether the strip's observed geometry can still move, excluding
+    /// repaint-only animation inside its applications.
+    pub fn geometry_pending(&self) -> bool {
+        !self.hidden
+            && (self.structure_dirty
+                || !self.group_layout_is_current()
+                || self.snap_in_flight()
+                || self.shift_in_flight()
+                || self.group_drag_active()
+                || self
+                    .groups
+                    .iter()
+                    .filter(|group| self.paints_within_row(group.get_rect(), 0.0))
+                    .any(WindowGroup::geometry_pending))
+    }
+
     pub fn handle_count(&self) -> usize {
         self.handles.len()
     }

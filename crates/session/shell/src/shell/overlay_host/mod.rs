@@ -9315,6 +9315,31 @@ impl ShellOverlayHost {
         self.palette_layout_dirty
     }
 
+    /// Pending viewport transitions and content layout, not repaint demand.
+    /// Hosted animation such as a blinking caret must not hold geometry open.
+    pub fn geometry_pending(&self) -> bool {
+        let now = Instant::now();
+        self.palette_layout_dirty
+            || self.workspace_content_layout_dirty
+            || self.workspace_switch_holding_at(now)
+            || self.transition_started.is_some()
+            || self.qs_transition.is_animating(now)
+            || self.palette_transition.is_animating(now)
+            || self.workspace_settings_overlay.is_animating(now)
+            || self.follow_transition.is_animating(now)
+            || self.group_row_ptrs.values().any(|&ptr| {
+                // SAFETY: see the field contract on group_row_ptrs.
+                let row = unsafe { &*ptr };
+                row.geometry_pending()
+            })
+    }
+
+    /// Whether the visible rows have been refreshed for the current query.
+    /// This observes the production fan-out, without triggering another one.
+    pub fn palette_query_ready(&self) -> bool {
+        self.palette_visible && self.palette.query() == self.last_search_query
+    }
+
     /// The palette's query, the id Enter would activate, and the rows on
     /// offer — otherwise a keystroke-driven harness can't tell which row
     /// is selected without "press Enter and see what changed".
