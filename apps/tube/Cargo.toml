@@ -22,6 +22,7 @@ web-features = ["media"]
 fnv.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-youtube-engine = { path = "../../crates/runtime/engines/youtube", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared streaming and playback layer. The watch-page `VideoPlayer` uses the
 # same `media::MediaEngine` as the local player and editor preview.
@@ -75,6 +76,13 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach YouTube through the YouTube client's engine library in the runtime
+# bundle (libtilo_youtube_engine.so, crates/runtime/engines/youtube) instead
+# of the executable. The release collection enables it
+# (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
+# links rustypipe statically, because the engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "live", "tilo-youtube-engine/thin"]
 # The default app includes live YouTube and media features. Shots/tests remain
 # hermetic at runtime because their live workers are not spawned; Grayjay sync
 # also fails closed if the system secret store is unavailable.

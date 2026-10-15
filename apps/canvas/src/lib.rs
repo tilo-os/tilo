@@ -57,6 +57,23 @@ use ui::widget::ControlSize;
 
 pub struct App;
 
+/// What the binary runs instead of opening a window.
+///
+/// `--probe-paint-engine VALUE` (the value is ignored) paints a stroke with
+/// every built-in medium, without a document or a display. In a release
+/// build the simulation is in `libtilo_paint_engine.so`, so the probe proves
+/// Canvas loads its engine library and runs it.
+const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
+    option: "--probe-paint-engine",
+    run: probe_paint_engine,
+}];
+
+fn probe_paint_engine(_: &str) -> Result<(), String> {
+    let report = tilo_wet_media::self_check()?;
+    println!("canvas --probe-paint-engine: {report}");
+    Ok(())
+}
+
 impl ResourceApp for App {
     type Resource = Artwork;
     const ID: &'static str = crate::APP_ID;
@@ -64,6 +81,10 @@ impl ResourceApp for App {
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
+    }
+
+    fn commands() -> &'static [ui::framework::Command] {
+        COMMANDS
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {

@@ -32,6 +32,7 @@
 )]
 
 pub mod brush;
+mod check;
 pub mod colour;
 pub mod composite;
 pub mod engine;
@@ -46,6 +47,7 @@ pub mod presets;
 pub mod watercolour;
 
 pub use brush::StrokePoint;
+pub use check::self_check;
 pub use colour::{Paint, Pigment, Rgb, parse_paint};
 pub use engine::{
     Blend, Canvas, Engines, Erase, Fill, LayerSim, Mark, MediumEngine, ParamSpec, Preset, Settings,

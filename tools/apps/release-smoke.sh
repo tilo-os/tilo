@@ -193,8 +193,51 @@ spotify() (
   rm -rf "$runtime"
 )
 
+# Canvas, Music and Tube run their engine libraries.
+engines() (
+  set -euo pipefail
+  libdir=$(rustc --print target-libdir)
+  failed=0
+  for probe in "canvas libtilo_paint_engine.so --probe-paint-engine" \
+               "music libtilo_youtube_engine.so --probe-youtube-engine" \
+               "tube libtilo_youtube_engine.so --probe-youtube-engine"; do
+    read -r app library option <<<"$probe"
+    if [[ ! -x $target/thin-app/$app ]]; then
+      echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"
+      continue
+    fi
+    if ! grep -Fxq "$library" "$target/thin-app/runtime-engines"; then
+      echo "build-thin-apps.sh did not list $library" >&2
+      failed=1
+      continue
+    fi
+    runtime=$(mktemp -d)
+    chmod 700 "$runtime"
+    status=0
+    XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="$target/thin-app:$libdir" LD_DEBUG=files \
+      timeout 120 "$target/thin-app/$app" "$option" check \
+      >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
+    if (( status != 0 )); then
+      grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
+      echo "$app could not run $library (exit $status)" >&2
+      failed=1
+    else
+      arrival=$(grep -Eo "file=${library//./\\.} \[0\];  needed by [^ ]*" \
+        "$runtime/loader.log" | head -1 || true)
+      if [[ $arrival == */$app ]]; then
+        printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
+      else
+        echo "$app ran $option without loading $library itself: ${arrival:-not loaded}" >&2
+        failed=1
+      fi
+    fi
+    rm -rf "$runtime"
+  done
+  exit "$failed"
+)
+
 failed=()
-for step in tapp_size runtime_size loader_cost first_frame media typst spotify; do
+for step in tapp_size runtime_size loader_cost first_frame media typst spotify engines; do
   printf '==> %s\n' "$step"
   "$step" || failed+=("$step")
 done

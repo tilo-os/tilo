@@ -21,12 +21,13 @@ web-features = []
 
 [features]
 thin = ["dep:runtime-dylib"]
-# Play Spotify through its engine library in the runtime bundle
-# (libtilo_spotify_engine.so, crates/runtime/engines/spotify) instead of the
-# executable. The release collection enables it (dist/apps/app-collections.toml);
-# a `thin` build without it (`tilo-app dev`) links librespot statically,
-# because the engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
-runtime-engine = ["thin", "spotify-native", "tilo-spotify-engine/thin"]
+# Play Spotify and reach YouTube Music through their engine libraries in the
+# runtime bundle (libtilo_spotify_engine.so and libtilo_youtube_engine.so,
+# under crates/runtime/engines/) instead of the executable. The release
+# collection enables it (dist/apps/app-collections.toml); a `thin` build
+# without it (`tilo-app dev`) links librespot and rustypipe statically,
+# because an engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "spotify-native", "tilo-spotify-engine/thin", "tilo-youtube-engine/thin"]
 # The default app includes live search, stream resolution, and audio output.
 # The bundled sample library and runtime offline switch keep shots and tests
 # hermetic. Live builds also support network lyrics.
@@ -46,6 +47,7 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-spotify-engine = { path = "../../crates/runtime/engines/spotify", optional = true }
+tilo-youtube-engine = { path = "../../crates/runtime/engines/youtube", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../crates/platform/tilo-files" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
