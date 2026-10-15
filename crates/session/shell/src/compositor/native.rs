@@ -10354,6 +10354,14 @@ pub fn run() {
         // Keys a control client queued as a physical keyboard's arrive here, with the
         // backend's own events.
         pending_events.extend(test_control_ctx.seat_events.drain(..));
+        // Any input is activity, whoever it is routed to below (a pen or a
+        // pinch can go straight to an app): reset the idle timer and wake the
+        // display if it was dimmed or blanked.
+        apply_session_transitions!(crate::compositor::activity::note_person_input(
+            &mut session,
+            &pending_events,
+            Instant::now(),
+        ));
         input_steps.step("backend-poll");
         let t_backend_poll_done = iter_t0.elapsed();
         if slow_prepaint_phase(t_backend_poll_done) {
@@ -10679,11 +10687,6 @@ pub fn run() {
                     // Instrumentation: the clock starts when the loop takes the event off the
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
-                    // Any input is activity — reset the idle timer and wake the display if it was blanked.
-                    apply_session_transitions!(session.note_activity(Instant::now()));
-                    if let Some(steps) = key_steps.as_mut() {
-                        steps.steps.mark("activity");
-                    }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
@@ -11119,7 +11122,6 @@ pub fn run() {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
-                        apply_session_transitions!(session.note_activity(Instant::now()));
                         apply_shell_gesture(&mut frame_builder, action);
                         session_changed = true;
                     }
