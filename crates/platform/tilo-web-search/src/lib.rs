@@ -6,10 +6,12 @@
 //! account, an API key or a hosted service: the device talks to the engines
 //! and pages directly, as a browser would.
 //!
-//! The engine scrapers and the merge are ported from
+//! Most engine scrapers and the merge are ported from
 //! [metasearch2](https://github.com/mat-1/metasearch2) by mat-1, which is
-//! dedicated to the public domain under CC0-1.0; `PROVENANCE.md` beside this
-//! crate records the upstream revision and what changed.
+//! dedicated to the public domain under CC0-1.0. Google is asked the way
+//! [SearXNG](https://github.com/searxng/searxng)'s `google_cse` engine asks
+//! it (AGPL-3.0-or-later). `PROVENANCE.md` beside this crate records both
+//! upstream revisions and what changed.
 //!
 //! Everything a remote server sends is untrusted: pages are parsed by a
 //! bounded, forgiving reader ([`html`]) that never runs or fetches anything,
@@ -30,7 +32,8 @@ pub use fetch::{FetchError, FetchLimits, FetchedPage, fetch};
 pub use guard::{Refusal, check_address, check_url};
 pub use merge::SearchResult;
 pub use search::{
-    EngineReport, EngineStatus, MAX_QUERY_CHARS, SearchError, SearchLimits, SearchResponse, search,
+    EngineReport, EngineStatus, FIRST_BACKOFF, MAX_BACKOFF, MAX_QUERY_CHARS, SearchError,
+    SearchLimits, SearchResponse, SearchState, search,
 };
 
 use std::time::Duration;

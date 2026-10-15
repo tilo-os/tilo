@@ -2,7 +2,9 @@
 //! engines change their pages and their tolerance without notice, so it only
 //! runs when asked: `cargo test -p tilo-web-search --test live -- --ignored`.
 
-use tilo_web_search::{Engine, EngineStatus, FetchLimits, SearchLimits, client, fetch, search};
+use tilo_web_search::{
+    Engine, EngineStatus, FetchLimits, SearchLimits, SearchState, client, fetch, search,
+};
 
 #[test]
 #[ignore = "needs the network and live search engines"]
@@ -15,6 +17,7 @@ fn the_default_engines_answer_and_a_result_can_be_read() {
     let response = runtime
         .block_on(search(
             &client,
+            &SearchState::default(),
             "rust programming language",
             &Engine::ALL,
             &SearchLimits::default(),

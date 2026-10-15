@@ -22,6 +22,8 @@ const TRACKING_PARAMS: &[&str] = &[
     "fbclid",
     "gclid",
     "msclkid",
+    // Bing appends it to some result links.
+    "msockid",
 ];
 
 /// `url` as a web address worth returning: absolute `http`/`https`, without
@@ -125,6 +127,10 @@ mod tests {
         assert_eq!(
             clean("https://example.com/?fbclid=1").as_deref(),
             Some("https://example.com/")
+        );
+        assert_eq!(
+            clean("https://www.whitepages.com/?msockid=0aca8d35").as_deref(),
+            Some("https://www.whitepages.com/")
         );
         for refused in ["/relative", "javascript:alert(1)", "mailto:a@b.c", ""] {
             assert_eq!(clean(refused), None, "{refused}");

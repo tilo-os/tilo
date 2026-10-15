@@ -4,7 +4,7 @@
 //! fared and the merged results; `web_search --fetch <url>` prints a page as
 //! readable text.
 
-use tilo_web_search::{Engine, FetchLimits, SearchLimits, client, fetch, search};
+use tilo_web_search::{Engine, FetchLimits, SearchLimits, SearchState, client, fetch, search};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query = args.join(" ");
     match runtime.block_on(search(
         &client,
+        &SearchState::default(),
         &query,
         &Engine::ALL,
         &SearchLimits::default(),

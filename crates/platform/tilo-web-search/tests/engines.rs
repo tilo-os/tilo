@@ -1,6 +1,6 @@
-//! Each engine's reader against a result page recorded from it (or, where
-//! the live engine refuses this client, written in its shape), and the merge
-//! of several engines' answers.
+//! Each engine's reader against an answer recorded from it (or, where the
+//! live engine refuses this client, written in its shape), and the merge of
+//! several engines' answers.
 #![allow(clippy::unwrap_used, reason = "in a test these are assertions")]
 
 use std::path::Path;
@@ -75,18 +75,30 @@ fn duckduckgo_results_unwrap_its_redirect_links() {
 }
 
 #[test]
-fn google_results_resolve_its_redirect_links() {
-    let results = parse(Engine::Google, "google.html");
+fn google_results_come_from_its_search_element_json() {
+    let results = parse(Engine::Google, "google.jsonp");
     assert_eq!(
         urls(&results),
         [
-            "https://www.rust-lang.org/",
-            "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+            "https://www.wetter.com/wetter_aktuell/wettervorhersage/morgen/deutschland/berlin/DE0001020.html",
+            "https://www.wetteronline.de/wetter/berlin",
+            "https://www.dwd.de/DE/wetter/vorhersage_aktuell/berlin_brandenburg/vhs_bbb_node.html",
         ]
     );
     assert_eq!(
-        results[0].snippet,
-        "A language empowering everyone to build reliable and efficient software."
+        results[1].title,
+        "Wetter Berlin - 4 Tage Vorhersage - WetterOnline"
+    );
+    // The answer's no-break space before the ellipsis is plain whitespace.
+    assert!(
+        results[0]
+            .snippet
+            .starts_with("Wetter für den 16.10.2026. In Berlin")
+    );
+    assert!(
+        results[0].snippet.ends_with(" ..."),
+        "{}",
+        results[0].snippet
     );
 }
 
