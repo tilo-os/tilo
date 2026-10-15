@@ -117,6 +117,7 @@ members = [
     "apps/slides",
     "apps/shortcuts",
     "apps/snippets",
+    "apps/staging-handoff-model",
     "apps/store",
     "apps/terminal",
     "apps/themes",
