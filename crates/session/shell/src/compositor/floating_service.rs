@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -249,7 +249,10 @@ fn serve_connection(
         return;
     };
     let mut reader = BufReader::new(stream);
-    let Some(handshake_frame) = read_frame(&mut reader).ok().flatten() else {
+    let Some(handshake_frame) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES)
+        .ok()
+        .flatten()
+    else {
         return;
     };
     let Ok(handshake) = serde_json::from_slice::<LauncherHandshake>(&handshake_frame) else {
@@ -304,7 +307,7 @@ fn serve_connection(
     });
 
     loop {
-        let frame = match read_frame(&mut reader) {
+        let frame = match wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
             Ok(Some(frame)) => frame,
             Ok(None) => break,
             Err(error) => {
@@ -407,28 +410,6 @@ impl AppearanceDelivery {
             }
         }
     }
-}
-
-fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Vec<u8>>> {
-    let mut frame = Vec::new();
-    let count = reader.read_until(b'\n', &mut frame)?;
-    if count == 0 {
-        return Ok(None);
-    }
-    if frame.len() > MAX_FRAME_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "shell-ui frame exceeds 1 MiB",
-        ));
-    }
-    if frame.last() != Some(&b'\n') {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "shell-ui frame has no newline terminator",
-        ));
-    }
-    frame.pop();
-    Ok(Some(frame))
 }
 
 #[cfg(test)]
@@ -697,7 +678,7 @@ mod tests {
             },
         );
         let mut reader = BufReader::new(child);
-        let frame = read_frame(&mut reader)
+        let frame = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES)
             .unwrap()
             .expect("actual host wire frame");
         assert_eq!(

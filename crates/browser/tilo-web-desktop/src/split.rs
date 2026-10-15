@@ -1,4 +1,4 @@
-//! Apps loaded when they first open.
+//! Apps loaded when they first open, and the Activity pane (`crate::activity`).
 //!
 //! `build.sh` splits the linked module with tools/web/wasm-split: what only
 //! one app's `definition()` reaches moves into that app's own module, which
@@ -103,12 +103,17 @@ impl Future for Load {
     }
 }
 
+/// Load a split point's module; `false` when the page could not.
+pub(crate) async fn load(module: LoadModule) -> bool {
+    Load { module, slot: None }.await
+}
+
 /// Load an app's module, then ask it for the app's definition.
 pub(crate) async fn definition(
     module: LoadModule,
     definition: Definition,
 ) -> Option<&'static ApplicationDefinition> {
-    if !(Load { module, slot: None }).await {
+    if !load(module).await {
         return None;
     }
     // SAFETY: the module that defines `definition` is loaded; it returns a

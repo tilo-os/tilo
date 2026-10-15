@@ -481,6 +481,13 @@ class AppSdkAffectedTests(unittest.TestCase):
     def test_sdk_workflow_tests_stay_inside_exempt_packages(self):
         workflow = (ROOT / '.forgejo/workflows/app-sdk.yml').read_text()
         for command in re.findall(r'cargo test[^\n]+', workflow):
+            # A tool outside the workspace, under a path that always keeps
+            # the lanes (GLOBAL_INPUTS).
+            manifest = re.search(r'--manifest-path (\S+)', command)
+            if manifest:
+                self.assertTrue(manifest.group(1).startswith(selector.GLOBAL_INPUTS), command)
+                self.assertNotRegex(command, r'-p ')
+                continue
             names = re.findall(r'-p ([a-z0-9-]+)', command)
             self.assertTrue(names, command)
             self.assertTrue(set(names) <= selector.SDK_PACKAGES, command)

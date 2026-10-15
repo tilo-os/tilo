@@ -90,13 +90,7 @@ impl GnomeKeyring {
     /// From the environment of a user service.
     #[must_use]
     pub fn from_environment() -> Self {
-        let data = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
-            })
-            .unwrap_or_default();
+        let data = tilo_paths::xdg::data_home().unwrap_or_default();
         Self {
             keyrings: data.join("keyrings"),
             control: std::env::var_os("GNOME_KEYRING_CONTROL")

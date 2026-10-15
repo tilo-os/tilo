@@ -274,10 +274,13 @@ jobs:
         run: node --test crates/platform/*/web/*.test.mjs
       - name: Build tilo-app
         run: bash tools/ci/measure.sh "SDK web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
+      - name: Prepare the pinned shared MoQ module once
+        run: python3 tools/ci/prepare_sdk_moq.py prepare
       - name: Desktop bundle (dev profile)
         run: |
           bash tools/ci/measure.sh "SDK dev desktop bundle build" -- \
             target/debug/tilo-app build --target web --bundle desktop apps/calculator
+          python3 tools/ci/prepare_sdk_moq.py license target/tilo-app/web/calculator/bundle
       - name: Headless Chromium for Testing
         run: |
           # Chrome's shared-library dependencies; present on current builders.
@@ -292,6 +295,7 @@ jobs:
       - name: Compiled Chat browser disconnect and retry
         run: |
           target/debug/tilo-app build apps/chat --platform web
+          python3 tools/ci/prepare_sdk_moq.py license target/tilo-app/web/chat/bundle
           cargo run --locked -p tilo-agent-participant --example mounted-resource -- \
             target/tilo-app/web/chat/bundle --disconnect-retry
       - name: Compiled Chat browser call consent and lifecycle
@@ -386,6 +390,11 @@ jobs:
           fi
       - name: Build tilo-app
         run: bash tools/ci/measure.sh "SDK release web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
+      # The splitter's tests compile a fixture for wasm32, split it and run
+      # the pieces: that a split module's static data is written before its
+      # code runs, and only data no other module reaches moves.
+      - name: Module splitter tests
+        run: bash tools/ci/measure.sh "Web module splitter tests" -- cargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml
       - name: Release desktop bundle within its size budget
         run: |
           bash tools/ci/measure.sh "SDK release desktop bundle build" -- \

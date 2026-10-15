@@ -153,6 +153,9 @@ pub struct Ops {
     failures: [AtomicU64; 7],
     guests: AtomicU64,
     spectators: AtomicU64,
+    /// The persistent room's admission caps; 0 when there is none.
+    max_guests: AtomicU64,
+    max_spectators: AtomicU64,
     reports: AtomicU64,
     reports_dropped: AtomicU64,
     report_bucket: Mutex<Bucket>,
@@ -182,6 +185,8 @@ impl Ops {
             failures: Default::default(),
             guests: AtomicU64::new(0),
             spectators: AtomicU64::new(0),
+            max_guests: AtomicU64::new(0),
+            max_spectators: AtomicU64::new(0),
             reports: AtomicU64::new(0),
             reports_dropped: AtomicU64::new(0),
             report_bucket: Mutex::new(Bucket {
@@ -227,6 +232,13 @@ impl Ops {
         self.spectators.store(spectators, Ordering::Relaxed);
     }
 
+    /// The persistent room's caps, so an alert can compare the online
+    /// counts with them instead of a copy of the deployment's numbers.
+    pub fn set_caps(&self, max_guests: u64, max_spectators: u64) {
+        self.max_guests.store(max_guests, Ordering::Relaxed);
+        self.max_spectators.store(max_spectators, Ordering::Relaxed);
+    }
+
     /// Takes one report token; false when reports arrive too fast
     /// across all visitors.
     pub fn admit_report(&self) -> bool {
@@ -249,6 +261,28 @@ impl Ops {
             self.reports_dropped.fetch_add(1, Ordering::Relaxed);
         }
         taken
+    }
+
+    /// The persistent room's caps, when there is one.
+    fn render_caps(&self, out: &mut String) {
+        for (name, help, cap) in [
+            (
+                "tilo_rooms_max_guests",
+                "Guests the persistent room admits (TILO_ROOMS_MAX_GUESTS).",
+                &self.max_guests,
+            ),
+            (
+                "tilo_rooms_max_spectators",
+                "Spectators the persistent room admits (TILO_ROOMS_MAX_SPECTATORS).",
+                &self.max_spectators,
+            ),
+        ] {
+            let cap = load(cap);
+            if cap > 0 {
+                metric(out, "gauge", name, help);
+                sample(out, name, "", cap);
+            }
+        }
     }
 
     /// The `/metrics` page. `rooms` is how many rooms run now.
@@ -294,6 +328,7 @@ impl Ops {
             "",
             load(&self.spectators),
         );
+        self.render_caps(&mut out);
         metric(
             &mut out,
             "counter",
@@ -523,12 +558,11 @@ fn textfiles(out: &mut String, dirs: &[PathBuf]) {
         else {
             continue;
         };
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.len() > TEXTFILE_MAX {
+        let Ok(Some(bytes)) = tilo_files::native::bounded::read(&path, TEXTFILE_MAX) else {
             continue;
-        }
+        };
         let age = age_of(&path).map_or(0, |age| age.as_secs());
-        if let Ok(text) = std::fs::read_to_string(&path) {
+        if let Ok(text) = String::from_utf8(bytes) {
             files.entry(name).or_insert((text, age));
         }
     }
@@ -675,6 +709,8 @@ mod tests {
         ops.joined();
         ops.join_failed(JoinFailure::Full);
         ops.set_online(5, 9);
+        assert!(!ops.render(1).contains("tilo_rooms_max_guests"));
+        ops.set_caps(500, 2000);
         let page = ops.render(1);
         for expected in [
             "# TYPE tilo_rooms_build_info gauge",
@@ -682,6 +718,9 @@ mod tests {
             "tilo_rooms_rooms 1",
             "tilo_rooms_online_guests 5",
             "tilo_rooms_online_spectators 9",
+            "# TYPE tilo_rooms_max_guests gauge",
+            "tilo_rooms_max_guests 500",
+            "tilo_rooms_max_spectators 2000",
             "tilo_rooms_joins_total 1",
             "tilo_rooms_join_failures_total{reason=\"full\"} 1",
             "tilo_rooms_relay_up 1",
