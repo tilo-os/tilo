@@ -200,9 +200,9 @@ pub enum FilesEffect {
     /// Toggle a cloud entry in the selection.
     #[effect(view)]
     SelectCloud { entry: String },
-    /// Import selected files and folders using the desktop destination chooser.
+    /// Import selected files and folders to an explicit folder, or choose one.
     #[effect(view)]
-    ImportCloud,
+    ImportCloud { folder: Option<String> },
     /// Observe enumeration, export and copy progress.
     #[effect(kind = "read", returns)]
     CloudProgress,

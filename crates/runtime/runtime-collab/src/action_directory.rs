@@ -330,8 +330,18 @@ pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
         ])
     });
     let visibility = row.visibility.as_ref().map_or_else(
-        || text("").saturating_mul(2),
-        |visibility| text(&visibility.action).saturating_add(json(&visibility.contract)),
+        || text("").saturating_mul(3),
+        |visibility| {
+            sum([
+                text(&visibility.action),
+                json(&visibility.contract),
+                text(
+                    visibility
+                        .governing_kind
+                        .map_or("", tilo_actions::OperationKind::as_str),
+                ),
+            ])
+        },
     );
     sum([
         STRUCT,
@@ -538,6 +548,9 @@ mod codec {
         out.set_has_children(row.has_children);
         if let Some(visibility) = &row.visibility {
             out.set_visibility_action(&visibility.action);
+            if let Some(kind) = visibility.governing_kind {
+                out.set_visibility_governing_kind(kind.as_str());
+            }
             out.set_visibility_contract_json(&encode_json(
                 &visibility.contract,
                 "visibility contract",
@@ -799,6 +812,13 @@ mod codec {
                     MAX_DIRECTORY_CONTRACT_WIRE_BYTES,
                 )?,
                 action: visibility_action,
+                governing_kind: match capnp_text(row.get_visibility_governing_kind()?)?.as_str() {
+                    "" => None,
+                    "document" => Some(OperationKind::Document),
+                    "effect" => Some(OperationKind::Effect),
+                    "view" => Some(OperationKind::View),
+                    _ => return Err(address.error("invalid visibility governing kind")),
+                },
             }),
             _ => {
                 return Err(address.error("visibility action and contract must be set together"));

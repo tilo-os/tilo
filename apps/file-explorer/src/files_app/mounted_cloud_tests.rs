@@ -1,7 +1,6 @@
 use super::*;
-use crate::effects::FilesEffect;
-use runtime_fs::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse};
 use std::os::unix::fs::PermissionsExt;
+use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse};
 
 #[test]
 #[allow(
@@ -27,7 +26,7 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).unwrap();
     }
     std::fs::write(mount.join("Uploaded.docx"), b"uploaded bytes").unwrap();
-    let socket = runtime_fs::cloud::files_socket_in(root.path());
+    let socket = tilo_cloud_files::cloud::files_socket_in(root.path());
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
     let server = std::thread::spawn(move || {
@@ -67,84 +66,91 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
     });
     let (services, recorder) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
-    let mut files = FileExplorerWidget::with_persistence(None, Some(mount.clone()));
-    files.startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
-        id: "account".into(),
-        kind: crate::remote_accounts::RemoteAccountKind::GoogleDrive,
-        label: "Drive".into(),
-        host: "drive.google.com".into(),
-        health: crate::remote_accounts::RemoteAccountHealth::Healthy,
-        files_mode: accounts::cloud_types::FilesMode::Sync,
-        mount: Some(mount.clone()),
-    }]);
-    files.navigate(mount.clone());
-    files.poll_mounted_cloud();
-    let replies = files
-        .mounted_cloud
-        .pending
-        .take()
-        .unwrap()
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
-    let (tx, rx) = channel();
-    tx.send(replies).unwrap();
-    files.mounted_cloud.pending = Some(rx);
-    assert!(files.poll_mounted_cloud());
-    server.join().unwrap();
-    for (name, _, source) in sources {
-        let entry = files
+    let mut app = ui::prelude::TestApp::<crate::FileExplorerShell>::new().unwrap();
+    app.with_surface(|files: &mut FileExplorerWidget| {
+        files.home_path = Some(mount.clone());
+        files.startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
+            id: "account".into(),
+            kind: crate::remote_accounts::RemoteAccountKind::GoogleDrive,
+            label: "Drive".into(),
+            host: "drive.google.com".into(),
+            health: crate::remote_accounts::RemoteAccountHealth::Healthy,
+            files_mode: accounts::cloud_types::FilesMode::Sync,
+            mount: Some(mount.clone()),
+        }]);
+        files.navigate(mount.clone());
+        files.poll_mounted_cloud();
+        let replies = files
+            .mounted_cloud
+            .pending
+            .take()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let (tx, rx) = channel();
+        tx.send(replies).unwrap();
+        files.mounted_cloud.pending = Some(rx);
+        assert!(files.poll_mounted_cloud());
+        server.join().unwrap();
+        for (name, _, source) in sources {
+            let entry = files
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap();
+            let row = files.entry_resource(entry);
+            let presentation = row.presentation.unwrap();
+            assert!(presentation.detail.unwrap().contains(source));
+            assert!(presentation.preview.unwrap().contains("independent"));
+            assert_eq!(
+                row.actions
+                    .iter()
+                    .find(|action| action.id == "open")
+                    .unwrap()
+                    .label,
+                t("files-mounted-open")
+            );
+            assert!(
+                row.actions
+                    .iter()
+                    .any(|action| action.id == "import-converted")
+            );
+        }
+        let uploaded = files
             .entries
             .iter()
-            .find(|entry| entry.name == name)
+            .find(|entry| entry.name == "Uploaded.docx")
             .unwrap();
-        let row = files.entry_resource(entry);
-        let presentation = row.presentation.unwrap();
-        assert!(presentation.detail.unwrap().contains(source));
-        assert!(presentation.preview.unwrap().contains("independent"));
-        assert_eq!(
-            row.actions
-                .iter()
-                .find(|action| action.id == "open")
-                .unwrap()
-                .label,
-            t("files-mounted-open")
-        );
         assert!(
-            row.actions
+            files
+                .entry_resource(uploaded)
+                .actions
                 .iter()
-                .any(|action| action.id == "import-converted")
+                .all(|a| a.id != "import-converted")
         );
-    }
-    let uploaded = files
-        .entries
-        .iter()
-        .find(|entry| entry.name == "Uploaded.docx")
-        .unwrap();
-    assert!(
-        files
-            .entry_resource(uploaded)
-            .actions
-            .iter()
-            .all(|a| a.id != "import-converted")
-    );
+    })
+    .unwrap();
     let id = crate::search_provider::entry_resource_id(&mount.join("Document.docx"));
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
-    files
-        .run_effect(FilesEffect::ImportConverted { entry: id })
+    app.call_on(&id, "import-converted", serde_json::json!({}))
         .unwrap();
     assert!(recorder.pick_requests()[0].is_writable_directory());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while files.mounted_cloud.chooser.is_some() {
+    while !destination.join("Document.docx").exists() || app.state().ops.pending().next().is_some()
+    {
         assert!(std::time::Instant::now() < deadline);
-        files.poll_mounted_cloud();
+        app.settle();
         std::thread::yield_now();
     }
-    assert!(
-        destination.join("Document.docx").exists(),
-        "status: {:?}; outcomes: {:?}",
-        files.status,
-        files.local_outcomes
-    );
+    app.with_surface(|files: &mut FileExplorerWidget| {
+        assert!(
+            destination.join("Document.docx").exists(),
+            "status: {:?}; outcomes: {:?}",
+            files.status,
+            files.local_outcomes
+        );
+    })
+    .unwrap();
     assert_eq!(
         std::fs::read(destination.join("Document.docx")).unwrap(),
         b"converted bytes"

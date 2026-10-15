@@ -120,6 +120,7 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                     visibility: Some(tilo_actions::remote::RowVisibility {
                         action: descriptor.address.action.clone(),
                         contract: exported.contract.clone(),
+                        governing_kind: Some(descriptor.kind),
                     }),
                     descriptor: Some(exported),
                 };
@@ -160,6 +161,7 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                     visibility: Some(tilo_actions::remote::RowVisibility {
                         action: descriptor.address.action.clone(),
                         contract: descriptor.contract.clone(),
+                        governing_kind: Some(descriptor.kind),
                     }),
                 }]
             } else {

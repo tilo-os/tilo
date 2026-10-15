@@ -247,6 +247,10 @@ impl CatalogueRow {
 pub struct RowVisibility {
     pub action: String,
     pub contract: ActionContract,
+    /// The operation whose contract discloses this row. Missing on legacy
+    /// publications; brokers must not infer that an unknown Read is public.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governing_kind: Option<crate::OperationKind>,
 }
 
 /// A publisher the caller may browse or invoke.

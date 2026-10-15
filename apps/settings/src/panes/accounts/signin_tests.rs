@@ -917,7 +917,7 @@ fn icloud_rows_are_marked_best_effort_and_offer_reauthentication() {
     let mut texts = Vec::new();
     collect(composed.as_ref(), &mut texts);
     assert!(
-        texts.iter().any(|text| text == "Re-authenticate"),
+        texts.iter().any(|text| text == "Re-authenticate — Files"),
         "{texts:?}"
     );
     assert!(texts.iter().any(|text| text == "Best effort"), "{texts:?}");

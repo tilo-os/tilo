@@ -26,6 +26,7 @@ use crate::resource::Resource;
 /// same ids and see the same time.
 #[derive(Debug)]
 pub struct ActionCx {
+    preview: bool,
     seed: [u8; 32],
     minted: u64,
     /// The ids [`Self::id`] minted, in order.
@@ -40,6 +41,32 @@ fn invoking_author() -> Option<String> {
     tilo_actions::invoking_context()
         .and_then(|context| context.invoker)
         .map(|invoker| invoker.actor)
+        .or_else(|| RECORD_ACTOR.with_borrow(Clone::clone))
+}
+
+thread_local! {
+    static RECORD_ACTOR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Attribution lent by the SDK's checked record callback. Compensation is
+/// calculated before an action envelope is installed, but must still see the
+/// actual admitted actor rather than an anonymous ambient host.
+///
+/// This supplies attribution only, never permission to access host resources.
+pub struct RecordActorScope(Option<String>);
+
+impl RecordActorScope {
+    /// Lend the actor admitted by the record host for this callback.
+    #[must_use]
+    pub fn enter(actor: String) -> Self {
+        Self(RECORD_ACTOR.replace(Some(actor)))
+    }
+}
+
+impl Drop for RecordActorScope {
+    fn drop(&mut self) {
+        RECORD_ACTOR.replace(self.0.take());
+    }
 }
 
 fn invoking_invocation() -> Option<tilo_actions::InvocationId> {
@@ -56,6 +83,7 @@ impl ActionCx {
     #[must_use]
     pub fn for_apply(doc: &Doc, payload: &[u8], now_ms: i64) -> Self {
         Self {
+            preview: tilo_actions::executor::is_replaying(),
             seed: seed(doc, b"tilo-resource/action-seed/v1", payload),
             minted: 0,
             ids: Vec::new(),
@@ -87,6 +115,7 @@ impl ActionCx {
         }
         hasher.update(payload);
         Self {
+            preview: tilo_actions::executor::is_replaying(),
             seed: *hasher.finalize().as_bytes(),
             minted: 0,
             ids: Vec::new(),
@@ -94,6 +123,14 @@ impl ActionCx {
             author: invoking_author(),
             invocation: invoking_invocation(),
         }
+    }
+
+    /// Whether the runtime is evaluating compensation on a private record copy
+    /// or replaying an existing change. Neither may issue host-local approvals
+    /// or repeat outside effects; only a new invocation admits those.
+    #[must_use]
+    pub fn is_preview(&self) -> bool {
+        self.preview
     }
 
     /// A fresh id, unique to this action and stable under replay.
@@ -614,11 +651,13 @@ impl<O: Operation> Stamped<O> {
         if let Some(edit) = self.operation.edit() {
             let mut copy = doc.clone();
             let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
+            cx.preview = true;
             edit.apply(&mut copy, &mut cx).ok()?;
             return Some((O::Record::read_fields(&copy, &ROOT).ok()?, cx.ids));
         }
         let mut after = O::Record::read_fields(doc, &ROOT).ok()?;
         let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
+        cx.preview = true;
         let minting = MintScope::enter(&cx);
         let performed = self.operation.perform(&mut after, &mut cx);
         drop(minting);

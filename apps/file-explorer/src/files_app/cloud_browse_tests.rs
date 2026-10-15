@@ -1,6 +1,6 @@
 use super::*;
-use runtime_fs::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, ImportReadState};
 use std::io::Write;
+use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, ImportReadState};
 
 #[test]
 #[allow(
@@ -13,7 +13,7 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
     env.set("XDG_RUNTIME_DIR", root.path());
     let destination = root.path().join("Chosen");
     std::fs::create_dir(&destination).unwrap();
-    let socket = runtime_fs::cloud::files_socket_in(root.path());
+    let socket = tilo_cloud_files::cloud::files_socket_in(root.path());
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let mut office = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -85,6 +85,7 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
     let (services, recorder) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
     let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
+    files.cloud_fixture_consent = true;
     files.startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
         id: "account".into(),
         kind: crate::remote_accounts::RemoteAccountKind::GoogleDrive,
@@ -114,7 +115,9 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
         })
         .unwrap();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
-    files.run_effect(FilesEffect::ImportCloud).unwrap();
+    files
+        .run_effect(FilesEffect::ImportCloud { folder: None })
+        .unwrap();
     assert!(recorder.pick_requests()[0].is_writable_directory());
     while files.cloud.chooser.is_some() || files.cloud.transfer.is_some() {
         assert!(std::time::Instant::now() < deadline);
@@ -134,7 +137,9 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
         matches!(&outcome.result()[0], crate::file_ops::Change::CloudImported{from,to,..} if from == "cloud:account:native" && Path::new(to) == destination.join("Document.docx"))
     );
     recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
-    files.run_effect(FilesEffect::ImportCloud).unwrap();
+    files
+        .run_effect(FilesEffect::ImportCloud { folder: None })
+        .unwrap();
     files.poll_cloud();
     assert!(files.cloud.transfer.is_none());
     assert_eq!(
@@ -144,6 +149,64 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
     );
     files.run_effect(FilesEffect::RevealCloud).unwrap();
     assert_eq!(files.current_path(), destination);
+}
+
+#[test]
+fn explicit_import_folder_is_pinned_without_a_chooser_and_is_not_source_consent() {
+    let root = tempfile::tempdir().unwrap();
+    let destination = root.path().join("Copies");
+    std::fs::create_dir(&destination).unwrap();
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+    files.cloud.active = true;
+    files.cloud.account = "private-account".into();
+    files.cloud.entries = vec![ImportEntry {
+        id: "remote".into(),
+        name: "Document.docx".into(),
+        kind: ImportKind::NativeExport,
+        revision: Some("revision".into()),
+        size: None,
+        content_writable: false,
+    }];
+    files.cloud.selected.insert("remote".into());
+    files
+        .run_effect(FilesEffect::ImportCloud {
+            folder: Some(destination.display().to_string()),
+        })
+        .unwrap();
+    assert!(recorder.pick_requests().is_empty());
+    assert!(files.cloud.chooser.is_none());
+    let crate::file_ops::FileOp::CloudImport {
+        folder,
+        destination: pinned,
+        ..
+    } = files.cloud.retry.as_ref().unwrap()
+    else {
+        panic!("explicit destination must queue a cloud import")
+    };
+    assert_eq!(Path::new(folder), destination);
+    assert_eq!(
+        *pinned,
+        crate::cloud_transfer::pin_destination(folder, std::iter::empty()).unwrap()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while files.cloud.transfer.is_some() {
+        assert!(std::time::Instant::now() < deadline);
+        files.poll_cloud();
+        std::thread::yield_now();
+    }
+    assert!(
+        files
+            .local_outcomes
+            .values()
+            .all(|outcome| matches!(outcome,
+                ui::tilo_resource::Settled::Failed { reason, partial }
+                    if reason.contains("host person") && partial.is_empty()
+            ))
+    );
+    assert_eq!(files.local_outcomes.len(), 1);
+    assert_eq!(std::fs::read_dir(destination).unwrap().count(), 0);
 }
 
 fn browse_test_account(id: &str) -> crate::remote_accounts::RemoteAccount {
@@ -232,7 +295,9 @@ fn local_navigation_invalidates_page_and_destination_chooser() {
         })
         .unwrap();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(root.path().into()));
-    files.run_effect(FilesEffect::ImportCloud).unwrap();
+    files
+        .run_effect(FilesEffect::ImportCloud { folder: None })
+        .unwrap();
     let (old, pending) = channel();
     files.cloud.pending = Some(pending);
     files.navigate(root.path().into());
@@ -251,7 +316,11 @@ fn local_navigation_invalidates_page_and_destination_chooser() {
     assert!(files.cloud_resources().is_empty());
     assert!(files.cloud.transfer.is_none());
     assert!(files.awaiting_ops.is_empty());
-    assert!(files.run_effect(FilesEffect::ImportCloud).is_err());
+    assert!(
+        files
+            .run_effect(FilesEffect::ImportCloud { folder: None })
+            .is_err()
+    );
     assert!(
         files
             .run_effect(FilesEffect::SelectCloud {

@@ -967,8 +967,24 @@ inputs = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
 readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
+package = "settings"
+inputs = [
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+]
+readers = [
+  "apps/settings/src/panes/accounts/cloud_import_acceptance.rs",
+  "apps/settings/tests/cloud_ux.rs",
+]
+
+[[cargo]]
 package = "tilo-fs"
 inputs = [
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg",
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
   "tools/test-assets.py", "tools/test-assets-build.rs",
@@ -976,6 +992,8 @@ inputs = [
 readers = [
   "crates/system/fs/src/main.rs", "crates/system/fs/build.rs",
   "crates/system/fs/tests/exact_share_process_fuse.rs",
+  "crates/system/fs/tests/cloud_mount.rs",
+  "crates/system/fs/tests/cloud_mount/import.rs",
 ]
 
 [[cargo]]

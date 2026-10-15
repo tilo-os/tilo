@@ -763,6 +763,9 @@ pub struct FileExplorerWidget {
     /// The accounts as last read from `accounts_root`.
     accounts_cache: Vec<crate::remote_accounts::RemoteAccount>,
     cloud: cloud_browse::CloudView,
+    /// Explicit consent injection for protocol fixtures, never ambient authority.
+    #[cfg(test)]
+    cloud_fixture_consent: bool,
     mounted_cloud: mounted_cloud::MountedCloud,
     host_intent: Option<ui::widget::AppHostIntent>,
     /// A one-shot shell-owned document admission. The reply is strong only
@@ -879,9 +882,27 @@ impl FileExplorerWidget {
         let id = uuid::Uuid::new_v4().to_string();
         if matches!(op, crate::file_ops::FileOp::CloudImport { .. }) {
             let (tx, rx) = std::sync::mpsc::channel();
+            // Issue and consume on the checked host thread, not in the worker.
+            // An unhosted widget alone supplies no authority to read cloud bytes.
+            let device = self.device.as_deref().unwrap_or("unhosted");
+            let consent = crate::cloud_jobs::approve(device, &op, &id)
+                .and_then(|()| crate::cloud_jobs::consume(device, &op, &id));
+            #[cfg(test)]
+            let consent = if self.cloud_fixture_consent {
+                Ok(crate::cloud_jobs::fixture_consent(&op))
+            } else {
+                consent
+            };
             self.cloud.transfer = Some((id, rx));
             std::thread::spawn(move || {
-                let _ = tx.send(crate::cloud_jobs::run(&op, None));
+                let outcome = match consent {
+                    Ok(consent) => crate::cloud_jobs::run(&op, consent),
+                    Err(reason) => ui::tilo_resource::Settled::Failed {
+                        reason,
+                        partial: vec![],
+                    },
+                };
+                let _ = tx.send(outcome);
             });
             return None;
         }
@@ -1635,6 +1656,8 @@ impl FileExplorerWidget {
             accounts_root: None,
             accounts_cache: Vec::new(),
             cloud: cloud_browse::CloudView::default(),
+            #[cfg(test)]
+            cloud_fixture_consent: false,
             mounted_cloud: mounted_cloud::MountedCloud::default(),
             host_intent: None,
             pending_document_open: None,
@@ -2007,7 +2030,7 @@ impl FileExplorerWidget {
             effect @ (FilesEffect::BrowseCloud { .. }
             | FilesEffect::MoreCloud
             | FilesEffect::SelectCloud { .. }
-            | FilesEffect::ImportCloud
+            | FilesEffect::ImportCloud { .. }
             | FilesEffect::CloudProgress
             | FilesEffect::CancelCloud
             | FilesEffect::RetryCloud
@@ -8772,7 +8795,9 @@ impl FileExplorerWidget {
         extras.extend(published_template_resources());
         extras.extend(self.live_entry_resources());
         extras.extend(self.live_remote_account_resources());
-        extras.extend(self.cloud_resources());
+        if ui::bound_dispatch::host_person_invocation_permitted() {
+            extras.extend(self.cloud_resources());
+        }
         let mut nearby_root = Resource::new("files.nearby", "files.nearby", "Nearby");
         self.append_nearby_receiver_resources(&mut nearby_root);
         extras.extend(nearby_root.children);
@@ -8791,6 +8816,11 @@ impl FileExplorerWidget {
     }
 
     fn live_remote_account_resources(&self) -> Vec<Resource> {
+        // Account discovery belongs to the host person, not to whoever owns
+        // the workspace. Checked resource reads install this trusted scope too.
+        if !ui::bound_dispatch::host_person_invocation_permitted() {
+            return Vec::new();
+        }
         // External file accounts are the folders the storage daemon's cloud
         // service mounts under `~/Remote`. Files never talks to the server or
         // opens the vault: it opens the folder like any other place and shows
@@ -9521,7 +9551,9 @@ impl FileExplorerWidget {
     pub(crate) fn search_entries_shown(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         let mut entries = self.places_search.entries();
         entries.extend(self.collaborative_search.entries());
-        entries.extend(self.remote_accounts_search.entries());
+        if ui::bound_dispatch::host_person_invocation_permitted() {
+            entries.extend(self.remote_accounts_search.entries());
+        }
         entries
     }
 }
@@ -9560,7 +9592,11 @@ impl FileExplorerWidget {
                 self.places_search
                     .resource(id)
                     .or_else(|| self.collaborative_search.resource(id))
-                    .or_else(|| self.remote_accounts_search.resource(id))
+                    .or_else(|| {
+                        ui::bound_dispatch::host_person_invocation_permitted()
+                            .then(|| self.remote_accounts_search.resource(id))
+                            .flatten()
+                    })
             })
             .or_else(|| (self.error.is_some() && id == RETRY_ROW).then(retry_row))
     }

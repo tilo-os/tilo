@@ -4430,7 +4430,6 @@ dependencies = [
  "iroh",
  "mime_guess",
  "runtime-dylib",
- "runtime-fs",
  "runtime-portal",
  "serde",
  "serde_json",
@@ -4443,6 +4442,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-cloud-files",
  "tilo-copy-lint",
  "tilo-files",
  "tilo-fs",
@@ -16624,6 +16624,21 @@ name = "tilo-clock"
 version = "0.1.0"
 dependencies = [
  "web-time",
+]
+
+[[package]]
+name = "tilo-cloud-files"
+version = "0.1.0"
+dependencies = [
+ "cap-fs-ext",
+ "cap-std",
+ "chrono",
+ "host-fs",
+ "runtime-fs",
+ "serde",
+ "serde_json",
+ "uuid",
+ "workspace-hack",
 ]
 
 [[package]]

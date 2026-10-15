@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 pub use crate::cloud_transfer::TransferProgress;
-use runtime_fs::cloud::ImportEntry;
+use tilo_cloud_files::cloud::ImportEntry;
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::Settled;
@@ -123,23 +123,16 @@ pub fn execute_with_progress(
     cancel: &AtomicBool,
     progress: impl Fn(TransferProgress),
 ) -> Outcome {
-    if let FileOp::CloudImport {
-        account,
-        entries,
-        folder,
-        destination,
-        ..
-    } = op
-    {
-        return crate::cloud_transfer::execute(
-            account,
-            entries,
-            folder,
-            destination,
-            cancel,
-            progress,
-        );
+    if matches!(
+        op,
+        FileOp::CloudImport { .. } | FileOp::ImportMounted { .. }
+    ) {
+        return Settled::Failed {
+            reason: "cloud import requires a host-private source consent".into(),
+            partial: vec![],
+        };
     }
+    let _ = (cancel, progress);
     let mut changes = Vec::new();
     let result = match op {
         FileOp::NewFolder { parent, name } => {
@@ -163,21 +156,15 @@ pub fn execute_with_progress(
             folder,
             create,
         } => move_into(paths, Path::new(folder), *create, &mut changes),
-        FileOp::Copy { paths, folder } | FileOp::ImportMounted { paths, folder } => {
-            paths.iter().try_for_each(|path| {
-                let copy = if matches!(op, FileOp::ImportMounted { .. }) {
-                    fileops::import_mounted_into
-                } else {
-                    fileops::copy_into
-                };
-                copy(Path::new(path), Path::new(folder)).map(|copied| {
-                    changes.push(Change::Copied {
-                        from: path.clone(),
-                        to: text(&copied),
-                    });
-                })
+        FileOp::Copy { paths, folder } => paths.iter().try_for_each(|path| {
+            fileops::copy_into(Path::new(path), Path::new(folder)).map(|copied| {
+                changes.push(Change::Copied {
+                    from: path.clone(),
+                    to: text(&copied),
+                });
             })
-        }
+        }),
+        FileOp::ImportMounted { .. } => Err("mounted import requires host-private consent".into()),
         FileOp::CloudImport { .. } => Err("cloud import requires its transfer worker".into()),
         FileOp::ClipboardReceipt { .. } => Err("clipboard receipt requires its native host".into()),
         FileOp::Revert { .. } => match reverting {
@@ -396,13 +383,35 @@ mod tests {
         std::fs::write(&source, b"original").unwrap();
         std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
         let paths = vec![text(&source)];
-        let imported = execute(
-            &FileOp::ImportMounted {
-                paths: paths.clone(),
-                folder: text(&folder),
-            },
-            None,
+        let op = FileOp::ImportMounted {
+            paths: paths.clone(),
+            folder: text(&folder),
+        };
+        assert!(
+            !execute(&op, None).is_done(),
+            "serialized jobs supply no private consent"
         );
+        let mut app =
+            ui::prelude::TestApp::<crate::resource::FileExplorerShell>::on_device("laptop")
+                .unwrap();
+        app.invoke(crate::resource::FileExplorer::queueing("laptop", op).unwrap())
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.state().ops.pending().next().is_some() {
+            assert!(std::time::Instant::now() < deadline);
+            app.settle();
+            std::thread::yield_now();
+        }
+        let imported = app
+            .state()
+            .ops
+            .entries()
+            .next()
+            .unwrap()
+            .1
+            .settled
+            .clone()
+            .unwrap();
         let destination = folder.join("mounted.txt");
         assert_eq!(
             done(&imported),

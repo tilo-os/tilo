@@ -1,5 +1,5 @@
 use super::*;
-use runtime_fs::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, ImportReadState};
+use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, ImportReadState};
 
 #[test]
 #[allow(
@@ -12,7 +12,7 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
     env.set("XDG_RUNTIME_DIR", root.path());
     let destination = root.path().join("Chosen");
     std::fs::create_dir(&destination).unwrap();
-    let socket = runtime_fs::cloud::files_socket_in(root.path());
+    let socket = tilo_cloud_files::cloud::files_socket_in(root.path());
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let entry = ImportEntry {
@@ -71,6 +71,7 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
     let (services, recorder) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
     let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
+    files.cloud_fixture_consent = true;
     files.startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
         id: "account".into(),
         kind: crate::remote_accounts::RemoteAccountKind::GoogleDrive,
@@ -95,7 +96,9 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
         .run_effect(FilesEffect::SelectCloud { entry: entry.id })
         .unwrap();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
-    files.run_effect(FilesEffect::ImportCloud).unwrap();
+    files
+        .run_effect(FilesEffect::ImportCloud { folder: None })
+        .unwrap();
     files.poll_cloud();
     ready_rx
         .recv_timeout(std::time::Duration::from_secs(5))
