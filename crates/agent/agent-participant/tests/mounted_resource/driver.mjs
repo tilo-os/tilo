@@ -215,7 +215,9 @@ try {
   // refused (no access) or failed.
   const entryOutcome = 'document.documentElement.dataset.entry';
   const chooseAccount = async name => {
-    await tab.waitFor('document.querySelectorAll(".tilo-entry-card button").length === 2');
+    await tab.waitFor(`document.documentElement.dataset.entry !== undefined
+      || document.querySelectorAll('.tilo-entry-card button').length === 2`);
+    assert.equal(await tab.evaluate(entryOutcome), undefined, 'entry must offer account choice before completing');
     await tab.evaluate(`Array.from(document.querySelectorAll(".tilo-entry-card button")).find(button => button.textContent.includes(${JSON.stringify(name)})).click()`);
   };
   observer.mark('navigate-link');
