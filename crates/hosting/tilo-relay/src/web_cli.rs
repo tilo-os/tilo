@@ -1348,10 +1348,6 @@ mod tests {
         (relay, root, approver, approver_endpoint)
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the relay serves the whole scenario and `shutdown` consumes it at the end"
-    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_room_certifies_exactly_the_admitted_browser_and_refuses_an_unmatched_code() {
         let tmp = tempfile::tempdir().unwrap();

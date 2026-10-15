@@ -261,10 +261,6 @@ impl ForeignFrameStore {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::float_cmp,
-    reason = "sheet geometry fixtures use exactly representable values"
-)]
 mod tests {
     use super::*;
 

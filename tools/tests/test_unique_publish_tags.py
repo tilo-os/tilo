@@ -69,12 +69,6 @@ class ShellPushTests(unittest.TestCase):
         self.assertIn('$repository:index-candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"', text)
         self.assertIn('"docker://registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH-$GITHUB_RUN_ID-${{ github.run_attempt }}"', text)
 
-    def test_release_tools_child_and_indexes_are_unique(self):
-        text = self.read("build-release-tools.yml")
-        self.assertNotIn("candidate-$SOURCE_REVISION-${{ matrix.arch }}", text)
-        self.assertIn('unique="$tag-$GITHUB_RUN_ID-${{ github.run_attempt }}"', text)
-        self.assertIn('--tag "$IMAGE_REPOSITORY:$unique"', text)
-
     def test_base_mirror_dev_disk_and_wine_pushes_are_unique(self):
         mirror = (ROOT / "os/dev/ensure-base-mirror.sh").read_text()
         self.assertIn('fedora-bootc:${BASE_SOURCE##*:}-recover-', mirror)

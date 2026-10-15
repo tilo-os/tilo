@@ -1420,10 +1420,6 @@ fn export_home_peer(
 /// Join a workspace as a durable, serving peer without a FUSE mount. The
 /// normal workspace router keeps the supplied live capability policy in front
 /// of its blob provider, so a home peer never becomes an unenforced source.
-#[allow(
-    clippy::too_many_lines,
-    reason = "replica startup is one ordered validation and service-lifetime sequence"
-)]
 async fn replica(config_path: PathBuf) -> Result<()> {
     let config_text = std::fs::read_to_string(&config_path)
         .with_context(|| format!("read home-peer bundle {}", config_path.display()))?;
@@ -3321,10 +3317,6 @@ fn open_history(cache_dir: Option<&Path>) -> Result<Option<Arc<FileHistoryStore>
 
 /// Atomically persist the namespace document and retain bounded known-good
 /// generations. A damaged primary is never overwritten by the live daemon.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "durable replacement is serialized with mutations"
-)]
 fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
     if let Err(error) = persist_namespace_generation(namespace, path) {
         eprintln!("namespace persist to {} failed: {error}", path.display());

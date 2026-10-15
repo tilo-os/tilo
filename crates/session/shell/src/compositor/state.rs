@@ -5791,7 +5791,6 @@ impl State {
         });
         #[allow(
             clippy::cast_possible_truncation,
-            clippy::cast_possible_wrap,
             reason = "output geometry is bounded by the i32 Wayland logical coordinate space"
         )]
         Rectangle::new(
@@ -5815,7 +5814,6 @@ impl State {
             .map(|rect| {
                 #[allow(
                     clippy::cast_possible_truncation,
-                    clippy::cast_possible_wrap,
                     reason = "Wayland logical coordinates are i32 by protocol"
                 )]
                 (rect.x0.round() as i32, rect.y0.round() as i32)
@@ -6246,10 +6244,6 @@ impl XdgActivationHandler for State {
         }
     }
 
-    #[allow(
-        clippy::collapsible_if,
-        reason = "The nested host-launch branch keeps the one-shot activation token's relocation decision visually separate from its post-relocation label mutation."
-    )]
     fn request_activation(
         &mut self,
         token: XdgActivationToken,
@@ -7406,7 +7400,6 @@ impl InputMethodHandler for State {
             });
         #[allow(
             clippy::cast_possible_truncation,
-            clippy::cast_possible_wrap,
             reason = "Wayland parent geometry is represented as i32 logical coordinates"
         )]
         Rectangle::new(

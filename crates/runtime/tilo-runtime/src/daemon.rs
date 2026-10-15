@@ -723,10 +723,6 @@ enum StartupPolicy {
     Admission { owner_uid: u32 },
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the broker is resolved before the endpoint is touched so a missing broker fails first"
-)]
 fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> io::Result<()> {
     validate_profile(profile)?;
     let mut stages = StartupStages::open(profile)?;

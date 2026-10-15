@@ -1234,8 +1234,7 @@ workflow = "room-service-image.yml"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
-reason = "needs the built registry-server image"
-workflow = "release-registry-server.yml"
+reason = "needs the built registry-server image: t's image-registry-server check runs it"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
@@ -1521,8 +1520,7 @@ workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
 suite = "os/tests/release_tools_image.sh"
-reason = "needs the built release-tools image"
-workflow = "build-release-tools.yml"
+reason = "needs the built release-tools image: t's image-release-tools-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"
@@ -1583,8 +1581,7 @@ reason = "exercises a Windows-only helper (msvcrt, os.O_BINARY); needs a Windows
 
 [[unrequired]]
 suite = "os/tests/tilo-session-lifecycle.sh"
-reason = "drives a VM over SSH"
-workflow = "ci-filesystem.yml"
+reason = "drives a VM over SSH; the real-fuse check in t.toml runs it"
 
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"

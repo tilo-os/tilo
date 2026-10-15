@@ -268,10 +268,6 @@ impl LiveGrants {
 /// Whether `peer` may be in `workspace_id`'s live plane now: its
 /// certificate current relay-wide and admitted by the room, see
 /// [`room_access::decide`].
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the guard only lives for the lookup; the value kept is a clone"
-)]
 pub(crate) async fn admitted(
     sessions: &Sessions,
     peer: &AuthenticatedPeer,

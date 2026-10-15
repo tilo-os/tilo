@@ -289,10 +289,6 @@ impl VerifiedNativeEnrollment {
     pub fn transport_hint(&self) -> &TransportHint {
         self.intent.transport_hint()
     }
-    #[allow(
-        clippy::unused_self,
-        reason = "an accessor on the enrolled value; native enrollment carries no separate delivery hint"
-    )]
     #[must_use]
     pub fn delivery_hint(&self) -> Option<&TransportHint> {
         None

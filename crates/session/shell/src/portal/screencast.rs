@@ -256,10 +256,6 @@ impl ScreenCastBackend {
 
     /// `CreateSession` — register the session so `SelectSources`/`Start` can
     /// carry the negotiated selection. Consent-neutral: response=0, empty results.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types and count are fixed by the org.freedesktop.impl.portal.ScreenCast.CreateSession D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     async fn create_session(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,

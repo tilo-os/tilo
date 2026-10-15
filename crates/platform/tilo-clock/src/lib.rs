@@ -66,10 +66,6 @@ mod imp {
 /// deadlines.
 #[must_use]
 #[inline]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the one sanctioned monotonic clock read"
-)]
 pub fn now() -> Instant {
     #[cfg(any(test, feature = "test-support"))]
     if let Some(at) = testing::monotonic_override() {
@@ -158,10 +154,6 @@ fn frozen_ms() -> u64 {
 /// After [`freeze_wall`] it is that instant, every time.
 #[must_use]
 #[inline]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the one sanctioned wall-clock read"
-)]
 pub fn wall() -> SystemTime {
     match frozen_ms() {
         0 => SystemTime::now(),

@@ -94,7 +94,8 @@ rm() { record rm "$@"; }
 install() { record install "$@"; }
 chmod() { record chmod "$@"; }
 jsign() { record jsign "$@"; }
-osslsigncode() { record osslsigncode "$@"; }
+# Neither removed crypto tool may be reintroduced by the recipe.
+osslsigncode() { record osslsigncode "$@"; return 1; }
 openssl() { record openssl "$@"; return 1; }
 test() {
   if [[ $1 == -f && $2 == /opt/inno-setup/ISCC.exe ]]; then
@@ -106,7 +107,8 @@ test() {
 '''
         for arch, failure in [('aarch64', 'none')] + [
             ('x86_64', failure) for failure in
-            ('none', 'dnf', 'sha256sum', 'wine', 'inno-present', 'jsign', 'osslsigncode')
+            ('none', 'dnf', 'sha256sum', 'bash', 'wine', 'wineserver', 'cp',
+             'inno-present', 'install', 'chmod', 'jsign')
         ]:
             with self.subTest(arch=arch, failure=failure), tempfile.TemporaryDirectory() as directory:
                 work = Path(directory)
@@ -123,7 +125,7 @@ test() {
                     self.assertEqual((work / 'packages').read_text().splitlines(), [
                         'install', '-y', '--setopt=install_weak_deps=False',
                         'wine-core', 'wine-common', 'wine-cms', 'java-25-openjdk-headless',
-                        'osslsigncode', 'python3-pyyaml', 'python3-jsonschema',
+                        'python3-pyyaml', 'python3-jsonschema',
                     ])
                     calls = (work / 'calls').read_text().splitlines()
                     self.assertEqual(calls.count('sha256sum --check --strict'), 2)
@@ -136,7 +138,8 @@ test() {
                     self.assertIn('cp -r /tmp/inno-prefix/drive_c/inno-setup /opt/inno-setup', calls)
                     self.assertIn('inno-present', calls)
                     self.assertIn('jsign --help', calls)
-                    self.assertIn('osslsigncode --version', calls)
+                    self.assertFalse(any(call.split()[0] in ('openssl', 'osslsigncode')
+                                         for call in calls), calls)
                     self.assertEqual((work / 'jsign').read_text(),
                                      '#!/bin/sh\nexec java -jar /usr/local/share/jsign/jsign.jar "$@"\n')
 

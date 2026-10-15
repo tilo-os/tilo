@@ -3,8 +3,8 @@ name: CI / app SDK
 # One app source, three targets. These lanes prove that the SDK builds Tilo
 # apps for Linux and the web through `tilo-app`, that a generated app builds
 # outside this repository, that every web-capable app runs in headless
-# Chromium, and that web bundles only shrink. The macOS lane runs on the one
-# macOS runner in dev-apps-macos.yml.
+# Chromium, and that web bundles only shrink. The macOS lane is t's
+# sdk-macos check, on the Mac.
 on:
   # Pull requests and pushes share one path list. The lander requires this
   # workflow's checks only on a head it reported on.

@@ -291,10 +291,6 @@ impl Relay {
     ///
     /// Returns [`RelayError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the guard only lives for the lookup; the value kept is a clone"
-    )]
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         let live_origin = checked_origins(&config).map_err(failed)?;
@@ -938,10 +934,6 @@ async fn body(
 
 /// Whether `user` is admitted to any workspace this relay serves: whose
 /// envelope it keeps.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "each workspace is locked only for its own lookup"
-)]
 async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
     let workspaces: Vec<_> = web
         .sessions

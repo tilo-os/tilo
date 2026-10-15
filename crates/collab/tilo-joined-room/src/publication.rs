@@ -106,10 +106,6 @@ impl<'a> NativeOutgoingEntry<'a> {
     pub fn channel(&self) -> [u8; 32] {
         self.0.channel
     }
-    #[allow(
-        clippy::unused_self,
-        reason = "a per-entry accessor; every native outgoing entry is currently a delta"
-    )]
     #[must_use]
     pub fn retention(&self) -> Retention {
         Retention::Delta
