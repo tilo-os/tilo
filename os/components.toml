@@ -514,6 +514,20 @@ files = [
   { from = "tilo-firstboot-files", to = "/usr/libexec/tilo-firstboot-files", mode = "0755" },
 ]
 
+# The boot security audit's proof that containers-policy.json requires the
+# pinned Cosign signature; tilo-security-audit runs it, so a swap takes effect
+# at the next audit.
+[[component]]
+name = "image-policy-check"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-image-policy-check"]
+bins = ["tilo-image-policy-check"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-image-policy-check", to = "/usr/libexec/tilo-image-policy-check", mode = "0755" },
+]
+
 # Downloaded, Tilo-signed system extensions: tilo-extension-activate.service at
 # boot, tilo-extension@VERB:ID.service on demand, the refresh timer and the
 # NetworkManager hook all start it; a swap takes effect at its next start.

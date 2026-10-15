@@ -192,7 +192,10 @@ containerfile="$repo/os/Containerfile"
 # installs the tilo-board-successor build output as
 # /usr/libexec/tilo-board-successor, with the mode the script had, instead of
 # the manifest's tilo-board-successor.py.
-expected_contract=02c279e3724424236bbf09ba9fd39472a4144ba2a87c2cb10503af4ee5bc71e3
+# The boot audit's image signature policy checker is now compiled: it arrives
+# from the image-policy-check component at the same path and mode instead of
+# from the context.
+expected_contract=5a9260a705345243bf00f2d8a4a929d2aaa1ea62d9d0921c18abe13ad9736193
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -284,7 +287,6 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
-  os/usr/libexec/tilo-image-policy-check \
   os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '

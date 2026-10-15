@@ -8,7 +8,6 @@
 #
 # path  # what it does, and so what porting it touches
 os/usr/libexec/tilo-boot-order  # dual boot, run by hand: enlists Tilo after Windows in the firmware boot order
-os/usr/libexec/tilo-image-policy-check  # security audit: containers-policy.json requires the pinned Cosign signature
 os/usr/libexec/tilo-install-dev-ssh.py  # installer, development images only: owner SSH keys
 os/usr/libexec/tilo-install-handoff-copy.py  # installer: copies handoff contents without staging metadata
 os/usr/libexec/tilo-installer-code-bootstrap.py  # installer, CI VMs only: /etc bootstrap for old immutable media
