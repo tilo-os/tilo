@@ -243,6 +243,23 @@ other, then asks the device's route (`HostServices::action_offload`,
 
 Content named twice is one input on both paths, as a worker stages it.
 
+A session that owns its profile's content store — the standalone runtime
+(`tilo_runtime::standalone`) and the shell's compositor-free runtime host —
+hands its broker the route `tilo_runtime::offload::action_offload` builds. It
+is configured by the device's home-peer registry (`peers/home-peers.json`
+beside the collaboration identity, or `TILO_HOME_PEERS_PATH`): the person's
+registered relay that retains the session's room shard
+(`tilo_relay_protocol::room_workspace_id`, as every relay binding derives it)
+places its compute (`tilo_relay::offload::home_relay`). With no such relay, or
+with `TILO_ACTION_OFFLOAD=off`, there is no route and the door behaves exactly
+as before. With one, `DeviceOffload` returns the route at once and connects in
+the background — a relay session subscribed to the room's workspace for
+placement and a compute session pinned to the relay's device key, over the
+store the apps' blob socket serves — answering `RunHere` with why until it is
+up and for good if the relay refuses this device or does not answer within
+`START_TIMEOUT`. The desktop compositor's apps keep their media in the
+filesystem daemon's store, which this route does not reach yet.
+
 ## Integration seams
 
 - Shell/device settings write device role and per-workspace replication intent.
