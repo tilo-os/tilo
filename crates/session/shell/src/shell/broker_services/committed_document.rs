@@ -19,10 +19,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         if owner.with_current(room, |view| {
             Ok(view
                 .peer()
@@ -65,7 +62,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         }
         Some(preparing_at_host(
             Arc::clone(self.network.as_ref()?),
-            self.owner.clone()?,
+            self.opened_owner("").ok()?,
             (context.clone(), self.tree.clone()),
             room,
         ))
@@ -99,9 +96,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             .as_ref()
             .ok_or("native selected custody unavailable")?
             .initialize_native_application(
-                self.owner
-                    .as_ref()
-                    .ok_or("native document owner unavailable")?,
+                &self.opened_owner("native document owner unavailable")?,
                 room,
                 context.certificate(),
                 tilo_joined_room::ApplicationInitialization {
@@ -122,10 +117,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         self.network
             .as_ref()
             .ok_or("native selected custody unavailable")?
@@ -154,10 +146,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         let read = owner.with_current(room, |view| {
             match view.read_document_with_history(
                 context.certificate().device_public_key,
@@ -213,10 +202,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         let read = owner.with_current(room, |view| {
             view.read_changes(
                 context.certificate().device_public_key,
@@ -254,10 +240,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         owner.with_current(room, |view| {
             view.holds_revision(
                 context.certificate().device_public_key,
@@ -276,10 +259,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         let second = tilo_action_broker::policy_schedule::second_at_or_after;
         // The room's own governance (its grants' and capabilities' expiries)
         // and this host's custody certificate (`check_native_custody`).
@@ -309,7 +289,7 @@ impl NativeOwnerCommitService {
         self.network
             .as_ref()
             .is_some_and(|network| network.governed_elsewhere(room))
-            && self.owner.as_ref().is_some_and(|owner| {
+            && self.opened_owner("").is_ok_and(|owner| {
                 owner
                     .with_current(room, |view| {
                         Ok(view.governor().capabilities.can_act_as_host)
@@ -327,7 +307,7 @@ impl NativeOwnerCommitService {
         error: &str,
     ) {
         let route = context.route();
-        let Some(owner) = self.owner.as_ref() else {
+        let Ok(owner) = self.opened_owner("") else {
             return;
         };
         let Ok((missing, host_governs)) = owner.with_current(room, |view| {

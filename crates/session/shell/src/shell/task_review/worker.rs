@@ -18,6 +18,33 @@ pub(super) struct Worker {
     certificate: Certificate,
 }
 
+/// Answer every request with `error`, for a review whose owner never opened.
+pub(super) fn refuse(state: &Mutex<State>, receiver: &mpsc::Receiver<Job>, error: &str) {
+    for job in receiver {
+        let Ok(mut state) = state.lock() else {
+            continue;
+        };
+        match job {
+            Job::Snapshot(room) => {
+                state.loading.remove(&room);
+                state.snapshots.insert(room, Err(error.to_owned()));
+            }
+            Job::Commit(request) => {
+                state
+                    .results
+                    .insert(request.invocation, Err(error.to_owned()));
+                state.completed.push_back(request.invocation);
+                while state.completed.len() > MAX_RESULTS {
+                    if let Some(old) = state.completed.pop_front() {
+                        state.results.remove(&old);
+                        state.requests.remove(&old);
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Worker {
     pub(super) fn new(owner: NativeWorkspaceOwner, commit: Arc<dyn OwnerCommitService>) -> Self {
         Self {

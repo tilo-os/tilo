@@ -14,7 +14,10 @@
 //! never with the tree held, which the loop takes every tick. Inbound
 //! network events wait for it, in the order they arrived, rather than the
 //! loop waiting; and the governed-room reads of chrome's window transfers
-//! take only an owner already open.
+//! take only an owner already open. The session broker, built on the loop
+//! at session start and usually the owner's first user, only starts the
+//! open: its synchronous answers say the owner is opening, and its commits
+//! wait for it in their own futures.
 
 use super::*;
 use crate::shell::{persist, state::WorkspaceTree};
@@ -366,19 +369,7 @@ fn on_a_slow_disk<T>(body: impl FnOnce() -> T) -> (T, usize) {
 fn open_in_progress(
     tree: &WorkspaceTreeHandle,
 ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
-    let runtime = tree.read().native_runtime.clone();
-    let (held, holding) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel::<()>();
-    let holder = std::thread::spawn(move || {
-        let opening = runtime.opening();
-        let _ = held.send(());
-        let _ = released.recv_timeout(SLOW_PUBLICATION);
-        drop(opening);
-    });
-    holding
-        .recv_timeout(Duration::from_secs(30))
-        .expect("the other open takes the writer");
-    (release, holder)
+    test_open_in_progress(tree, SLOW_PUBLICATION)
 }
 
 fn departed(seed: u8) -> iroh::EndpointId {
@@ -515,4 +506,91 @@ fn the_loop_reads_governed_rooms_without_opening_the_owner() {
         !governed,
         "a room no owner governs is ungoverned once the owner is open"
     );
+}
+
+#[test]
+fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
+    use crate::shell::broker_services::{NATIVE_OWNER_OPENING, NativeOwnerCommitService};
+    use std::sync::Arc;
+    use tilo_action_broker::services::WorkspaceMemberships;
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
+    let directory = tempfile::tempdir().expect("a directory for the state file");
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let room = active_room(&tree).to_string();
+    let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
+    let network = Arc::new(network);
+    // The session starts with no owner open: the broker's services, built
+    // on the frame loop, are its first users. Each of the broker's owner
+    // services (commits, document reads, memberships, tasks) is a
+    // `NativeOwnerCommitService`; the task review resolves its own.
+    let (release, holder) = open_in_progress(&tree);
+
+    let (built, syncs) = on_a_slow_disk(|| {
+        timed(|| {
+            let commit = NativeOwnerCommitService::new(tree.clone(), Some(Arc::clone(&network)));
+            let review = crate::shell::task_review::NativeTaskReview::new(
+                tree.clone(),
+                Some(Arc::clone(&network)),
+            );
+            (commit, review)
+        })
+    });
+    let ((commit, review), took) = built;
+
+    assert_eq!(
+        syncs, 0,
+        "building the session broker's services synced the state file on the frame loop"
+    );
+    assert!(
+        took <= FRAME,
+        "building the session broker's services took {took:?} with the owner still opening, over one frame ({FRAME:?})"
+    );
+    let review = review.expect("an owner still opening is not a missing one");
+    // A synchronous question says the owner is opening, never that there
+    // is none, and never answers from a guessed owner.
+    assert_eq!(
+        OwnerCommitService::health(&commit).expect_err("health while the owner opens"),
+        NATIVE_OWNER_OPENING
+    );
+    assert_eq!(
+        WorkspaceMemberships::task_snapshot(&commit, &room)
+            .expect_err("a task snapshot while the owner opens"),
+        NATIVE_OWNER_OPENING
+    );
+    assert!(
+        review.requires_room(&room),
+        "a room read as needing no task review before the owner that knows had opened"
+    );
+
+    // A commit waits for the open in its own future, instead of failing
+    // closed or running without the owner.
+    let pending = commit.commit(OwnerCommitRequest {
+        room: "not a room".into(),
+        operation: CommitOperation::RetiredAgentRuntime,
+    });
+    let committing = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime for the commit")
+            .block_on(pending)
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        !committing.is_finished(),
+        "a commit gave up on an owner still opening"
+    );
+    drop(release);
+    holder.join().expect("the other open");
+    let committed = committing.join().expect("the commit's thread");
+    assert_eq!(
+        committed.map(drop),
+        Err("invalid native room".to_string()),
+        "the commit did not go on against the opened owner"
+    );
+
+    until_opened(&network);
+    OwnerCommitService::health(&commit).expect("the broker answers from the owner once it opened");
+    WorkspaceMemberships::health(&commit)
+        .expect("membership answers from the owner once it opened");
 }

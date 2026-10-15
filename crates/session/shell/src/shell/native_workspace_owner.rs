@@ -239,6 +239,30 @@ pub(crate) fn attached(tree: &WorkspaceTreeHandle) -> Option<NativeWorkspaceOwne
     runtime.owner_of(tree).ok().flatten()
 }
 
+/// Another open of `tree`'s writer, in progress on a thread of its own
+/// until the returned sender is dropped (or `hold` passed): every other
+/// open of the writer waits behind it, so the owner stays opening
+/// meanwhile.
+#[cfg(test)]
+pub(crate) fn test_open_in_progress(
+    tree: &WorkspaceTreeHandle,
+    hold: std::time::Duration,
+) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    let runtime = tree.read().native_runtime.clone();
+    let (held, holding) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let opening = runtime.opening();
+        let _ = held.send(());
+        let _ = released.recv_timeout(hold);
+        drop(opening);
+    });
+    holding
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the other open takes the writer");
+    (release, holder)
+}
+
 #[cfg(test)]
 pub(crate) fn test_tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
     tests::tree_of(owner)

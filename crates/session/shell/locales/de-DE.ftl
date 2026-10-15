@@ -1814,6 +1814,7 @@ peer-sync-resend-failed = Erneutes Senden fehlgeschlagen: { $error }
 peer-sync-invite-canceled = Einladung zurückgezogen
 peer-sync-cancel-failed = Zurückziehen fehlgeschlagen: { $error }
 peer-sync-unexpected-response = Unerwartete Antwort der Zusammenarbeit
+peer-sync-working = Wird ausgeführt …
 peer-sync-using-verified-identity = Verifizierte Identität wird verwendet · { $verification }
 peer-sync-ask-for-identity = Bitte die Person, dir ihre Tilo-Identität zu schicken, und füge sie dann hier ein.
 peer-sync-name-required = Gib an, für wen diese Einladung ist

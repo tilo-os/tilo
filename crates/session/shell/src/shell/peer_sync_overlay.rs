@@ -333,6 +333,21 @@ impl PeerSyncOverlay {
         self.state.status = Some(t("peer-sync-paste-token"));
     }
 
+    /// Say the card's `request` is being carried out: minting, redeeming,
+    /// resending or cancelling waits on the network off the frame loop, and
+    /// [`Self::finish_typed_request`] replaces this once it is back.
+    pub fn begin_request(&mut self, request: &PeerSyncRequest) {
+        if matches!(
+            request,
+            PeerSyncRequest::IssueInviteFor { .. }
+                | PeerSyncRequest::AcceptInvite(_)
+                | PeerSyncRequest::ResendInvitation(_)
+                | PeerSyncRequest::CancelInvitation(_)
+        ) {
+            self.state.status = Some(t("peer-sync-working"));
+        }
+    }
+
     /// Apply the host's transport result. Failed named invites retain the
     /// typed name so they can be retried; successful connects close the input.
     pub fn finish_request(
