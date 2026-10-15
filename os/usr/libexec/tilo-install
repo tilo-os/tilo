@@ -1794,7 +1794,7 @@ if [ "$ALONGSIDE" -eq 1 ] && [ "$ENCRYPT" -eq 1 ] \
   [ -c "$VM_INSTALL_PROOF_PORT" ] && systemd-detect-virt --vm --quiet \
     || die "VM install proof requires a named virtio character device inside a VM"
   VM_INSTALL_PROOF=/run/tilo-installer/vm-install-proof.json
-  python3 /usr/libexec/tilo-vm-install-proof.py \
+  /usr/libexec/tilo-vm-install-proof \
     --target-root "$MNT" --deploy-etc "$DEPLOY_ETC" \
     --efi-root "$BOOT_ESP_ROOT" \
     --target-uki "$BOOT_ESP_ROOT/EFI/Linux/bootc/bootc_composefs-${TARGET_COMPOSEFS_DIGEST}.efi" \

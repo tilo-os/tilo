@@ -210,7 +210,8 @@ containerfile="$repo/os/Containerfile"
 # The signed offline target's verifier and the USB-free installation guard
 # (tilo-staging-handoff) are now compiled too: two more install-helpers rows,
 # from the base image instead of the installer's overlay of os/usr.
-expected_contract=a69ec6ad3b73855dd3eed27b346332892f9bcb452755a4b28b17a107bd50eb5c
+# The VM install proof emitter is compiled too (one more install-helpers row).
+expected_contract=37eca2c7f752663580eb772f6673e1e4640e70bd483e97d9f644246f5c381f76
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

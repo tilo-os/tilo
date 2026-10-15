@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The installer's privileged helpers: the live side of USB-free installation, the signed offline target, the setup handoff copy, dev SSH keys and the VM export cache."
+description = "The installer's privileged helpers: the live side of USB-free installation, the signed offline target, the setup handoff copy, dev SSH keys, the VM export cache and install proof."
 
 [lib]
 name = "tilo_install_helpers"
@@ -29,6 +29,10 @@ path = "src/bin/offline_target.rs"
 [[bin]]
 name = "tilo-staging-handoff"
 path = "src/bin/staging_handoff.rs"
+
+[[bin]]
+name = "tilo-vm-install-proof"
+path = "src/bin/vm_install_proof.rs"
 
 # The loopback proofs (os/tests/staging_helper_loop.sh,
 # os/tests/staging_reclaim_loop.sh) run the staging handoff against fixture

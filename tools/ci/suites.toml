@@ -794,6 +794,7 @@ readers = [
   "crates/system/install-helpers/tests/bootc_copy_cache.rs",
   "crates/system/install-helpers/tests/offline_target.rs",
   "crates/system/install-helpers/tests/staging_handoff.rs",
+  "crates/system/install-helpers/tests/install_proof.rs",
 ]
 
 [[cargo]]
