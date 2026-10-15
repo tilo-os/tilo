@@ -16,6 +16,93 @@ use crate::shell::test_support::{
     DenyAmbientStarts, PopulatedShellFixture, dispatch_populated_fixture_click,
 };
 
+/// Both public recording paths must end a paint: otherwise the row's
+/// one-width-step latch stays set forever even as layouts and paints run.
+#[cfg(target_os = "linux")]
+fn assert_paint_releases_width_step(segmented: bool) {
+    let mut at = ui::time::now();
+    ui::time::testing::with_monotonic_time(at, || {
+        let mut fixture =
+            PopulatedShellFixture::with_tree((1200, 800), Theme::dark(), two_strip_tree());
+        let strip = fixture
+            .chrome()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .strips[0]
+            .id;
+        // Establish the usable basis before requesting a transition.
+        fixture.relayout();
+        let _ = fixture.paint();
+        let before = fixture
+            .host_mut()
+            .group_row_mut_for_tests(strip)
+            .unwrap()
+            .group_at_for_test(0)
+            .unwrap()
+            .layout_width_px();
+        assert!(!fixture.host_mut().set_group_widths(800).is_empty());
+        let target = fixture
+            .host_mut()
+            .group_row_mut_for_tests(strip)
+            .unwrap()
+            .group_at_for_test(0)
+            .unwrap()
+            .dest_width_px();
+        assert!(before > target + 100.0);
+        let mut paints = 0_u32;
+        let mut advances = 0_u32;
+        let mut previous = before;
+        for _ in 0..100 {
+            at += ui::time::Duration::from_millis(16);
+            ui::time::testing::with_monotonic_time(at, || {
+                fixture.relayout();
+                let width = fixture
+                    .host_mut()
+                    .group_row_mut_for_tests(strip)
+                    .unwrap()
+                    .group_at_for_test(0)
+                    .unwrap()
+                    .get_rect()
+                    .width();
+                if (previous - width).abs() > 0.05 {
+                    advances = advances.saturating_add(1);
+                }
+                previous = width;
+                let scene = if segmented {
+                    fixture.paint_with_damage().scene
+                } else {
+                    fixture.paint()
+                };
+                assert!(!scene.encoding().is_empty());
+                paints = paints.saturating_add(1);
+            });
+        }
+        assert_eq!(paints, 100);
+        assert!(
+            advances > 4,
+            "segmented={segmented}: {paints} paints advanced layout only {advances} times; width {previous}, target {target}"
+        );
+        assert!(
+            (previous - target).abs() < 0.5,
+            "segmented={segmented}: painted width {previous} must settle at {target}"
+        );
+    });
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn legacy_paint_releases_width_step_each_frame() {
+    assert_paint_releases_width_step(false);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn segmented_paint_releases_width_step_each_frame() {
+    assert_paint_releases_width_step(true);
+}
+
 const NATIVE_WIDTH: u32 = 3_840;
 const NATIVE_HEIGHT: u32 = 2_160;
 

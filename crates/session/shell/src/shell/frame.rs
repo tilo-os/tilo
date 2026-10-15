@@ -2304,6 +2304,7 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
+        self.host.mark_drawn();
         for proxy in &self.floating_transfer_proxies {
             proxy.draw(&mut scene);
         }
@@ -2451,6 +2452,9 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
+        // Complete the widget paint lifecycle, including the strip's
+        // one-width-step-per-frame latch and hosted layout dirtiness.
+        self.host.mark_drawn();
         // Each kind of client surface floating over the desktop is one
         // damage part, there whether or not any is mapped: a popup opening
         // or a floating window repainting repaints its own rect.
