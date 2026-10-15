@@ -26,13 +26,24 @@ itself; the page seeds its own desktop and documents.
 | request | answer |
 |---|---|
 | `POST /rooms` | `201 {roomId, origin, room, userPublicKey, expiresAt, pageTicket, joinUrl, admit, events, invitations, app}`; `503` when all rooms are in use |
-| `POST /rooms/<id>/invitations` `{record?}` | `201 {joinUrl, ticket}`: one more guest, whose link opens `record` (else the room's Writer); `429` beyond `TILO_ROOMS_MAX_GUESTS`. The body may be empty |
+| `POST /rooms/<id>/invitations?key=<owner key>` `{record?}` | `201 {joinUrl, ticket}`: one more guest, whose link opens `record` (else the room's Writer); `429` beyond `TILO_ROOMS_MAX_GUESTS`. The body may be empty. Owner only: see below |
 | `POST /rooms/<id>/admit` `{ticket, pairingCode}` | `200 {label, device, pairingCode, at}` once the room certified that browser; `403 {error}` for a spent, unknown or busy ticket, or when the room certified nobody for that code (no browser showed it within a minute, more than one did, or the policy refused it), which leaves the ticket usable |
-| `GET /rooms/<id>/events` | Server-sent events: `member` per certified device, earlier ones replayed first; `expired` when the room ends |
+| `GET /rooms/<id>/events?key=<owner key>` | Server-sent events: `member` per certified device, earlier ones replayed first; `expired` when the room ends. Owner only: see below |
 | `GET /app/<path>` | the browser runtime bundle (page modules, `pkg/`, fonts, data), `rooms.mjs` and `page.html` |
 | `GET /open/<path>` | the same bundle as the web entry guest links name: `index.html` (desktop), `app/index.html` (full tab) |
 | `GET /open/entry.json` | `{tickets}`: where the entry pages redeem a link's guest ticket (`<api>/rooms/`) |
 | `GET /healthz` | `{ok: true}` |
+
+Minting invitations and watching members belong to whoever created the
+room. `POST /rooms` answers `invitations` and `events` as complete URLs that
+carry the room's owner key, 32 random bytes in hex, in the query (an
+`EventSource` cannot send headers); pages use them as given and never build
+them. Everything a guest link shows is public: the room's host is its
+service id and the link names the room's uuid. So neither route answers
+without the key, a wrong key or the uuid in place of the id reads as `404 no
+such room`, and a guest link grants exactly its one guest's admission.
+`admit` takes no key: it spends a single-use ticket on the pairing code a
+browser shows, and accepts the room's id or its uuid.
 
 `joinUrl` is a link in the web link grammar
 (docs/architecture/web-routing.md):
@@ -290,10 +301,21 @@ seeded app keeps exactly its ten newest reset snapshots (chat none), and
 that SIGTERM stops the service and its relay within 20 seconds (eu1's
 grace period). The same workflow runs it before the browser check.
 
+`dev/owner-key-e2e.py` checks a throwaway room's owner routes the same way:
+it creates a room as a page does, then checks that nothing a guest link
+shows (the room's host, its uuid, the link without its ticket), a wrong key
+or the uuid with the right key mints an invitation or opens the member
+stream, each refused as no such room and spending no guest slot; that the
+answer's `invitations` and `events` URLs work as given; and that an invitee
+still redeems their ticket at the room's uuid. It runs with `limits-e2e.py`.
+
 ```sh
 python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \
   --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
   --out target/limits-e2e
+python3 crates/hosting/tilo-room-service/dev/owner-key-e2e.py \
+  --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
+  --out target/owner-key-e2e
 node crates/hosting/tilo-room-service/dev/auth-e2e.mjs --bundle DIR \
   --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
   --out target/auth-e2e [--allow-dev]
