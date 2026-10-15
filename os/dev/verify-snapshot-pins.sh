@@ -17,7 +17,7 @@
 #   os/kernel-snapshot.env  each architecture's kernel passes
 #                           os/dev/verify-kernel-provenance.sh.
 #
-# Needs cosign, skopeo, jq and registry read access. Exit 0 when every pin
+# Needs cosign, jq and registry read access (and skopeo, where installed). Exit 0 when every pin
 # verifies, 1 otherwise.
 set -euo pipefail
 
@@ -34,7 +34,7 @@ for pin in "$@"; do
     *) fail "not a pin this check verifies: $pin" ;;
   esac
 done
-for tool in cosign skopeo jq; do
+for tool in cosign jq; do
   command -v "$tool" >/dev/null || fail "$tool is required"
 done
 
