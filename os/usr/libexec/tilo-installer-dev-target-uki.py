@@ -170,6 +170,27 @@ def fields(raw):
     return values
 
 
+def without_install_disk_identity(words):
+    """Drop the words `bootc install` adds to name this disk's filesystems.
+
+    A split-kernel install leaves a BLS entry whose options start with
+    `root=UUID=<fs> rootflags=... rw boot=UUID=<boot>` and the matching
+    `systemd.mount-extra=UUID=<boot>:/boot:auto:ro`, ahead of the image's own
+    kargs. The installed UKI finds its root and /boot the way every Tilo UKI
+    does (root=tilo-auto and the TILO_BOOT mount), so only those words go;
+    any other root or /boot mount still fails the identity checks.
+    """
+    roots = [word for word in words if word.startswith('root=UUID=')]
+    boots = [word for word in words if word.startswith('boot=UUID=')]
+    require(len(roots) <= 1 and len(boots) <= 1, 'installed boot entry has ambiguous bootc disk identities')
+    dropped = set(roots + boots)
+    if boots:
+        dropped.add('systemd.mount-extra=' + boots[0].removeprefix('boot=') + ':/boot:auto:ro')
+    if roots:
+        dropped |= {word for word in words if word == 'rw' or word.startswith('rootflags=')}
+    return [word for word in words if word not in dropped]
+
+
 def sections(path):
     tool = load_module(UKI_TOOL, 'dev_target_sections')
     data = path.read_bytes()
@@ -213,7 +234,7 @@ def promote(image_root, target_root, esp, selected):
         installed_initrd = regular(esp, bls['initrd'].lstrip('/'))
         require(installed_kernel.read_bytes() == kernel_bytes and installed_initrd.read_bytes() == initrd_bytes,
                 'installed boot payload differs from the selected CI development image')
-        words = bls['options'].split()
+        words = without_install_disk_identity(bls['options'].split())
         require(not destination.exists() and not destination.is_symlink(), 'target UKI already exists')
     else:
         installed = sections(regular(esp, relative))

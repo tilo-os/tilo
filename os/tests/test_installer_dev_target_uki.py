@@ -29,6 +29,10 @@ DTB = struct.pack('>10I', 0xD00DFEED, 40, 40, 40, 40, 17, 16, 0, 0, 0)
 DIGEST = 'a' * 128
 MANIFEST = 'sha256:' + 'b' * 64
 ORIGIN = 'registry.tilo.so/tilo/tilo-vm:main-fixture-lenovo-83ed'
+# What bootc 1.16 `install to-filesystem --composefs-backend` writes ahead of
+# the image's kargs in a split-kernel BLS entry (captured from a VM install).
+FS_UUID, BOOT_UUID = '298c49ae-60ed-4a00-a035-c863f0b1a686', 'adc2062b-7c7c-4f19-960a-ad87b0823796'
+BOOTC_DISK_IDENTITY = f'root=UUID={FS_UUID} rootflags=subvol=/ rw boot=UUID={BOOT_UUID}'
 
 
 def pe(payloads):
@@ -80,7 +84,9 @@ class DevelopmentTarget(unittest.TestCase):
         self.entry.write_text(f'title Tilo\nversion {DIGEST}\nsort-key bootc-tilo-0\n'
                               f'linux /EFI/Linux/bootc_composefs-{DIGEST}/vmlinuz\n'
                               f'initrd /EFI/Linux/bootc_composefs-{DIGEST}/initrd\n'
-                              f'options quiet root=tilo-auto composefs={DIGEST} tilo.install\n')
+                              f'options {BOOTC_DISK_IDENTITY} composefs={DIGEST} '
+                              f'systemd.mount-extra=UUID={BOOT_UUID}:/boot:auto:ro '
+                              f'root=tilo-auto quiet tilo.install\n')
         self.selected = {'target_digest': MANIFEST, 'update_origin': ORIGIN}
         # Split-kernel tests model the constructor alongside the fake build()
         # output. Do not depend on ukify being installed on the CI test runner.
@@ -136,6 +142,10 @@ class DevelopmentTarget(unittest.TestCase):
         cmdline = Path(str(argv[argv.index('--cmdline') + 1])[1:]).read_bytes().rstrip(b'\r\n')
         self.assertNotIn(b'tilo.install', cmdline)
         self.assertIn(dev.MOUNT.encode(), cmdline)
+        # bootc's install-time disk identity never reaches the installed UKI.
+        for word in BOOTC_DISK_IDENTITY.split() + [f'systemd.mount-extra=UUID={BOOT_UUID}:/boot:auto:ro']:
+            self.assertNotIn(word.encode(), cmdline.split())
+        self.assertTrue(cmdline.startswith(f'composefs={DIGEST} root=tilo-auto quiet '.encode()))
         output = Path(argv[argv.index('--output') + 1])
         output.write_bytes(pe({'.linux': KERNEL, '.initrd': INITRD,
                               '.cmdline': cmdline + b'\0', '.dtb': DTB}))
@@ -244,7 +254,7 @@ class DevelopmentTarget(unittest.TestCase):
         installed = dev.sections(self.esp / f'EFI/Linux/bootc/bootc_composefs-{DIGEST}.efi')
         self.assertEqual((installed['.linux'], installed['.initrd'], installed['.dtb']), (KERNEL, INITRD, DTB))
         self.assertEqual(installed['.cmdline'],
-                         f'quiet root=tilo-auto composefs={DIGEST} {dev.MOUNT}'.encode())
+                         f'composefs={DIGEST} root=tilo-auto quiet {dev.MOUNT}'.encode())
         ini = configparser.ConfigParser()
         ini.read(self.origin)
         self.assertEqual(ini.get('boot', 'boot_type'), 'uki')
@@ -286,7 +296,8 @@ class DevelopmentTarget(unittest.TestCase):
 
     def test_wrong_payload_or_ci_manifest_fails_before_mutation(self):
         original_entry, original_origin = self.entry.read_bytes(), self.origin.read_bytes()
-        for variant in ('payload', 'manifest', 'composefs', 'ambiguous-kernel', 'unsafe-bls'):
+        for variant in ('payload', 'manifest', 'composefs', 'ambiguous-kernel', 'unsafe-bls',
+                        'other-root', 'second-bootc-root'):
             with self.subTest(variant=variant):
                 if variant == 'payload':
                     path = self.esp / f'EFI/Linux/bootc_composefs-{DIGEST}/vmlinuz'
@@ -295,6 +306,11 @@ class DevelopmentTarget(unittest.TestCase):
                     self.selected['target_digest'] = 'sha256:' + 'c' * 64
                 elif variant == 'composefs':
                     self.entry.write_text(original_entry.decode().replace('composefs=' + DIGEST, 'composefs=' + 'c' * 128))
+                elif variant == 'other-root':
+                    # Only bootc's own UUID root is dropped; any other root stays fatal.
+                    self.entry.write_text(original_entry.decode().replace(' quiet', ' root=/dev/vda3 quiet'))
+                elif variant == 'second-bootc-root':
+                    self.entry.write_text(original_entry.decode().replace(' quiet', f' root=UUID={BOOT_UUID} quiet'))
                 elif variant == 'ambiguous-kernel':
                     (self.image / 'usr/lib/modules/other').mkdir()
                 else:
