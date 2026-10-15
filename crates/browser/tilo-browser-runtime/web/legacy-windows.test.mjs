@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  CHUNK_FIRST, CHUNK_KEY, CHUNK_LAST, INDEX_RECORD, LEGACY_APP,
-  createLegacyWindows, createReassembler, createStreamDecoder, decodeFrame, evdevKey, h264CodecString,
+  CHUNK_FIRST, CHUNK_KEY, CHUNK_LAST, INDEX_RECORD, LEGACY_APP, VIDEO_DECODER_CONFIGS,
+  createLegacyWindows, createReassembler, createStreamDecoder, decodableCodecs, decodeFrame, evdevKey, h264CodecString,
   wheelPixels, windowPoint, windowTitle,
 } from './legacy-windows.mjs';
 
@@ -408,7 +408,62 @@ test('chunks with inconsistent timestamps, sizes or key flags drop the access un
 
 test('an index cannot redirect a surface to an arbitrary record or codec', () => {
   assert.equal(decodeFrame(json(1, [{...STREAM, record: '@tilo:private-document'}])), null);
-  assert.equal(decodeFrame(json(1, [{...STREAM, codec: 'vp9'}])), null);
+  assert.deepEqual(decodeFrame(json(1, [{...STREAM, codec: 'hevc-main10'}])), {kind: 'index', streams: []},
+    'a codec the page does not know lists nothing');
+  assert.equal(decodeFrame(json(2, {...STREAM, codec: 'hevc-main10'})), null);
+  assert.equal(decodeFrame(json(1, [STREAM, 7])), null, 'a stream that is not one still spoils the index');
+});
+
+test('a stream in a codec the page does not know is left out, and the publisher\'s other windows still show', () => {
+  const other = {...STREAM, surface: '0000000000000008', record: '@tilo:legacy-window:0000000000000008', codec: 'hevc-main10'};
+  assert.deepEqual(decodeFrame(json(1, [other, STREAM])), {kind: 'index', streams: [STREAM]});
+  const m = mount();
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [other, STREAM]));
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'h264'}]);
+  m.layer.close();
+});
+
+test('VP9 and AV1 streams decode with their codec\'s configuration, and a session\'s switch reconfigures', () => {
+  const m = mount();
+  const vp9 = {...STREAM, codec: 'vp9'};
+  // The first bytes of a libvpx key frame and the inter frame after it.
+  const vp9Key = [0x82, 0x49, 0x83, 0x42, 0x00, 0x00, 0xf0, 0x00];
+  const vp9Inter = [0x86, 0x00, 0x40, 0x92, 0x9c, 0x28, 0x49, 0x40];
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [vp9]));
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'vp9'}]);
+  m.live.deliver(STREAM.record, SHELL, json(2, vp9));
+  m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_KEY | CHUNK_FIRST | CHUNK_LAST, 0, vp9Key));
+  m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_FIRST | CHUNK_LAST, 1, vp9Inter));
+  assert.equal(m.codecs.decoders[0].config.codec, 'vp09.00.10.08');
+  assert.deepEqual(m.codecs.decoders[0].chunks.map(chunk => chunk.type), ['key', 'delta']);
+  // Its session switched to AV1 (a viewer joined that decodes it): the
+  // window stays, and the next key frame reconfigures.
+  const av1 = {...STREAM, codec: 'av1'};
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [av1]));
+  m.live.deliver(STREAM.record, SHELL, json(2, av1));
+  m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_FIRST | CHUNK_LAST, 2, vp9Inter));
+  assert.equal(m.codecs.decoders.length, 1, 'nothing decodes before the new key frame');
+  m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_KEY | CHUNK_FIRST | CHUNK_LAST, 3, [0x12, 0x00, 0x0a, 0x0b]));
+  assert.equal(m.codecs.decoders.length, 2);
+  assert.equal(m.codecs.decoders[0].state, 'closed');
+  assert.equal(m.codecs.decoders[1].config.codec, 'av01.0.04M.08');
+  assert.equal(m.layer.stats().streams, 1);
+  m.layer.close();
+});
+
+test('the page says which video codecs its WebCodecs decodes', async () => {
+  const asked = [];
+  const VideoDecoder = {
+    async isConfigSupported(config) {
+      asked.push(config.codec);
+      if (config.codec.startsWith('av01')) throw new Error('not here');
+      return {supported: config.codec !== 'nope', config};
+    },
+  };
+  assert.deepEqual(await decodableCodecs(VideoDecoder), ['h264', 'vp9']);
+  assert.deepEqual(asked, Object.values(VIDEO_DECODER_CONFIGS));
+  assert.deepEqual(await decodableCodecs({isConfigSupported: async () => ({supported: false})}), []);
+  assert.deepEqual(await decodableCodecs(undefined), [], 'without WebCodecs the page plays no window');
 });
 
 test('closing while input is in flight drops unsent events', async () => {

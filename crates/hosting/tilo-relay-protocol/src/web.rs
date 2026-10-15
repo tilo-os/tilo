@@ -22,6 +22,7 @@
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
 //! | `/live/grant/agent` | [`AgentLiveGrantRequest`] | [`LiveGrant`] for [`agent_publisher`] |
 //! | `/live/legacy-input` | [`InputRequest`](crate::legacy_window::InputRequest) | `204`, `403` when the member may not drive the window |
+//! | `/live/legacy-codecs` | [`CodecsRequest`](crate::legacy_window::CodecsRequest) | `204`, `403` when not admitted |
 //! | `/live/fallback/{open,send,resume}` | live fallback frames | frame stream |
 //! | `/rooms` | [`RoomsRequest`](crate::rooms::RoomsRequest) | [`RoomsReply`](crate::rooms::RoomsReply) |
 //! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |

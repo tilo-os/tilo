@@ -167,6 +167,29 @@ fn publish(client: &RelayClient, workspace_id: u64, author: [u8; 32], message: &
         .unwrap();
 }
 
+/// The next codec advert `native` receives: presence of the `host` device,
+/// as `(advertised peer, software decode labels)`.
+async fn next_codec_advert(native: &RelayClient, host: &DeviceCert) -> (u64, Vec<String>) {
+    tilo_test_env::within("a codec advert", async {
+        loop {
+            let Some(Envelope::Presence { payload, .. }) = native.recv().await else {
+                continue;
+            };
+            let presence = crate::AttributedPresence::decode(&payload).unwrap();
+            if let Ok(NeighbourMsg::MediaCapabilities {
+                peer,
+                software_decode,
+                ..
+            }) = postcard::from_bytes(&presence.body)
+            {
+                assert_eq!(presence.author, host.device_public_key);
+                return (peer, software_decode);
+            }
+        }
+    })
+    .await
+}
+
 fn start(cert: &DeviceCert, surface: u64) -> NeighbourMsg {
     NeighbourMsg::SurfaceStreamStart {
         surface,
@@ -575,7 +598,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         .unwrap();
     let web = Arc::new(Web {
         sessions,
-        grants,
+        grants: grants.clone(),
         legacy: legacy.clone(),
         live: live.relay.clone(),
         host_info: HostInfo {
@@ -601,7 +624,11 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     let serving = tokio::spawn(plain_accept_loop(listener, web.clone()));
     let online_sessions = web.sessions.clone();
     drop(web);
-    let maintaining = tokio::spawn(maintain_legacy(legacy.clone(), relay.web_context().clone()));
+    let maintaining = tokio::spawn(maintain_legacy(
+        legacy.clone(),
+        grants.clone(),
+        relay.web_context().clone(),
+    ));
     let token = browser(addr, &owner_key, &owner).await;
     let guest_token = browser(addr, &guest_key, &guest).await;
     // Who is here: a member is listed in their room by their session's
@@ -803,6 +830,65 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
             ));
         }
     }
+    // What members' pages decode reaches the room's sessions as this host's
+    // own codec advert, so a session without an H.264 encoder can pick VP9.
+    let codecs = |workspace_id, decode: &[&str]| {
+        postcard::to_allocvec(&wire::CodecsRequest {
+            workspace_id,
+            decode: decode.iter().map(|label| (*label).to_owned()).collect(),
+        })
+        .unwrap()
+    };
+    for (session, request, code) in [
+        (None, codecs(room.workspace_id, &["vp9"]), 401),
+        (Some(token), codecs(room.workspace_id ^ 1, &["vp9"]), 403),
+        (
+            Some(token),
+            codecs(room.workspace_id, &["h264"; wire::MAX_CODEC_LABELS + 1]),
+            400,
+        ),
+    ] {
+        assert_eq!(
+            post(addr, wire::CODECS_ROUTE, session, request).await.0,
+            code
+        );
+    }
+    // The owner's page enters the live plane without saying: H.264 only.
+    let (code, _) = post(
+        addr,
+        "/live/grant",
+        Some(token),
+        postcard::to_allocvec(&room.workspace_id).unwrap(),
+    )
+    .await;
+    assert_eq!(code, 200);
+    let host_handle = tilo_peer_state::peer_handle(&host.device_public_key);
+    assert_eq!(
+        next_codec_advert(&owner_native, &host).await,
+        (host_handle, vec!["h264".to_owned()])
+    );
+    assert_eq!(
+        post(
+            addr,
+            wire::CODECS_ROUTE,
+            Some(token),
+            codecs(room.workspace_id, &["vp9", "hevc", "h264"]),
+        )
+        .await
+        .0,
+        204
+    );
+    tilo_test_env::within("the VP9 advert", async {
+        loop {
+            let (peer, mut labels) = next_codec_advert(&owner_native, &host).await;
+            labels.sort();
+            if labels == ["h264", "vp9"] {
+                assert_eq!(peer, host_handle);
+                break;
+            }
+        }
+    })
+    .await;
     // A viewer cannot manufacture a stream or keep editor input after a role change.
     rooms
         .set_member_role(

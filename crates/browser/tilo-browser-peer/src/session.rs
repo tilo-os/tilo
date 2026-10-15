@@ -309,6 +309,10 @@ enum Command {
         tilo_relay_protocol::legacy_window::InputRequest,
         InputCompletion,
     ),
+    LegacyCodecs(
+        tilo_relay_protocol::legacy_window::CodecsRequest,
+        InputCompletion,
+    ),
     Rooms(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
     Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
     Node(NodeCompletion),
@@ -820,6 +824,21 @@ impl PeerHandle {
         done: InputCompletion,
     ) -> Result<(), String> {
         self.send(Command::LegacyInput(request, done))
+    }
+
+    /// Tell the host which video codecs this page decodes
+    /// ([`crate::carrier::legacy_codecs`]) over the current HTTPS session;
+    /// `done` receives whether the host took the advert.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn legacy_codecs_then(
+        &self,
+        request: tilo_relay_protocol::legacy_window::CodecsRequest,
+        done: InputCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::LegacyCodecs(request, done))
     }
 
     /// Post this person's own recent actions ([`crate::carrier::here`]) over
@@ -1645,6 +1664,9 @@ impl Task {
             Command::LegacyInput(request, done) => {
                 Self::request_legacy_input(request, done, client)
             }
+            Command::LegacyCodecs(request, done) => {
+                Self::request_legacy_codecs(request, done, client)
+            }
             Command::Here(request, done) => Self::request_here(request, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(room, request, op) => self.voice_call(room, request, op, client),
@@ -1847,7 +1869,6 @@ impl Task {
         true
     }
 
-    /// Always `true`: the session takes it whatever the answer.
     /// Ask the room's steward for the keys of every record this watching
     /// page waits on and is not asking for already; each answer comes back
     /// as [`Command::WatchedKeys`].
@@ -1881,6 +1902,30 @@ impl Task {
         }
     }
 
+    /// Always `true`: the session takes it whatever the answer.
+    fn request_legacy_codecs(
+        request: tilo_relay_protocol::legacy_window::CodecsRequest,
+        done: InputCompletion,
+        client: Option<&Link>,
+    ) -> bool {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let taken =
+                        crate::carrier::legacy_codecs(http.as_ref(), &session, &request).await;
+                    done(taken.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("codec adverts are sent over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+        true
+    }
+
+    /// Always `true`: the session takes it whatever the answer.
     fn request_here(
         request: tilo_relay_protocol::web::HereRequest,
         done: HereCompletion,
