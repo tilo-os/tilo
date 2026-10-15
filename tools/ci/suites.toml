@@ -94,7 +94,6 @@ suites = [
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
   "os/tests/board_release_promotion.py",
-  "os/tests/test_board_successor.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
   "os/tests/board_audio_contract.sh",
@@ -740,6 +739,21 @@ package = "tilo-firstboot-files"
 # The first-boot cases run the shipped tilo-firstboot-user with this helper.
 inputs = ["os/usr/libexec/tilo-firstboot-user"]
 readers = ["crates/system/firstboot-files/tests/firstboot_user.rs"]
+
+[[cargo]]
+package = "tilo-board-successor"
+# The selector's tests run the shipped tilo-verified-update with it, read the
+# shipped hardware definitions as profile fixtures, and hold the reader to the
+# module the installer still uses.
+inputs = [
+  "os/usr/libexec/tilo-verified-update",
+  "os/hardware/profiles/*.json",
+  "os/dev/hardware_profile.py",
+]
+readers = [
+  "crates/system/board-successor/tests/successor.rs",
+  "crates/system/board-successor/tests/profile.rs",
+]
 
 [[cargo]]
 package = "greeter"

@@ -328,6 +328,7 @@ members = [
     "crates/system/advisory-lock",
     "crates/system/app-state",
     "crates/system/block-devices",
+    "crates/system/board-successor",
     "crates/system/bounded-command",
     "crates/system/cloud-source",
     "crates/system/cloud-source-dav",

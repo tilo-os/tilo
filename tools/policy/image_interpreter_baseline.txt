@@ -7,7 +7,6 @@
 # exception made in review, with the reason after `#`.
 #
 # path  # what it does, and so what porting it touches
-os/usr/libexec/tilo-board-successor.py  # verified update: picks the authenticated board successor
 os/usr/libexec/tilo-boot-order  # dual boot, run by hand: enlists Tilo after Windows in the firmware boot order
 os/usr/libexec/tilo-image-policy-check  # security audit: containers-policy.json requires the pinned Cosign signature
 os/usr/libexec/tilo-install-dev-ssh.py  # installer, development images only: owner SSH keys
