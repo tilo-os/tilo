@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileExt, MetadataExt};
 
 const CHILD_FD: RawFd = crate::services::BASELINE_SECCOMP_CHILD_FD;
@@ -45,11 +46,11 @@ fn read_bytes(file: &File) -> io::Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn binding(bytes: &[u8]) -> Binding {
-    Binding {
+fn binding(bytes: &[u8]) -> io::Result<Binding> {
+    Ok(Binding {
         sha256: Sha256::digest(bytes).into(),
-        bytes: bytes.len() as u32,
-    }
+        bytes: u32::try_from(bytes.len()).map_err(io::Error::other)?,
+    })
 }
 fn verify(file: &File, expected: &Binding) -> io::Result<Vec<u8>> {
     expected.validate()?;
@@ -57,7 +58,6 @@ fn verify(file: &File, expected: &Binding) -> io::Result<Vec<u8>> {
     // SAFETY: fcntl inspects the held descriptor; no pointer argument is used.
     let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
     let name = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
-    use std::os::unix::ffi::OsStrExt;
     if metadata.uid() != 0
         || metadata.nlink() != 0
         || metadata.len() != u64::from(expected.bytes)
@@ -70,7 +70,7 @@ fn verify(file: &File, expected: &Binding) -> io::Result<Vec<u8>> {
         ));
     }
     let bytes = read_bytes(file)?;
-    if binding(&bytes) != *expected {
+    if binding(&bytes)? != *expected {
         return Err(refused("Original baseline filter binding differs"));
     }
     Ok(bytes)
@@ -84,7 +84,7 @@ impl Filter {
             return Err(refused("Original compiler filter is not root owned"));
         }
         let bytes = read_bytes(&source)?;
-        let binding = binding(&bytes);
+        let binding = binding(&bytes)?;
         // SAFETY: the literal name and fixed flags create a private sealable memfd.
         let raw = unsafe {
             libc::memfd_create(
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn ordinary_and_unsealed_filters_cannot_satisfy_sealed_baseline_binding() {
         let ordinary = tempfile::tempfile().unwrap();
-        assert!(verify(&ordinary, &binding(&[0; 8])).is_err());
+        assert!(verify(&ordinary, &binding(&[0; 8]).unwrap()).is_err());
         // SAFETY: literal name and fixed flags create an owned test-only memfd.
         let raw =
             unsafe { libc::memfd_create(c"unsealed-baseline-test".as_ptr(), libc::MFD_CLOEXEC) };
@@ -149,7 +149,7 @@ mod tests {
         // SAFETY: the successful syscall transferred a new descriptor to this test.
         let mut unsealed = unsafe { File::from_raw_fd(raw) };
         unsealed.write_all(&[0; 8]).unwrap();
-        assert!(verify(&unsealed, &binding(&[0; 8])).is_err());
+        assert!(verify(&unsealed, &binding(&[0; 8]).unwrap()).is_err());
         assert!(read_bytes(&ordinary).is_err());
         unsealed.set_len(9).unwrap();
         assert!(read_bytes(&unsealed).is_err());
@@ -158,7 +158,7 @@ mod tests {
     #[cfg(feature = "managed-tree-test")]
     fn root_captured_baseline_is_exact_sealed_and_refuses_substitution() {
         // This opt-in native fixture requires real root; absence is a failure.
-        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(rustix::process::geteuid().as_raw(), 0);
         let bytes = sandbox_core::seccomp::compile_baseline(
             sandbox_core::seccomp::SeccompProfile::TiloDefault,
         )

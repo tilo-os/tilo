@@ -61,7 +61,8 @@ impl Database {
             ffi::leveldb_options_set_compression(options.0.as_ptr(), ffi::Compression::Snappy);
         }
         let mut error = std::ptr::null_mut();
-        let result = unsafe { ffi::leveldb_open(options.0.as_ptr(), path.as_ptr(), &mut error) };
+        let result =
+            unsafe { ffi::leveldb_open(options.0.as_ptr(), path.as_ptr(), &raw mut error) };
         let database = NonNull::new(result).map(Self);
         check_error(error)?;
         database.ok_or(SourceError::UnsupportedSchema)
@@ -83,8 +84,8 @@ impl Database {
                 options.0.as_ptr(),
                 key.as_ptr().cast(),
                 key.len(),
-                &mut length,
-                &mut error,
+                &raw mut length,
+                &raw mut error,
             )
         };
         let allocation = NonNull::new(pointer).map(|pointer| Allocation { pointer, length });
@@ -122,7 +123,7 @@ impl Database {
                     key.len(),
                     value.as_ptr().cast(),
                     value.len(),
-                    &mut error,
+                    &raw mut error,
                 );
             } else {
                 ffi::leveldb_delete(
@@ -130,7 +131,7 @@ impl Database {
                     options,
                     key.as_ptr().cast(),
                     key.len(),
-                    &mut error,
+                    &raw mut error,
                 );
             }
             ffi::leveldb_writeoptions_destroy(options);

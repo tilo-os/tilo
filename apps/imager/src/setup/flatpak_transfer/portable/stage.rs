@@ -60,7 +60,7 @@ pub struct Expectation {
 fn legacy_protocol() -> u32 {
     1
 }
-fn is_legacy_protocol(value: &u32) -> bool {
+fn is_legacy_protocol<T: PartialEq<u32>>(value: &T) -> bool {
     *value == 1
 }
 impl Expectation {

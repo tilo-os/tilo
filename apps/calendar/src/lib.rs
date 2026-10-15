@@ -45,6 +45,7 @@ mod input_context;
 pub mod model;
 mod outbox;
 pub mod resource;
+pub mod setup;
 mod sidebar;
 mod tasks;
 mod timeline_interaction;

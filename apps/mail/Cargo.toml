@@ -100,6 +100,7 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 # Cross-app acceptance: drive the real Settings sign-in and consume its store.
 settings = { path = "../settings" }
 test-http = { path = "../../crates/dev/test-http" }
+tilo-seal = { path = "../../crates/system/tilo-seal" }
 
 [lints]
 workspace = true

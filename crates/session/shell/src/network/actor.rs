@@ -355,21 +355,10 @@ pub enum NetCmd {
     },
     NativeMedia(super::native_media::Command),
     NativeEnrollment(super::invite::enrollment_driver::Command),
-    /// Invoke a relay-governed room's own `tilo.workspace` governance, on the
-    /// room's relay session, and answer the relay's receipt.
+    /// Invoke what a relay answers itself (a room's governance, a member's
+    /// own business in it, or the host's own operations) on a relay session,
+    /// and answer the relay's receipt.
     RoomGovernance(Box<room_governance::Request>),
-    /// Ask the room authority of the relay at `relay`, as `certificate`, from
-    /// this device's own endpoint: the relay accepts only the certificate of
-    /// the endpoint it authenticated. Only what a room's governance actions
-    /// cannot carry goes this way: creating, listing and entering rooms on
-    /// a host, the invitation that enrolls this device into a room it does
-    /// not hold yet, and a member's own namespace claim and effect receipt.
-    RoomAdmin {
-        relay: EndpointAddr,
-        certificate: DeviceCert,
-        command: Box<tilo_relay_session::rooms::RoomCommand>,
-        reply: std::sync::mpsc::SyncSender<Result<tilo_relay_session::rooms::RoomReply, String>>,
-    },
     JoinWorkspace {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
@@ -1004,9 +993,7 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
     Some(match command {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(_) => "dialling a host",
-        NetCmd::GovernorAction { .. } | NetCmd::RoomAdmin { .. } | NetCmd::RoomGovernance(_) => {
-            "talking to a room's host"
-        }
+        NetCmd::GovernorAction { .. } | NetCmd::RoomGovernance(_) => "talking to a room's host",
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
@@ -1528,28 +1515,7 @@ impl ActorState {
                 self.endpoint.clone(),
                 self.host_identity.as_ref(),
             ),
-            Some(NetCmd::RoomGovernance(request)) => {
-                let (ws, host) = (request.ws, request.host);
-                if let Some(frame) = self.room_governance.send(*request, Instant::now()) {
-                    self.publish_remote_action(ws, host, NeighbourMsg::RemoteAction { frame })
-                        .await;
-                }
-            }
-            Some(NetCmd::RoomAdmin {
-                relay,
-                certificate,
-                command,
-                reply,
-            }) => {
-                let client = tilo_relay_session::rooms::RoomAdminClient::new(
-                    self.endpoint.clone(),
-                    certificate,
-                );
-                tokio::spawn(async move {
-                    let answer = client.send(relay, *command).await;
-                    let _ = reply.send(answer.map_err(|error| error.to_string()));
-                });
-            }
+            Some(NetCmd::RoomGovernance(request)) => self.send_room_governance(*request).await,
             Some(NetCmd::AttachActionBroker { queue, host, rooms }) => {
                 let rooms: HashMap<_, _> = rooms
                     .into_iter()
@@ -2349,6 +2315,72 @@ impl ActorState {
             tracing::warn!(ws, peer = %target, "no direct or relayed route for a remote action; held until the peer is seen");
             self.pending_remote_actions
                 .hold(ws, target, frame, Instant::now());
+        }
+    }
+
+    /// Send `request` to whoever it is addressed to ([`room_governance`]): a
+    /// room's relay device on any session of the room, or a host on its own
+    /// session of the workspace once that session is subscribed.
+    async fn send_room_governance(&mut self, request: room_governance::Request) {
+        let (ws, to) = (request.ws, request.to);
+        match to {
+            room_governance::Addressee::Device(host) => {
+                if let Some(frame) = self.room_governance.send(request, host, Instant::now()) {
+                    self.publish_remote_action(ws, host, NeighbourMsg::RemoteAction { frame })
+                        .await;
+                }
+            }
+            room_governance::Addressee::Host(endpoint) => {
+                let subscribed = self
+                    .host_sessions
+                    .get(&(ws, endpoint))
+                    .is_some_and(|runtime| {
+                        !runtime.replaying.load(std::sync::atomic::Ordering::Acquire)
+                    });
+                if subscribed {
+                    self.send_to_host(request, endpoint);
+                } else {
+                    // Its session is dialled with every topic this device
+                    // joined; the request goes once it is subscribed.
+                    self.room_governance.hold(request, Instant::now());
+                }
+            }
+        }
+    }
+
+    /// The host at `peer` subscribed this device to `ws`: refresh what its
+    /// native session holds and send the requests that waited for it.
+    fn host_ready(&mut self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
+        self.request_native_refresh(ws);
+        for request in self.room_governance.ready_for(ws, peer) {
+            self.send_to_host(request, peer);
+        }
+        NetEvent::HostReady { ws, peer }
+    }
+
+    /// Send `request` on the session of its workspace with the host at
+    /// `endpoint`, to the device that session's handshake authenticated.
+    fn send_to_host(&mut self, request: room_governance::Request, endpoint: EndpointId) {
+        let Some(session) = self
+            .host_sessions
+            .get(&(request.ws, endpoint))
+            .map(|runtime| Arc::clone(&runtime.session))
+        else {
+            let _ = request.reply.send(Err("the host's session closed".into()));
+            return;
+        };
+        let device = session.relay_device_public_key();
+        let Ok(host) = EndpointId::from_bytes(&device) else {
+            let _ = request
+                .reply
+                .send(Err("the host named an invalid device".into()));
+            return;
+        };
+        if let Some(frame) = self.room_governance.send(request, host, Instant::now())
+            && let Err(error) = session.publish_remote_action(device, frame)
+        {
+            // Its caller hears nothing and gives up in its own time.
+            tracing::warn!(%error, host = %endpoint, "a request to a host was not sent");
         }
     }
 
@@ -3179,10 +3211,7 @@ impl ActorState {
         let event = self.admit_native_governance(ws, event).await;
         let mapped = match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
-            HostEvent::Ready => {
-                self.request_native_refresh(ws);
-                Some(NetEvent::HostReady { ws, peer })
-            }
+            HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
             HostEvent::Voice(event) => {
                 let session = self
@@ -4343,6 +4372,7 @@ fn remember_governance(
         msg,
         NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
     ) {
         return;
@@ -7800,7 +7830,18 @@ mod tests {
                         inbound.push(Inbound::Frame { room, frame });
                     }
                     NeighbourMsg::MlsAccessRequest { request, .. } => {
-                        inbound.push(Inbound::AccessRequest { room, request });
+                        inbound.push(Inbound::AccessRequest {
+                            room,
+                            request,
+                            route: None,
+                        });
+                    }
+                    NeighbourMsg::MlsRoutedAccessRequest { request, route, .. } => {
+                        inbound.push(Inbound::AccessRequest {
+                            room,
+                            request,
+                            route: Some(route),
+                        });
                     }
                     NeighbourMsg::MlsGovernanceAck { ack, .. } => {
                         inbound.push(Inbound::Ack { room, ack });

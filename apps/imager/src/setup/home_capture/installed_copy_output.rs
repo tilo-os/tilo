@@ -1181,7 +1181,7 @@ impl InstalledCopyCompletion {
             events: libc::POLLIN,
             revents: 0,
         };
-        let result = unsafe { libc::poll(&mut stopped, 1, 0) };
+        let result = unsafe { libc::poll(&raw mut stopped, 1, 0) };
         if result < 0 {
             return Err(io::Error::last_os_error());
         }

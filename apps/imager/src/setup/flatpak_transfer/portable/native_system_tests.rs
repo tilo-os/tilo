@@ -97,7 +97,7 @@ fn public_fixture_file(path: &Path, bytes: &[u8]) {
         io::Write as _,
         os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
     };
-    assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -391,7 +391,7 @@ fn verify_constrained_restore(
 }
 fn owner_producer() {
     // SAFETY: this call merely observes process authority.
-    assert_ne!(unsafe { libc::geteuid() }, 0);
+    assert_ne!(rustix::process::geteuid().as_raw(), 0);
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
     environment.set("TILO_NATIVE_FLATPAK_FIXTURE_DIAGNOSTICS", "1");
@@ -578,7 +578,7 @@ fn real_named_system_producer_and_native_target_restore() {
         _ => {
             // SAFETY: geteuid only reads current process credentials.
             assert_eq!(
-                unsafe { libc::geteuid() },
+                rustix::process::geteuid().as_raw(),
                 0,
                 "explicit system qualification requires privileged runner"
             );
@@ -716,7 +716,7 @@ fn repackage_extra(stage: &Path, fixture: &Path, cancel: &AtomicBool) -> Applica
 /// GPT/UDisks coordinator. Do not fork its mount topology away from its daemon.
 pub(in crate::setup) fn initialize_original_source(root: &Path) -> Agent {
     use std::os::unix::fs::MetadataExt as _;
-    assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
     let marker = Path::new("/etc/.tilo-paired-qualification");
     let metadata = fs::symlink_metadata(marker).expect("isolated coordinator /etc marker required");
     assert!(metadata.is_file());

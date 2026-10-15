@@ -23,6 +23,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["ch
 # Shared multi-account store and encrypted secret vault. Settings owns writes;
 # credentials are sealed in the vault rather than the plaintext store.
 accounts = { path = "../../crates/system/accounts", features = ["person"] }
+account-custody = { path = "../../crates/system/account-custody", default-features = false }
 # Tilo action model for serializable, replayable document mutations.
 tilo-actions = { path = "../../crates/collab/actions" }
 # Notes are rich text, edited in the SDK rich-text editor.
@@ -56,7 +57,7 @@ thin = ["dep:runtime-dylib"]
 # The CalDAV transport runs on the app runtime and is a no-op without a
 # configured account.
 default = ["live"]
-live = ["tilo-dav/net", "dep:tilo-net"]
+live = ["tilo-dav/net", "dep:tilo-net", "account-custody/custody", "tilo-dav/client"]
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["chrono", "test-support"] }

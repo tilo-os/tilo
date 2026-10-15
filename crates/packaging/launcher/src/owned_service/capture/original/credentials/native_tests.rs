@@ -404,10 +404,10 @@ fn assert_root_restored(ids: (u32, u32), original_groups: &[u32], caps: &[Data; 
         "actual root capabilities were not restored"
     );
     // SAFETY: real/effective credential getters have no arguments.
-    assert_eq!(unsafe { libc::getuid() }, 0);
-    assert_eq!(unsafe { libc::geteuid() }, 0);
-    assert_eq!(unsafe { libc::getgid() }, 0);
-    assert_eq!(unsafe { libc::getegid() }, 0);
+    assert_eq!(rustix::process::getuid().as_raw(), 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
+    assert_eq!(rustix::process::getgid().as_raw(), 0);
+    assert_eq!(rustix::process::getegid().as_raw(), 0);
     assert_eq!(
         std::fs::read(ROOT_PROOF).unwrap(),
         b"root-only filesystem readback"
@@ -420,7 +420,7 @@ fn assert_root_restored(ids: (u32, u32), original_groups: &[u32], caps: &[Data; 
 }
 fn inner() {
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "native isolated root prerequisite required"
     );
@@ -536,7 +536,7 @@ fn actual_private_home_final_observation_restores_root_before_sealing_mounted_re
     const COMPLETE: &[u8] = b"private Home observed as caller; sealed receipt owned by root";
     if let Some(marker) = std::env::var_os(CHILD) {
         assert_eq!(
-            unsafe { libc::geteuid() },
+            rustix::process::geteuid().as_raw(),
             0,
             "actual root prerequisite required"
         );

@@ -1,48 +1,33 @@
-//! The staging ESP handoff read by the live installer (`tilo-install
-//! --internal-handoff`). A hint, never authority: the installer revalidates
-//! every identity and extent and the person still confirms.
-//!
-//! On the ESP the file is `/EFI/tilo-staging/handoff.json`, a fixed-size
-//! placeholder the exporter reserves (see [`super::fat`]). Its content is the
-//! compact JSON below followed by ASCII spaces up to the file's size; any
-//! JSON parser that permits trailing whitespace (e.g. `serde_json::from_slice`,
-//! Python `json.loads`) reads it unchanged.
+//! The Imager's side of the staging ESP handoff ([`staging_handoff_model`]): the
+//! handoff for a plan, and the secret-free profile it may carry onto the
+//! unencrypted staging ESP. The placeholder the exporter reserves for it is
+//! in [`super::fat`].
 
 use serde::{Deserialize, Serialize};
+pub use staging_handoff_model::{HANDOFF_FILE, pad_json};
+use staging_handoff_model::{HostOs, StagedIdentity};
 
-use super::plan::{Extent, Plan};
+use super::plan::Plan;
 
-pub const HANDOFF_FILE: &str = "handoff.json";
-pub const SCHEMA: u32 = 1;
-
+/// The shared staging contract, with an optional metadata-only migration binding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StagedIdentity {
-    pub partuuid: String,
-    pub first_lba: u64,
-    pub last_lba: u64,
+#[serde(transparent)]
+pub struct Handoff {
+    staging: staging_handoff_model::Handoff,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Handoff {
-    pub schema: u32,
-    pub operation_id: String,
-    /// `windows` or `linux`.
-    pub host_os: String,
-    pub disk_guid: String,
-    pub disk_size_bytes: u64,
-    pub staging_esp: StagedIdentity,
-    pub staging_root: StagedIdentity,
-    pub target_extent: Extent,
-    /// Four uppercase hex digits, e.g. `0004`.
-    pub owned_boot_entry: String,
-    pub original_boot_order: Vec<String>,
-    /// Secret-free fields accepted by the installer's media profile.
-    pub profile: serde_json::Map<String, serde_json::Value>,
-    /// Metadata-only source binding; carries no credentials or home data.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub migration: Option<serde_json::Value>,
+impl std::ops::Deref for Handoff {
+    type Target = staging_handoff_model::Handoff;
+
+    fn deref(&self) -> &Self::Target {
+        &self.staging
+    }
+}
+
+impl std::ops::DerefMut for Handoff {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.staging
+    }
 }
 
 /// Keys of the installer's secret-free media profile
@@ -109,76 +94,25 @@ pub fn profile_from_install(
 }
 
 impl Handoff {
-    /// Build the handoff for a plan whose partitions now carry `esp_guid` and
-    /// `root_guid`. `original_boot_order` comes from the helper's live
-    /// firmware read (the Windows probe basis has none).
-    pub fn for_plan(
-        operation_id: &str,
-        plan: &Plan,
-        esp_guid: &str,
-        root_guid: &str,
-        owned_boot_entry: &str,
-        original_boot_order: Vec<String>,
-        profile: serde_json::Map<String, serde_json::Value>,
-    ) -> Self {
-        Self {
-            schema: SCHEMA,
-            operation_id: operation_id.into(),
-            host_os: plan.basis.host_os().into(),
-            disk_guid: plan.basis.disk.guid.to_ascii_lowercase(),
-            disk_size_bytes: plan.basis.disk.size_bytes,
-            staging_esp: StagedIdentity {
-                partuuid: esp_guid.to_ascii_lowercase(),
-                first_lba: plan.staging_esp.first_lba,
-                last_lba: plan.staging_esp.last_lba,
-            },
-            staging_root: StagedIdentity {
-                partuuid: root_guid.to_ascii_lowercase(),
-                first_lba: plan.staging_root.first_lba,
-                last_lba: plan.staging_root.last_lba,
-            },
-            target_extent: plan.target_extent,
-            owned_boot_entry: owned_boot_entry.into(),
-            original_boot_order,
-            profile,
-            migration: None,
-        }
-    }
-
-    /// Compact JSON padded with spaces to exactly `len` bytes.
+    /// Validated compact JSON padded with spaces to exactly `len` bytes.
     pub fn to_padded(&self, len: u64) -> Result<Vec<u8>, String> {
+        self.validate()?;
         pad_json(&serde_json::to_vec(self).map_err(|e| e.to_string())?, len)
     }
 
     /// Parse placeholder bytes (JSON plus trailing whitespace).
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() > staging_handoff_model::MAX_BYTES {
+            return Err("staged installation record is unexpectedly large".into());
+        }
         let handoff: Self = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         handoff.validate()?;
         Ok(handoff)
     }
 
-    /// Internal consistency the installer can check before revalidating
-    /// against the live disk.
+    /// Shared staging consistency plus the secret-free profile and migration binding.
     pub fn validate(&self) -> Result<(), String> {
-        let extent_ok = |first: u64, last: u64| first > 0 && first <= last;
-        if self.schema != SCHEMA
-            || !matches!(self.host_os.as_str(), "windows" | "linux")
-            || !super::is_guid(&self.disk_guid)
-            || !super::is_guid(&self.staging_esp.partuuid)
-            || !super::is_guid(&self.staging_root.partuuid)
-            || self.staging_esp.partuuid == self.staging_root.partuuid
-            || !extent_ok(self.staging_esp.first_lba, self.staging_esp.last_lba)
-            || !extent_ok(self.staging_root.first_lba, self.staging_root.last_lba)
-            || !extent_ok(self.target_extent.first_lba, self.target_extent.last_lba)
-            || self.target_extent.last_lba + 1 != self.staging_esp.first_lba
-            || self.staging_esp.last_lba + 1 != self.staging_root.first_lba
-            || self.owned_boot_entry.len() != 4
-            || self.owned_boot_entry != self.owned_boot_entry.to_ascii_uppercase()
-            || super::efi::parse_boot_number(&self.owned_boot_entry).is_err()
-            || self.original_boot_order.contains(&self.owned_boot_entry)
-        {
-            return Err("handoff is internally inconsistent".into());
-        }
+        self.staging.validate()?;
         validate_profile(&self.profile)?;
         if let Some(raw) = &self.migration {
             #[cfg(not(target_os = "linux"))]
@@ -193,7 +127,7 @@ impl Handoff {
                 )
                 .map_err(|error| error.to_string())?;
                 let source = &plan.home.volume;
-                if self.host_os != "linux"
+                if self.host_os != HostOs::Linux
                     || plan.operation_id != self.operation_id
                     || !source.disk_guid.eq_ignore_ascii_case(&self.disk_guid)
                     || source.disk_bytes != self.disk_size_bytes
@@ -224,18 +158,42 @@ impl Handoff {
     }
 }
 
-/// `json` followed by ASCII spaces to exactly `len` bytes.
-pub fn pad_json(json: &[u8], len: u64) -> Result<Vec<u8>, String> {
-    let len = usize::try_from(len).map_err(|e| e.to_string())?;
-    if json.len() > len {
-        return Err(format!(
-            "{} bytes of JSON do not fit the {len}-byte ESP placeholder",
-            json.len()
-        ));
+/// The handoff for a plan whose partitions now carry `esp_guid` and
+/// `root_guid`. `original_boot_order` comes from the helper's live firmware
+/// read (the Windows probe basis has none).
+pub fn for_plan(
+    operation_id: &str,
+    plan: &Plan,
+    esp_guid: &str,
+    root_guid: &str,
+    owned_boot_entry: &str,
+    original_boot_order: Vec<String>,
+    profile: serde_json::Map<String, serde_json::Value>,
+) -> Handoff {
+    Handoff {
+        staging: staging_handoff_model::Handoff {
+            schema: staging_handoff_model::SCHEMA,
+            operation_id: operation_id.into(),
+            host_os: plan.basis.host_os(),
+            disk_guid: plan.basis.disk.guid.to_ascii_lowercase(),
+            disk_size_bytes: plan.basis.disk.size_bytes,
+            staging_esp: StagedIdentity {
+                partuuid: esp_guid.to_ascii_lowercase(),
+                first_lba: plan.staging_esp.first_lba,
+                last_lba: plan.staging_esp.last_lba,
+            },
+            staging_root: StagedIdentity {
+                partuuid: root_guid.to_ascii_lowercase(),
+                first_lba: plan.staging_root.first_lba,
+                last_lba: plan.staging_root.last_lba,
+            },
+            target_extent: plan.target_extent,
+            owned_boot_entry: owned_boot_entry.into(),
+            original_boot_order,
+            profile,
+            migration: None,
+        },
     }
-    let mut out = json.to_vec();
-    out.resize(len, b' ');
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -243,7 +201,17 @@ mod tests {
     use super::*;
 
     fn sample() -> Handoff {
-        let basis = super::super::plan::tests::linux_basis(512, 256 << 30, Vec::new());
+        let basis = super::super::plan::tests::linux_basis(
+            512,
+            256 << 30,
+            vec![super::super::platform::Partition {
+                number: 1,
+                guid: "22222222-2222-4222-8222-222222222222".into(),
+                type_guid: "0fc63daf-8483-4772-8e79-3d69d8477de4".into(),
+                first_lba: 2048,
+                last_lba: 1048575,
+            }],
+        );
         let plan = super::super::plan::compute(
             &basis,
             super::super::plan::Requirements {
@@ -256,8 +224,8 @@ mod tests {
         let mut profile = serde_json::Map::new();
         profile.insert("schema".into(), 1.into());
         profile.insert("hostname".into(), "tilo".into());
-        Handoff::for_plan(
-            "op-1",
+        for_plan(
+            "0a0b0c0d-0000-4000-8000-000000000001",
             &plan,
             plan.staging_esp.partition_guid.as_deref().unwrap(),
             plan.staging_root.partition_guid.as_deref().unwrap(),
@@ -265,6 +233,145 @@ mod tests {
             vec!["0001".into()],
             profile,
         )
+    }
+
+    /// Run the parser that detects and publishes the live handoff, rather
+    /// than a reimplementation of its field rules.
+    #[cfg(target_os = "linux")]
+    fn parse_live(bytes: &[u8]) -> std::process::Output {
+        use std::io::Write;
+        let mut input = tempfile::NamedTempFile::new().unwrap();
+        input.write_all(bytes).unwrap();
+        let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../os/usr/libexec/tilo-staging-handoff");
+        std::process::Command::new("python3").arg("-c")
+            .arg("import runpy,sys,json; m=runpy.run_path(sys.argv[1]); print(json.dumps(m['load_handoff_file'](sys.argv[2])))")
+            .arg(helper).arg(input.path()).output().unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn migration_round_trips_through_shared_and_live_consumers_and_fails_closed() {
+        let mut handoff = sample();
+        let migration = serde_json::json!({
+            "schema": 1,
+            "operation_id": handoff.operation_id,
+            "categories": {"home": true, "flatpak": false, "accounts": true},
+            "home_policy": "access-read-only",
+            "home": {
+                "volume": {
+                    "disk_guid": handoff.disk_guid,
+                    "disk_bytes": handoff.disk_size_bytes,
+                    "sector_bytes": 512,
+                    "partition_guid": "22222222-2222-4222-8222-222222222222",
+                    "first_lba": 2048, "last_lba": 1048575,
+                    "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+                    "filesystem": "ext4"
+                },
+                "relative": {"platform": "Unix", "units": b"home/person"},
+                "inode": 1234, "original_uid": 1000, "subvolume": null
+            }
+        });
+        handoff.migration = Some(serde_json::from_value(migration.clone()).unwrap());
+        let bytes = handoff.to_padded(16384).unwrap();
+        let shared = staging_handoff_model::Handoff::parse(&bytes).unwrap();
+        assert_eq!(shared, handoff.staging);
+        assert_eq!(Handoff::parse(&bytes).unwrap(), handoff);
+        let decoded = serde_json::to_value(&shared).unwrap();
+        assert_eq!(
+            decoded["migration"], migration,
+            "retain all source and consent data"
+        );
+        crate::setup::migration_handoff::Plan::parse(
+            &serde_json::to_vec(&decoded["migration"]).unwrap(),
+        )
+        .unwrap();
+
+        let live = parse_live(&bytes);
+        assert!(
+            live.status.success(),
+            "{}",
+            String::from_utf8_lossy(&live.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&live.stdout).unwrap(),
+            decoded
+        );
+
+        for pointer in [
+            "/unexpected",
+            "/migration/unexpected",
+            "/migration/home/unexpected",
+            "/migration/home/volume/unexpected",
+            "/migration/home/relative/unexpected",
+        ] {
+            let mut invalid = decoded.clone();
+            let (parent, key) = pointer.rsplit_once('/').unwrap();
+            invalid
+                .pointer_mut(parent)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(key.into(), true.into());
+            let invalid = serde_json::to_vec(&invalid).unwrap();
+            assert!(Handoff::parse(&invalid).is_err(), "{pointer}");
+            assert!(
+                staging_handoff_model::Handoff::parse(&invalid).is_err(),
+                "{pointer}"
+            );
+            assert!(!parse_live(&invalid).status.success(), "{pointer}");
+        }
+        for (pointer, value) in [
+            ("/host_os", serde_json::json!("windows")),
+            (
+                "/migration/operation_id",
+                serde_json::json!("different-operation"),
+            ),
+            ("/migration/home/volume/disk_bytes", serde_json::json!(1)),
+            (
+                "/migration/home/volume/last_lba",
+                serde_json::json!(handoff.target_extent.first_lba),
+            ),
+            (
+                "/migration/home/volume/partition_guid",
+                serde_json::json!(handoff.staging_esp.partuuid),
+            ),
+            (
+                "/migration/home/relative/units",
+                serde_json::json!(b"home/../person"),
+            ),
+        ] {
+            let mut invalid = decoded.clone();
+            *invalid.pointer_mut(pointer).unwrap() = value;
+            let invalid = serde_json::to_vec(&invalid).unwrap();
+            assert!(Handoff::parse(&invalid).is_err(), "{pointer}");
+            assert!(
+                staging_handoff_model::Handoff::parse(&invalid).is_err(),
+                "{pointer}"
+            );
+            assert!(!parse_live(&invalid).status.success(), "{pointer}");
+        }
+    }
+
+    #[test]
+    fn shared_staging_contract_remains_the_wire_format() {
+        let handoff = sample();
+        let bytes = handoff.to_padded(4096).unwrap();
+        assert_eq!(
+            staging_handoff_model::Handoff::parse(&bytes).unwrap(),
+            handoff.staging
+        );
+        let json = serde_json::to_string(&handoff).unwrap();
+        let duplicated = json.replacen('{', "{\"schema\":1,", 1);
+        assert!(Handoff::parse(duplicated.as_bytes()).is_err());
+        assert!(Handoff::parse(&vec![b' '; staging_handoff_model::MAX_BYTES + 1]).is_err());
+
+        let mut malformed = handoff.clone();
+        malformed.operation_id = "not-a-guid".into();
+        assert!(malformed.to_padded(4096).is_err());
+        let mut secret = handoff;
+        secret.profile.insert("password".into(), "secret".into());
+        assert!(secret.to_padded(4096).is_err());
     }
 
     /// Handoff encoding, validation and profile mapping.
@@ -288,7 +395,7 @@ mod tests {
             let mut h = sample();
             h.profile
                 .insert("encryption_passphrase".into(), "hunter2".into());
-            assert!(h.validate().is_err());
+            assert!(validate_profile(&h.profile).is_err());
             let mut h = sample();
             h.owned_boot_entry = "boot".into();
             assert!(h.validate().is_err());

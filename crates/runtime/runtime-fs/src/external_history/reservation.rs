@@ -111,7 +111,13 @@ impl NativeReservationFacts {
 // Exact unpublished source getter tuple: operation, owner, source/destination
 // parents, protected custody, permissions, held facts, attributes and locators.
 // NativeAttributes is a newtype BTreeMap and has the same postcard map encoding.
-use crate::operations::NativeReplacementPurpose;
+/// Source-minted description of namespace replacement intent. Observing this
+/// value admits neither an operation nor canonical history authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum NativeReplacementPurpose {
+    ReplacementRename,
+    AtomicSave,
+}
 type Wire = (
     [u8; 16],
     [u8; 32],

@@ -49,6 +49,7 @@ ed25519-dalek.workspace = true
 browser-continuity = { workspace = true, features = ["native"] }
 tilo-image-codec = { version = "0.1.0", path = "../../crates/platform/tilo-image-codec" }
 install-profile-model = { path = "../../crates/session/install-profile-model" }
+staging-handoff-model = { path = "../staging-handoff-model" }
 uuid.workspace = true
 base64.workspace = true
 crc32fast.workspace = true
@@ -107,9 +108,11 @@ block-devices = { path = "../../crates/system/block-devices" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 workspace-hack = { version = "0.1" }
+tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { workspace = true, optional = true }
@@ -148,13 +151,16 @@ ignored = ["blake3"]
 [dev-dependencies]
 tilo-desktop-model = { path = "../../crates/session/desktop-model" }
 vello_encoding.workspace = true
-# Installer transport must reach the canonical storage consumer, not only the vault.
-tilo-fs = { path = "../../crates/system/fs" }
 cloud-source-dav = { path = "../../crates/system/cloud-source-dav", features = ["fake-server"] }
 test-http = { path = "../../crates/dev/test-http" }
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Installer transport must reach the canonical storage consumer, not only the vault.
+# Its FUSE backend is a Linux service, not part of hosted Windows tests.
+tilo-fs = { path = "../../crates/system/fs" }
 
 [lints]
 workspace = true

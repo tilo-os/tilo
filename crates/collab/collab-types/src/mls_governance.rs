@@ -614,6 +614,53 @@ impl MlsAccessRequestV1 {
     }
 }
 
+/// Upper bound on each id of a [`ChannelRoute`], so a claim cannot make a
+/// steward hash or store an unbounded string.
+pub const MAX_CHANNEL_ROUTE_ID_BYTES: usize = 1024;
+
+/// The record a channel carries: its app and record id, which with the room
+/// hash to the channel's id ([`crate::document_channel_id`]).
+///
+/// A channel id cannot be turned back into its record, so a steward that is
+/// to decide Read on the record (a Deny over an app or a pattern of records
+/// included) must be told the route. The claim needs no signature and no
+/// trust in whoever presents it: [`Self::proves`] holds only for the route
+/// whose hash is the channel's id, and finding another route with the same
+/// hash means breaking SHA-256. A device asking for a channel's key sends it
+/// beside its access request; a steward keeps it with the channel.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelRoute {
+    pub app: String,
+    pub record: String,
+}
+
+impl ChannelRoute {
+    #[must_use]
+    pub fn new(app: impl Into<String>, record: impl Into<String>) -> Self {
+        Self {
+            app: app.into(),
+            record: record.into(),
+        }
+    }
+
+    /// The channel this route's record has in `room`.
+    #[must_use]
+    pub fn channel(&self, room: &str) -> ChannelId {
+        crate::document_channel_id(&self.app, room, &self.record)
+    }
+
+    /// Whether this is the route of `channel`, one of `room`'s channels:
+    /// both ids within [`MAX_CHANNEL_ROUTE_ID_BYTES`] and hashing, with
+    /// `room`, to `channel`.
+    #[must_use]
+    pub fn proves(&self, room: &str, channel: ChannelId) -> bool {
+        self.app.len() <= MAX_CHANNEL_ROUTE_ID_BYTES
+            && self.record.len() <= MAX_CHANNEL_ROUTE_ID_BYTES
+            && self.channel(room) == channel
+    }
+}
+
 /// A device's cumulative acknowledgement: it has durably processed every
 /// governance frame of `channel` up to and including `through_digest`.
 ///
@@ -714,6 +761,20 @@ impl MlsGovernanceAckV1 {
 mod tests {
     use super::*;
     use crate::generate_keypair;
+
+    #[test]
+    fn a_channel_route_proves_only_its_own_channel() {
+        let route = ChannelRoute::new("so.tilo.sheets", "payroll");
+        let channel = crate::document_channel_id("so.tilo.sheets", "room", "payroll");
+        assert_eq!(route.channel("room"), channel);
+        assert!(route.proves("room", channel));
+        assert!(!route.proves("other", channel));
+        assert!(!ChannelRoute::new("so.tilo.sheets", "budget").proves("room", channel));
+        assert!(!ChannelRoute::new("so.tilo.notes", "payroll").proves("room", channel));
+        let long = "x".repeat(MAX_CHANNEL_ROUTE_ID_BYTES + 1);
+        let oversized = ChannelRoute::new("so.tilo.sheets", long);
+        assert!(!oversized.proves("room", oversized.channel("room")));
+    }
 
     #[test]
     fn access_request_is_bound_to_its_device_channel_and_package() {

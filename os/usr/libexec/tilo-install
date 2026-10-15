@@ -413,6 +413,9 @@ NEW_ROOT_PARTUUID=""
 CONFIRM_FREE_SPACE=""
 INTERNAL_HANDOFF=""
 PREPARED_SETUP_RECEIPT=""
+ACCOUNT_OPERATION=""
+ACCOUNT_STAGE=""
+ACCOUNTS_COMMITTED=0
 EXPECTED_PARTITIONS=()
 PIN=""
 while [ $# -gt 0 ]; do
@@ -478,10 +481,17 @@ while [ $# -gt 0 ]; do
     --yes|-y) ASSUME_YES=1; shift ;;
     --internal-handoff) INTERNAL_HANDOFF="${2:-}"; shift 2 ;;
     --prepared-setup-receipt) PREPARED_SETUP_RECEIPT="${2:-}"; shift 2 ;;
+    --account-operation) ACCOUNT_OPERATION="${2:-}"; shift 2 ;;
     -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+
+if [ -n "$ACCOUNT_OPERATION" ]; then
+  [[ "$ACCOUNT_OPERATION" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+    || die "invalid account operation UUID"
+  [ -x /usr/libexec/tilo-firstboot-home-seeds ] || die "account transport helper is missing"
+fi
 
 # The signed target UKI always mounts TILO_BOOT. Every supported install mode
 # must create that ext4 partition before promotion; reject any future caller
@@ -745,12 +755,12 @@ validate_disk_identity() {
     || die "$DISK size changed after selection; refresh disks and review again"
   [ "$actual_devnum" = "$EXPECT_DISK_DEVNUM" ] \
     || die "$DISK device identity changed after selection; refresh disks and review again"
-  if [ -n "$EXPECT_DISK_WWN" ]; then
+  if [ -n "$EXPECT_DISK_WWN" ] || [ -n "$ACCOUNT_OPERATION" ]; then
     actual_wwn="$(lsblk -dno WWN "$DISK" 2>/dev/null | trim_identity)"
     [ "$actual_wwn" = "$EXPECT_DISK_WWN" ] \
       || die "$DISK WWN changed after selection; refusing destructive work"
   fi
-  if [ -n "$EXPECT_DISK_SERIAL" ]; then
+  if [ -n "$EXPECT_DISK_SERIAL" ] || [ -n "$ACCOUNT_OPERATION" ]; then
     actual_serial="$(lsblk -dno SERIAL "$DISK" 2>/dev/null | trim_identity)"
     [ "$actual_serial" = "$EXPECT_DISK_SERIAL" ] \
       || die "$DISK serial changed after selection; refusing destructive work"
@@ -1038,6 +1048,13 @@ if [ "$WANT_PIN" -eq 1 ]; then
     || die "$POLICY_ERROR"
 fi
 
+
+# Keep binary credentials on a private descriptor, never in shell variables or
+# argv. Other installation tools receive EOF rather than transport bytes.
+if [ -n "$ACCOUNT_OPERATION" ]; then
+  exec 9<&0
+  exec </dev/null
+fi
 
 # Bind the reviewed disk immediately before guided GPT mutation.
 validate_disk_identity
@@ -1403,6 +1420,12 @@ if [ "$ENCRYPT" -eq 1 ]; then
   ENC_CLEANUP_TARGET="$DISK"
   [ "$ALONGSIDE" -eq 0 ] || ENC_CLEANUP_TARGET="$ROOT_PARTITION"
   cleanup_encrypted_install() {
+    # Remove the transport before unmounting on any failed install. Successful
+    # firstboot retains it until the destination user's import has committed.
+    if [ "${ACCOUNTS_COMMITTED:-0}" -eq 0 ] && [ -n "${ACCOUNT_STAGE:-}" ]; then
+      rm -rf -- "$ACCOUNT_STAGE"
+      sync -f -- "$(dirname -- "$ACCOUNT_STAGE")" 2>/dev/null || true
+    fi
     if ! release_copy_scratch; then
       log "error: could not remove bootc scratch mount; leaving LUKS open for safe recovery"
       [ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
@@ -1633,6 +1656,23 @@ fi
 
 [ -n "$DEPLOY_ETC" ] || die "could not locate the installed deployment's writable /etc on $DISK"
 
+if [ -n "$ACCOUNT_OPERATION" ]; then
+  install -d -m 0755 "$DEPLOY_ETC/tilo"
+  validate_disk_identity
+  ACCOUNT_TARGET="$(/usr/libexec/tilo-firstboot-home-seeds --accounts-fingerprint \
+    "$(blockdev --getsize64 "$DISK")" \
+    "$(lsblk -dno MAJ:MIN "$DISK" | trim_identity)" \
+    "$(lsblk -dno WWN "$DISK" | trim_identity)" \
+    "$(lsblk -dno SERIAL "$DISK" | trim_identity)")" \
+    || die "could not bind selected accounts to the installed disk"
+  account_destination="$DEPLOY_ETC/tilo/online-accounts"
+  /usr/libexec/tilo-firstboot-home-seeds --accounts-stage \
+    "$ACCOUNT_OPERATION" "$ACCOUNT_TARGET" "$USERNAME" 1000 "$account_destination" <&9 \
+    || die "could not stage selected online accounts"
+  ACCOUNT_STAGE="$account_destination"
+  exec 9<&-
+fi
+
 # Publish a recovery receipt before adding any Tilo-owned chainloader shortcuts
 # or target configuration. Both this provisional receipt and its final refresh
 # are atomic, so an interrupted alongside install never leaves an empty/partial
@@ -1649,6 +1689,11 @@ label_installed_tilo_path() {
   chcon --no-dereference -- "$context" "$staged" \
     || die "could not label installed $installed"
 }
+if [ -n "$ACCOUNT_STAGE" ]; then
+  label_installed_tilo_path "$ACCOUNT_STAGE" /etc/tilo/online-accounts
+  label_installed_tilo_path "$ACCOUNT_STAGE/binding.json" /etc/tilo/online-accounts/binding.json
+  label_installed_tilo_path "$ACCOUNT_STAGE/transport" /etc/tilo/online-accounts/transport
+fi
 # A signed offline target can predate the installer. First-boot account
 # creation belongs to the install transaction, not an assumed target /usr
 # payload. Stage the reviewed helper and its sandbox in writable /etc, without
@@ -2177,6 +2222,8 @@ else
   umount "$MOUNTED" 2>/dev/null || true
   MOUNTED=""
 fi
+
+ACCOUNTS_COMMITTED=1
 
 # Only after every step above succeeded: hand the next restart to the new
 # Tilo exactly once. The restored BootOrder keeps the existing system as the

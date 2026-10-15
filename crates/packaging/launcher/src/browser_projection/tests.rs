@@ -52,7 +52,7 @@ impl Fixture {
 }
 fn manifest(id: &str) -> ManifestView {
     toml::from_str(&format!(
-        "[package]\nid = \"{id}\"\nversion = \"1\"\n[entrypoint]\nbin = \"browser\"\n"
+        "[package]\nkind = \"app\"\nid = \"{id}\"\nversion = \"1\"\n[entrypoint]\nbin = \"browser\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n"
     ))
     .unwrap()
 }

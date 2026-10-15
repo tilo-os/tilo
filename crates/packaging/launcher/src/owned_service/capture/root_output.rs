@@ -44,7 +44,13 @@ pub struct OriginalOutputFiles {
 /// protected source witness, exact GPT/partition ancestry, all-source physical
 /// disjointness, mount ownership/alias and operation lease checks.
 pub trait OriginalOutputCustody: ServiceAuthority {
+    /// Clone the controller's held source and output descriptors.
+    /// # Errors
+    /// Refuses unavailable custody or descriptor duplication failures.
     fn held_files(&self) -> io::Result<OriginalOutputFiles>;
+    /// Return the authenticated output transaction binding.
+    /// # Errors
+    /// Refuses unavailable, retired or changed transaction authority.
     fn binding(&self) -> io::Result<OriginalOutputBinding>;
 }
 pub struct OriginalOutputAdmission {
@@ -164,10 +170,13 @@ fn validate_files(files: &OriginalOutputFiles, binding: &OriginalOutputBinding) 
     Ok(())
 }
 impl OriginalOutputAdmission {
+    /// Admit output held by the authenticated root transaction controller.
+    /// # Errors
+    /// Refuses non-root callers, invalid bindings, changed custody or insufficient space.
     pub fn admit(custody: Arc<dyn OriginalOutputCustody>) -> io::Result<Self> {
         // SAFETY: observes current real/effective/filesystem UIDs, no change.
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || unsafe { libc::setfsuid(u32::MAX) } != 0
         {
             return Err(refuse("Original output requires native root custody"));
@@ -274,7 +283,7 @@ mod tests {
 
     #[test]
     fn original_output_retired_native_custody_never_requests_files_or_claim() {
-        struct Retired;
+        struct Retired(std::sync::atomic::AtomicUsize);
         impl ServiceAuthority for Retired {
             fn check(&self) -> io::Result<()> {
                 Err(refuse("Original transaction retired"))
@@ -282,22 +291,29 @@ mod tests {
         }
         impl OriginalOutputCustody for Retired {
             fn held_files(&self) -> io::Result<OriginalOutputFiles> {
-                panic!("Refused authority must not request output descriptors")
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(refuse(
+                    "Refused authority must not request output descriptors",
+                ))
             }
             fn binding(&self) -> io::Result<OriginalOutputBinding> {
-                panic!("Refused authority must not request a transaction binding")
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(refuse(
+                    "Refused authority must not request a transaction binding",
+                ))
             }
         }
-        let result = OriginalOutputAdmission::admit(Arc::new(Retired));
-        let error = match result {
-            Ok(_) => panic!("Retired authority admitted"),
-            Err(error) => error,
+        let custody = Arc::new(Retired(std::sync::atomic::AtomicUsize::new(0)));
+        let result = OriginalOutputAdmission::admit(custody.clone());
+        assert_eq!(custody.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let Err(error) = result else {
+            panic!("Retired authority admitted");
         };
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         // Neither principal branch skips this production constructor. Nonroot
         // callers refuse even before reaching the retired root controller.
-        let expected = if unsafe { libc::getuid() } == 0
-            && unsafe { libc::geteuid() } == 0
+        let expected = if rustix::process::getuid().as_raw() == 0
+            && rustix::process::geteuid().as_raw() == 0
             && unsafe { libc::setfsuid(u32::MAX) } == 0
         {
             "Original transaction retired"

@@ -569,14 +569,14 @@ pub(in crate::setup) struct InstalledCopyAttempt {
 impl InstalledCopyAttempt {
     /// Route selection only. An existing record still needs typed recovery,
     /// independently stopped processes and a new authentic full verifier.
-    pub(in crate::setup) fn exists(store: &Store) -> io::Result<bool> {
+    pub(in crate::setup::home_capture) fn exists(store: &Store) -> io::Result<bool> {
         store.installed_copy_snapshots(&store.operation)?;
         let present = load(store)?.is_some();
         store.check_original_output_operation(&store.operation)?;
         Ok(present)
     }
     /// Fresh intent is durable before any scratch mkdir or signed worker launch.
-    pub(in crate::setup) fn prepare(
+    pub(in crate::setup::home_capture) fn prepare(
         store: Arc<Mutex<Store>>,
         source: Arc<OriginalCopyReadAdmission>,
         target: Arc<ExecutingPeer>,
@@ -669,7 +669,7 @@ impl InstalledCopyAttempt {
     pub(in crate::setup) fn attempt(&self) -> &str {
         &self.attempt
     }
-    pub(in crate::setup) fn store(&self) -> Arc<Mutex<Store>> {
+    pub(in crate::setup::home_capture) fn store(&self) -> Arc<Mutex<Store>> {
         self.store.clone()
     }
     pub(in crate::setup::home_capture) fn source(&self) -> Arc<OriginalCopyReadAdmission> {
@@ -843,7 +843,7 @@ impl InstalledCopyAttempt {
         self.check(cancel)
     }
     /// Full response is persisted as an observation, never a Verified token.
-    pub(in crate::setup) fn record_exported<O: OriginalWorkerOwner>(
+    pub(in crate::setup::home_capture) fn record_exported<O: OriginalWorkerOwner>(
         &self,
         scratch: &InstalledCopyScratch,
         owner: &Arc<O>,

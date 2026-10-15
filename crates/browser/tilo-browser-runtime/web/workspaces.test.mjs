@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, randomDisplayName, rememberEntered, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {CustodyError} from './device-custody.mjs';
+import {HOST_CHANGED, NOT_REJOINED} from './peer.mjs';
 
 const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(key), userPublicKey: key.toString(16).padStart(2, '0').repeat(32), sign: async () => new Uint8Array(64)});
 
@@ -66,6 +68,88 @@ test('a person who was pruned is pre-admitted again as the same person', async (
   assert.equal(calls.posted[0].body.userPublicKey, '11'.repeat(32));
 });
 
+test('a kept membership the host refuses once the session starts is joined again as the same person', async () => {
+  // A host that started its room anew answers the old certificate only when
+  // the session begins, after connecting resolved.
+  const membership = {origin: 'https://rooms.example', room: 'OLD', userPublicKey: '11'.repeat(32)};
+  const {calls, options, store} = harness({person: identity(0x11), membership});
+  let disposed = false;
+  options.connect = async connected => {
+    calls.connected.push(connected);
+    return {room: connected.room, dispose: async () => { disposed = true; },
+      whenReady: async () => { throw new Error('The host no longer accepts this browser. Certify it again.'); }};
+  };
+  const peer = await joinViaHost(options);
+  assert.ok(disposed);
+  assert.equal(calls.posted[0].body.userPublicKey, '11'.repeat(32));
+  assert.equal(peer.room, 'ROOM');
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)});
+});
+
+test('a host that has not answered a kept membership yet keeps it and is not asked to admit again', async () => {
+  const membership = {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)};
+  const {calls, options, store} = harness({person: identity(0x11), membership});
+  options.connect = async connected => ({room: connected.room, dispose: async () => {},
+    whenReady: async () => { throw new DOMException('Room admission timed out', 'TimeoutError'); }});
+  await assert.rejects(joinViaHost(options), {name: 'TimeoutError'});
+  assert.equal(calls.posted.length, 0);
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
+});
+
+test('another tab holding the device key keeps the membership and asks the host nothing', async () => {
+  // Not the host's refusal: a second tab of this browser while the first is
+  // open. Joining again would spend a seat and the address's join window,
+  // then fail the same way.
+  const membership = {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)};
+  const {calls, options, store} = harness({person: identity(0x11), membership});
+  options.connect = async () => { throw new CustodyError('custody-busy', 'Another tab holds this device key'); };
+  await assert.rejects(joinViaHost(options), {name: 'CustodyError', code: 'custody-busy'});
+  assert.equal(calls.posted.length, 0);
+  assert.equal(calls.joined.length, 0);
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
+});
+
+test('a host set up again is joined again through its door once, only when the person agrees', async () => {
+  // The peer refuses what this browser kept for the previous host before
+  // any session starts (peer.mjs); the page asks the person what to do.
+  const membership = {origin: 'https://rooms.example', room: 'OLD', userPublicKey: '11'.repeat(32)};
+  const changed = () => Object.assign(new Error(HOST_CHANGED), {name: 'AdmissionError', code: 'host-changed'});
+  const run = async answer => {
+    const {calls, options, store} = harness({person: identity(0x11), membership});
+    const asked = [];
+    options.connect = async connected => { calls.connected.push(connected); throw changed(); };
+    if (answer !== undefined) options.confirmRejoin = async () => { asked.push(true); return answer; };
+    return {calls, store, asked, joining: joinViaHost(options)};
+  };
+
+  // No one to ask (an embedding page, a link naming the old room): refused.
+  const unasked = await run(undefined);
+  await assert.rejects(unasked.joining, {code: 'host-changed', message: HOST_CHANGED});
+  assert.equal(unasked.calls.posted.length, 0, 'no join was spent');
+  assert.deepEqual(keptMembership(commons, {getItem: key => unasked.store.get(key)}), membership);
+
+  // Not now: refused in those words, still with no join, the membership kept.
+  const declined = await run(false);
+  await assert.rejects(declined.joining, {name: 'AdmissionError', code: 'host-changed', message: NOT_REJOINED});
+  assert.equal(declined.asked.length, 1);
+  assert.equal(declined.calls.posted.length, 0, 'no join was spent');
+  assert.equal(declined.calls.joined.length, 0);
+  assert.deepEqual(keptMembership(commons, {getItem: key => declined.store.get(key)}), membership);
+
+  // Join again: one door join as the same person, kept as the new room.
+  const agreed = await run(true);
+  const peer = await agreed.joining;
+  assert.equal(agreed.asked.length, 1);
+  assert.equal(agreed.calls.connected.length, 1, 'the kept membership was tried once');
+  assert.equal(agreed.calls.posted.length, 1, 'exactly one join at the door');
+  assert.equal(agreed.calls.posted[0].body.userPublicKey, '11'.repeat(32));
+  assert.equal(agreed.calls.joined.length, 1);
+  assert.equal(agreed.calls.joined[0].identity.userPublicKey, '11'.repeat(32));
+  assert.equal(peer.room, 'ROOM');
+  assert.deepEqual(keptMembership(commons, {getItem: key => agreed.store.get(key)}),
+    {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)});
+});
+
 test('a membership kept for another person is not reused for this one', async () => {
   const {calls, options} = harness({person: identity(0x33), membership: {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)}});
   await joinViaHost(options);
@@ -106,7 +190,9 @@ test('the home workspace is listed first, then the person\u2019s own, each host 
 
 function spectating(spectateReply) {
   const calls = {posted: [], connected: []};
-  const certificate = {user_public_key: Array(32).fill(0x5e), device_public_key: Array(32).fill(1), device_label: 'Spectator'};
+  // A real clock reading, beyond 2^53: it must reach the runtime unrounded.
+  const certificate = '{"user_public_key":[' + Array(32).fill(0x5e).join(',') + '],"device_public_key":[' + Array(32).fill(1).join(',')
+    + '],"device_label":"Spectator","issued_at_ns":1791962530023125779}';
   return {
     calls,
     certificate,
@@ -135,7 +221,8 @@ test('a spectator certifies an in-memory device key and connects without a perso
   assert.equal(connected.room, 'ROOM');
   assert.equal(connected.userPublicKey, '5e'.repeat(32));
   assert.equal(Array.from(connected.custody.publicKey, b => b.toString(16).padStart(2, '0')).join(''), devicePublicKey);
-  assert.deepEqual(JSON.parse(connected.deviceCertificate), {cert: certificate, hostCert: {device_public_key: Array(32).fill(9)}});
+  assert.equal(connected.deviceCertificate, `{"cert":${certificate},"hostCert":{"device_public_key":[${Array(32).fill(9).join(',')}]}}`);
+  assert.match(connected.deviceCertificate, /"issued_at_ns":1791962530023125779[,}]/);
   // The key signs, and cannot be exported: nothing about it outlives the page.
   assert.equal((await connected.custody.sign(new Uint8Array([1]))).length, 64);
   await connected.store.put('k', 'v');

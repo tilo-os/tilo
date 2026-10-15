@@ -6,7 +6,11 @@ use std::{io::Read, os::unix::fs::MetadataExt, path::PathBuf};
 
 #[test]
 fn installed_completed_btrfs_copy_preserves_original_witness_and_inventory() {
-    assert_eq!(unsafe { libc::geteuid() }, 0, "root fixture required");
+    assert_eq!(
+        rustix::process::geteuid().as_raw(),
+        0,
+        "root fixture required"
+    );
     let system = PathBuf::from(
         std::env::var_os("TILO_ORIGINAL_COMPLETED_BTRFS_INSTALLED_ROOT")
             .expect("actual installed completed-Btrfs fixture required"),

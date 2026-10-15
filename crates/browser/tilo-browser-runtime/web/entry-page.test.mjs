@@ -47,7 +47,7 @@ async function fixture() {
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot;')
-    .replace("import {loadRuntime, mountDesktop, prepareGpu} from './host.mjs';", 'const loadRuntime = async () => ({}), mountDesktop = () => {}, prepareGpu = () => {};')
+    .replace("import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';", 'const loadRuntime = async () => ({}), mountDesktop = () => {}, prefetchApplication = () => {}, prepareGpu = () => {};')
     .replace("import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';", "const startArrival = () => {}, failureMessage = error => error.message, STOPPED_DRAWING = 'stopped';")
     .replace("import {watchForUpdate} from './bundle-update.mjs';", 'const watchForUpdate = () => {};')
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
@@ -105,3 +105,4 @@ test('creating a workspace remembers it and uses the existing save-and-close swi
   assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'created'});
   assert.equal(enteredWorkspaces().find(room => room.room === 'created').name, 'Created');
 });
+

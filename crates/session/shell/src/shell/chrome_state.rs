@@ -639,6 +639,10 @@ pub struct ChromeState {
     /// At most one — an OSD counts a value up, so eight volume presses
     /// show one slab, not eight banners. See [`crate::shell::osd`].
     pub osd: Option<crate::shell::osd::Osd>,
+    /// What an action that left nothing to see confirms in passing
+    /// ("Enrollment token copied"): one short-lived pill, never a
+    /// notification. Painted and announced beside the OSD.
+    pub acknowledger: ui::widget::acknowledgement::Acknowledger,
     /// What a tablet pad's controls do, while its mode button (or the
     /// button its settings pick) is held. See [`crate::shell::pad_map`].
     pub pad_map: Option<crate::shell::pad_map::PadMap>,
@@ -917,6 +921,7 @@ impl ChromeState {
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,
+            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
             pad_map: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
@@ -2473,6 +2478,13 @@ impl ChromeState {
 
     pub fn show_osd(&mut self, osd: crate::shell::osd::Osd) {
         crate::shell::osd::raise(&mut self.osd, osd);
+        self.bump();
+    }
+
+    /// Confirm in passing an action whose result is out of sight, such as
+    /// a copy to the clipboard. Replaces whatever pill was showing.
+    pub fn acknowledge(&mut self, text: impl Into<String>) {
+        self.acknowledger.say(text);
         self.bump();
     }
 

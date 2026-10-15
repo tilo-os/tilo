@@ -74,8 +74,8 @@ impl Drop for PendingHandoff {
     }
 }
 fn seal(bytes: &[u8]) -> io::Result<File> {
-    if unsafe { libc::getuid() } != 0
-        || unsafe { libc::geteuid() } != 0
+    if rustix::process::getuid().as_raw() != 0
+        || rustix::process::geteuid().as_raw() != 0
         || bytes.is_empty()
         || bytes.len() > 4096
     {

@@ -45,6 +45,7 @@ impl CompletedSetupPackage {
         verified: &VerifiedOriginalHome,
         cancel: &AtomicBool,
     ) -> io::Result<crate::setup::media_setup::CompletedSetupReceipt> {
+        self.validate_origin(verified)?;
         let origin = Origin::Home(verified.retain()?);
         let receipt = publication::publish(self, &origin, cancel)?;
         selection::publish(&origin, &receipt.setup, cancel)?;
@@ -61,7 +62,7 @@ impl CompletedSetupPackage {
         Ok(receipt)
     }
     fn validate_completion_origin(&self, origin: &Origin) -> io::Result<()> {
-        self.origin.validate_same_origin(origin)
+        self.origin.retain()?.validate_same_origin(origin)
     }
 }
 impl PreparedSetupReview {
@@ -90,7 +91,9 @@ impl PreparedSetupReview {
         self.validate()?;
         origin.validate_setup(self)?;
         let declaration = self.pending_original_declaration()?;
-        if declaration != origin.declaration() {
+        if declaration != origin.declaration()
+            || declaration.identity_public_key() != self.manifest.identity_public_key
+        {
             return Err(invalid());
         }
         if let Some(home) = origin.home() {

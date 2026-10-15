@@ -136,12 +136,12 @@ impl NamespaceWitness {
             }
         }
         let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.pid))?;
-        let start = stat
+        let start_time = stat
             .rsplit_once(") ")
             .and_then(|(_, fields)| fields.split_whitespace().nth(19))
             .and_then(|value| value.parse().ok())
             .ok_or(io::ErrorKind::InvalidData)?;
-        if !member.belongs_to(self.pid, start) {
+        if !member.belongs_to(self.pid, start_time) {
             return Err(refused("executing task is outside consuming init"));
         }
         self.validate_for_launcher(launcher)?;
@@ -172,8 +172,9 @@ impl NamespaceWitness {
         .into_iter()
         .enumerate()
         {
+            let tag = u8::try_from(index).map_err(io::Error::other)?;
             io.retry(libc::POLLOUT, |stream| {
-                runtime_portal::fd_transport::send_with_fd(stream.as_fd(), &[index as u8], fd)
+                runtime_portal::fd_transport::send_with_fd(stream.as_fd(), &[tag], fd)
             })?;
             let mut ack = [0];
             io.read_exact(&mut ack)?;
@@ -300,7 +301,9 @@ impl ConnectedNamespace {
         witness: NamespaceWitness,
         cancellation: &ServiceCancellation,
     ) -> io::Result<()> {
-        witness.send(&mut self.stream, cancellation)
+        let result = witness.send(&mut self.stream, cancellation);
+        drop(witness);
+        result
     }
 }
 
@@ -569,9 +572,11 @@ mod tests {
             .write_all(&runtime_portal::process_binding::MAGIC)
             .unwrap();
         receiver.write_all(&challenge).unwrap();
-        let peer = runtime_portal::process_binding::receive(&receiver, &challenge, unsafe {
-            libc::geteuid()
-        })
+        let peer = runtime_portal::process_binding::receive(
+            &receiver,
+            &challenge,
+            rustix::process::geteuid().as_raw(),
+        )
         .unwrap();
         receiver.write_all(&[1]).unwrap();
         assert!(peer.current());

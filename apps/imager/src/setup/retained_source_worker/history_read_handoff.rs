@@ -83,8 +83,8 @@ impl Drop for HistoryReadHandoff {
     }
 }
 fn seal(bytes: &[u8]) -> io::Result<File> {
-    if unsafe { libc::getuid() } != 0
-        || unsafe { libc::geteuid() } != 0
+    if rustix::process::getuid().as_raw() != 0
+        || rustix::process::geteuid().as_raw() != 0
         || bytes.is_empty()
         || bytes.len() > 4096
     {
@@ -133,8 +133,8 @@ impl HistoryReadPublisher {
     fn check_retirement_custody(&self) -> io::Result<()> {
         // Exact worker witness is checked by the held handoff before/after RPC.
         // Authority remains mandatory in check(), descriptors() and every arm.
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || !self.live.load(std::sync::atomic::Ordering::Acquire)
         {
             return Err(refused());
@@ -171,20 +171,6 @@ impl RetainedSourceWorker {
             live: self.source_live.clone(),
         });
         if result.check()? != before || self.check_current_custody()? != before {
-            return Err(refused());
-        }
-        Ok(result)
-    }
-    pub(in crate::setup) fn connect_history_read_handoff(
-        &self,
-        enrollment: Arc<RootHistoryReadEnrollment>,
-        subject: Arc<dyn WorkspaceHistoryReadSubjectBackend>,
-    ) -> io::Result<HistoryReadHandoff> {
-        let before = self.check_current_custody()?;
-        let result = self
-            .history_read_publisher()?
-            .connect_history_read_handoff(enrollment, subject)?;
-        if self.check_current_custody()? != before {
             return Err(refused());
         }
         Ok(result)

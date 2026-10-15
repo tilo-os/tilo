@@ -153,7 +153,7 @@ fn signed_entry(package_id: &str, tapp_url: &str, tapp: &[u8]) -> RegistryEntry 
     signed_entry_version(package_id, "1.4.0", tapp_url, tapp)
 }
 
-fn signed_entry_version(
+pub(crate) fn signed_entry_version(
     package_id: &str,
     version: &str,
     tapp_url: &str,

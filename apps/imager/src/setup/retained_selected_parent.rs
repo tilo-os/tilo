@@ -5,7 +5,6 @@ use super::super::{
     retained_selected_edit::{RootSelectedEditAdmission, RootSelectedEditor},
     retained_source_worker::RetainedSourceWorker,
 };
-pub(in crate::setup) use super::RetainedSelectedEditRelay;
 use super::{Consumer, Custody, HomeDirectory, InstalledRetainedLaunchInput, Source};
 use runtime_fs::directory_connection::{DirectoryConnection, ROOT_DIRECTORY};
 use runtime_fs::{
@@ -311,7 +310,7 @@ impl RootSelectedEditSource {
         if let Some(result) = &self.retirement {
             return result
                 .as_ref()
-                .map(|()| ())
+                .copied()
                 .map_err(|error| io::Error::other(error.clone()));
         }
         // Actual Reader cap/driver retirement must precede source revocation.
@@ -355,7 +354,7 @@ impl RootSelectedEditSource {
                 } else {
                     Err(super::refused())
                 });
-            self.retirement = Some(result.as_ref().map(|()| ()).map_err(ToString::to_string));
+            self.retirement = Some(result.as_ref().copied().map_err(ToString::to_string));
             self.worker.take();
             return result;
         }
@@ -739,13 +738,13 @@ impl SourceSelectedParent {
         proof: Arc<AcknowledgedSelectedReplacement>,
         continuity: Option<Arc<RootHistoryReadContinuity>>,
         finished: ObservedReplacementFinished,
-    ) -> Result<(), PendingHandoff> {
+    ) -> Result<(), Box<PendingHandoff>> {
         let scope = match self.scope.lock() {
             Ok(registered) => registered.as_ref().and_then(Weak::upgrade),
             Err(_) => None,
         };
         let Some(scope) = scope else {
-            return Err(handoff);
+            return Err(Box::new(handoff));
         };
         if proof.check_custody(self).is_err()
             || finished
@@ -753,15 +752,15 @@ impl SourceSelectedParent {
                 .is_err()
             || !Arc::ptr_eq(handoff.pending(), proof.pending().backend())
         {
-            return Err(handoff);
+            return Err(Box::new(handoff));
         }
         if let Some(read) = &continuity {
             if read.check_acknowledged(&proof, self).is_err() {
-                return Err(handoff);
+                return Err(Box::new(handoff));
             }
         }
         let Ok(mut owner) = scope.owner.lock() else {
-            return Err(handoff);
+            return Err(Box::new(handoff));
         };
         let operation = proof.observation().operation;
         if !Arc::ptr_eq(&scope.source, self)
@@ -776,7 +775,7 @@ impl SourceSelectedParent {
                 .iter()
                 .any(|entry| entry.proof.observation().operation == operation)
         {
-            return Err(handoff);
+            return Err(Box::new(handoff));
         }
         owner
             .completed_handoffs

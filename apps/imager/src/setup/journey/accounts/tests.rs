@@ -83,6 +83,7 @@ fn settle(accounts: &mut Accounts) {
 }
 
 #[test]
+#[cfg(unix)]
 fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     let dav_server = crate::setup::account_transfer::dav_readiness::test_server();
     let temp = tempfile::tempdir().unwrap();
@@ -1464,6 +1465,7 @@ fn selected_tilo_metadata_change_and_unavailable_custody_never_claim_connection(
 }
 
 #[test]
+#[cfg(unix)]
 fn saved_tilo_source_redirects_cannot_escape_the_consented_config_root() {
     use std::os::unix::fs::symlink;
     let source = tilo_source(true);
@@ -2067,7 +2069,7 @@ fn source_home_checkpoint_requires_current_acknowledged_operation_and_keeps_gene
                 migrate: Some(true),
                 categories: [true, true, true],
                 browser_domains: [true, true],
-                excluded_flatpak_apps: Default::default(),
+                excluded_flatpak_apps: std::collections::BTreeSet::default(),
                 device_label: "My computer".into(),
                 purpose: install_profile_model::default_purpose(),
             },

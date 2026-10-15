@@ -41,7 +41,7 @@ pub(super) fn matches(
         Err(error) => return Err(error),
     };
     // SAFETY: reads current process credentials only.
-    let owner = unsafe { libc::geteuid() };
+    let owner = rustix::process::geteuid().as_raw();
     if !metadata.is_file()
         || metadata.len() > MAX_BYTES
         || metadata.uid() != owner

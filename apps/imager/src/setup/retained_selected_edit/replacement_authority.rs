@@ -188,7 +188,7 @@ fn context_digest(
     Ok(digest)
 }
 fn seal(bytes: &[u8]) -> io::Result<File> {
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(refused());
     }
     let raw = unsafe {

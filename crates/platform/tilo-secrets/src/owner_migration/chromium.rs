@@ -35,12 +35,12 @@ impl ChromiumKey {
     /// Refuses a non-directory, foreign owner, or elevated caller.
     pub fn new(profile: &File, brand: ChromiumBrand) -> Result<Self, SecretError> {
         let facts = profile.metadata().map_err(|_| SecretError::Denied)?;
-        let owner = unsafe { libc::getuid() };
+        let owner = rustix::process::getuid().as_raw();
         if !facts.is_dir()
             || facts.uid() != owner
             || facts.mode() & 0o022 != 0
             || owner == 0
-            || unsafe { libc::geteuid() } != owner
+            || rustix::process::geteuid().as_raw() != owner
         {
             return Err(SecretError::Denied);
         }
@@ -61,8 +61,8 @@ impl ChromiumKey {
         if !facts.is_dir()
             || (facts.uid(), facts.dev(), facts.ino()) != self.identity
             || facts.mode() & 0o022 != 0
-            || unsafe { libc::getuid() } != self.identity.0
-            || unsafe { libc::geteuid() } != self.identity.0
+            || rustix::process::getuid().as_raw() != self.identity.0
+            || rustix::process::geteuid().as_raw() != self.identity.0
         {
             return Err(SecretError::Denied);
         }
@@ -78,7 +78,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let file = File::create(directory.path().join("not-profile")).unwrap();
         assert!(ChromiumKey::new(&file, ChromiumBrand::Chrome).is_err());
-        if unsafe { libc::getuid() } == 0 {
+        if rustix::process::getuid().as_raw() == 0 {
             assert!(
                 ChromiumKey::new(
                     &File::open(directory.path()).unwrap(),

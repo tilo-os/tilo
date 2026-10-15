@@ -1,3 +1,45 @@
+# Windows preparation never enrolls identities or signs into accounts.
+installer-windows-heading = Prepare on Windows
+installer-windows-intro = Review explicitly selected folders, preserve local data, then sign in from the live Tilo system. Cloud membership does not prove synchronization. Replacement of Windows is not authorized here. Exports are separate from boot media. The image writer erases its target; keep your backup on a different drive.
+installer-windows-find = Suggest locations
+installer-windows-source-title = Select one exact source folder
+installer-windows-grant = Review this folder
+installer-windows-choose-known-folder = Choose a personal folder
+installer-windows-choose-onedrive = Choose a OneDrive folder
+installer-windows-choose-outlook = Choose Outlook archives or local stores
+installer-windows-choose-steam = Choose Steam data
+installer-windows-choose-steam-library = Choose another Steam library
+installer-windows-choose-other = Choose another folder
+installer-windows-budget = Copy: { $copy }; retained at source: { $retain }; explicitly excluded: { $excluded }; unavailable locally: { $unavailable }
+installer-windows-incomplete = This inventory is incomplete. Unavailable, unsupported or unreadable data remains at source. Do not replace Windows based on this export.
+installer-windows-grant-library = Review the referenced library: { $path }
+installer-windows-category-summary = { $category }: { $count } entries — { $decision }
+installer-windows-exclude = Exclude with the stated reason
+installer-windows-exclusion-reason = Reason for excluding data
+installer-windows-hints-unavailable = Account suggestions could not be checked. Local folder review is unaffected; sign in manually in the live system.
+installer-windows-copy = Copy
+installer-windows-retain-original = Retain at source
+installer-windows-password = Password for private sign-in suggestions
+installer-windows-password-required = Use at least eight characters to encrypt suggestions for the live session.
+installer-windows-export-title = Select a backup destination, separate from the image target
+installer-windows-export = Export reviewed preparation
+installer-windows-checking = Checking only the independently selected locations…
+installer-windows-exporting = Copying and verifying selected local files…
+installer-windows-exported = Verified local copies and encrypted suggestions were exported. Keep this backup separate from the drive you erase in the image writer. Source data is unchanged; sign in later from live Tilo.
+installer-windows-export-failed = Export is incomplete. Verified output is retained. Keep the originals; this is not a replacement authorization.
+installer-windows-source-failed = This exact source could not be reviewed. Select it again.
+installer-windows-decision-failed = Review the source decision. Exclusion requires an explicit reason.
+installer-windows-media = Open the verified USB image writer
+installer-windows-category-personal-files = Personal files
+installer-windows-category-sync-data = Sync folder data (sync unverified)
+installer-windows-category-mail-archive = Mail archives
+installer-windows-category-mail-cache-or-drafts = Local mail stores and drafts
+installer-windows-category-steam-userdata = Steam user data
+installer-windows-category-game-save = Game saves
+installer-windows-category-game-mod = Mods and workshop data
+installer-windows-category-game-installation = Game installations (may contain local changes)
+installer-windows-category-potentially-unique = Other potentially unique data
+
 # Image write review. The remaining image contents are written unchanged.
 imager-review-setup-hostname = Written with hostname { $hostname }, then verified
 
@@ -617,9 +659,29 @@ installer-preview-storage-temporary = Temporary installer space
 
 installer-preview-storage-shrink = Your current system’s partition will be resized. Its files stay in place.
 
-installer-preview-storage-shortfall = This installation needs { $needed }; { $available } is available.
+installer-preview-storage-shortfall = This installation needs { $needed }; { $available } is available. Keep the original files and system intact. Choose a smaller Tilo size if offered, or use a USB installer with another destination disk. If you move files to existing external storage first, independently verify the copy before freeing space. You can exit now without installing.
 
 installer-preview-storage-unreadable = This disk cannot be prepared from your current system. You can use a USB installer instead.
+installer-recovery-heading = Copy to a recovery folder
+installer-recovery-native-unavailable = Verified resumable recovery copying is unavailable on this host: native directory-entry durability has not been qualified. Keep the original and use the ordinary installation media path; no backup or cloud recovery is assumed.
+installer-recovery-retain-source = The original remains authoritative. Remote and cloud placeholders are unverified. A verified copy does not authorize replacing Windows or freeing source space.
+installer-recovery-choose-directory = Choose recovery folder
+installer-recovery-copy = Copy and verify
+installer-recovery-retry = Retry and reverify
+installer-recovery-cancel = Stop copying
+installer-recovery-not-independent = This folder is not proven to be on independent physical storage. Another partition on the same disk is not an independent backup.
+installer-recovery-state-not-selected = Choose an explicit destination folder to review its capacity and durability.
+installer-recovery-state-reviewed = Destination reviewed. No data has been copied yet.
+installer-recovery-state-copying = Copying and verifying. Keep both storage devices connected.
+installer-recovery-state-verified = Local copy verified. Keep the original until installation and recovery requirements are satisfied.
+installer-recovery-state-cancelled = Copy stopped. Verified partial output is retained for retry.
+installer-recovery-state-incomplete = Some data could not be verified. The original must remain.
+installer-recovery-state-interrupted = Copy interrupted. Retry to recheck source identity and verified receipts.
+installer-recovery-source-required = Select an exact Windows source folder first.
+installer-recovery-review-failed = Recovery destination could not be reviewed. Select a writable private folder with sufficient space and supported durable storage.
+installer-recovery-copy-failed = Recovery could not start. Review the destination or retry the interrupted copy.
+installer-recovery-copy-required = Finish and verify the selected recovery copy before continuing.
+installer-recovery-write-guard = Recovery data cannot be proven outside the installation write ranges. Keep the original and choose another destination.
 
 installer-preview-storage-release-blocked = Direct installation is not available in this build. You can install from USB instead.
 

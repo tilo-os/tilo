@@ -146,7 +146,7 @@ pub(in crate::setup) fn run_owned_applications_disposable(
     run_owned(cancel, true)
 }
 fn run_owned(cancel: &AtomicBool, receiving: bool) -> io::Result<QualifiedOriginalConsumer> {
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(failure(
             "Original consumer qualification requires the installed root controller",
         ));
@@ -263,7 +263,7 @@ mod tests {
         file.try_clone().unwrap().write_all(SOURCE_MARKER).unwrap();
         assert_eq!(
             exact_marker(&file, SOURCE_MARKER).is_ok(),
-            unsafe { libc::geteuid() } == 0,
+            rustix::process::geteuid().as_raw() == 0,
             "Only the actual root-owned correctly shaped file is accepted"
         );
         let mut different = SOURCE_MARKER.to_vec();

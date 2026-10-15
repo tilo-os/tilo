@@ -91,7 +91,7 @@ fn optional_directory(path: &Path) -> io::Result<Option<Arc<PinnedDirectory>>> {
         Ok(pin) => {
             pin.validate()?;
             // Source access belongs to the original account, never root fallback.
-            if pin.file.metadata()?.uid() != unsafe { libc::geteuid() } {
+            if pin.file.metadata()?.uid() != rustix::process::geteuid().as_raw() {
                 return Err(io::ErrorKind::PermissionDenied.into());
             }
             Ok(Some(pin))
@@ -127,7 +127,7 @@ fn optional_override(path: &Path) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
     let file = cap_primitives::fs::open(&parent.file, Path::new(name), &options)?;
     let before = file.metadata()?;
     if !before.is_file()
-        || before.uid() != unsafe { libc::geteuid() }
+        || before.uid() != rustix::process::geteuid().as_raw()
         || before.mode() & 0o7022 != 0
         || before.len() > OVERRIDE_LIMIT
     {
@@ -227,6 +227,10 @@ impl SelectedState {
             bytes,
         })
     }
+    #[cfg(any(
+        feature = "capture-worker",
+        all(test, feature = "native-capture-qualification")
+    ))]
     pub(super) fn entry_bound(&self) -> io::Result<usize> {
         self.apps.iter().try_fold(2usize, |total, app| {
             total

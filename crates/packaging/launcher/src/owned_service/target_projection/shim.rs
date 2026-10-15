@@ -1,6 +1,11 @@
 //! Signed shim's transient root phase. Any error is fatal to that canonical
-//! service; NamespaceOwner retains the child until actual namespace teardown.
-use super::*;
+//! service; `NamespaceOwner` retains the child until actual namespace teardown.
+use super::{
+    AsRawFd, FUSE_FD, File, FromRawFd, FuseIdentity, MetadataExt, OpenOptionsExt, OsString,
+    OsStringExt, OwnedFd, READY_FD, Read, Record, TOKEN_FD, TargetProjectionMode, UnixStream,
+    delayed_filter, duplicate, io, mount_id, namespaces, receive_record, refused, root, seal,
+    validate_ids,
+};
 use runtime_portal::process_binding;
 use std::ffi::CString;
 use std::os::fd::AsFd;
@@ -74,15 +79,19 @@ fn held_inode(file: &File) -> io::Result<u64> {
 impl RootTargetBootstrap {
     /// Exact fixed descriptor admission, before mandatory Landlock. The caller
     /// is the independently verified canonical native shim, never an app mode.
+    ///
+    /// # Errors
+    /// Fails if root credentials, the sealed bootstrap, namespace separation, inherited FUSE identity, or baseline filter custody cannot be verified.
     pub fn prepare() -> io::Result<Self> {
         root()?;
         let record = receive_record(&duplicate(TOKEN_FD)?)?;
         record.validate(false)?;
         let actual = namespaces()?;
         if actual.last() != record.namespaces.last()
-            || actual[..5]
+            || actual
                 .iter()
-                .zip(&record.namespaces[..5])
+                .take(5)
+                .zip(record.namespaces.iter().take(5))
                 .any(|(a, b)| a == b)
         {
             return Err(refused("Target bootstrap namespace closure differs"));
@@ -103,6 +112,9 @@ impl RootTargetBootstrap {
     }
     /// Root kernel mount into root-private canonical namespace. No fuser
     /// Session is created as root: its Owner ACL must snapshot the target UID.
+    ///
+    /// # Errors
+    /// Fails if private placement, mounting, receipt publication, descriptor handoff, or baseline filter installation fails. After mounting, the namespace owner must reclaim the namespace on failure.
     pub fn mount_and_publish(mut self) -> io::Result<MountedTargetBootstrap> {
         root()?;
         let parent = private_parent()?;
@@ -162,7 +174,11 @@ impl RootTargetBootstrap {
             .into_iter()
             .enumerate()
         {
-            runtime_portal::fd_transport::send_with_fd(self.ready.as_fd(), &[index as u8], fd)?;
+            runtime_portal::fd_transport::send_with_fd(
+                self.ready.as_fd(),
+                &[u8::try_from(index).map_err(io::Error::other)?],
+                fd,
+            )?;
             let mut ack = [0];
             self.ready.read_exact(&mut ack)?;
             if ack != [1] {
@@ -213,6 +229,9 @@ impl MountedTargetBootstrap {
     }
     /// Called exclusively after the canonical mandatory Landlock succeeds.
     /// It cannot recreate transient mount privilege or admit source groups.
+    ///
+    /// # Errors
+    /// Fails if the held read view has not been confined or authenticated credential dropping fails.
     pub fn drop_after_confinement(self) -> io::Result<()> {
         if self.readonly_view.is_some() {
             return Err(refused("Target worker missing held read confinement"));
@@ -286,6 +305,9 @@ pub struct TargetFuseReady {
     record: Record,
 }
 impl AdmittedTargetFuse {
+    ///
+    /// # Errors
+    /// Fails if the sealed record, dropped credentials, namespaces, or inherited FUSE descriptor cannot be authenticated.
     pub fn receive() -> io::Result<Self> {
         let record = receive_record(&duplicate(TOKEN_FD)?)?;
         record.validate(true)?;
@@ -323,9 +345,12 @@ impl AdmittedTargetFuse {
     }
 }
 impl TargetFuseReady {
-    /// Call only after actual Session::from_fd handshake. Root observes this
+    /// Call only after actual `Session::from_fd` handshake. Root observes this
     /// exact target task, not an app-authored readiness label, then checks the
     /// held kernel endpoint with the connected source relay serving requests.
+    ///
+    /// # Errors
+    /// Fails if worker identity or namespace validation, the readiness handshake, or an observation exchange fails.
     pub fn serve_observations(mut self) -> io::Result<()> {
         verify_dropped(self.record.uid, self.record.gid)?;
         if namespaces()? != self.record.namespaces {
@@ -336,30 +361,12 @@ impl TargetFuseReady {
             &mut self.stream,
             &cancellation,
             std::time::Duration::from_secs(10),
-            |stream| process_binding::complete(stream),
+            process_binding::complete,
         )?;
         super::observation::serve(self.stream, &self.record)
     }
 }
 pub(super) fn verify_dropped(uid: u32, gid: u32) -> io::Result<()> {
-    validate_ids(uid, gid)?;
-    let (mut r, mut e, mut s) = (0, 0, 0);
-    if unsafe { libc::getresuid(&raw mut r, &raw mut e, &raw mut s) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if (r, e, s) != (uid, uid, uid) || unsafe { libc::setfsuid(u32::MAX) } as u32 != uid {
-        return Err(refused("Target worker UID differs"));
-    }
-    if unsafe { libc::getresgid(&raw mut r, &raw mut e, &raw mut s) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if (r, e, s) != (gid, gid, gid)
-        || unsafe { libc::setfsgid(u32::MAX) } as u32 != gid
-        || unsafe { libc::getgroups(0, std::ptr::null_mut()) } != 0
-        || unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) } != 1
-    {
-        return Err(refused("Target worker GID/groups/confinement differ"));
-    }
     #[repr(C)]
     struct Header {
         version: u32,
@@ -371,6 +378,26 @@ pub(super) fn verify_dropped(uid: u32, gid: u32) -> io::Result<()> {
         effective: u32,
         permitted: u32,
         inheritable: u32,
+    }
+    validate_ids(uid, gid)?;
+    let (mut r, mut e, mut s) = (0, 0, 0);
+    if unsafe { libc::getresuid(&raw mut r, &raw mut e, &raw mut s) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if (r, e, s) != (uid, uid, uid)
+        || u32::from_ne_bytes(unsafe { libc::setfsuid(u32::MAX) }.to_ne_bytes()) != uid
+    {
+        return Err(refused("Target worker UID differs"));
+    }
+    if unsafe { libc::getresgid(&raw mut r, &raw mut e, &raw mut s) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if (r, e, s) != (gid, gid, gid)
+        || u32::from_ne_bytes(unsafe { libc::setfsgid(u32::MAX) }.to_ne_bytes()) != gid
+        || unsafe { libc::getgroups(0, std::ptr::null_mut()) } != 0
+        || unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) } != 1
+    {
+        return Err(refused("Target worker GID/groups/confinement differ"));
     }
     let header = Header {
         version: 0x2008_0522,
@@ -403,8 +430,8 @@ mod held_read_view_tests {
     use super::*;
     #[test]
     fn actual_held_rule_view_survives_path_replacement_and_refuses_unrelated_fd() {
-        let mut nonce = [0; 16];
         use getrandom::rand_core::TryRng as _;
+        let mut nonce = [0; 16];
         getrandom::SysRng.try_fill_bytes(&mut nonce).unwrap();
         let path = std::env::temp_dir().join(format!(
             "tilo-held-read-{}-{}",

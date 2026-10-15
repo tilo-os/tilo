@@ -1,5 +1,8 @@
 //! Exact managed consuming namespace placement; wire facts never grant source access.
-use super::*;
+use super::{
+    Arc, BASE, ExecutingPeer, ExposurePreparation, File, NamespaceWitness, OwnedFd, Read, identity,
+    io, kernel_stopped, mount_id, namespace, refused,
+};
 use crate::ordinary_child::{ManagedConsumingBootstrap, exposure_control::PlacementRecord};
 use std::sync::Mutex;
 
@@ -79,6 +82,7 @@ impl RemotePlacement {
             return Err(refused("Remote exposure namespace changed"));
         }
         let rows = mounts(owner.mountinfo()?)?;
+        drop(owner);
         let clone = rows
             .iter()
             .find(|row| row.id == self.record.clone_mount_id)
@@ -105,10 +109,12 @@ impl RemotePlacement {
     }
     pub(super) fn file(&self) -> io::Result<&File> {
         self.check()?;
-        self.view.as_ref().ok_or(io::ErrorKind::NotConnected.into())
+        self.view
+            .as_ref()
+            .ok_or_else(|| io::ErrorKind::NotConnected.into())
     }
     pub(super) fn adopt_consumer(
-        &mut self,
+        &self,
         witness: &NamespaceWitness,
         peer: &ExecutingPeer,
     ) -> io::Result<()> {
@@ -142,6 +148,7 @@ impl RemotePlacement {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         let rows = mounts(owner.mountinfo()?)?;
+        drop(owner);
         let stage = format!("{BASE}/{}", hex::encode(self.record.nonce));
         if rows.iter().any(|row| {
             row.id == self.record.clone_mount_id
@@ -184,20 +191,25 @@ fn mounts(file: File) -> io::Result<Vec<Row>> {
             .iter()
             .position(|v| *v == b"-")
             .ok_or_else(|| refused("Remote mount row separator missing"))?;
-        if split < 6 || f.len() != split + 4 {
+        if split < 6 || split.checked_add(4) != Some(f.len()) {
             return Err(refused("Remote mount row malformed"));
         }
-        let id = number(f[0])?;
-        let parent = number(f[1])?;
+        let [mount, parent, _, _, path, options, ..] = f.as_slice() else {
+            return Err(refused("Remote mount row malformed"));
+        };
+        let id = number(mount)?;
+        let parent = number(parent)?;
         if id == 0 || result.iter().any(|r: &Row| r.id == id) {
             return Err(refused("Remote mount ID duplicate"));
         }
-        let options: Vec<_> = f[5].split(|b| *b == b',').collect();
+        let options: Vec<_> = options.split(|b| *b == b',').collect();
         result.push(Row {
             id,
             parent,
-            path: f[4].to_vec(),
-            private: !f[6..split]
+            path: path.to_vec(),
+            private: !f
+                .get(6..split)
+                .ok_or_else(|| refused("Remote mount row malformed"))?
                 .iter()
                 .any(|v| v.starts_with(b"shared:") || v.starts_with(b"master:")),
             restricted: [b"nodev".as_slice(), b"nosuid", b"noexec"]
@@ -212,7 +224,10 @@ fn mounts(file: File) -> io::Result<Vec<Row>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Seek, Write};
+    use std::{
+        io::{Seek, Write},
+        os::fd::FromRawFd,
+    };
     fn table(bytes: &[u8]) -> File {
         let raw =
             unsafe { libc::memfd_create(c"exposure-mount-table-test".as_ptr(), libc::MFD_CLOEXEC) };

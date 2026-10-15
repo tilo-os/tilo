@@ -49,7 +49,7 @@ fn run_native(
     arguments: &[String],
     cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<String, String> {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     if super::super::journey::main_story_tests::fixture_mount_root()
         .is_some_and(|root| home == root.join("home"))
         && matches!(
@@ -70,7 +70,7 @@ fn run_native(
         pinned.validate().map_err(|error| error.to_string())?;
         let metadata = pinned.file.metadata().map_err(|error| error.to_string())?;
         // SAFETY: geteuid has no preconditions.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         if uid == 0 || metadata.uid() != uid || metadata.mode() & 0o022 != 0 {
             return Err(
                 "Flatpak migration must run as the owner of a private home directory".into(),
@@ -224,7 +224,7 @@ fn verify_repository(
             .map_err(|error| error.to_string())?;
         let metadata = pin.file.metadata().map_err(|error| error.to_string())?;
         // SAFETY: geteuid has no preconditions.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         if uid == 0 || metadata.uid() != uid || metadata.mode() & 0o022 != 0 {
             return Err("Repository verification requires the owner of a private home".into());
         }

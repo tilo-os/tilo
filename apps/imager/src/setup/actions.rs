@@ -969,6 +969,40 @@ fn yes_no(value: bool) -> &'static str {
     if value { "Yes" } else { "No" }
 }
 
+/// A delivery retry writes the prepared account capsule, so it is distinct
+/// from the read-only native package recheck.
+pub(super) fn desktop_preparation_row(retry: bool) -> LiveRow {
+    LiveRow::new(
+        "imager.setup.desktop-preparation",
+        "imager.setup.desktop-preparation",
+        super::strings::t("installer-desktop-resource"),
+    )
+    .operation(gated(
+        bound(
+            &SetupEffect::RetryDesktop,
+            super::strings::t("installer-desktop-retry"),
+        ),
+        retry,
+        "desktop_preparation_unavailable",
+        &super::strings::t("installer-desktop-unavailable"),
+    ))
+}
+
+pub(super) fn desktop_preparation_status(retry: bool) -> EffectStatus {
+    if retry {
+        EffectStatus::labelled(
+            SetupEffect::RETRY_DESKTOP,
+            super::strings::t("installer-desktop-retry"),
+        )
+    } else {
+        EffectStatus::unavailable(
+            SetupEffect::RETRY_DESKTOP,
+            "desktop_preparation_unavailable",
+            super::strings::t("installer-desktop-unavailable"),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1222,39 +1256,5 @@ mod tests {
                 .iter()
                 .all(|action| action.kind == OperationKind::Effect)
         );
-    }
-}
-
-/// A delivery retry writes the prepared account capsule, so it is distinct
-/// from the read-only native package recheck.
-pub(super) fn desktop_preparation_row(retry: bool) -> LiveRow {
-    LiveRow::new(
-        "imager.setup.desktop-preparation",
-        "imager.setup.desktop-preparation",
-        super::strings::t("installer-desktop-resource"),
-    )
-    .operation(gated(
-        bound(
-            &SetupEffect::RetryDesktop,
-            super::strings::t("installer-desktop-retry"),
-        ),
-        retry,
-        "desktop_preparation_unavailable",
-        &super::strings::t("installer-desktop-unavailable"),
-    ))
-}
-
-pub(super) fn desktop_preparation_status(retry: bool) -> EffectStatus {
-    if retry {
-        EffectStatus::labelled(
-            SetupEffect::RETRY_DESKTOP,
-            super::strings::t("installer-desktop-retry"),
-        )
-    } else {
-        EffectStatus::unavailable(
-            SetupEffect::RETRY_DESKTOP,
-            "desktop_preparation_unavailable",
-            super::strings::t("installer-desktop-unavailable"),
-        )
     }
 }

@@ -468,6 +468,10 @@ impl Drop for BootstrapFence {
     }
 }
 
+pub(super) fn run_original_copy(arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
+    original_copy::run(arguments)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,7 +531,7 @@ mod tests {
                 "changed {field}"
             );
         }
-        let mut altered = bytes.clone();
+        let mut altered = bytes;
         altered.push(b' ');
         assert!(challenge(&altered, &binding, [1; 32]).is_err());
         assert!(challenge(&vec![b'a'; 64 * 1024 + 1], &binding, [1; 32]).is_err());
@@ -605,8 +609,4 @@ mod tests {
         assert_eq!(receiver.read(&mut [0]).unwrap(), 0);
         drop(fence);
     }
-}
-
-pub(super) fn run_original_copy(arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
-    original_copy::run(arguments)
 }

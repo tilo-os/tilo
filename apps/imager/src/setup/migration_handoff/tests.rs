@@ -287,7 +287,7 @@ fn protected_inventory_codec_refuses_shape_operation_and_content_substitutions()
 
     // Whitespace-altered bytes with an updated length/hash still refuse:
     // canonical inventory custody cannot ambiguously authenticate two encodings.
-    let mut padded = bytes.clone();
+    let mut padded = bytes;
     padded.push(b'\n');
     let mut changed = wire;
     changed["flatpak_inventory"]["len"] = serde_json::json!(padded.len());
@@ -322,7 +322,7 @@ fn protected_inventory_codec_preserves_ordinary_64k_plan_limit_without_truncatio
     let parsed = crate::setup::flatpak_transfer::HandoffInventory::parse(&bytes).unwrap();
     assert_eq!(
         serde_json::to_value(parsed).unwrap(),
-        inline.flatpak_inventory.clone().unwrap(),
+        inline.flatpak_inventory.unwrap(),
         "every source and public record survives normalization"
     );
     let compact_wire = compact.bytes().unwrap();

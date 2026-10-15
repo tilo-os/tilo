@@ -381,6 +381,9 @@ def call(command: list[str], log: Path, cwd: Path, env: dict[str, str] | None = 
 
 
 def run_hosting(ctx: RunContext) -> list[record.Record]:
+    # Historical refs predate this gate; every side that has it must pass it.
+    if "keystroke_writes" in ctx.bins:
+        call([ctx.bins["keystroke_writes"]], ctx.dir / "keystroke-writes.log", ctx.repo)
     # Both sides need a bench that knows --relay-cpus; an older one refuses it.
     cpus = ["--relay-cpus", str(ctx.options.hosting_relay_cpus)] if ctx.options.hosting_relay_cpus else []
     call([ctx.bins["relay_load"], "--collaborators", "100", "--minutes", str(ctx.options.hosting_minutes),
@@ -425,15 +428,22 @@ def run_render(ctx: RunContext) -> list[record.Record]:
     return measured
 
 
-IDLE_WAKEUPS_TEST = "idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget"
-
-
 def run_wakeups(ctx: RunContext) -> list[record.Record]:
     log = ctx.dir / "idle.log"
-    # A run over the wakeup budget fails the test but still measured: the
-    # adapter fails only when the run printed no measurement.
-    call(["bash", ctx.repo / "tools/test-env.sh", ctx.bins["it"], IDLE_WAKEUPS_TEST, "--exact", "--nocapture"],
-         log, ctx.cwd["it"], {"TILO_IDLE_WAKEUP_WINDOW_SECS": str(ctx.options.wakeups_window)}, check=False)
+    # A run over budget still produces evidence for A/B comparison, just as
+    # in the other groups. The scheduled lane also enforces the executable's exit.
+    if "idle-wakeups" in ctx.bins:
+        command = [ctx.bins["idle-wakeups"]]
+        cwd = ctx.repo
+    else:
+        # Historical refs kept the same measurement in the integration suite.
+        command = [ctx.bins["it"],
+                   "idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget",
+                   "--exact", "--nocapture"]
+        cwd = ctx.cwd["it"]
+    call(["bash", ctx.repo / "tools/test-env.sh", *command],
+         log, cwd, {"TILO_IDLE_WAKEUP_WINDOW_SECS": str(ctx.options.wakeups_window),
+                    "TILO_IDLE_SHELL_BIN": str(ctx.bins["shell"])}, check=False)
     return adapters.idle_wakeups([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
@@ -490,7 +500,11 @@ BROWSER_BUILD = ("bash", "-c",
 GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("hosting", "release", "none",
           (("cargo", "build", "--locked", "--release", "-p", "tilo-relay", "--example", "relay_load"),),
-          {"relay_load": "target/release/examples/relay_load"}, {}, {}, run_hosting),
+          {"relay_load": "target/release/examples/relay_load"}, {}, {}, run_hosting,
+          {"keystroke_writes": ("crates/hosting/tilo-relay/examples/keystroke_writes.rs",
+                                ("cargo", "build", "--locked", "-p", "tilo-relay", "--example",
+                                 "keystroke_writes"),
+                                "target/debug/examples/keystroke_writes")}),
     Group("latency", "dev", "lavapipe",
           (("cargo", "build", "--locked", "-p", "shell", "--bin", "shell"),),
           {"shell": "target/debug/shell"}, {}, {}, run_latency),
@@ -512,10 +526,12 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
                              ("cargo", "build", "--locked", "--release", "-p", "notes", "--example",
                               "notes-latency"),
                              "target/release/examples/notes-latency")}),
-    Group("wakeups", "dev", "lavapipe", (),
-          {"shell": "target/debug/shell"},
-          {"it": (("cargo", "test", "--locked", "-p", "shell", "--test", "it", "--no-run"), "it")},
-          {"shell": "target/debug/shell"}, run_wakeups),
+    Group("wakeups", "dev", "lavapipe",
+          (("cargo", "build", "--locked", "-p", "shell", "--example", "idle-wakeups",
+            "--features", "scheduled-idle-benchmark"),
+           ("cargo", "build", "--locked", "-p", "shell", "--bin", "shell")),
+          {"shell": "target/debug/shell", "idle-wakeups": "target/debug/examples/idle-wakeups"},
+          {}, {"shell": "target/debug/shell"}, run_wakeups),
     Group("fs", "dev", "none", (),
           {}, {"performance_gate": (("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate",
                                      "--no-run"), "performance_gate")},
@@ -557,11 +573,22 @@ def test_executable(command: tuple[str, ...], target: str, repo: Path, log: Path
     return found[0]
 
 
+def side_group(group: Group, repo: Path) -> Group:
+    """Keep A/B comparisons with refs before the idle executable migration usable."""
+    if group.name != "wakeups" or (repo / "crates/session/shell/examples/idle-wakeups.rs").is_file():
+        return group
+    return dataclasses.replace(
+        group, builds=(("cargo", "build", "--locked", "-p", "shell", "--bin", "shell"),),
+        binaries={"shell": "target/debug/shell"},
+        tests={"it": (("cargo", "test", "--locked", "-p", "shell", "--test", "it", "--no-run"), "it")})
+
+
 def build_side(groups: list[Group], side: str, commit: str, repo: Path, out: Path) -> dict[str, Any]:
     """Check out `commit`, build every group and keep its artifacts."""
     git(repo, "checkout", "--quiet", "--detach", commit)
     manifest: dict[str, Any] = {}
-    for group in groups:
+    for selected in groups:
+        group = side_group(selected, repo)
         directory = out / "bin" / side / group.name
         directory.mkdir(parents=True, exist_ok=True)
         log = out / "logs" / f"build-{side}-{group.name}.log"

@@ -11,13 +11,48 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct Incarnation {
     pub(super) pid: u32,
     start: u64,
     uid: u32,
     boot: [u8; 16],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IncarnationWire {
+    pid: u32,
+    start: u64,
+    uid: u32,
+    boot: [u8; 16],
+}
+
+impl<'de> Deserialize<'de> for Incarnation {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::try_from(IncarnationWire::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl TryFrom<IncarnationWire> for Incarnation {
+    type Error = io::Error;
+    fn try_from(wire: IncarnationWire) -> io::Result<Self> {
+        let value = Self {
+            pid: wire.pid,
+            start: wire.start,
+            uid: wire.uid,
+            boot: wire.boot,
+        };
+        if value.pid <= 1
+            || value.pid > i32::MAX as u32
+            || value.start == 0
+            || value.boot == [0; 16]
+        {
+            return Err(failure("invalid process incarnation"));
+        }
+        Ok(value)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +66,28 @@ pub(super) struct Custody {
     pub(super) launch_acknowledged: bool,
     #[serde(default)]
     pub(super) inventory_scratch: Option<super::store::ScratchReceipt>,
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_process_incarnations() {
+        let valid = serde_json::json!({"pid": 2, "start": 1, "uid": 1000, "boot": vec![1; 16]});
+        let parsed: Incarnation = serde_json::from_value(valid.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), valid);
+        for (field, invalid) in [
+            ("pid", serde_json::json!(1)),
+            ("pid", serde_json::json!(u32::MAX)),
+            ("start", serde_json::json!(0)),
+            ("boot", serde_json::json!(vec![0; 16])),
+        ] {
+            let mut wire = valid.clone();
+            wire[field] = invalid;
+            assert!(serde_json::from_value::<Incarnation>(wire).is_err());
+        }
+    }
 }
 
 impl Incarnation {
@@ -297,60 +354,6 @@ fn boot_id() -> io::Result<[u8; 16]> {
         .as_bytes())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    struct Owned(std::process::Child);
-    impl Drop for Owned {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-
-    #[test]
-    fn foreign_boot_custody_never_signals_a_matching_live_pid() {
-        let mut child = Owned(
-            std::process::Command::new("sleep")
-                .arg("30")
-                .spawn()
-                .unwrap(),
-        );
-        let uid = unsafe { libc::getuid() };
-        let mut host = Incarnation::capture(child.0.id(), uid).unwrap();
-        assert!(host.open_current().unwrap().is_some());
-        host.boot[0] ^= 1;
-        let custody = Custody {
-            host,
-            projection: None,
-            launch_acknowledged: true,
-            inventory_scratch: None,
-            namespace: Some(Namespace {
-                init_pid: host.pid,
-                start_ticks: host.start,
-                namespace_dev: 0,
-                namespace_ino: 0,
-            }),
-        };
-        custody.stop_and_observe().unwrap();
-        assert!(child.0.try_wait().unwrap().is_none());
-    }
-
-    #[test]
-    fn a_reused_start_value_does_not_pin_the_live_process() {
-        let mut child = Owned(
-            std::process::Command::new("sleep")
-                .arg("30")
-                .spawn()
-                .unwrap(),
-        );
-        let mut identity = Incarnation::capture(child.0.id(), unsafe { libc::getuid() }).unwrap();
-        identity.start = identity.start.wrapping_add(1);
-        assert!(identity.open_current().unwrap().is_none());
-        assert!(child.0.try_wait().unwrap().is_none());
-    }
-}
-
 fn exited(fd: &File) -> io::Result<bool> {
     let mut poll = libc::pollfd {
         fd: fd.as_raw_fd(),
@@ -388,4 +391,59 @@ fn terminate(fd: &File) -> io::Result<()> {
         std::thread::sleep(Duration::from_millis(10));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Owned(std::process::Child);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn foreign_boot_custody_never_signals_a_matching_live_pid() {
+        let mut child = Owned(
+            std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        );
+        let uid = rustix::process::getuid().as_raw();
+        let mut host = Incarnation::capture(child.0.id(), uid).unwrap();
+        assert!(host.open_current().unwrap().is_some());
+        host.boot[0] ^= 1;
+        let custody = Custody {
+            host,
+            projection: None,
+            launch_acknowledged: true,
+            inventory_scratch: None,
+            namespace: Some(Namespace {
+                init_pid: host.pid,
+                start_ticks: host.start,
+                namespace_dev: 0,
+                namespace_ino: 0,
+            }),
+        };
+        custody.stop_and_observe().unwrap();
+        assert!(child.0.try_wait().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_reused_start_value_does_not_pin_the_live_process() {
+        let mut child = Owned(
+            std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        );
+        let mut identity =
+            Incarnation::capture(child.0.id(), rustix::process::getuid().as_raw()).unwrap();
+        identity.start = identity.start.wrapping_add(1);
+        assert!(identity.open_current().unwrap().is_none());
+        assert!(child.0.try_wait().unwrap().is_none());
+    }
 }

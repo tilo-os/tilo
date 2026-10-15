@@ -24,7 +24,7 @@ fn denied() -> SourceError {
     SourceError::UnsupportedEncryption
 }
 fn safe(facts: &std::fs::Metadata) -> bool {
-    let owner = unsafe { libc::getuid() };
+    let owner = rustix::process::getuid().as_raw();
     (facts.uid() == 0 || facts.uid() == owner)
         && (facts.mode() & 0o022 == 0
             || facts.is_dir() && facts.uid() == 0 && facts.mode() & 0o1000 != 0)
@@ -96,7 +96,7 @@ impl PublicFile {
                 libc::fstatat(
                     edge.parent.as_raw_fd(),
                     edge.name.as_ptr(),
-                    &mut actual,
+                    &raw mut actual,
                     libc::AT_SYMLINK_NOFOLLOW,
                 )
             } != 0
@@ -295,7 +295,7 @@ mod native_locator {
         let marker = PublicFile::open(Path::new("/run/tilo-native-chromium-qualification"))
             .expect("explicit isolated native fixture required");
         assert_eq!(marker.file.metadata().unwrap().uid(), 0);
-        assert_ne!(unsafe { libc::getuid() }, 0);
+        assert_ne!(rustix::process::getuid().as_raw(), 0);
         let native = native().expect("exact pinned public package mounted at fixed native root");
         native.validate().unwrap();
         // Native snap retains stale ASAR module metadata; documented Flatpak

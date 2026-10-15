@@ -130,7 +130,16 @@ pub fn expectation(value: &Value, kind: &str) -> Result<()> {
     }
     let plain_limit = number(limits, "plaintext_bytes")?;
     // Wider arithmetic preserves Python's unbounded intermediate calculations.
-    let bound = u128::from(plain_limit) + 2048 + u128::from(plain_limit).div_ceil(1048576) * 256;
+    let bound = u128::from(plain_limit)
+        .checked_add(2048)
+        .and_then(|n| {
+            n.checked_add(
+                u128::from(plain_limit)
+                    .div_ceil(1_048_576)
+                    .checked_mul(256)?,
+            )
+        })
+        .ok_or_else(|| invalid("portable Home receipt bound overflows"))?;
     let sealed = number(value, "sealed_bytes")?;
     let entries_limit = number(limits, "entries")?;
     require(
@@ -265,7 +274,7 @@ pub fn shared_apps(value: &Value) -> Result<bool> {
             .and_then(Value::as_bool)
             == Some(true);
     require(
-        !absent(value, "computer_apps_scope") == required,
+        absent(value, "computer_apps_scope") != required,
         "Computer applications scope is missing or unexpected",
     )?;
     if !required {
@@ -372,15 +381,22 @@ fn reported_resize(value: &Value) -> Result<()> {
     let first = number(volume, "first_lba")?;
     let last = number(volume, "last_lba")?;
     let sector = number(volume, "sector_bytes")?;
+    let extent_bytes = u128::from(last)
+        .checked_sub(u128::from(first))
+        .and_then(|n| n.checked_add(1))
+        .and_then(|n| n.checked_mul(u128::from(sector)));
     require(
-        (512..=65536).contains(&sector)
-            && sector.is_power_of_two()
+        (512..=65536).contains(&sector),
+        "reported resize sector size is out of bounds",
+    )?;
+    require(
+        sector.is_power_of_two()
             && last >= first
             && last == new_last
             && to > 0
             && to < from
             && to % (1 << 20) == 0
-            && (u128::from(last) - u128::from(first) + 1) * u128::from(sector) == u128::from(to)
+            && extent_bytes == Some(u128::from(to))
             && volume.get("filesystem").and_then(Value::as_str) == Some("btrfs")
             && text(volume, "filesystem_uuid")?.to_lowercase() == text(resize, "filesystem_uuid")?
             && text(volume, "partition_guid")?.to_lowercase() == text(resize, "partition_guid")?,

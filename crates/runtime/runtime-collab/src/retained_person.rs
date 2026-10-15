@@ -414,8 +414,7 @@ impl SignedRetainedPersonProof {
 // Kernel identity is observed independently of deserialized proof claims.
 #[cfg(all(target_os = "linux", feature = "client"))]
 fn effective_uid() -> libc::uid_t {
-    // SAFETY: geteuid takes no pointers and has no caller preconditions.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 
 #[cfg(all(test, target_os = "linux", feature = "native-retained-qualification"))]

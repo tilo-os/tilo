@@ -46,8 +46,7 @@ impl Namespace {
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(app_dir)?;
         let metadata = parent.metadata()?;
-        // SAFETY: geteuid has no pointers or side effects.
-        let owner = unsafe { libc::geteuid() };
+        let owner = rustix::process::geteuid().as_raw();
         if metadata.uid() != owner || metadata.mode() & 0o022 != 0 {
             return Err(io::Error::other(
                 "console app directory is not owner controlled",

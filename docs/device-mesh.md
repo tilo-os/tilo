@@ -82,9 +82,41 @@ signed-package launcher; the relay never accepts a command, host path,
 environment, or bearer secret from a requester. A worker advertises only after
 its package catalogue, launcher, private staging store and power policy pass
 health checks, and disconnect/health regression withdraws it immediately.
-Until workspace CAS hydration is connected to this protocol, the production
-owner explicitly rejects jobs with remote inputs and never reports an output
-digest that the requester cannot retrieve.
+
+### Job content
+
+A job names its inputs by blake3 digest and its result names its outputs the
+same way; the bytes never ride in the durable compute envelopes. Each digest
+moves on a stream of its own on the compute connection
+(`StreamOpen::ComputeContent`, `tilo_relay::compute_content`), and the relay
+decides from the job's durable record who may have it:
+
+- **Inputs.** The job's worker may ask for a digest the job lists, while the
+  job runs. The relay asks the job's requester, which answers from its own
+  workspace content (`ComputeClient::serve_inputs`). A worker therefore reads
+  exactly what the invoker itself can produce, never more: being a worker
+  grants no read of its own, and the requester re-checks that the digest
+  belongs to a job it submitted to that worker. The worker hydrates each
+  listed digest once into a private per-job directory, bounded by
+  `MAX_COMPUTE_INPUT_BYTES`, the job's memory limit and its lifetime; the
+  launcher stages those bytes read-only into the sandbox and the directory
+  is removed when the job ends. The package never receives a network or
+  blob credential, host path, environment or argv from the requester.
+- **Outputs.** Before reporting a completed job the worker stores every
+  output and writes an index of exactly those digests beside the job's
+  claim, so it never reports a digest the requester cannot fetch. Only the
+  job's requester may ask for them (`ComputeClient::retrieve_outputs`), and
+  only digests the job reported; the worker re-checks the claim's requester
+  and the index. Outputs stay retrievable for a day (`OUTPUT_RETENTION`).
+
+Every hop checks the bytes against the digest and its bound: the source
+before sending, the relay while forwarding, the asker on receipt. A refusal
+carries a stable code, so a job whose input its requester cannot produce
+fails promptly as `input_unavailable` (`input_integrity`, `input_too_large`
+and `input_timeout` likewise) rather than hanging. The requester has to be
+online while its job hydrates; a job whose inputs already live on the worker
+still travels from the requester, which is the price of never widening what
+a worker reads.
 
 ## Integration seams
 

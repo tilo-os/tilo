@@ -82,7 +82,7 @@ fn mounted(value: &Value, depth: usize, roots: &mut BTreeSet<String>) -> Result<
         }
     }
     for c in rows(value) {
-        mounted(c, depth + 1, roots)?;
+        mounted(c, depth.checked_add(1).ok_or_else(invalid)?, roots)?;
     }
     Ok(())
 }
@@ -231,10 +231,10 @@ impl Grants {
     pub fn release(&mut self) -> Result<()> {
         let mut failure = None;
         for lease in self.leases.drain(..).rev() {
-            if let Err(e) = lease.retire() {
-                if failure.is_none() {
-                    failure = Some(e);
-                }
+            if let Err(e) = lease.retire()
+                && failure.is_none()
+            {
+                failure = Some(e);
             }
         }
         failure.map_or(Ok(()), Err)
@@ -358,10 +358,10 @@ pub fn with_root<T>(binding: &Value, f: impl FnOnce(&File) -> Result<T>) -> Resu
     }
     let result = if candidates.len() == 1 {
         let fd = candidates.first().ok_or_else(invalid)?;
-        if !fs::capacity(fd)?.1 {
-            Err(invalid())
-        } else {
+        if fs::capacity(fd)?.1 {
             f(fd)
+        } else {
+            Err(invalid())
         }
     } else {
         Err(invalid())

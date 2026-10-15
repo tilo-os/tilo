@@ -143,8 +143,7 @@ impl SelectedEditorOwner {
     pub(super) fn stage_status(&self) -> StageStatus {
         self.state
             .lock()
-            .map(|state| state.stage)
-            .unwrap_or(StageStatus::Refused)
+            .map_or(StageStatus::Refused, |state| state.stage)
     }
     /// The dispatcher has already written Staged on the existing bootstrap.
     /// Delegate only this retained child and the exact freshly certified command.
@@ -169,19 +168,17 @@ impl SelectedEditorOwner {
             }
             Ok::<_, io::Error>(prepared)
         })();
-        let prepared = match prepared {
-            Ok(prepared) => prepared,
-            Err(_) => {
-                launcher::ordinary_child::refuse_consuming_bootstrap(stream, deadline)?;
-                return Ok(launcher::ordinary_child::DelegationOutcome::Refused);
-            }
+        let prepared = if let Ok(prepared) = prepared {
+            prepared
+        } else {
+            launcher::ordinary_child::refuse_consuming_bootstrap(stream, deadline)?;
+            return Ok(launcher::ordinary_child::DelegationOutcome::Refused);
         };
-        let mut managed = match prepared.managed.lock() {
-            Ok(managed) => managed,
-            Err(_) => {
-                launcher::ordinary_child::refuse_consuming_bootstrap(stream, deadline)?;
-                return Ok(launcher::ordinary_child::DelegationOutcome::Refused);
-            }
+        let mut managed = if let Ok(managed) = prepared.managed.lock() {
+            managed
+        } else {
+            launcher::ordinary_child::refuse_consuming_bootstrap(stream, deadline)?;
+            return Ok(launcher::ordinary_child::DelegationOutcome::Refused);
         };
         managed.delegate_shell_command(
             stream,
@@ -569,7 +566,7 @@ impl Worker {
                 schema: 1,
                 request_id: self.request.request_id.clone(),
                 app_id: binding.app_id.clone(),
-                package_sha256: binding.package_sha256.clone(),
+                package_sha256: binding.package_sha256,
                 launcher_pid: launcher.pid(),
                 launcher_start: launcher.start_time()?,
             };
@@ -815,6 +812,13 @@ impl Drop for WorkerFence {
     }
 }
 
+/// Check the installed signed worker/runtime cohort used by the concrete linked
+/// RetainedSelectedEditSession factory. This creates no source/app capability.
+pub(super) fn check_installed_edit_backend() -> io::Result<()> {
+    let _service = super::home_capture::TrustedCaptureService::native()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,7 +880,7 @@ mod tests {
         altered = launch.clone();
         altered.access = v2::SelectedAccess::ReadOnly;
         assert!(review_declaration(&request, &altered, &context).is_err());
-        let mut bytes = context.clone();
+        let mut bytes = context;
         bytes.push(b' ');
         assert!(review_declaration(&request, &launch, &bytes).is_err());
         assert!(review_declaration(&request, &launch, &vec![0; 64 * 1024 + 1]).is_err());
@@ -931,11 +935,4 @@ mod tests {
         assert_eq!(peer.read(&mut [0]).unwrap(), 0);
         assert_eq!(launcher.read(&mut [0]).unwrap(), 0);
     }
-}
-
-/// Check the installed signed worker/runtime cohort used by the concrete linked
-/// RetainedSelectedEditSession factory. This creates no source/app capability.
-pub(super) fn check_installed_edit_backend() -> io::Result<()> {
-    let _service = super::home_capture::TrustedCaptureService::native()?;
-    Ok(())
 }

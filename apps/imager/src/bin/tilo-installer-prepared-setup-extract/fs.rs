@@ -11,10 +11,10 @@ pub const RECEIPT: &str = "receipt.json";
 pub const DIRECTORY: &str = ".tilo-installer";
 pub const MAX: u64 = 32 * 1024 * 1024 + 16384;
 pub fn uid() -> u32 {
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 pub fn gid() -> u32 {
-    unsafe { libc::getegid() }
+    rustix::process::getegid().as_raw()
 }
 fn c(s: &str) -> Result<CString> {
     CString::new(s).map_err(|_| invalid())
@@ -73,12 +73,17 @@ pub fn protected(fd: &File, owner: u32, private: bool) -> Result<Metadata> {
     Ok(m)
 }
 pub fn snapshot(m: &Metadata) -> Vec<i128> {
+    // Each timestamp component is i64, so nanosecond scaling is exact in i128.
     vec![
         i128::from(m.dev()),
         i128::from(m.ino()),
         i128::from(m.len()),
-        i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()),
-        i128::from(m.ctime()) * 1_000_000_000 + i128::from(m.ctime_nsec()),
+        i128::from(m.mtime())
+            .saturating_mul(1_000_000_000)
+            .saturating_add(i128::from(m.mtime_nsec())),
+        i128::from(m.ctime())
+            .saturating_mul(1_000_000_000)
+            .saturating_add(i128::from(m.ctime_nsec())),
     ]
 }
 pub fn identity(m: &Metadata) -> (u64, u64) {
@@ -147,7 +152,8 @@ pub fn read_fd(fd: &File, bound: u64, own: Option<u32>, forbidden_mode: u32) -> 
         return Err(invalid());
     }
     let mut data = Vec::new();
-    (&fd).take(bound + 1).read_to_end(&mut data)?;
+    fd.take(bound.checked_add(1).ok_or_else(invalid)?)
+        .read_to_end(&mut data)?;
     if data.len() as u64 != m.len() || snapshot(&m) != snapshot(&fd.metadata()?) {
         return Err(invalid());
     }
@@ -305,7 +311,7 @@ pub fn chain(root: &str, components: &[&str], uid: u32, gid: u32) -> Result<File
     let mut fd = directory(root)?;
     protected(&fd, uid, false)?;
     for (i, c) in components.iter().enumerate() {
-        fd = private_child(&fd, c, uid, gid, i + 1 == components.len())?;
+        fd = private_child(&fd, c, uid, gid, Some(i) == components.len().checked_sub(1))?;
     }
     Ok(fd)
 }

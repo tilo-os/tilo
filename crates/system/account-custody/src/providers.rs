@@ -33,7 +33,37 @@ pub enum OAuthIssuer {
     Spotify,
 }
 
+pub(crate) fn valid_mailbox(email: &str) -> bool {
+    email.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty() && !domain.is_empty() && !domain.contains('@')
+    }) && !email.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 impl OAuthIssuer {
+    /// Canonical settings consumed by Mail, including for hosted domains.
+    /// Supply a provider-confirmed mailbox address, not an unverified hint.
+    /// This constructs metadata only: validate the mail grant before saving it.
+    /// Unsupported issuers and malformed addresses return `None`.
+    pub fn mail_config(self, email: &str) -> Option<accounts::email::AccountConfig> {
+        if !valid_mailbox(email) {
+            return None;
+        }
+        let (imap, smtp, port) = match self {
+            Self::Google => ("imap.gmail.com", "smtp.gmail.com", 465),
+            Self::Microsoft => ("outlook.office365.com", "smtp.office365.com", 587),
+            _ => return None,
+        };
+        Some(accounts::email::AccountConfig {
+            email: email.into(),
+            username: email.into(),
+            imap_host: imap.into(),
+            smtp_host: smtp.into(),
+            smtp_port: port,
+            auth: accounts::email::AuthMethod::OAuth,
+            ..Default::default()
+        })
+    }
+
     pub const ALL: [Self; 4] = [Self::Google, Self::Microsoft, Self::Dropbox, Self::Spotify];
 
     /// Stable identifier, also the issuer's table in `oauth-clients.toml`.
@@ -161,6 +191,10 @@ pub enum Capability {
     Files,
     /// Mail over IMAP and SMTP (`XOAUTH2`).
     Mail,
+    /// Calendars over `CalDAV`.
+    Calendar,
+    /// Provider-confirmed identity, separate from resource-specific mail tokens.
+    Identity,
     Music,
     MusicStreaming,
 }
@@ -182,11 +216,24 @@ impl OAuthUse {
         Self::new(issuer, Capability::Mail)
     }
 
+    /// Calendars from `issuer`. An unsupported issuer has no configured scopes.
+    pub const fn calendar(issuer: OAuthIssuer) -> Self {
+        Self::new(issuer, Capability::Calendar)
+    }
+
+    /// Provider-confirmed identity, without requesting files or mail access.
+    pub const fn identity(issuer: OAuthIssuer) -> Self {
+        Self::new(issuer, Capability::Identity)
+    }
+
     /// The product name shown to the person.
     pub fn label(self) -> &'static str {
         match (self.issuer, self.capability) {
             (OAuthIssuer::Spotify, _) => "Spotify",
             (_, Capability::Music | Capability::MusicStreaming) => "Music",
+            (OAuthIssuer::Google, Capability::Calendar) => "Google Calendar",
+            (_, Capability::Calendar) => "Calendar",
+            (_, Capability::Identity) => self.issuer.label(),
             (OAuthIssuer::Google, Capability::Files) => "Google Drive",
             (OAuthIssuer::Google, Capability::Mail) => "Gmail",
             (OAuthIssuer::Microsoft, Capability::Files) => "OneDrive",
@@ -303,6 +350,34 @@ mod tests {
             .collect();
         assert_eq!(keys.len(), 4);
         assert_eq!(OAuthCloud::from_type_id(WEBDAV_TYPE), None);
+    }
+
+    #[test]
+    fn canonical_mail_settings_support_hosted_domains_without_guessing() {
+        let config = OAuthIssuer::Microsoft
+            .mail_config("ada@hosted.example")
+            .unwrap();
+        assert_eq!(config.imap_host, "outlook.office365.com");
+        assert_eq!(config.imap_port, 993);
+        assert_eq!(config.smtp_host, "smtp.office365.com");
+        assert_eq!(config.smtp_port, 587);
+        assert_eq!(config.username, config.email);
+        assert_eq!(config.auth, accounts::email::AuthMethod::OAuth);
+        assert!(config.imap_tls && config.smtp_tls);
+        assert!(config.validate().is_empty());
+        for email in [
+            "@example.org",
+            "ada@",
+            "ada@@example.org",
+            "ada@example.org\0",
+        ] {
+            assert!(OAuthIssuer::Microsoft.mail_config(email).is_none());
+        }
+        assert!(
+            OAuthIssuer::Dropbox
+                .mail_config("ada@example.org")
+                .is_none()
+        );
     }
 
     #[test]

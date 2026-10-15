@@ -25,7 +25,7 @@ struct Record {
     manifest: Manifest,
 }
 fn root() -> io::Result<()> {
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(())
@@ -33,8 +33,7 @@ fn root() -> io::Result<()> {
 fn operation(value: &str) -> io::Result<()> {
     if uuid::Uuid::parse_str(value)
         .ok()
-        .filter(|id| id.to_string() == value)
-        .is_none()
+        .is_none_or(|id| id.to_string() != value)
     {
         return Err(invalid());
     }

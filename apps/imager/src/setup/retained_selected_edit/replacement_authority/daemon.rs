@@ -280,10 +280,10 @@ impl PendingDaemonEnrollment {
             let value = Arc::new(CertifiedNativeHistoryDaemon {
                 input: input.clone(),
                 purpose,
-                peer: peer,
+                peer,
                 stream: Mutex::new(stream),
-                context: context,
-                challenge: challenge,
+                context,
+                challenge,
                 sealed,
                 cancel: cancel.clone(),
                 failed: AtomicBool::new(false),
@@ -304,7 +304,7 @@ impl CertifiedNativeHistoryDaemon {
         &self.input
     }
     pub(in crate::setup) fn uses_input(&self, input: &Arc<InstalledRetainedLaunchInput>) -> bool {
-        Arc::ptr_eq(&self.input, input)
+        Arc::ptr_eq(self.input(), input)
     }
     pub(in crate::setup) fn check(&self) -> io::Result<()> {
         let result = (|| {
@@ -703,10 +703,7 @@ fn connect(cancel: &AtomicBool, deadline: Instant) -> io::Result<UnixStream> {
     };
     if result != 0 {
         let error = io::Error::last_os_error();
-        if !matches!(
-            error.raw_os_error(),
-            Some(libc::EINPROGRESS) | Some(libc::EAGAIN)
-        ) {
+        if !matches!(error.raw_os_error(), Some(libc::EINPROGRESS | libc::EAGAIN)) {
             return Err(error);
         }
         loop {

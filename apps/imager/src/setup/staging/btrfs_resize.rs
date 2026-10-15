@@ -75,8 +75,8 @@ pub(super) fn shrink(
     if !matches!(binding.sector_bytes, 512 | 4096)
         || to == 0
         || to >= from
-        || to % (1 << 20) != 0
-        || from % binding.sector_bytes != 0
+        || !to.is_multiple_of(1 << 20)
+        || !from.is_multiple_of(binding.sector_bytes)
     {
         return Err("invalid retained Btrfs resize extent".into());
     }

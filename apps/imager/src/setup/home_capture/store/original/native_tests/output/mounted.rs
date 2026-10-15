@@ -54,9 +54,12 @@ fn subject_disk(path: &Path) -> block_devices::BlockDevice {
                     .any(|part| part.kind == "part" && part.maj_min.as_deref() == Some(&number))
         })
         .collect();
-    let [disk] = matches.as_slice() else {
-        panic!("actual unique direct GPT subject required");
-    };
+    assert_eq!(
+        matches.len(),
+        1,
+        "actual unique direct GPT subject required"
+    );
+    let disk = matches[0];
     assert_eq!(disk.pttype.as_deref(), Some("gpt"));
     assert!(disk.ptuuid.is_some());
     disk.clone()

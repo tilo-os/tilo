@@ -31,7 +31,7 @@ const FAILED_REFRESH_BACKOFF: Duration = Duration::from_secs(30);
 const LIST_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_OUTPUT_LIMIT: usize = 1024 * 1024;
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(crate) const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 fn safe_diagnostic(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
@@ -59,6 +59,114 @@ static DISK_CACHE_LOADED: AtomicBool = AtomicBool::new(false);
 /// a panic while holding this lock doesn't corrupt the cached listing
 /// it protects, so a poisoned lock is treated the same as a healthy
 /// one rather than wedging every future caller in this process.
+/// What an install under way has done so far, as `app install
+/// --progress-lines` reports it, for the card standing in the place its
+/// window will open in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InstallProgress {
+    Downloading { received: u64, total: Option<u64> },
+    Installing,
+}
+
+static INSTALL_PROGRESS: Mutex<Vec<(String, InstallProgress)>> = Mutex::new(Vec::new());
+
+/// How often the install worker looks for new progress lines.
+const INSTALL_PROGRESS_POLL: Duration = Duration::from_millis(100);
+
+fn with_install_progress<T>(f: impl FnOnce(&mut Vec<(String, InstallProgress)>) -> T) -> T {
+    f(&mut INSTALL_PROGRESS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner))
+}
+
+/// The latest progress `package_id`'s install reported, if it is under way
+/// and has reported any.
+pub(crate) fn install_progress(package_id: &str) -> Option<InstallProgress> {
+    with_install_progress(|all| {
+        all.iter()
+            .find(|(package, _)| package == package_id)
+            .map(|(_, progress)| *progress)
+    })
+}
+
+pub(crate) fn set_install_progress(package_id: &str, progress: Option<InstallProgress>) {
+    with_install_progress(|all| {
+        all.retain(|(package, _)| package != package_id);
+        if let Some(progress) = progress {
+            all.push((package_id.to_owned(), progress));
+        }
+    });
+}
+
+/// One `--progress-lines` line; anything else is not progress.
+fn parse_progress_line(line: &str) -> Option<InstallProgress> {
+    let mut words = line.trim().strip_prefix("progress ")?.split(' ');
+    match (words.next()?, words.next(), words.next(), words.next()) {
+        ("installing", None, None, None) => Some(InstallProgress::Installing),
+        ("downloading", Some(received), Some(total), None) => Some(InstallProgress::Downloading {
+            received: received.parse().ok()?,
+            total: match total {
+                "-" => None,
+                total => Some(total.parse().ok()?),
+            },
+        }),
+        _ => None,
+    }
+}
+
+/// What a failed install says went wrong: its `app:` error lines, without
+/// the progress and the announcements it printed on the way.
+fn install_failure_detail(stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let lines = || {
+        stderr
+            .lines()
+            .filter(|line| !line.trim().is_empty() && parse_progress_line(line).is_none())
+    };
+    let errors: Vec<&str> = lines().filter(|line| line.starts_with("app:")).collect();
+    let detail = if errors.is_empty() {
+        lines().next_back().unwrap_or_default().to_owned()
+    } else {
+        errors.join(" ")
+    };
+    safe_diagnostic(detail.as_bytes())
+}
+
+/// Run `command` (an `app install --progress-lines`), recording its progress
+/// for `package_id` as the lines arrive.
+fn run_install_reporting(
+    command: std::process::Command,
+    package_id: &str,
+) -> Result<bounded_command::Output, bounded_command::Error> {
+    let mut child = bounded_command::spawn_prepared_observing_stderr(
+        command,
+        None,
+        INSTALL_OUTPUT_LIMIT,
+        INSTALL_TIMEOUT,
+    )?;
+    let mut partial = Vec::new();
+    let result = loop {
+        while let Some(observation) = child.try_stderr() {
+            let bounded_command::StderrObservation::Bytes(bytes) = observation else {
+                continue;
+            };
+            partial.extend(bytes);
+            while let Some(end) = partial.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = partial.drain(..=end).collect();
+                if let Some(progress) = parse_progress_line(&String::from_utf8_lossy(&line)) {
+                    set_install_progress(package_id, Some(progress));
+                }
+            }
+        }
+        if let Some(result) = child.try_wait() {
+            break result;
+        }
+        std::thread::sleep(INSTALL_PROGRESS_POLL);
+    };
+    set_install_progress(package_id, None);
+    result
+}
+
 fn lock_catalogue() -> std::sync::MutexGuard<'static, Option<(Vec<CatalogueApp>, Instant)>> {
     CATALOGUE
         .lock()
@@ -369,9 +477,8 @@ pub fn install_and_launch(
     let identity = (package_id.clone(), display_name.clone());
     let spawn_result = launcher::spawn_reporting(builder, move || {
         let mut command = std::process::Command::new(&bin);
-        command.args(["install", &package_id]);
-        let out =
-            bounded_command::run_prepared(command, None, INSTALL_OUTPUT_LIMIT, INSTALL_TIMEOUT);
+        command.args(["install", "--progress-lines", &package_id]);
+        let out = run_install_reporting(command, &package_id);
         match out {
             Err(e) => {
                 push_failure(
@@ -385,7 +492,7 @@ pub fn install_and_launch(
                 return;
             }
             Ok(o) if !o.status.success() => {
-                let detail = safe_diagnostic(&o.stderr);
+                let detail = install_failure_detail(&o.stderr);
                 let detail = if detail.is_empty() {
                     crate::shell::i18n::t_args(
                         "catalogue-error-exited",
@@ -402,6 +509,8 @@ pub fn install_and_launch(
 
         invalidate();
         launcher::invalidate_app_cache();
+        // The install is done; the window is now due as for any start.
+        launcher::hold_presentation_for(&package_id, Duration::ZERO);
 
         launcher::set_workspace_capabilities(capabilities);
         if let Err(e) = launcher::launch(&package_id, room) {
@@ -438,6 +547,66 @@ fn push_failure(package_id: &str, display_name: &str, detail: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_install_reports_its_bytes_while_it_runs_and_fails_with_its_error_alone() {
+        assert_eq!(
+            parse_progress_line("progress downloading 4200000 18000000\n"),
+            Some(InstallProgress::Downloading {
+                received: 4_200_000,
+                total: Some(18_000_000),
+            })
+        );
+        assert_eq!(
+            parse_progress_line("progress downloading 12 -"),
+            Some(InstallProgress::Downloading {
+                received: 12,
+                total: None,
+            })
+        );
+        assert_eq!(
+            parse_progress_line("progress installing"),
+            Some(InstallProgress::Installing)
+        );
+        assert_eq!(
+            parse_progress_line("Finding the app in the Tilo Store…"),
+            None
+        );
+        assert_eq!(parse_progress_line("progress downloading many -"), None);
+
+        let package = "so.tilo.test.progress-lines";
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "echo 'Finding the app' >&2; echo 'progress downloading 5 10' >&2; \
+             sleep 2; echo 'app: the store is unreachable' >&2; exit 1",
+        ]);
+        let worker = std::thread::spawn(move || run_install_reporting(command, package));
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        let mut seen = None;
+        while seen.is_none() && Instant::now() < deadline {
+            seen = install_progress(package);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            seen,
+            Some(InstallProgress::Downloading {
+                received: 5,
+                total: Some(10),
+            }),
+            "the bytes are known while the install still runs"
+        );
+        let output = worker.join().unwrap().expect("the install ran");
+        assert_eq!(
+            install_progress(package),
+            None,
+            "a finished install has none"
+        );
+        assert_eq!(
+            install_failure_detail(&output.stderr),
+            "app: the store is unreachable"
+        );
+    }
 
     #[test]
     fn catalogue_listing_parses_strictly_and_seeds_the_palette() {

@@ -11,7 +11,7 @@ SCRIPT = ROOT / "os/dev/ci-native-podman-store.sh"
 
 class NativePodmanStoreTests(unittest.TestCase):
     def setUp(self):
-        scratch = ROOT / "target/native-store-fixtures"
+        scratch = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "native-store-fixtures"
         scratch.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=scratch)
         self.addCleanup(self.temporary.cleanup)

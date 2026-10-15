@@ -1209,6 +1209,8 @@ fn reconcile_entry_history(
         let now = tilo_clock::try_unix_now().context("clock precedes Unix epoch")?;
         registry_types::verify_snapshot(&catalogue, owner, now)
             .context("verify runtime catalogue against registry owner")?;
+        let (tapp, _) = read_tapp(&args.file, false)?;
+        require_optional_runtime_offers(entry, &args.url, &tapp.meta.manifest, &catalogue.entries)?;
         let dropped = registry_client::runtime_history::reconcile(
             entry,
             &catalogue.entries,
@@ -1233,6 +1235,52 @@ fn reconcile_entry_history(
     Ok(())
 }
 
+/// A newly published app must not become visible before its exact engine.
+/// The caller verifies the owner-signed snapshot and the app before this check.
+fn require_optional_runtime_offers(
+    entry: &registry_types::RegistryEntry,
+    current_url: &str,
+    manifest: &Manifest,
+    catalogue: &[registry_types::RegistryEntry],
+) -> Result<()> {
+    let current = entry
+        .versions
+        .iter()
+        .find(|version| {
+            version
+                .tapp()
+                .is_some_and(|tapp| tapp.tapp_url == current_url)
+        })
+        .context("current package is missing from its registry entry")?;
+    let target = current
+        .target()
+        .context("current package has no native target")?;
+    for runtime in tilo_app_package::desktop::optional_runtime_dependencies(manifest) {
+        let offered = catalogue.iter().any(|provider| {
+            registry_types::is_runtime_package_id(&provider.package_id)
+                && provider
+                    .versions
+                    .iter()
+                    .filter_map(registry_types::RegistryVersion::target)
+                    .any(|provided| {
+                        provided.platform == target.platform
+                            && provided.architecture == target.architecture
+                            && provided.runtime.as_deref() == Some(runtime.as_str())
+                    })
+        });
+        if !offered {
+            return Err(registry_client::runtime_history::MissingRuntime {
+                package_id: entry.package_id.clone(),
+                version: current.version.clone(),
+                architecture: target.architecture.clone(),
+                runtime: runtime.clone(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn record_missing_runtime(path: Option<&Path>, error: &anyhow::Error) -> Result<()> {
     if let (Some(path), Some(missing)) = (
         path,
@@ -1252,7 +1300,81 @@ fn record_missing_runtime(path: Option<&Path>, error: &anyhow::Error) -> Result<
 
 #[cfg(test)]
 mod runtime_readiness_tests {
-    use super::record_missing_runtime;
+    use super::{record_missing_runtime, require_optional_runtime_offers};
+
+    #[test]
+    fn publication_waits_for_the_exact_engine_and_native_architecture() {
+        use registry_types::{
+            RegistryEntry, RegistryTarget, RegistryVersion, TappArtifact, VersionArtifact,
+        };
+
+        let manifest: super::Manifest =
+            super::Manifest::from_toml_str(include_str!("../../../../apps/browser/tilo-app.toml"))
+                .unwrap();
+        let runtime = &manifest.package.optional_runtimes[0];
+        let signer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let url = "https://apps.tilo.so/artifacts/browser.tapp";
+        let mut app = RegistryEntry {
+            package_id: manifest.package.id.to_string(),
+            kind: registry_types::EntryKind::App,
+            name: "Browser".into(),
+            description: "Browse the web".into(),
+            tagline: "Web browser".into(),
+            images: registry_types::LocalizedImages::default(),
+            supported_languages: vec!["en".into()],
+            categories: vec!["Network".into()],
+            source_url: None,
+            homepage: None,
+            publisher_pubkey_hex: hex::encode(signer.verifying_key().to_bytes()),
+            versions: vec![RegistryVersion {
+                version: "1.0.0".into(),
+                released_at_unix: 1_790_000_000,
+                artifact: VersionArtifact::Tapp(TappArtifact {
+                    tapp_url: url.into(),
+                    tapp_root_hash_hex: "aa".repeat(32),
+                    tapp_size_bytes: 12_288,
+                    tapp_blake3_hex: "bb".repeat(32),
+                    target: RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: manifest.package.runtime.clone(),
+                        interfaces: vec![],
+                    },
+                }),
+            }],
+            updated_at_unix: 1_790_000_001,
+            signature_hex: String::new(),
+        };
+        registry_types::sign_entry(&mut app, &signer);
+        let missing = require_optional_runtime_offers(&app, url, &manifest, &[]).unwrap_err();
+        assert_eq!(
+            missing
+                .downcast_ref::<registry_client::runtime_history::MissingRuntime>()
+                .unwrap()
+                .runtime,
+            *runtime
+        );
+        let mut provider = app.clone();
+        provider.package_id = "so.tilo.runtime.chromium".into();
+        for (provided_runtime, architecture, accepted) in [
+            ("tilo-runtime/older-engine", "x86_64", false),
+            (runtime.as_str(), "aarch64", false),
+            (runtime.as_str(), "x86_64", true),
+        ] {
+            let VersionArtifact::Tapp(artifact) = &mut provider.versions[0].artifact else {
+                panic!("native package")
+            };
+            artifact.target.runtime = Some(provided_runtime.into());
+            artifact.target.architecture = architecture.into();
+            registry_types::sign_entry(&mut provider, &signer);
+            assert_eq!(
+                require_optional_runtime_offers(&app, url, &manifest, &[provider.clone()]).is_ok(),
+                accepted
+            );
+        }
+        assert!(registry_types::verify_entry_signature(&app));
+    }
 
     #[test]
     fn writes_only_typed_exact_runtime_refusals() {

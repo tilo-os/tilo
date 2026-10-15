@@ -76,7 +76,7 @@ pub(in crate::setup) fn parse_text(bytes: &[u8], default: bool) -> io::Result<Op
 }
 fn validate_binary(bytes: &[u8]) -> io::Result<()> {
     if bytes.len() > LIMIT
-        || (bytes.len() < 28 || (bytes.len() - 4) % 8 != 0)
+        || (bytes.len() < 28 || !(bytes.len() - 4).is_multiple_of(8))
         || bytes[..4] != 2u32.to_le_bytes()
     {
         return Err(invalid());

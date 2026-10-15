@@ -6,6 +6,7 @@ use crate::setup::{
     migration_review::SourceInventory,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "capture-worker")]
 use sha2::Digest;
 use std::{
     collections::BTreeSet,
@@ -252,6 +253,10 @@ impl OriginalInstallation {
 }
 /// Explicit source consent retains original installations and signing metadata.
 /// No root path is accepted from an unauthenticated portable manifest.
+#[cfg(any(
+    feature = "capture-worker",
+    all(test, feature = "native-capture-qualification")
+))]
 pub(in crate::setup) struct StorageRequirement {
     pub(in crate::setup) staging_bytes: u64,
     pub(in crate::setup) sealed_bytes: u64,
@@ -267,6 +272,10 @@ pub struct PortableFlatpakSource {
 }
 impl PortableFlatpakSource {
     /// Conservative full-original-repo bound, not a claim of minimal subset size.
+    #[cfg(any(
+        feature = "capture-worker",
+        all(test, feature = "native-capture-qualification")
+    ))]
     pub(in crate::setup) fn storage_requirement(
         &self,
         include_user_state: bool,
@@ -343,6 +352,7 @@ impl PortableFlatpakSource {
         })
     }
     /// Authentication and exact protected source selection proof, no target install.
+    #[cfg(feature = "capture-worker")]
     pub(in crate::setup) fn verify_sealed(
         &self,
         expected: &Expectation,
@@ -394,6 +404,7 @@ impl PortableFlatpakSource {
         crate::setup::migration::check_cancel(cancel)
     }
 
+    #[cfg(feature = "capture-worker")]
     fn verify_original_manifest(
         &self,
         imported: &ApplicationImport,
@@ -601,6 +612,7 @@ impl PortableFlatpakSource {
     }
     /// Closed reviewed dependencies come from the protected original intent;
     /// boot never rediscovers a different runtime, extension or latest commit.
+    #[cfg(any(feature = "capture-worker", test))]
     pub(in crate::setup::flatpak_transfer) fn review_closed_original(
         runner: &super::SourceScopedRunner<NativeOfflineRunner>,
         inventory: &super::HandoffInventory,
@@ -609,6 +621,7 @@ impl PortableFlatpakSource {
     ) -> Result<Arc<Self>, String> {
         Self::review_closed_material(runner, inventory, home, false, cancel)
     }
+    #[cfg(any(feature = "capture-worker", test))]
     pub(in crate::setup::flatpak_transfer) fn review_closed_original_selected(
         runner: &super::SourceScopedRunner<NativeOfflineRunner>,
         inventory: &super::HandoffInventory,
@@ -617,6 +630,7 @@ impl PortableFlatpakSource {
     ) -> Result<Arc<Self>, String> {
         Self::review_closed_material(runner, inventory, home, true, cancel)
     }
+    #[cfg(any(feature = "capture-worker", test))]
     fn review_closed_material(
         runner: &super::SourceScopedRunner<NativeOfflineRunner>,
         inventory: &super::HandoffInventory,

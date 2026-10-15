@@ -37,7 +37,7 @@ fn query(path: &Path, sql: &str) -> String {
 #[test]
 fn actual_pinned_broker_capture_preserves_live_sqlite_wal_hidden_data_links_and_xattrs() {
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "canonical disposable privileged native qualifier required"
     );
@@ -82,7 +82,7 @@ fn actual_pinned_broker_capture_preserves_live_sqlite_wal_hidden_data_links_and_
         .arg("-u")
         .arg("-c")
         .arg(
-            r#"
+            r"
 import sqlite3, sys, time
 c = sqlite3.connect(sys.argv[1])
 c.execute('PRAGMA journal_mode=WAL')
@@ -101,7 +101,7 @@ while True:
     c.commit()
     if n == 1: print('READY', flush=True)
     time.sleep(.002)
-"#,
+",
         )
         .arg(&database)
         .stdin(Stdio::null())

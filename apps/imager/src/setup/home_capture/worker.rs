@@ -41,12 +41,14 @@ pub(crate) fn run_provider() -> io::Result<()> {
         net::UnixListener,
     };
     use std::time::Duration;
-    if unsafe { libc::getuid() } == 0 || unsafe { libc::geteuid() } != unsafe { libc::getuid() } {
+    if rustix::process::getuid().as_raw() == 0
+        || rustix::process::geteuid().as_raw() != rustix::process::getuid().as_raw()
+    {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let directory = PinnedDirectory::open_absolute(Path::new(launcher::appdir::SANDBOX_APP_DIR))?;
     let facts = directory.file.metadata()?;
-    if facts.uid() != unsafe { libc::getuid() } || facts.mode() & 0o077 != 0 {
+    if facts.uid() != rustix::process::getuid().as_raw() || facts.mode() & 0o077 != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let path = Path::new(launcher::appdir::SANDBOX_APP_DIR).join("provider.sock");
@@ -255,6 +257,7 @@ impl Request {
         self.validate_protocol()?;
         Ok(self)
     }
+    #[cfg(test)]
     pub(in crate::setup) fn into_validate(
         self,
         expected: Expectation,

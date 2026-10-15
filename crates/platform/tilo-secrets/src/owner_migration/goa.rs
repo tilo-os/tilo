@@ -64,9 +64,9 @@ impl GoaCredential {
         identity: &str,
     ) -> Result<Self, SecretError> {
         let metadata = directory.metadata().map_err(|_| SecretError::Denied)?;
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         if uid == 0
-            || unsafe { libc::geteuid() } != uid
+            || rustix::process::geteuid().as_raw() != uid
             || !metadata.is_dir()
             || metadata.uid() != uid
             || metadata.mode() & 0o022 != 0
@@ -96,8 +96,8 @@ impl GoaCredential {
         let facts = self.directory.metadata().map_err(|_| SecretError::Denied)?;
         if (facts.uid(), facts.dev(), facts.ino()) != self.witness
             || facts.mode() & 0o022 != 0
-            || unsafe { libc::getuid() } != self.witness.0
-            || unsafe { libc::geteuid() } != self.witness.0
+            || rustix::process::getuid().as_raw() != self.witness.0
+            || rustix::process::geteuid().as_raw() != self.witness.0
         {
             return Err(SecretError::Denied);
         }
@@ -131,7 +131,7 @@ mod tests {
             "account_1",
             "person@example.test",
         );
-        if unsafe { libc::getuid() } == 0 {
+        if rustix::process::getuid().as_raw() == 0 {
             assert!(ordinary.is_err());
         } else {
             let grant = ordinary.unwrap();

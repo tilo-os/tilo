@@ -4,8 +4,7 @@ mod applications;
 pub(in crate::setup) mod bootstrap;
 mod export;
 pub(in crate::setup) use applications::{
-    CommittedOriginalApplicationsSelection, OriginalApplicationsOutcome,
-    VerifiedOriginalApplications,
+    CommittedOriginalApplicationsSelection, VerifiedOriginalApplications,
 };
 mod verified;
 pub(in crate::setup) use verified::{CommittedOriginalSelection, VerifiedOriginalHome};
@@ -34,7 +33,9 @@ use std::{
 /// create only a fresh fixed staging child through canonical private nofollow
 /// provisioning. It must not release that mount before supervised child exit.
 /// No caller path/UUID or deserialized token constructs this ownership.
-pub(in crate::setup) trait OwnedMediumOutput: ServiceAuthority {
+pub(in crate::setup::home_capture) trait OwnedMediumOutput:
+    ServiceAuthority
+{
     fn inventory_scratch(&self) -> io::Result<(File, u64)> {
         Err(refused(
             "Original review needs admitted backed inventory storage",
@@ -149,13 +150,13 @@ impl OfflineOutputTransaction {
         let transaction = Self::admit(read, store, medium.clone(), cancellation)?;
         Ok((transaction, medium))
     }
-    pub(in crate::setup) fn admit(
+    pub(in crate::setup::home_capture) fn admit(
         read: Arc<OfflineReadAdmission>,
         store: Store,
         medium: Arc<dyn OwnedMediumOutput>,
         cancellation: ServiceCancellation,
     ) -> io::Result<Arc<Self>> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused("Original output requires the root boot controller"));
         }
         let cancelled = AtomicBool::new(false);
@@ -234,13 +235,8 @@ impl OfflineOutputTransaction {
     ) -> io::Result<T> {
         self.check()?;
         let proof = OriginalOutputAdmission::admit(self.clone())?;
-        // Persist before any callback can launch. Lost acknowledgement after
-        // this point requires actual namespace/checkpoint recovery, never an
-        // automatic second writer on the same staging directory.
-        self.store
-            .lock()
-            .map_err(|_| refused("Original output Store lock failed"))?
-            .mark_original_output_launching(&self.binding.attempt, &self.medium.files()?.output)?;
+        // Export and verification callers persist their distinct checkpoints
+        // before entering this shared output-capability wrapper.
         let result =
             self.with_inventory_reader(runtime, publisher, |admission, request, digest| {
                 run(admission.with_original_output(proof)?, request, digest)

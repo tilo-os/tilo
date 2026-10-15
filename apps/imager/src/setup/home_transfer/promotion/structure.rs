@@ -36,7 +36,7 @@ pub(super) fn capture(
 fn one(parent: &Arc<PinnedDirectory>, name: &OsStr, path: &Path) -> io::Result<Item> {
     let metadata = metadata_nofollow(&parent.file, Path::new(name))?;
     // SAFETY: geteuid only reads the current process's credentials.
-    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o6000 != 0 {
+    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o6000 != 0 {
         return Err(changed(
             "Relocated metadata ownership or privilege bits changed",
         ));

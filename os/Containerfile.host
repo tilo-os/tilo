@@ -166,8 +166,10 @@ RUN for u in \
         wireplumber.service \
     ; do systemctl mask "$u" || true; done
 
-# Signed-image trust roots — the same policy the desktop image
-# uses. Refuses to `bootc upgrade` unless the image is signed.
+# Signed-image trust roots — the same policy the desktop image uses. It
+# requires the pinned signature for the official Tilo repositories only; this
+# operator-built image records `localhost/tilo-host` as its update origin,
+# which the policy does not cover, so its own updates are not verified.
 COPY keys/cosign.pub /usr/share/tilo/cosign.pub
 COPY os/etc/containers/policy.json /etc/containers/policy.json
 COPY os/etc/containers/registries.d/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml

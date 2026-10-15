@@ -31,6 +31,8 @@ mod client_owns_its_endpoint;
 mod coedit_through_host;
 #[path = "commit_dedup.rs"]
 mod commit_dedup;
+#[path = "compute_content.rs"]
+mod compute_content;
 #[path = "compute_session.rs"]
 mod compute_session;
 #[path = "cross_user_workspace_host.rs"]

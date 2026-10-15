@@ -133,10 +133,14 @@ fn discover_one(kind: KnownFolderKind) -> KnownFolder {
          if ($null -ne $folder) {{ [Console]::Out.Write($folder.Self.Path) }}",
         kind.windows_shell_name()
     );
-    let output = match Command::new("powershell.exe")
-        .args(["-NoProfile", "-STA", "-Command", &script])
-        .output()
-    {
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-STA", "-Command", &script]);
+    let output = match bounded_command::run_prepared(
+        command,
+        None,
+        128 * 1024,
+        std::time::Duration::from_secs(10),
+    ) {
         Ok(output) => output,
         Err(error) => {
             return KnownFolder::unavailable(

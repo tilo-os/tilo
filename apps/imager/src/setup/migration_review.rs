@@ -174,9 +174,6 @@ impl SourceInventory {
     pub(super) fn entry_count(&self) -> usize {
         self.facts.len()
     }
-    pub(super) fn runtime_sockets(&self) -> impl Iterator<Item = io::Result<PathBuf>> + '_ {
-        self.paths_of_kind(4)
-    }
     pub(super) fn summary(&self) -> io::Result<InventorySummary> {
         let mut summary = InventorySummary::default();
         for item in self.facts.iter() {
@@ -229,6 +226,7 @@ impl SourceInventory {
             same_device: Some(root.identity.dev()),
             #[cfg(target_os = "linux")]
             same_mount: Some(fs_native::snapshot_lease::mount_id(&root.file)?),
+            #[cfg(target_os = "linux")]
             projected_roots: None,
             max_entries: 1_000_000,
             #[cfg(target_os = "linux")]

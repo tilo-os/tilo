@@ -500,7 +500,7 @@ mod tests {
             std::fs::read(source.path().join("cookies.sqlite")).unwrap(),
             original
         );
-        let mut changed = declaration.clone();
+        let mut changed = declaration;
         changed.sessions[0].service = Service::Discord;
         let fresh = tempfile::tempdir().unwrap();
         assert!(

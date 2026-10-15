@@ -95,7 +95,7 @@ impl OfflineMediaReview {
         }
         Ok(())
     }
-    pub(crate) fn with_protected_delivery<T>(
+    pub(in crate::setup) fn with_protected_delivery<T>(
         &self,
         target: &TargetDrive,
         artifact: &PreparedMedia,
@@ -636,6 +636,13 @@ fn reseal_amendment(
         original_password: Zeroizing::new(password.to_vec()),
         browser_frozen: true,
         delivery_started: AtomicBool::new(false),
+        recovery: Mutex::new(
+            original
+                .recovery
+                .lock()
+                .map_err(|_| io::Error::other("Recovery custody unavailable"))?
+                .clone(),
+        ),
         transfer_generation: Mutex::new(None),
     }))
 }

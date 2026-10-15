@@ -128,7 +128,10 @@ impl Storage {
                         available_bytes: selected,
                     })
                 } else {
-                    plan::compute(basis, requirements(selected))
+                    let requirements = requirements(selected);
+                    let plan = plan::compute(basis, requirements)?;
+                    super::super::migration_recovery::admit_retained(&plan, requirements)?;
+                    Ok(plan)
                 }
             });
     }
@@ -142,6 +145,20 @@ impl Storage {
 
     pub fn application_estimate(&self) -> Option<u64> {
         (self.minimum > staging::MIN_TARGET_BYTES).then(|| self.minimum - staging::MIN_TARGET_BYTES)
+    }
+
+    /// Admission uses the same retained placement checker as review, not the
+    /// presence of a cached successful preview alone.
+    pub fn admit(&self) -> Result<(), plan::PlanError> {
+        let plan = self
+            .plan
+            .as_ref()
+            .ok_or_else(|| {
+                plan::PlanError::Unsupported("Review storage capacity before continuing".into())
+            })?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        super::super::migration_recovery::admit_retained(plan, requirements(self.selected << 30))
     }
 
     pub fn selected(&self) -> u64 {
@@ -195,6 +212,27 @@ pub(super) fn requirements(target_bytes: u64) -> plan::Requirements {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn admission_refuses_shortage_and_modified_review_geometry() {
+        let mut storage = Storage::default();
+        storage.stage();
+        assert!(storage.admit().is_ok());
+        storage
+            .plan
+            .as_mut()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .target_extent
+            .first_lba += 2048;
+        assert!(storage.admit().is_err());
+        storage.set_application_minimum(600 << 30);
+        assert!(matches!(
+            storage.admit(),
+            Err(plan::PlanError::InsufficientSpace { .. })
+        ));
+    }
+
     #[test]
     fn production_planner_and_size_control_enforce_application_lower_bound() {
         let mut storage = Storage::default();

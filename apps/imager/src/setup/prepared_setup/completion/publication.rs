@@ -51,19 +51,20 @@ pub(in crate::setup) fn publish(
         root.validate_destination()?;
         // A proven identical delivered package already owns its ciphertext
         // allocation. Require copy capacity only when actual delivery is absent.
-        let receipt = match media_setup::verify_completed_ciphertext(delivery, &root, cancel)? {
-            Some(receipt) => receipt,
-            None => {
-                // This copies ciphertext. Home's inverse plaintext limits
-                // subtract framing and are not physical writable capacity.
-                let free = super::super::completed_setup_free_bytes(&root.file)?;
-                let needed =
-                    super::super::completed_setup_ciphertext_reservation(expected.sealed_bytes)?;
-                if needed > free {
-                    return Err(changed("Completed setup lacks reserved writable capacity"));
-                }
-                media_setup::deliver_completed_ciphertext(delivery, &root, cancel)?
+        let receipt = if let Some(receipt) =
+            media_setup::verify_completed_ciphertext(delivery, &root, cancel)?
+        {
+            receipt
+        } else {
+            // This copies ciphertext. Home's inverse plaintext limits
+            // subtract framing and are not physical writable capacity.
+            let free = super::super::completed_setup_free_bytes(&root.file)?;
+            let needed =
+                super::super::completed_setup_ciphertext_reservation(expected.sealed_bytes)?;
+            if needed > free {
+                return Err(changed("Completed setup lacks reserved writable capacity"));
             }
+            media_setup::deliver_completed_ciphertext(delivery, &root, cancel)?
         };
         if receipt.sealed_bytes != expected.sealed_bytes
             || receipt.ciphertext_sha256 != expected.ciphertext_sha256

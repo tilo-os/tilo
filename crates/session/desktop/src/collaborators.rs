@@ -15,7 +15,7 @@ use ui::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use ui::icons::Icon;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, ControlSize, FieldFace, SegmentedFace, TextInput, Widget};
+use ui::widget::{Button, ButtonFace, ControlSize, FieldFace, TextInput, Widget};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -29,8 +29,8 @@ const ACTIONS_H: f64 = 40.0;
 /// Follow/Stop, Invite, Join — is at least this tall.
 const MIN_TARGET: f64 = 32.0;
 const INVITED_ROW_ALPHA: f32 = 0.55;
-const ROSTER_PAGE_SIZE: usize = 3;
-const ROSTER_PAGER_H: f64 = 36.0;
+/// Rows the People popover shows before its list scrolls.
+const VISIBLE_ROWS: usize = 8;
 /// An expanded row shows at most this many lines of its recent summary, so
 /// one talkative participant cannot push everyone else off the page.
 const RECENT_MAX_LINES: usize = 3;
@@ -91,7 +91,12 @@ pub enum CollaboratorsHit {
     Invite,
     Join,
     RoomActivity,
+    /// Change the name others see. Only painted when the host offers it.
+    Rename,
     EditStatus,
+    /// Show or hide the choice of what to share. The host calls
+    /// [`CollaboratorsOverlay::toggle_sharing_choices`].
+    ChangeSharing,
     SetStatusSharing(ui::StatusSharing),
     /// Toggle follow for the row at this index.
     ToggleFollow(usize),
@@ -99,8 +104,6 @@ pub enum CollaboratorsHit {
     /// by the row body (never its Follow button), only for rows that have a
     /// recent summary; the host toggles [`CollaboratorsModel::expanded_id`].
     ToggleDetails(usize),
-    PreviousPeople,
-    NextPeople,
     /// Inside the card, but not on an action.
     Absorb,
     /// Outside the card; the host should close it.
@@ -120,13 +123,12 @@ pub struct RosterRow {
     pub invited: bool,
     /// Ephemeral current location, never a history summary.
     pub activity: Option<String>,
-    /// Short participant intention. `automatic` is rendered with a sparkle so
+    /// Short participant intention, marked by its [`LineSource`] so
     /// model-suggested words cannot be mistaken for a direct quote.
     pub status: Option<RosterStatus>,
     /// What the participant did in the last few minutes, as a short summary.
-    /// Shown only while the row is expanded; `automatic` (model prose) gets
-    /// the same sparkle treatment as `status`. A row without one is not
-    /// expandable.
+    /// Shown only while the row is expanded, marked like `status`. A row
+    /// without one is not expandable.
     pub recent: Option<RosterStatus>,
     pub followable: bool,
 }
@@ -134,7 +136,31 @@ pub struct RosterRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterStatus {
     pub text: String,
-    pub automatic: bool,
+    pub source: LineSource,
+}
+
+/// Who wrote a line shown about someone. It decides the line's marker: only
+/// software-written words carry the generated sparkle, and nothing the
+/// person did not type carries the pencil.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineSource {
+    /// The person typed it.
+    Written,
+    /// A model (or another generator) wrote it from what they did.
+    Generated,
+    /// Plainly read off what they did ("Editing Welcome in Notes").
+    Observed,
+}
+
+impl LineSource {
+    #[must_use]
+    pub fn generated_if(generated: bool) -> Self {
+        if generated {
+            Self::Generated
+        } else {
+            Self::Observed
+        }
+    }
 }
 
 /// Immutable data and policy decisions needed to paint one frame.
@@ -145,8 +171,13 @@ pub struct RosterStatus {
 pub struct CollaboratorsModel<'a> {
     pub host: Rect,
     pub rows: &'a [RosterRow],
-    pub own_initial: char,
+    /// The name others see for this person (a guest's given name, such as
+    /// "Brave Fox"); its first letter is the avatar's.
+    pub own_label: &'a str,
     pub own_color: Color,
+    /// Whether the host can rename this person: the name then carries an
+    /// edit affordance that raises [`CollaboratorsHit::Rename`].
+    pub own_rename: bool,
     pub unavailable: Option<&'a str>,
     pub may_invite: bool,
     pub followed_id: Option<&'a str>,
@@ -157,6 +188,8 @@ pub struct CollaboratorsModel<'a> {
     /// Local participant's ephemeral semantic action, shown separately from
     /// their longer-lived intent/status so the two cannot be conflated.
     pub own_activity: Option<&'a str>,
+    /// Whether `own_activity` is model prose rather than read off actions.
+    pub own_activity_generated: bool,
     pub own_status_automatic: bool,
     pub status_sharing: ui::StatusSharing,
     pub status_editing: bool,
@@ -246,7 +279,29 @@ pub struct CollaboratorsOverlay {
     status_height: f64,
     status_block_height: f64,
     mode_height: f64,
-    stacked_modes: bool,
+    /// The own block, top to bottom: the name line, the status field (only
+    /// where the host edits it), the live line, the sharing line and, while
+    /// open, the sharing choices.
+    name_height: f64,
+    own_name_width: f64,
+    own_label: String,
+    own_avatar: Rect,
+    rename_offered: bool,
+    /// The name and its edit mark: the Rename target, zero when the host
+    /// cannot rename.
+    own_name: Rect,
+    shows_own_activity: bool,
+    own_line_height: f64,
+    own_activity_top: f64,
+    sharing_line_height: f64,
+    sharing_text_width: f64,
+    sharing_top: f64,
+    /// The "Change" link that opens the sharing choices.
+    sharing_change: Rect,
+    sharing_open: bool,
+    /// The sharing modes this host offers: writing your own needs a host
+    /// that edits the status.
+    offered_modes: Vec<ui::StatusSharing>,
     follow_width: f64,
     follow_height: f64,
     activity_height: f64,
@@ -270,16 +325,15 @@ pub struct CollaboratorsOverlay {
     row_rects: Vec<Rect>,
     /// Row bodies that toggle the recent summary; zero for rows without one.
     row_details: Vec<Rect>,
-    roster_offset: usize,
-    roster_range: std::ops::Range<usize>,
-    previous_people: Rect,
-    next_people: Rect,
+    /// The popover's height when it shows at most [`VISIBLE_ROWS`] rows.
+    visible_height: f64,
     keyboard_focus: Option<CollaboratorsHit>,
     targets: ui::widget::PaintedTargets,
     painted_actions: Vec<(String, CollaboratorsHit)>,
     held_submit: [bool; 2],
     accessibility_rows: Vec<RosterRow>,
     accessibility_status: Option<String>,
+    accessibility_own_label: String,
     accessibility_own_activity: Option<String>,
     accessibility_status_automatic: bool,
     accessibility_sharing: ui::StatusSharing,
@@ -347,6 +401,11 @@ impl CollaboratorsOverlay {
         let previous_focus_rect = self.focused_rect();
         let previous_panel = self.panel;
         let previous_host = self.host;
+        // A choice that took effect closes the choices: the sharing line
+        // now says what was chosen.
+        if self.sharing_open && model.status_sharing != self.accessibility_sharing {
+            self.sharing_open = false;
+        }
         self.measure_controls(text_renderer, theme, model);
         self.layout(
             model.host,
@@ -359,11 +418,8 @@ impl CollaboratorsOverlay {
             self.cancel_pointer_gesture();
         }
         self.configure_scroll(theme, model);
-        self.partition_sharing(text_renderer, theme);
         self.retain_frame(model);
-        self.keyboard_focus = self
-            .reconcile_pager_focus(focus)
-            .filter(|hit| self.rect_for_hit(*hit).is_some());
+        self.keyboard_focus = focus.filter(|hit| self.rect_for_hit(*hit).is_some());
         if previous_focus_rect != self.focused_rect() {
             self.reveal_focus();
         }
@@ -377,6 +433,9 @@ impl CollaboratorsOverlay {
         self.accessibility_rows.clear();
         self.accessibility_rows.extend_from_slice(model.rows);
         self.accessibility_status = model.own_status.map(str::to_string);
+        model
+            .own_label
+            .clone_into(&mut self.accessibility_own_label);
         self.accessibility_own_activity = model.own_activity.map(str::to_string);
         self.accessibility_status_automatic = model.own_status_automatic;
         self.accessibility_sharing = model.status_sharing;
@@ -454,20 +513,46 @@ impl CollaboratorsOverlay {
             });
             self.scroll = Some(scroll);
         }
+        if self.scroll_offset() > 0.0 {
+            // The list scrolls under the heading; the count stays in view.
+            let band = Rect::new(
+                self.panel.x0 + 1.0,
+                self.panel.y0 + 1.0,
+                self.panel.x1 - 1.0,
+                self.panel.y0 + self.header_height.max(48.0),
+            );
+            let radius =
+                (ui::chrome::ChromeRole::Panel.radius(theme, rect.height()) - 1.0).max(0.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                ui::chrome::shell::panel_ground(theme),
+                None,
+                &RoundedRect::from_rect(
+                    band,
+                    vello::kurbo::RoundedRectRadii::new(radius, radius, 0.0, 0.0),
+                ),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                ui::chrome::shell::panel_border(theme),
+                None,
+                &Rect::new(band.x0, band.y1 - 1.0, band.x1, band.y1),
+            );
+            self.draw_header(scene, transform, text_renderer, theme, model);
+        }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
-    )]
-    fn draw_contents(
-        &mut self,
+    /// The heading with the "here now" count and who is watching. Drawn
+    /// with the content, and again pinned over it once the list scrolls.
+    fn draw_header(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         model: &CollaboratorsModel<'_>,
-        cursor: Option<Point>,
     ) {
         let rect = self.panel;
         let tokens = &theme.tokens;
@@ -531,15 +616,34 @@ impl CollaboratorsOverlay {
                 &caption,
             );
         }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
+    fn draw_contents(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &CollaboratorsModel<'_>,
+        cursor: Option<Point>,
+    ) {
+        self.draw_header(scene, transform, text_renderer, theme, model);
+        let rect = self.panel;
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
         self.draw_own_status(scene, transform, text_renderer, theme, model, cursor);
         if let Some(exposure) = model.screen_exposure {
             let banner = Rect::new(
                 rect.x0 + 12.0,
-                rect.y0 + self.header_height.max(48.0) + self.status_block_height.max(92.0),
+                rect.y0 + self.header_height.max(48.0) + self.status_block_height,
                 rect.x1 - 12.0,
                 rect.y0
                     + self.header_height.max(48.0)
-                    + self.status_block_height.max(92.0)
+                    + self.status_block_height
                     + self.exposure_height.max(44.0)
                     - 4.0,
             );
@@ -572,7 +676,7 @@ impl CollaboratorsOverlay {
 
         let roster_top = rect.y0
             + self.header_height.max(48.0)
-            + self.status_block_height.max(92.0)
+            + self.status_block_height
             + if model.screen_exposure.is_some() {
                 self.exposure_height.max(44.0)
             } else {
@@ -599,25 +703,7 @@ impl CollaboratorsOverlay {
             );
         }
 
-        let list_top = rect.y0
-            + self.header_height.max(48.0)
-            + self.status_block_height.max(92.0)
-            + if model.screen_exposure.is_some() {
-                self.exposure_height.max(44.0)
-            } else {
-                0.0
-            }
-            + if model.unavailable.is_some() {
-                self.warning_height.max(24.0)
-            } else {
-                0.0
-            };
-        for (visible_index, index) in self.roster_range.clone().enumerate() {
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "layout() above clamps roster_range to model.rows.len()"
-            )]
-            let row = &model.rows[index];
+        for (index, (row, row_rect)) in model.rows.iter().zip(&self.row_rects).enumerate() {
             let relationship = model.relationship_for(&row.id);
             let relationship_partner = relationship.as_ref().and_then(|relationship| {
                 let partner_id = match relationship {
@@ -629,10 +715,7 @@ impl CollaboratorsOverlay {
                     .iter()
                     .find(|candidate| candidate.id == partner_id.as_str())
             });
-            let y = self.row_rects.get(index).map_or_else(
-                || list_top + f64_of_usize(visible_index) * self.row_h(),
-                |rect| rect.y0,
-            );
+            let y = row_rect.y0;
             self.draw_row(
                 scene,
                 transform,
@@ -649,14 +732,6 @@ impl CollaboratorsOverlay {
                 },
             );
         }
-        self.draw_roster_pager(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            model.rows.len(),
-            cursor,
-        );
         self.draw_footer(scene, transform, text_renderer, theme, cursor);
         if let Some(rect) = self
             .focused_rect()
@@ -673,7 +748,9 @@ impl CollaboratorsOverlay {
     }
 
     fn configure_scroll(&mut self, theme: &Theme, model: &CollaboratorsModel<'_>) {
-        let available = (model.host.y1 - self.panel.y0 - 8.0).max(1.0);
+        let available = (model.host.y1 - self.panel.y0 - 8.0)
+            .min(self.visible_height)
+            .max(1.0);
         let gutter = if self.panel.height() > available {
             f64::from(theme.tokens.metrics.scrollbar_gutter)
         } else {
@@ -716,18 +793,6 @@ impl CollaboratorsOverlay {
 
     fn content_point(&self, point: Point) -> Point {
         Point::new(point.x, point.y + self.scroll_offset())
-    }
-
-    fn reconcile_pager_focus(&self, focus: Option<CollaboratorsHit>) -> Option<CollaboratorsHit> {
-        match focus {
-            Some(CollaboratorsHit::NextPeople) if self.next_people.area() <= 0.0 => {
-                (self.previous_people.area() > 0.0).then_some(CollaboratorsHit::PreviousPeople)
-            }
-            Some(CollaboratorsHit::PreviousPeople) if self.previous_people.area() <= 0.0 => {
-                (self.next_people.area() > 0.0).then_some(CollaboratorsHit::NextPeople)
-            }
-            other => other,
-        }
     }
 
     fn reveal_focus(&mut self) {
@@ -1206,12 +1271,16 @@ impl CollaboratorsOverlay {
             CollaboratorsHit::Join
         } else if self.activity.area() > 0.0 && self.activity.contains(point) {
             CollaboratorsHit::RoomActivity
+        } else if self.own_name.area() > 0.0 && self.own_name.contains(point) {
+            CollaboratorsHit::Rename
         } else if self.status_editable() && self.status.contains(point) {
             CollaboratorsHit::EditStatus
+        } else if self.sharing_change.area() > 0.0 && self.sharing_change.contains(point) {
+            CollaboratorsHit::ChangeSharing
         } else if let Some((mode, _)) = self
             .status_modes
             .iter()
-            .find(|(_, rect)| rect.contains(point))
+            .find(|(_, rect)| rect.area() > 0.0 && rect.contains(point))
         {
             CollaboratorsHit::SetStatusSharing(*mode)
         } else if let Some(index) = self
@@ -1226,10 +1295,6 @@ impl CollaboratorsOverlay {
             .position(|rect| rect.area() > 0.0 && rect.contains(point))
         {
             CollaboratorsHit::ToggleDetails(index)
-        } else if self.previous_people.area() > 0.0 && self.previous_people.contains(point) {
-            CollaboratorsHit::PreviousPeople
-        } else if self.next_people.area() > 0.0 && self.next_people.contains(point) {
-            CollaboratorsHit::NextPeople
         } else {
             CollaboratorsHit::Absorb
         }
@@ -1257,12 +1322,19 @@ impl CollaboratorsOverlay {
 
     fn focus_order(&self) -> Vec<CollaboratorsHit> {
         let mut order = Vec::new();
+        if self.own_name.area() > 0.0 {
+            order.push(CollaboratorsHit::Rename);
+        }
         if self.status_editable() {
             order.push(CollaboratorsHit::EditStatus);
+        }
+        if self.sharing_change.area() > 0.0 {
+            order.push(CollaboratorsHit::ChangeSharing);
         }
         order.extend(
             self.status_modes
                 .iter()
+                .filter(|(_, rect)| rect.area() > 0.0)
                 .map(|(mode, _)| CollaboratorsHit::SetStatusSharing(*mode)),
         );
         // Each row's body comes before its Follow button, in reading order;
@@ -1283,12 +1355,6 @@ impl CollaboratorsOverlay {
                 order.push(CollaboratorsHit::ToggleFollow(index));
             }
         }
-        if self.previous_people.area() > 0.0 {
-            order.push(CollaboratorsHit::PreviousPeople);
-        }
-        if self.next_people.area() > 0.0 {
-            order.push(CollaboratorsHit::NextPeople);
-        }
         if self.invite.area() > 0.0 {
             order.extend([CollaboratorsHit::Invite, CollaboratorsHit::Join]);
         }
@@ -1303,15 +1369,15 @@ impl CollaboratorsOverlay {
             CollaboratorsHit::Invite => Some(self.invite),
             CollaboratorsHit::Join => Some(self.join),
             CollaboratorsHit::RoomActivity => Some(self.activity),
+            CollaboratorsHit::Rename => Some(self.own_name),
             CollaboratorsHit::EditStatus => self.status_editable().then_some(self.status),
+            CollaboratorsHit::ChangeSharing => Some(self.sharing_change),
             CollaboratorsHit::SetStatusSharing(mode) => self
                 .status_modes
                 .iter()
                 .find_map(|(candidate, rect)| (*candidate == mode).then_some(*rect)),
             CollaboratorsHit::ToggleFollow(index) => self.row_actions.get(index).copied(),
             CollaboratorsHit::ToggleDetails(index) => self.row_details.get(index).copied(),
-            CollaboratorsHit::PreviousPeople => Some(self.previous_people),
-            CollaboratorsHit::NextPeople => Some(self.next_people),
             CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss => None,
         }
         .filter(|rect| rect.area() > 0.0)
@@ -1403,16 +1469,19 @@ impl CollaboratorsOverlay {
                     ));
                 }
                 if let Some(status) = &row.status {
-                    details.push(if status.automatic {
-                        t_args(
+                    details.push(match status.source {
+                        LineSource::Generated => t_args(
                             "a11y-shell-people-intent-inferred",
                             &[("status", (&status.text).into())],
-                        )
-                    } else {
-                        t_args(
+                        ),
+                        LineSource::Written => t_args(
                             "a11y-shell-people-intent",
                             &[("status", (&status.text).into())],
-                        )
+                        ),
+                        LineSource::Observed => t_args(
+                            "a11y-shell-people-now",
+                            &[("activity", (&status.text).into())],
+                        ),
                     });
                 }
                 if let Some(recent) = row
@@ -1421,7 +1490,7 @@ impl CollaboratorsOverlay {
                     .filter(|_| self.accessibility_expanded.as_deref() == Some(row.id.as_str()))
                 {
                     details.push(t_args(
-                        if recent.automatic {
+                        if recent.source == LineSource::Generated {
                             "a11y-shell-people-recent-inferred"
                         } else {
                             "a11y-shell-people-recent"
@@ -1468,13 +1537,27 @@ impl CollaboratorsOverlay {
                         None,
                     )
                 }
+                CollaboratorsHit::Rename => (
+                    Role::Button,
+                    t_args(
+                        "a11y-shell-rename",
+                        &[("name", (&self.accessibility_own_label).into())],
+                    ),
+                    t("a11y-shell-rename-description"),
+                    None,
+                ),
+                CollaboratorsHit::ChangeSharing => {
+                    expanded = Some(self.sharing_open);
+                    (
+                        Role::Button,
+                        t("a11y-shell-sharing-change"),
+                        Self::sharing_line(self.accessibility_sharing),
+                        None,
+                    )
+                }
                 CollaboratorsHit::SetStatusSharing(mode) => (
                     Role::RadioButton,
-                    match mode {
-                        ui::StatusSharing::Automatic => t("a11y-shell-status-automatic"),
-                        ui::StatusSharing::ManualOnly => t("a11y-shell-status-manual"),
-                        ui::StatusSharing::Off => t("a11y-shell-status-off"),
-                    },
+                    Self::sharing_choice(mode),
                     match mode {
                         ui::StatusSharing::Automatic => {
                             t("a11y-shell-status-automatic-description")
@@ -1515,18 +1598,6 @@ impl CollaboratorsOverlay {
                         None,
                     )
                 }
-                CollaboratorsHit::PreviousPeople => (
-                    Role::Button,
-                    t("a11y-shell-people-previous"),
-                    t("a11y-shell-people-previous-description"),
-                    None,
-                ),
-                CollaboratorsHit::NextPeople => (
-                    Role::Button,
-                    t("a11y-shell-people-next"),
-                    t("a11y-shell-people-next-description"),
-                    None,
-                ),
                 CollaboratorsHit::Invite => (
                     Role::Button,
                     t("a11y-shell-invite"),
@@ -1615,10 +1686,6 @@ impl CollaboratorsOverlay {
         true
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one layout pass derives every panel rect from the same running offsets"
-    )]
     fn layout(
         &mut self,
         host: Rect,
@@ -1628,16 +1695,8 @@ impl CollaboratorsOverlay {
         has_exposure: bool,
     ) {
         self.host = host;
-        if self.roster_offset >= member_count {
-            self.roster_offset = 0;
-        }
-        let paged = member_count > ROSTER_PAGE_SIZE;
-        let end = self
-            .roster_offset
-            .saturating_add(ROSTER_PAGE_SIZE)
-            .min(member_count);
-        self.roster_range = self.roster_offset..end;
-        let rows = f64_of_usize(self.roster_range.len().max(1));
+        let uniform = self.row_h();
+        let resting = move |_: usize| uniform;
         let warning_h = if unavailable {
             self.warning_height.max(24.0)
         } else {
@@ -1648,51 +1707,41 @@ impl CollaboratorsOverlay {
         } else {
             0.0
         };
-        let pager_h = if paged {
-            (self.control_height + 8.0).max(ROSTER_PAGER_H)
-        } else {
-            0.0
-        };
         let exposure_h = if has_exposure {
             self.exposure_height.max(44.0)
         } else {
             0.0
         };
         let footer_h = (self.activity_height + 8.0).max(FOOTER_H);
-        // Only a visible expanded row adds its summary's height; rows below
-        // it move down by exactly that much.
-        let expanded = self
-            .expanded_row
-            .filter(|index| self.roster_range.contains(index))
-            .map(|index| index.saturating_sub(self.roster_offset));
+        // Only the expanded row adds its summary's height; rows below it
+        // move down by exactly that much.
+        let expanded = self.expanded_row.filter(|index| *index < member_count);
         let extra = if expanded.is_some() {
             self.expanded_extra
         } else {
             0.0
         };
-        let list_top = self.header_height.max(48.0)
-            + self.status_block_height.max(92.0)
-            + exposure_h
-            + warning_h;
-        let row_h = self.row_h();
-        let row_offset = move |visible_index: usize| {
-            list_top
-                + f64_of_usize(visible_index) * row_h
-                + if expanded.is_some_and(|open| open < visible_index) {
-                    extra
-                } else {
-                    0.0
-                }
+        let list_top =
+            self.header_height.max(48.0) + self.status_block_height + exposure_h + warning_h;
+        let mut offsets = Vec::with_capacity(member_count);
+        let mut y = list_top;
+        for index in 0..member_count {
+            offsets.push(y);
+            y += resting(index) + if expanded == Some(index) { extra } else { 0.0 };
+        }
+        let rows_h = if member_count == 0 {
+            resting(0)
+        } else {
+            y - list_top
         };
-        let row_extent = move |visible_index: usize| {
-            row_h
-                + if expanded == Some(visible_index) {
-                    extra
-                } else {
-                    0.0
-                }
-        };
-        let height = list_top + rows * self.row_h() + extra + pager_h + 16.0 + actions_h + footer_h;
+        let tail_h = 16.0 + actions_h + footer_h;
+        let height = list_top + rows_h + tail_h;
+        // Everyone is listed; past VISIBLE_ROWS the popover stops growing and
+        // its list scrolls under the pinned header.
+        let visible_rows_h = offsets
+            .get(VISIBLE_ROWS)
+            .map_or(rows_h, |top| top - list_top);
+        self.visible_height = list_top + visible_rows_h + tail_h;
         let x1 = host.x1 - 16.0 - self.scroll_gutter;
         let y0 = host.y0 + 48.0;
         self.panel = Rect::new(x1 - (320.0 - self.scroll_gutter), y0, x1, y0 + height);
@@ -1702,61 +1751,23 @@ impl CollaboratorsOverlay {
             self.panel.x1 - 8.0,
             self.panel.y1 - 4.0,
         );
-        self.row_actions = (0..member_count)
-            .map(|index| {
-                let Some(visible_index) = index.checked_sub(self.roster_offset) else {
-                    return Rect::ZERO;
-                };
-                if visible_index >= self.roster_range.len() {
-                    return Rect::ZERO;
-                }
-                self.row_action_rect(self.panel, self.panel.y0 + row_offset(visible_index))
-            })
+        self.row_actions = offsets
+            .iter()
+            .map(|top| self.row_action_rect(self.panel, self.panel.y0 + top))
             .collect();
-        self.row_rects = (0..member_count)
-            .map(|index| {
-                let Some(visible_index) = index.checked_sub(self.roster_offset) else {
-                    return Rect::ZERO;
-                };
-                if visible_index >= self.roster_range.len() {
-                    return Rect::ZERO;
-                }
-                let y = self.panel.y0 + row_offset(visible_index);
+        self.row_rects = offsets
+            .iter()
+            .enumerate()
+            .map(|(index, top)| {
+                let y = self.panel.y0 + top;
                 Rect::new(
                     self.panel.x0 + 8.0,
                     y,
                     self.panel.x1 - 8.0,
-                    y + row_extent(visible_index),
+                    y + resting(index) + if expanded == Some(index) { extra } else { 0.0 },
                 )
             })
             .collect();
-        if paged {
-            let pager_y = self.panel.y0 + list_top + rows * self.row_h() + extra;
-            let center = self.panel.x0 + self.panel.width() / 2.0;
-            self.previous_people = if self.roster_offset > 0 {
-                Rect::new(
-                    self.panel.x0 + 12.0,
-                    pager_y + 4.0,
-                    center - 38.0,
-                    pager_y + 4.0 + self.control_height.max(MIN_TARGET),
-                )
-            } else {
-                Rect::ZERO
-            };
-            self.next_people = if end < member_count {
-                Rect::new(
-                    center + 38.0,
-                    pager_y + 4.0,
-                    self.panel.x1 - 12.0,
-                    pager_y + 4.0 + self.control_height.max(MIN_TARGET),
-                )
-            } else {
-                Rect::ZERO
-            };
-        } else {
-            self.previous_people = Rect::ZERO;
-            self.next_people = Rect::ZERO;
-        }
         if may_invite {
             // Shared control metrics preserve the minimum target as text grows.
             let control_h = self.control_height.max(MIN_TARGET);
@@ -1779,151 +1790,105 @@ impl CollaboratorsOverlay {
             self.invite = Rect::ZERO;
             self.join = Rect::ZERO;
         }
-        self.status = Rect::new(
-            self.panel.x0 + 44.0,
-            self.panel.y0 + self.header_height.max(48.0) + 2.0,
-            self.panel.x1 - 12.0,
-            self.panel.y0 + self.header_height.max(48.0) + 2.0 + self.status_height.max(28.0),
-        );
-        let mode_top = self.status.y1 + 4.0;
-        let mode_width = (self.panel.width() - 32.0) / 3.0;
-        self.status_modes = [
-            ui::StatusSharing::Automatic,
-            ui::StatusSharing::ManualOnly,
-            ui::StatusSharing::Off,
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(index, mode)| {
-            let index = f64_of_usize(index);
-            let rect = if self.stacked_modes {
-                let top = mode_top + index * (self.mode_height + 4.0);
-                Rect::new(
-                    self.panel.x0 + 12.0,
-                    top,
-                    self.panel.x1 - 12.0,
-                    top + self.mode_height,
-                )
-            } else {
-                Rect::new(
-                    self.panel.x0 + 12.0 + index * mode_width,
-                    mode_top,
-                    self.panel.x0 + 8.0 + (index + 1.0) * mode_width,
-                    mode_top + self.mode_height.max(24.0),
-                )
-            };
-            (mode, rect)
-        })
-        .collect();
+        self.layout_own_block();
     }
 
-    pub fn change_people_page(&mut self, forward: bool, member_count: usize) {
-        self.targets.cancel_pointer_press();
-        if forward {
-            if self.roster_offset.saturating_add(ROSTER_PAGE_SIZE) < member_count {
-                self.roster_offset = self.roster_offset.saturating_add(ROSTER_PAGE_SIZE);
-            }
-        } else {
-            self.roster_offset = self.roster_offset.saturating_sub(ROSTER_PAGE_SIZE);
-        }
-        self.keyboard_focus = self.keyboard_focus.filter(|hit| {
-            matches!(
-                hit,
-                CollaboratorsHit::PreviousPeople | CollaboratorsHit::NextPeople
+    /// Place the own block's parts from its measured heights, top down.
+    fn layout_own_block(&mut self) {
+        let gap = 4.0;
+        let text_x = self.panel.x0 + ROW_TEXT_INSET;
+        let mut y = self.panel.y0 + self.header_height.max(48.0) + gap;
+        self.own_avatar = Rect::from_center_size(
+            (self.panel.x0 + 25.0, y + self.name_height / 2.0),
+            (26.0, 26.0),
+        );
+        // The name and its pencil, as wide as they paint: the whole name
+        // is the target, never the empty band beside it.
+        self.own_name = if self.rename_offered {
+            Rect::new(
+                text_x - 4.0,
+                y,
+                (text_x + self.own_name_width + 6.0 + 14.0 + 4.0).min(self.panel.x1 - 12.0),
+                y + self.name_height,
             )
-        });
+        } else {
+            Rect::ZERO
+        };
+        y += self.name_height + gap;
+        if self.status_height > 0.0 {
+            self.status = Rect::new(text_x, y, self.panel.x1 - 12.0, y + self.status_height);
+            y += self.status_height + gap;
+        } else {
+            self.status = Rect::ZERO;
+        }
+        self.own_activity_top = y;
+        if self.shows_own_activity {
+            y += self.own_line_height + gap;
+        }
+        self.sharing_top = y;
+        self.sharing_change = Rect::new(
+            text_x - 4.0,
+            y,
+            (text_x + self.sharing_text_width + 4.0).min(self.panel.x1 - 12.0),
+            y + self.sharing_line_height,
+        );
+        y += self.sharing_line_height + gap;
+        self.status_modes = self
+            .offered_modes
+            .iter()
+            .map(|mode| {
+                if !self.sharing_open {
+                    return (*mode, Rect::ZERO);
+                }
+                // One single-choice list: rows touch, the chosen one lifted
+                // and checked.
+                let rect = Rect::new(text_x - 8.0, y, self.panel.x1 - 8.0, y + self.mode_height);
+                y += self.mode_height;
+                (*mode, rect)
+            })
+            .collect();
     }
 
-    fn draw_roster_pager(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        member_count: usize,
-        cursor: Option<Point>,
-    ) {
-        if member_count <= ROSTER_PAGE_SIZE {
-            return;
-        }
-        let label = format!(
-            "{}–{} of {member_count}",
-            self.roster_range.start.saturating_add(1),
-            self.roster_range.end
-        );
-        let (width, _) = text_renderer.measure_style(&label, None, &theme.text(TextRole::Caption));
-        let y = self.previous_people.y0.max(self.next_people.y0);
-        text_renderer.draw_style(
-            scene,
-            &label,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate(
-                (
-                    self.panel.x0 + self.panel.width() / 2.0 - f64::from(width) / 2.0,
-                    y + 7.0,
-                )
-                    .into(),
-            ),
-            None,
-            &theme.text(TextRole::Caption),
-        );
-        for (rect, icon, name, hit) in [
-            (
-                self.previous_people,
-                Icon::ChevronLeft,
-                crate::i18n::t("people-panel-previous-page"),
-                CollaboratorsHit::PreviousPeople,
-            ),
-            (
-                self.next_people,
-                Icon::ChevronRight,
-                crate::i18n::t("people-panel-next-page"),
-                CollaboratorsHit::NextPeople,
-            ),
-        ] {
-            if rect.area() <= 0.0 {
-                continue;
-            }
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(rect, "")
-                    .icon(icon)
-                    .accessible_name(&name)
-                    .pressed(self.interaction(hit).pressed)
-                    .hovered(cursor.is_some_and(|point| rect.contains(point))),
-            );
+    /// Open or close the choice of what to share ([`CollaboratorsHit::ChangeSharing`]).
+    /// Choosing a mode closes it again on the next paint.
+    pub fn toggle_sharing_choices(&mut self) {
+        self.targets.cancel_pointer_press();
+        self.sharing_open = !self.sharing_open;
+        if !self.sharing_open
+            && matches!(
+                self.keyboard_focus,
+                Some(CollaboratorsHit::SetStatusSharing(_))
+            )
+        {
+            self.keyboard_focus = Some(CollaboratorsHit::ChangeSharing);
         }
     }
 
-    fn partition_sharing(&mut self, text: &mut TextRenderer, theme: &Theme) {
-        if self.stacked_modes {
-            return;
-        }
-        let labels = Self::sharing_labels();
-        let labels = labels.iter().map(String::as_str).collect::<Vec<_>>();
-        let top = self.status.y1 + 4.0;
-        let band = Rect::new(
-            self.panel.x0 + 12.0,
-            top,
-            self.panel.x1 - 12.0,
-            top + self.mode_height,
-        );
-        let rects = SegmentedFace::partition(band, &labels, ControlSize::Regular, text, theme);
-        for ((_, target), rect) in self.status_modes.iter_mut().zip(rects) {
-            *target = rect;
-        }
+    /// What the sharing line says for `mode`: plain words, never a mode
+    /// name.
+    fn sharing_line(mode: ui::StatusSharing) -> String {
+        crate::i18n::t(match mode {
+            ui::StatusSharing::Automatic => "people-panel-sharing-line-auto",
+            ui::StatusSharing::ManualOnly => "people-panel-sharing-line-manual",
+            ui::StatusSharing::Off => "people-panel-sharing-line-off",
+        })
     }
 
-    fn sharing_labels() -> [String; 3] {
-        [
-            "people-panel-sharing-auto",
-            "people-panel-sharing-manual",
-            "people-panel-sharing-hidden",
-        ]
-        .map(crate::i18n::t)
+    /// The label of the choice that selects `mode`.
+    fn sharing_choice(mode: ui::StatusSharing) -> String {
+        crate::i18n::t(match mode {
+            ui::StatusSharing::Automatic => "people-panel-sharing-choice-auto",
+            ui::StatusSharing::ManualOnly => "people-panel-sharing-choice-manual",
+            ui::StatusSharing::Off => "people-panel-sharing-choice-off",
+        })
+    }
+
+    /// The sharing line with its link: "Sharing what you're doing · Change".
+    fn sharing_parts(mode: ui::StatusSharing) -> (String, String) {
+        (
+            format!("{} \u{b7} ", Self::sharing_line(mode)),
+            crate::i18n::t("people-panel-sharing-change"),
+        )
     }
 
     fn disclosure_width(theme: &Theme) -> f32 {
@@ -1964,20 +1929,7 @@ impl CollaboratorsOverlay {
             ui::widget::ListRowFace::new(&crate::i18n::t("a11y-shell-workspace-activity"))
                 .disclosure()
                 .height(text, theme);
-        self.status_height = FieldFace::height(ControlSize::Regular, theme);
-        self.mode_height = SegmentedFace::height(ControlSize::Regular, theme);
-        let labels = Self::sharing_labels();
-        let labels = labels.iter().map(String::as_str).collect::<Vec<_>>();
-        self.stacked_modes =
-            SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, text, theme)
-                > 288.0 - f64::from(theme.tokens.metrics.scrollbar_gutter);
-        let sharing_height = if self.stacked_modes {
-            self.mode_height * 3.0 + 8.0
-        } else {
-            self.mode_height
-        };
-        self.status_block_height =
-            2.0 + self.status_height + 4.0 + sharing_height + f64::from(theme.tokens.spacing.s2);
+        self.measure_own_block(text, theme, model);
         self.follow_height = ButtonFace::height(ControlSize::Regular, theme);
         self.row_height = (self.follow_height + 8.0).max(ROW_MIN_H);
         self.follow_width = ["people-panel-follow", "people-panel-stop-following"]
@@ -1991,6 +1943,62 @@ impl CollaboratorsOverlay {
             .fold(FOLLOW_MIN_W, f64::max);
         self.measure_expanded(text, theme, model);
         self.measure_watching(text, theme, model);
+    }
+
+    /// Measure the own block: the name line, the status field where the host
+    /// edits it, the live line, the sharing line and the open choices.
+    fn measure_own_block(
+        &mut self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        model: &CollaboratorsModel<'_>,
+    ) {
+        let name_style = theme.text(TextRole::Body).strong();
+        let caption = theme.text(TextRole::Caption);
+        let caption_line = f64::from(caption.line_height_px());
+        self.own_line_height = caption_line;
+        model.own_label.clone_into(&mut self.own_label);
+        self.rename_offered = model.own_rename;
+        let (name_width, name_line) = text.measure_style(model.own_label, None, &name_style);
+        self.own_name_width = f64::from(name_width);
+        self.name_height = f64::from(name_line).max(26.0);
+        self.status_height = if model.status_editable {
+            FieldFace::height(ControlSize::Regular, theme)
+        } else {
+            0.0
+        };
+        self.mode_height =
+            ui::widget::ListRowFace::new(&Self::sharing_choice(model.status_sharing))
+                .checked(true)
+                .height(text, theme)
+                .max(MIN_TARGET);
+        self.offered_modes = [
+            ui::StatusSharing::Automatic,
+            ui::StatusSharing::ManualOnly,
+            ui::StatusSharing::Off,
+        ]
+        .into_iter()
+        .filter(|mode| model.status_editable || *mode != ui::StatusSharing::ManualOnly)
+        .collect();
+        let (line, change) = Self::sharing_parts(model.status_sharing);
+        self.sharing_text_width = f64::from(text.measure_style(&line, None, &caption).0)
+            + f64::from(text.measure_style(&change, None, &caption).0);
+        // The link is one comfortable target tall, not just its text.
+        self.sharing_line_height = (caption_line + 8.0).max(24.0);
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let mut height = gap + self.name_height + gap;
+        if model.status_editable {
+            height += self.status_height + gap;
+        }
+        self.shows_own_activity = model.own_activity.is_some();
+        if self.shows_own_activity {
+            height += caption_line + gap;
+        }
+        height += self.sharing_line_height;
+        if self.sharing_open {
+            height += gap + f64_of_usize(self.offered_modes.len()) * self.mode_height;
+        }
+        self.status_block_height = height + f64::from(theme.tokens.spacing.s3);
     }
 
     /// Lay out the expanded row's recent summary: wrapped under the row's
@@ -2167,6 +2175,7 @@ impl CollaboratorsOverlay {
         );
     }
 
+    /// The sharing line, its "Change" link and, while open, the choices.
     fn paint_sharing(
         &self,
         scene: &mut Scene,
@@ -2176,41 +2185,124 @@ impl CollaboratorsOverlay {
         sharing: ui::StatusSharing,
         cursor: Option<Point>,
     ) {
-        let labels = Self::sharing_labels();
-        let rects = self
-            .status_modes
-            .iter()
-            .map(|(_, rect)| *rect)
-            .collect::<Vec<_>>();
-        let selected = self
-            .status_modes
-            .iter()
-            .position(|(mode, _)| *mode == sharing);
-        if self.stacked_modes {
-            for ((mode, rect), label) in self.status_modes.iter().zip(&labels) {
-                Button::paint(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &ButtonFace::new(*rect, label)
-                        .toggled(*mode == sharing)
-                        .hovered(cursor.is_some_and(|point| rect.contains(point)))
-                        .pressed(
-                            self.interaction(CollaboratorsHit::SetStatusSharing(*mode))
-                                .pressed,
-                        )
-                        .focused(
-                            self.keyboard_focus == Some(CollaboratorsHit::SetStatusSharing(*mode)),
-                        ),
-                );
-            }
-        } else {
-            let labels = labels.iter().map(String::as_str).collect::<Vec<_>>();
-            let face = SegmentedFace::new(&rects, &labels, selected.unwrap_or(0)).hovered(
-                cursor.and_then(|point| rects.iter().position(|rect| rect.contains(point))),
+        let colors = &theme.tokens.colors;
+        let caption = theme.text(TextRole::Caption);
+        let (lead, change) = Self::sharing_parts(sharing);
+        let link = self.sharing_change;
+        let hovered = cursor.is_some_and(|point| link.contains(point));
+        if hovered || self.interaction(CollaboratorsHit::ChangeSharing).pressed {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.text_primary.multiply_alpha(0.06),
+                None,
+                &RoundedRect::from_rect(link, f64::from(theme.tokens.radii.detail)),
             );
-            ui::widget::ToggleGroup::paint(scene, transform, text_renderer, theme, &face);
+        }
+        let y = self.sharing_top
+            + (self.sharing_line_height - f64::from(caption.line_height_px())) / 2.0;
+        let x = link.x0 + 4.0;
+        let (lead_width, _) = text_renderer.measure_style(&lead, None, &caption);
+        text_renderer.draw_style(
+            scene,
+            &lead,
+            colors.text_dim,
+            transform.pre_translate((x, y).into()),
+            None,
+            &caption,
+        );
+        text_renderer.draw_style(
+            scene,
+            &change,
+            colors.intent.inverted,
+            transform.pre_translate((x + f64::from(lead_width), y).into()),
+            None,
+            &caption,
+        );
+        for (mode, rect) in self
+            .status_modes
+            .iter()
+            .filter(|(_, rect)| rect.area() > 0.0)
+        {
+            let hit = CollaboratorsHit::SetStatusSharing(*mode);
+            let mut interaction = self.interaction(hit);
+            interaction.hovered = cursor.is_some_and(|point| rect.contains(point));
+            interaction.focused = self.keyboard_focus == Some(hit);
+            let label = Self::sharing_choice(*mode);
+            ui::widget::ListRowFace::new(&label)
+                .checked(*mode == sharing)
+                .selected(*mode == sharing)
+                .interaction(interaction)
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    *rect,
+                );
+        }
+    }
+
+    /// The own name, in the text column beside the avatar, with a pencil
+    /// when the host can rename.
+    fn paint_own_name(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rename: bool,
+        cursor: Option<Point>,
+    ) {
+        let colors = &theme.tokens.colors;
+        let style = theme.text(TextRole::Body).strong();
+        let target = Rect::new(
+            self.panel.x0 + ROW_TEXT_INSET - 4.0,
+            self.own_avatar.center().y - self.name_height / 2.0,
+            self.own_name.x1,
+            self.own_avatar.center().y + self.name_height / 2.0,
+        );
+        let hovered = rename && cursor.is_some_and(|point| target.contains(point));
+        if hovered || (rename && self.interaction(CollaboratorsHit::Rename).pressed) {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.text_primary.multiply_alpha(0.06),
+                None,
+                &RoundedRect::from_rect(target, f64::from(theme.tokens.radii.detail)),
+            );
+        }
+        let x = self.panel.x0 + ROW_TEXT_INSET;
+        let pencil = if rename { 6.0 + 14.0 } else { 0.0 };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+        )]
+        let shown = text_renderer.elide_to_width_style(
+            &self.own_label,
+            (self.panel.x1 - 12.0 - x - pencil).max(0.0) as f32,
+            &style,
+        );
+        let (width, height) = text_renderer.measure_style(&shown, None, &style);
+        let top = target.y0 + (self.name_height - f64::from(height)) / 2.0;
+        text_renderer.draw_style(
+            scene,
+            &shown,
+            colors.text_primary,
+            transform.pre_translate((x, top).into()),
+            None,
+            &style,
+        );
+        if rename {
+            let icon_x = x + f64::from(width) + 6.0;
+            let centre = target.y0 + self.name_height / 2.0;
+            Icon::Pencil.draw(
+                scene,
+                transform,
+                Rect::new(icon_x, centre - 7.0, icon_x + 14.0, centre + 7.0),
+                if hovered {
+                    colors.text_primary
+                } else {
+                    colors.text_dim
+                },
+            );
         }
     }
 
@@ -2224,19 +2316,19 @@ impl CollaboratorsOverlay {
         cursor: Option<Point>,
     ) {
         let colors = &theme.tokens.colors;
-        let avatar = Rect::new(
-            self.panel.x0 + 12.0,
-            self.status.y0 + 1.0,
-            self.panel.x0 + 38.0,
-            self.status.y0 + 27.0,
-        );
-        ui::widget::AvatarFace::new(&model.own_initial.to_string(), "")
+        let avatar = self.own_avatar;
+        let initial: Option<String> = model
+            .own_label
+            .chars()
+            .find(|c| c.is_alphanumeric())
+            .map(|c| c.to_uppercase().collect());
+        ui::widget::AvatarFace::new(initial.as_deref().unwrap_or_default(), "")
             .presence(model.own_color)
             .paint(
                 &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 avatar,
             );
-        if !model.own_initial.is_alphabetic() {
+        if initial.is_none() {
             // An identity with no letter to show (a bare key) would leave a
             // blank disc; a person glyph says who it is instead.
             Icon::User.draw(
@@ -2255,7 +2347,68 @@ impl CollaboratorsOverlay {
             &spark,
         );
         scene.fill(Fill::NonZero, transform, model.own_color, None, &spark);
-        self.paint_status_field(scene, transform, text_renderer, theme, model, cursor);
+        self.paint_own_name(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            model.own_rename,
+            cursor,
+        );
+        if self.status.area() > 0.0 {
+            self.paint_status_field(scene, transform, text_renderer, theme, model, cursor);
+            if model.own_status_automatic && !model.status_editing {
+                // The status in the field was suggested, not typed.
+                let side = 12.0;
+                let badge = Rect::new(
+                    self.status.x1 - 8.0 - side,
+                    self.status.center().y - side / 2.0,
+                    self.status.x1 - 8.0,
+                    self.status.center().y + side / 2.0,
+                );
+                Icon::Sparkles.draw(scene, transform, badge, colors.intent.inverted);
+            }
+        }
+        if let Some(activity) = model.own_activity {
+            let caption = theme.text(TextRole::Caption);
+            let x = self.panel.x0 + ROW_TEXT_INSET;
+            let top = self.own_activity_top;
+            let line = f64::from(caption.line_height_px());
+            // Model prose carries the sparkle; a line read off what this
+            // person did carries only their colour.
+            if model.own_activity_generated {
+                Icon::Sparkles.draw(
+                    scene,
+                    transform,
+                    Rect::from_center_size((x + 6.0, top + line / 2.0), (12.0, 12.0)),
+                    colors.intent.inverted,
+                );
+            } else {
+                let dot = vello::kurbo::Circle::new(Point::new(x + 6.0, top + line / 2.0), 3.0);
+                scene.fill(Fill::NonZero, transform, model.own_color, None, &dot);
+            }
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+            )]
+            let activity = text_renderer.elide_to_width_style(
+                activity,
+                (self.panel.x1 - 12.0 - x - ROW_ICON_TEXT_INSET).max(0.0) as f32,
+                &caption,
+            );
+            text_renderer.draw_style(
+                scene,
+                &activity,
+                if model.own_activity_generated {
+                    colors.intent.inverted
+                } else {
+                    colors.text_dim
+                },
+                transform.pre_translate((x + ROW_ICON_TEXT_INSET, top).into()),
+                None,
+                &caption,
+            );
+        }
         self.paint_sharing(
             scene,
             transform,
@@ -2264,45 +2417,6 @@ impl CollaboratorsOverlay {
             model.status_sharing,
             cursor,
         );
-        if let Some(activity) = model.own_activity {
-            let dot = vello::kurbo::Circle::new(
-                Point::new(
-                    self.status.x0 + 8.0,
-                    self.panel.y0
-                        + self.header_height.max(48.0)
-                        + self.status_block_height.max(92.0)
-                        - 22.0,
-                ),
-                3.0,
-            );
-            scene.fill(Fill::NonZero, transform, model.own_color, None, &dot);
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
-            )]
-            let activity = text_renderer.elide_to_width_style(
-                activity,
-                (self.status.width() - 20.0).max(0.0) as f32,
-                &theme.text(TextRole::Caption),
-            );
-            text_renderer.draw_style(
-                scene,
-                &activity,
-                colors.text_dim,
-                transform.pre_translate(
-                    (
-                        self.status.x0 + 16.0,
-                        self.panel.y0
-                            + self.header_height.max(48.0)
-                            + self.status_block_height.max(92.0)
-                            - 28.0,
-                    )
-                        .into(),
-                ),
-                None,
-                &theme.text(TextRole::Caption),
-            );
-        }
     }
 
     fn draw_row(
@@ -2373,6 +2487,12 @@ impl CollaboratorsOverlay {
         self.draw_row_text(scene, transform, text_renderer, theme, frame);
     }
 
+    /// The avatar's centre: level with the row's lines, never lower than
+    /// on a three-line row.
+    fn avatar_center_y(&self, frame: &RowFrame<'_>) -> f64 {
+        frame.y + self.row_h() / 2.0
+    }
+
     fn draw_row_identity(
         &self,
         scene: &mut Scene,
@@ -2395,7 +2515,7 @@ impl CollaboratorsOverlay {
     ) {
         let row = frame.row;
         let colors = &theme.tokens.colors;
-        let center = Point::new(self.panel.x0 + 28.0, frame.y + self.row_h() / 2.0);
+        let center = Point::new(self.panel.x0 + 28.0, self.avatar_center_y(frame));
         let avatar_rect = Rect::new(
             center.x - 11.0,
             center.y - 11.0,
@@ -2464,7 +2584,7 @@ impl CollaboratorsOverlay {
         frame: &RowFrame<'_>,
     ) {
         let row = frame.row;
-        let center = Point::new(self.panel.x0 + 28.0, frame.y + self.row_h() / 2.0);
+        let center = Point::new(self.panel.x0 + 28.0, self.avatar_center_y(frame));
         if !row.invited {
             // A live spark belongs on the identity itself: it reads as
             // "here now" without turning the row into a status report.
@@ -2672,13 +2792,21 @@ impl CollaboratorsOverlay {
             next_line += line_h;
         }
         if let Some(status) = &row.status {
-            let icon = if status.automatic {
-                Icon::Sparkles
-            } else {
-                Icon::Pencil
-            };
             let icon_rect = Rect::new(text_x, next_line, text_x + 12.0, next_line + 12.0);
-            icon.draw(scene, transform, icon_rect, colors.intent.inverted);
+            // Only model prose gets the sparkle and only typed words the
+            // pencil; a line read off what they did gets their colour.
+            match status.source {
+                LineSource::Generated => {
+                    Icon::Sparkles.draw(scene, transform, icon_rect, colors.intent.inverted);
+                }
+                LineSource::Written => {
+                    Icon::Pencil.draw(scene, transform, icon_rect, colors.intent.inverted);
+                }
+                LineSource::Observed => {
+                    let dot = vello::kurbo::Circle::new(icon_rect.center(), 3.0);
+                    scene.fill(Fill::NonZero, transform, row.color, None, &dot);
+                }
+            }
             let status_text_x = text_x + ROW_ICON_TEXT_INSET;
             #[allow(
                 clippy::cast_possible_truncation,
@@ -2797,7 +2925,7 @@ impl CollaboratorsOverlay {
         let top = frame.y + self.recent_top(frame.row, frame.followed, theme);
         // Model prose carries the same sparkle as an inferred status, so a
         // summary is never read as the person's own words.
-        let (icon, ink) = if recent.automatic {
+        let (icon, ink) = if recent.source == LineSource::Generated {
             (Icon::Sparkles, colors.intent.inverted)
         } else {
             (Icon::History, colors.text_dim)
@@ -3129,10 +3257,10 @@ mod tests {
             assert_eq!(invite.y1, join.y1);
         }
 
-        fn crowded_rosters_page_without_putting_rows_under_the_footer() {
+        fn crowded_rosters_list_everyone_and_scroll_past_eight_rows() {
             let mut overlay = CollaboratorsOverlay::default();
-            let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
-            overlay.layout(host, 8, false, true, false);
+            let host = Rect::new(0.0, 0.0, 1200.0, 1600.0);
+            overlay.layout(host, 12, false, true, false);
 
             assert_eq!(
                 overlay
@@ -3140,48 +3268,41 @@ mod tests {
                     .iter()
                     .filter(|rect| rect.area() > 0.0)
                     .count(),
-                ROSTER_PAGE_SIZE
-            );
-            assert!(overlay.next_people.area() > 0.0);
-            assert_eq!(
-                overlay.hit_test(overlay.next_people.center()),
-                CollaboratorsHit::NextPeople
+                12,
+                "everyone is listed; there are no pages"
             );
             assert!(
                 overlay
                     .row_rects
                     .iter()
-                    .filter(|rect| rect.area() > 0.0)
                     .all(|rect| rect.y1 < overlay.activity.y0)
             );
-
-            overlay.change_people_page(true, 8);
-            overlay.layout(host, 8, false, true, false);
-            assert_eq!(overlay.roster_range, 3..6);
-            assert!(overlay.previous_people.area() > 0.0);
             assert_eq!(
-                overlay.hit_test(overlay.row_action_rects()[3].center()),
-                CollaboratorsHit::ToggleFollow(3)
+                overlay.hit_test(overlay.row_action_rects()[11].center()),
+                CollaboratorsHit::ToggleFollow(11)
+            );
+            let visible_bottom = overlay.panel.y0 + overlay.visible_height;
+            assert!(
+                overlay.panel.y1 > visible_bottom,
+                "twelve people overflow the popover"
+            );
+            let tail = overlay.panel.y1 - overlay.row_rects[11].y1;
+            assert!(
+                (overlay.row_rects[7].y1 + tail - visible_bottom).abs() < 1e-9,
+                "the capped popover shows exactly eight rows"
             );
 
-            overlay.change_people_page(true, 8);
-            overlay.layout(host, 8, false, true, false);
-            assert_eq!(overlay.roster_range, 6..8);
-            assert_eq!(
-                overlay
-                    .row_action_rects()
-                    .iter()
-                    .filter(|rect| rect.area() > 0.0)
-                    .count(),
-                2
+            overlay.layout(host, 5, false, true, false);
+            assert!(
+                (overlay.panel.y0 + overlay.visible_height - overlay.panel.y1).abs() < 1e-9,
+                "a short roster never scrolls"
             );
-            assert_eq!(overlay.next_people, Rect::ZERO);
         }
 
         footer_separator_and_row_edge_register_on_every_palette();
         footer_keeps_a_token_gap_around_the_activity_row();
         every_button_is_at_least_one_pointer_target_and_centred_in_its_band();
-        crowded_rosters_page_without_putting_rows_under_the_footer();
+        crowded_rosters_list_everyone_and_scroll_past_eight_rows();
     }
 
     #[test]
@@ -3238,7 +3359,7 @@ mod tests {
                 activity: Some("Editing · Q2 finance report".into()),
                 status: Some(RosterStatus {
                     text: "Preparing the board review".into(),
-                    automatic: true,
+                    source: LineSource::Generated,
                 }),
                 recent: None,
                 followable: true,
@@ -3256,7 +3377,7 @@ mod tests {
 
         fn accessibility_keeps_own_live_action_separate_from_own_intent() {
             let mut overlay = CollaboratorsOverlay::default();
-            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 0, false, false, false);
+            paint_roster_focus(&mut overlay, &[]);
             overlay.accessibility_status = Some("Closing the Q3 forecast".into());
             overlay.accessibility_own_activity = Some("Reconciling · Q3 forecast".into());
             let snapshot = overlay.accessibility_snapshot();
@@ -3326,7 +3447,8 @@ mod tests {
             let model = CollaboratorsModel {
                 host: Rect::ZERO,
                 rows: &rows,
-                own_initial: 'Q',
+                own_label: "Quinn",
+                own_rename: false,
                 own_color: Color::from_rgb8(7, 8, 9),
                 unavailable: None,
                 may_invite: false,
@@ -3334,6 +3456,7 @@ mod tests {
                 following_pairs: &pairs,
                 own_status: None,
                 own_activity: None,
+                own_activity_generated: false,
                 own_status_automatic: false,
                 status_sharing: ui::StatusSharing::Automatic,
                 status_editing: false,
@@ -3404,11 +3527,26 @@ mod tests {
 
         fn own_status_and_privacy_modes_are_first_class_hit_targets() {
             let mut overlay = CollaboratorsOverlay::default();
-            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true, false);
+            let people = roster_focus_rows();
+            paint_roster_focus(&mut overlay, &people);
             assert_eq!(
                 overlay.hit_test(overlay.status.center()),
                 CollaboratorsHit::EditStatus
             );
+            assert!(
+                overlay
+                    .status_modes
+                    .iter()
+                    .all(|(_, rect)| rect.area() == 0.0),
+                "the choices stay closed until asked for"
+            );
+            assert_eq!(
+                overlay.hit_test(overlay.sharing_change.center()),
+                CollaboratorsHit::ChangeSharing
+            );
+            overlay.toggle_sharing_choices();
+            paint_roster_focus(&mut overlay, &people);
+            assert_eq!(overlay.status_modes.len(), 3);
             for (mode, rect) in &overlay.status_modes {
                 assert_eq!(
                     overlay.hit_test(rect.center()),
@@ -3419,7 +3557,7 @@ mod tests {
 
         fn keyboard_reaches_status_privacy_follow_and_activity_without_pointer_input() {
             let mut overlay = CollaboratorsOverlay::default();
-            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true, false);
+            paint_roster_focus(&mut overlay, &roster_focus_rows());
 
             assert_eq!(overlay.key(&Key::Named(NamedKey::Home), false), None);
             assert_eq!(
@@ -3463,6 +3601,96 @@ mod tests {
             .collect()
     }
 
+    /// Paint the own block as a host that edits no status but renames (the
+    /// browser): `sharing` is the current choice.
+    fn paint_guest(overlay: &mut CollaboratorsOverlay, sharing: ui::StatusSharing) {
+        overlay.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &CollaboratorsModel {
+                host: Rect::new(0.0, 0.0, 800.0, 600.0),
+                rows: &[],
+                own_label: "Brave Fox",
+                own_rename: true,
+                own_color: Color::from_rgb8(170, 120, 130),
+                unavailable: None,
+                may_invite: false,
+                followed_id: None,
+                following_pairs: &[],
+                own_status: None,
+                own_activity: Some("Editing Welcome in Notes"),
+                own_activity_generated: false,
+                own_status_automatic: false,
+                status_sharing: sharing,
+                status_editing: false,
+                status_selection: ui::text_selection::Selection::default(),
+                screen_exposure: None,
+                expanded_id: None,
+                watching: 0,
+                status_editable: false,
+            },
+            None,
+        );
+    }
+
+    #[test]
+    fn a_guest_sees_their_name_and_plain_sharing_choices() {
+        let mut overlay = CollaboratorsOverlay::default();
+        paint_guest(&mut overlay, ui::StatusSharing::Automatic);
+        assert_eq!(overlay.status, Rect::ZERO, "no status field it cannot edit");
+        assert_eq!(
+            overlay.hit_test(overlay.own_name.center()),
+            CollaboratorsHit::Rename
+        );
+        let snapshot = overlay.accessibility_snapshot();
+        let change = snapshot
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Change what you share"))
+            .expect("the sharing line is a control");
+        assert_eq!(
+            change.description.as_deref(),
+            Some("Sharing what you're doing")
+        );
+        assert!(
+            snapshot
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Change your name, Brave Fox"))
+        );
+
+        overlay.toggle_sharing_choices();
+        paint_guest(&mut overlay, ui::StatusSharing::Automatic);
+        let offered: Vec<_> = overlay.status_modes.iter().map(|(mode, _)| *mode).collect();
+        assert_eq!(
+            offered,
+            [ui::StatusSharing::Automatic, ui::StatusSharing::Off],
+            "writing your own needs a host that edits the status"
+        );
+        let off = overlay.status_modes[1].1;
+        assert_eq!(
+            overlay.hit_test(off.center()),
+            CollaboratorsHit::SetStatusSharing(ui::StatusSharing::Off)
+        );
+        // The host applied the choice: the choices close and the line says
+        // what was chosen.
+        paint_guest(&mut overlay, ui::StatusSharing::Off);
+        assert!(
+            overlay
+                .status_modes
+                .iter()
+                .all(|(_, rect)| rect.area() == 0.0)
+        );
+        let snapshot = overlay.accessibility_snapshot();
+        assert!(
+            snapshot.children.iter().any(|node| {
+                node.description.as_deref() == Some("Not sharing what you're doing")
+            })
+        );
+    }
+
     fn paint_roster_focus(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow]) {
         paint_roster_focus_in(overlay, rows, Rect::new(0.0, 0.0, 800.0, 600.0));
     }
@@ -3476,7 +3704,8 @@ mod tests {
             &CollaboratorsModel {
                 host,
                 rows,
-                own_initial: 'Q',
+                own_label: "Quinn",
+                own_rename: false,
                 own_color: Color::from_rgb8(170, 120, 130),
                 unavailable: None,
                 may_invite: false,
@@ -3484,6 +3713,7 @@ mod tests {
                 following_pairs: &[],
                 own_status: None,
                 own_activity: None,
+                own_activity_generated: false,
                 own_status_automatic: false,
                 status_sharing: ui::StatusSharing::Automatic,
                 status_editing: false,
@@ -3517,7 +3747,8 @@ mod tests {
                 &CollaboratorsModel {
                     host: Rect::new(0.0, 0.0, 800.0, 700.0),
                     rows,
-                    own_initial: 'Q',
+                    own_label: "Quinn",
+                    own_rename: false,
                     own_color: Color::from_rgb8(170, 120, 130),
                     unavailable: None,
                     may_invite: false,
@@ -3525,6 +3756,7 @@ mod tests {
                     following_pairs: &[],
                     own_status: Some("Reviewing"),
                     own_activity: None,
+                    own_activity_generated: false,
                     own_status_automatic: false,
                     status_sharing: ui::StatusSharing::Automatic,
                     status_editing: false,
@@ -3547,7 +3779,7 @@ mod tests {
         let mut people = roster_focus_rows();
         people[0].recent = Some(RosterStatus {
             text: "Rewrote the intro and resolved two comments in Notes".into(),
-            automatic: true,
+            source: LineSource::Generated,
         });
         let mut overlay = CollaboratorsOverlay::default();
         paint(&mut overlay, &people, None, true);
@@ -3624,9 +3856,8 @@ mod tests {
         assert!(
             overlay
                 .focus_order()
-                .iter()
-                .any(|hit| matches!(hit, CollaboratorsHit::SetStatusSharing(_))),
-            "sharing modes stay"
+                .contains(&CollaboratorsHit::ChangeSharing),
+            "the sharing choice stays"
         );
     }
 
@@ -3635,7 +3866,7 @@ mod tests {
         let mut overlay = CollaboratorsOverlay::default();
         let mut people = roster_focus_rows();
         paint_roster_focus(&mut overlay, &people);
-        assert!(overlay.focus_accessibility_path(&[5]));
+        assert!(overlay.focus_accessibility_path(&[3]));
         people.swap(0, 1);
         paint_roster_focus(&mut overlay, &people);
         assert_eq!(
@@ -3657,7 +3888,7 @@ mod tests {
         let mut overlay = CollaboratorsOverlay::default();
         let mut people = roster_focus_rows();
         paint_roster_focus(&mut overlay, &people);
-        assert!(overlay.focus_accessibility_path(&[5]));
+        assert!(overlay.focus_accessibility_path(&[3]));
         people.remove(0);
         paint_roster_focus(&mut overlay, &people);
         assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
@@ -3678,7 +3909,7 @@ mod tests {
         let mut overlay = CollaboratorsOverlay::default();
         let mut people = roster_focus_rows();
         paint_roster_focus(&mut overlay, &people);
-        assert!(overlay.focus_accessibility_path(&[5]));
+        assert!(overlay.focus_accessibility_path(&[3]));
         people.first_mut().expect("Ada").followable = false;
         paint_roster_focus(&mut overlay, &people);
         assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
@@ -3692,11 +3923,11 @@ mod tests {
     }
 
     #[test]
-    fn roster_follow_focus_survives_resize_and_clears_on_page_change() {
+    fn roster_follow_focus_survives_resize_and_arrivals() {
         let mut overlay = CollaboratorsOverlay::default();
         let mut people = roster_focus_rows();
         paint_roster_focus(&mut overlay, &people);
-        assert!(overlay.focus_accessibility_path(&[5]));
+        assert!(overlay.focus_accessibility_path(&[3]));
         let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
         paint_roster_focus_in(&mut overlay, &people, viewport);
         assert_eq!(
@@ -3704,7 +3935,7 @@ mod tests {
             Some(CollaboratorsHit::ToggleFollow(0))
         );
         let focus = overlay
-            .accessibility_rect_for_path(&[5])
+            .accessibility_rect_for_path(&[3])
             .expect("Ada after resize");
         assert!(
             viewport.contains(focus.origin()) && viewport.contains(Point::new(focus.x1, focus.y1))
@@ -3715,16 +3946,11 @@ mod tests {
             row.label = name.into();
             people.push(row);
         }
-        overlay.change_people_page(true, people.len());
         paint_roster_focus_in(&mut overlay, &people, viewport);
-        assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
-        overlay.change_people_page(false, people.len());
-        paint_roster_focus_in(&mut overlay, &people, viewport);
-        assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
-        assert!(overlay.focus_accessibility_path(&[5]));
         assert_eq!(
             overlay.key(&Key::Named(NamedKey::Enter), false),
-            Some(CollaboratorsHit::ToggleFollow(0))
+            Some(CollaboratorsHit::ToggleFollow(0)),
+            "people arriving keep the focus where it was"
         );
     }
 }

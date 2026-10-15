@@ -30,8 +30,10 @@ pub struct CloudFs {
 
 impl CloudFs {
     pub fn new(volume: Arc<CloudVolume>) -> Self {
-        // SAFETY: getuid/getgid cannot fail.
-        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        let (uid, gid) = (
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw(),
+        );
         Self { volume, uid, gid }
     }
 

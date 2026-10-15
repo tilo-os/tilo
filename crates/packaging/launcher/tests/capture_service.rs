@@ -5,8 +5,8 @@ use launcher::{
     },
     run::{IdentitySource, LaunchMode, RunOptions},
 };
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
 use std::{
     fs::File,
     io::{self, Read, Write},
@@ -36,7 +36,7 @@ struct InaccessibleAncestor {
 impl InaccessibleAncestor {
     fn deny(path: &Path) -> io::Result<Self> {
         let permissions = std::fs::metadata(path)?.permissions();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0))?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o0))?;
         Ok(Self {
             path: path.into(),
             permissions,
@@ -139,7 +139,12 @@ type = "cli"
     )
     .unwrap();
     assert!(matches!(
-        tilo_app_package::verify_with_trust(&packed.meta, &[publisher], &[], &Default::default()),
+        tilo_app_package::verify_with_trust(
+            &packed.meta,
+            &[publisher],
+            &[],
+            &tilo_app_package::RevocationList::default()
+        ),
         tilo_app_package::Verification::Trusted { .. }
     ));
     let installed = root.join("installed-worker");
@@ -155,7 +160,7 @@ type = "cli"
     }
     let mut row = launcher::managed::agent_package_row(
         packed.id().to_hex(),
-        installed.clone(),
+        installed,
         metadata.join("manifest.toml"),
     );
     row.id = PACKAGE.into();
@@ -165,24 +170,37 @@ type = "cli"
     row
 }
 
-fn inspect_peer(
-    endpoint: launcher::owned_service::ServiceEndpoint,
-    cancel: ServiceCancellation,
-    sender: std::sync::mpsc::Sender<OwnedFd>,
-) -> io::Result<()> {
-    let custody = endpoint.custody()?;
+fn namespace_metadata(pid: u32) -> io::Result<std::fs::Metadata> {
+    std::fs::metadata(format!("/proc/{pid}/ns/pid"))
+}
+
+fn assert_peer_custody(
+    custody: &launcher::owned_service::ServiceCustody,
+    namespace: &std::fs::Metadata,
+) {
     assert!(custody.init_pid > 1 && custody.start_ticks > 0);
-    let namespace = std::fs::metadata(format!("/proc/{}/ns/pid", custody.init_pid))?;
     assert_eq!(
         (namespace.dev(), namespace.ino()),
         (custody.namespace_dev, custody.namespace_ino)
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
+}
+
+fn inspect_peer(
+    endpoint: &launcher::owned_service::ServiceEndpoint,
+    cancel: &ServiceCancellation,
+    sender: &std::sync::mpsc::Sender<OwnedFd>,
+) -> io::Result<()> {
+    let custody = endpoint.custody()?;
+    assert_peer_custody(&custody, &namespace_metadata(custody.init_pid)?);
+    let started = Instant::now();
     let mut stream = loop {
         match endpoint.connect() {
             Ok(stream) => break stream,
-            Err(error) if error.kind() == io::ErrorKind::NotFound && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10))
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && started.elapsed() < Duration::from_secs(10) =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => return Err(error),
         }
@@ -218,6 +236,21 @@ fn inspect_peer(
     Ok(())
 }
 
+fn assert_worker_reaped(receive: &std::sync::mpsc::Receiver<OwnedFd>) {
+    let pidfd = receive.recv_timeout(Duration::from_secs(1)).unwrap();
+    let mut poll = libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    assert_eq!(unsafe { libc::poll(&raw mut poll, 1, 0) }, 1);
+    assert_ne!(
+        poll.revents & libc::POLLIN,
+        0,
+        "authenticated worker must be reaped before capture admission ends"
+    );
+}
+
 #[test]
 fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
     let payload = super::support::capture_worker_payload();
@@ -235,7 +268,7 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
     std::fs::write(source.join("document"), b"selected bytes").unwrap();
     std::fs::write(source_parent.join("source-secret"), b"not selected").unwrap();
     std::fs::write(output_parent.join("output-secret"), b"not selected").unwrap();
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     let admission =
         CaptureAdmission::verify(&runtime, &publisher, File::open(&source).unwrap(), uid)
             .unwrap()
@@ -300,7 +333,7 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
         cancel,
         key.clone(),
         Some(Box::new(move |endpoint| {
-            inspect_peer(endpoint, callback_cancel, send)
+            inspect_peer(&endpoint, &callback_cancel, &send)
         })),
     )
     .unwrap_or_else(|error| {
@@ -311,18 +344,7 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
         panic!("actual capture launch failed: {error:?}\nchild diagnostics:\n{diagnostic}");
     });
     assert!(exit.matches(&key, &data, PACKAGE));
-    let pidfd = receive.recv_timeout(Duration::from_secs(1)).unwrap();
-    let mut poll = libc::pollfd {
-        fd: pidfd.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    assert_eq!(unsafe { libc::poll(&mut poll, 1, 0) }, 1);
-    assert_ne!(
-        poll.revents & libc::POLLIN,
-        0,
-        "authenticated worker must be reaped before capture admission ends"
-    );
+    assert_worker_reaped(&receive);
     drop(source_custody);
     assert_eq!(
         std::fs::read(source.join("document")).unwrap(),
@@ -352,7 +374,7 @@ fn signed_original_source_reader_drops_source_groups_only_after_namespace_confin
         return;
     }
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "qualification requires disposable root namespace"
     );
@@ -400,7 +422,7 @@ fn signed_original_source_reader_drops_source_groups_only_after_namespace_confin
         false,
     );
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "receiving parent credentials remain unchanged"
     );
@@ -423,6 +445,17 @@ fn signed_original_source_reader_drops_source_groups_only_after_namespace_confin
     );
     assert!(!source.join("forbidden-new-file").exists());
 
+    assert_retired_original_reader(&root, &runtime, &publisher, &installed, &source);
+    assert_eq!(unsafe { libc::umount2(path.as_ptr(), 0) }, 0);
+}
+
+fn assert_retired_original_reader(
+    root: &Path,
+    runtime: &Path,
+    publisher: &str,
+    installed: &package_store::InstalledPackage,
+    source: &Path,
+) {
     // A permissive, unrelated outer authority cannot replace the retained
     // original context. Retiring it must refuse endpoint use and tear down the
     // actual signed namespace before its owning callback thread returns.
@@ -430,9 +463,9 @@ fn signed_original_source_reader_drops_source_groups_only_after_namespace_confin
     std::fs::create_dir(&retired_data).unwrap();
     std::fs::set_permissions(&retired_data, std::fs::Permissions::from_mode(0o700)).unwrap();
     let retired_admission = CaptureAdmission::verify_original_source(
-        &runtime,
-        &publisher,
-        File::open(&source).unwrap(),
+        runtime,
+        publisher,
+        File::open(source).unwrap(),
         1000,
         1001,
         &[1002],
@@ -444,9 +477,9 @@ fn signed_original_source_reader_drops_source_groups_only_after_namespace_confin
     .with_installation(installed.clone(), &installed.publisher_key_hex)
     .unwrap();
     let refused = returning_callback_retains_original_custody(
-        original_reader_launch(&installed, &retired_data, &root.join("source-secret")),
+        original_reader_launch(installed, &retired_data, &root.join("source-secret")),
         retired_admission,
-        File::open(&source).unwrap(),
+        File::open(source).unwrap(),
         ServiceLeaseKey::default(),
         true,
     );
@@ -454,7 +487,6 @@ fn signed_original_source_reader_drops_source_groups_only_after_namespace_confin
         refused.is_err(),
         "retired read authority cannot admit a successful checkpoint"
     );
-    assert_eq!(unsafe { libc::umount2(path.as_ptr(), 0) }, 0);
 }
 
 struct RetainedReadFixture {
@@ -529,8 +561,49 @@ fn returning_callback_retains_original_custody(
     };
     let endpoint = match receive.recv_timeout(Duration::from_secs(15)) {
         Ok(endpoint) => endpoint,
-        Err(error) => signed_reader_failure(&mut running, &diagnostic, "endpoint", &error),
+        Err(error) => {
+            return Err(signed_reader_failure(
+                &mut running,
+                &diagnostic,
+                "endpoint",
+                &error,
+            ));
+        }
     };
+    let (custody, init) = observe_retained_custody(&endpoint, &weak, context);
+    let started = Instant::now();
+    let stream = loop {
+        match endpoint.connect() {
+            Ok(stream) => break stream,
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && started.elapsed() < Duration::from_secs(10) =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => {
+                return Err(signed_reader_failure(
+                    &mut running,
+                    &diagnostic,
+                    "connect",
+                    &error,
+                ));
+            }
+        }
+    };
+    exercise_retained_endpoint(&endpoint, &weak, &stream, custody, retire);
+    drop(endpoint);
+    let result = running.worker.take().unwrap().join().unwrap();
+    assert_retained_exit(&init, &weak);
+    drop(stream);
+    result
+}
+
+fn observe_retained_custody(
+    endpoint: &launcher::owned_service::ServiceEndpoint,
+    weak: &std::sync::Weak<RetainedReadFixture>,
+    context: Arc<RetainedReadFixture>,
+) -> (launcher::owned_service::ServiceCustody, OwnedFd) {
     let custody = endpoint.custody().unwrap();
     let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, custody.init_pid, 0) };
     assert!(raw >= 0, "live authenticated init must be observable");
@@ -540,16 +613,16 @@ fn returning_callback_retains_original_custody(
         weak.upgrade().is_some(),
         "callback return must retain original context"
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let stream = loop {
-        match endpoint.connect() {
-            Ok(stream) => break stream,
-            Err(error) if error.kind() == io::ErrorKind::NotFound && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => signed_reader_failure(&mut running, &diagnostic, "connect", &error),
-        }
-    };
+    (custody, init)
+}
+
+fn exercise_retained_endpoint(
+    endpoint: &launcher::owned_service::ServiceEndpoint,
+    weak: &std::sync::Weak<RetainedReadFixture>,
+    stream: &std::os::unix::net::UnixStream,
+    custody: launcher::owned_service::ServiceCustody,
+    retire: bool,
+) {
     // connect() observes the real provider socket created AFTER the signed
     // shim changed source credentials and the worker verified group reads,
     // readonly source, closed descriptors and GNU tar. Its protocol read is
@@ -582,25 +655,6 @@ fn returning_callback_retains_original_custody(
         stream.read_exact(&mut response).unwrap();
         assert_eq!(&response, b"verified\n");
     }
-    drop(endpoint);
-    let result = running.worker.take().unwrap().join().unwrap();
-    let mut fd = libc::pollfd {
-        fd: init.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    assert_eq!(unsafe { libc::poll(&raw mut fd, 1, 0) }, 1);
-    assert_ne!(
-        fd.revents & libc::POLLIN,
-        0,
-        "callback worker return must observe actual init quiescence"
-    );
-    assert!(
-        weak.upgrade().is_none(),
-        "context can retire only after namespace exit and endpoint release"
-    );
-    drop(stream);
-    result
 }
 
 fn signed_reader_failure(
@@ -608,7 +662,7 @@ fn signed_reader_failure(
     diagnostic: &Path,
     phase: &str,
     error: &dyn std::fmt::Debug,
-) -> ! {
+) -> launcher::run::RunError {
     // Preserve canonical ownership and the actual refusal rather than letting
     // an assertion panic silently discard the owning thread's terminal result.
     running.cancellation.cancel();
@@ -626,8 +680,26 @@ fn signed_reader_failure(
     if let Err(error) = observation {
         stderr = format!("diagnostic unavailable: {error}");
     }
-    panic!(
+    launcher::run::RunError::Io(io::Error::other(format!(
         "actual signed reader {phase}: {error:?}; worker refusal: {refusal}\nchild diagnostics:\n{stderr}"
+    )))
+}
+
+fn assert_retained_exit(init: &OwnedFd, weak: &std::sync::Weak<RetainedReadFixture>) {
+    let mut fd = libc::pollfd {
+        fd: init.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    assert_eq!(unsafe { libc::poll(&raw mut fd, 1, 0) }, 1);
+    assert_ne!(
+        fd.revents & libc::POLLIN,
+        0,
+        "callback worker return must observe actual init quiescence"
+    );
+    assert!(
+        weak.upgrade().is_none(),
+        "context can retire only after namespace exit and endpoint release"
     );
 }
 
@@ -649,7 +721,6 @@ fn original_reader_source(root: &Path) -> (PathBuf, std::ffi::CString) {
     std::fs::write(root.join("source-secret"), b"receiving root secret").unwrap();
     std::fs::create_dir(source.join("mounted-directory")).unwrap();
     std::fs::write(source.join("mounted-file"), b"underlying file remains").unwrap();
-    use std::os::unix::ffi::OsStrExt;
     std::fs::write(
         source.join(std::ffi::OsStr::from_bytes(b"raw-\xff")),
         b"underlying raw remains",
@@ -799,15 +870,16 @@ fn assert_original_reader_refuses_unattached_custody(
     )
     .err()
     .expect("unguarded original reader must refuse before spawn");
-    match error {
-        launcher::run::RunError::Io(error) => {
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            assert_eq!(
-                error.to_string(),
-                "Original-source execution requires retained read custody"
-            );
-        }
-        other => panic!("unguarded reader refused for an unrelated reason: {other:?}"),
+    assert!(
+        matches!(error, launcher::run::RunError::Io(_)),
+        "unguarded reader refused for an unrelated reason: {error:?}"
+    );
+    if let launcher::run::RunError::Io(error) = error {
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "Original-source execution requires retained read custody"
+        );
     }
     assert!(
         std::fs::read_dir(data).unwrap().next().is_none(),

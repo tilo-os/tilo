@@ -62,7 +62,7 @@ pub struct RecordTransactionJournalEntry {
     pub namespace_delta: Option<Vec<u8>>,
     /// Local protected native intent, not an authority or observed-effect proof.
     /// Generic record replay cannot complete it. No successful native adapter is
-    /// enrolled until the actual replacing FsJob receipt can be revalidated.
+    /// enrolled until the actual replacing `FsJob` receipt can be revalidated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_native_effect: Option<ExternalNativeEffectBinding>,
 }

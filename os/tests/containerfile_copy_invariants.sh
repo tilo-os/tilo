@@ -184,7 +184,15 @@ containerfile="$repo/os/Containerfile"
 # the runtime with a fresh key. The installed paths are unchanged.
 # The boot audit's image signature policy checker is one intentional payload
 # addition beside the audit in the existing libexec COPY instruction.
-expected_contract=727c1c6bdd5359de743254d29b9f50721581c49e164b5f3fc4bf875610b1ece7
+# tilo-extension is now compiled: it arrives from the extension component at
+# the same path and mode instead of from the context.
+# The cache cleanup's policy (/etc/tilo/cache-gc.toml, beside desktop.toml) and
+# its system and user tilo-cache-gc.service/.timer units ride existing COPY
+# instructions; they are the intentional payload rows.
+# systemd-bless-boot's drop-in, which lets blessing rename the booted entry on
+# the read-only ESP, is one intentional payload row with a COPY of its own: no
+# existing instruction copies into that drop-in directory.
+expected_contract=421fc895e0f13089d5527182a986e06c5b7dc1791ff1e4acf175895fa6a7b8ae
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -277,7 +285,6 @@ for path in \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
   os/usr/libexec/tilo-image-policy-check \
-  os/usr/libexec/tilo-extension \
   os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '

@@ -566,8 +566,7 @@ fn signing_key_from_open_file(
             // read-only with the device-identity group. Custom/test stores may
             // be owned by the caller, but a third account may never substitute
             // the signing identity merely by matching its mode.
-            // SAFETY: geteuid takes no arguments and has no failure mode.
-            let reader = unsafe { libc::geteuid() };
+            let reader = rustix::process::geteuid().as_raw();
             if !secret_key_owner_is_accepted(owner_policy, metadata.uid(), reader) {
                 return Err(PersistError::InsecureOwner {
                     path: path.display().to_string(),
@@ -1514,8 +1513,7 @@ mod tests {
     fn an_unreachable_device_key_is_an_error_not_a_fresh_machine() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        // SAFETY: geteuid takes no arguments and has no failure mode.
-        if unsafe { libc::geteuid() } == 0 {
+        if rustix::process::geteuid().as_raw() == 0 {
             // Root reaches the key whatever its directory's mode.
             return;
         }

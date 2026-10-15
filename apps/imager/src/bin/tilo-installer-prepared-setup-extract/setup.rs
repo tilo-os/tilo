@@ -126,7 +126,7 @@ fn source(root: &str) -> Result<Option<Candidate>> {
         if before.len() != fs::MAX {
             return Err(invalid());
         }
-        let mut buffer = [0; 65536];
+        let mut buffer = vec![0; 65536].into_boxed_slice();
         loop {
             let n = fd.read(&mut buffer)?;
             if n == 0 {
@@ -203,7 +203,7 @@ pub fn extract(roots: &[String], output: &str) -> Result<Option<Value>> {
     let temp = fs::Temporary::new(&parent, fs::uid(), fs::gid())?;
     let mut total = 0;
     let mut digest = Sha256::new();
-    let mut buffer = [0; 65536];
+    let mut buffer = vec![0; 65536].into_boxed_slice();
     loop {
         let n = (&candidate.fd).read(&mut buffer)?;
         if n == 0 {
@@ -211,7 +211,7 @@ pub fn extract(roots: &[String], output: &str) -> Result<Option<Value>> {
         }
         let sealed =
             usize::try_from(size.saturating_sub(total).min(n as u64)).map_err(|_| invalid())?;
-        total += n as u64;
+        total = total.checked_add(n as u64).ok_or_else(invalid)?;
         if total > candidate.before.len()
             || total > fs::MAX
             || buffer
@@ -342,11 +342,11 @@ pub fn account(username: &str) -> Result<Account> {
                 record.as_mut_ptr(),
                 buffer.as_mut_ptr().cast(),
                 buffer.len(),
-                &mut result,
+                &raw mut result,
             )
         };
         if status == libc::ERANGE && buffer.len() < 1024 * 1024 {
-            buffer.resize(buffer.len() * 2, 0);
+            buffer.resize(buffer.len().checked_mul(2).ok_or_else(invalid)?, 0);
             continue;
         }
         if status != 0 || result.is_null() {

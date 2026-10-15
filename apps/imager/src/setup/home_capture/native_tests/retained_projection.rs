@@ -467,9 +467,9 @@ fn target_stdio_child() {
         return;
     }
     let mut stream = unsafe { UnixStream::from_raw_fd(73) };
-    assert_eq!(unsafe { libc::getuid() }, TARGET_UID);
-    assert_eq!(unsafe { libc::geteuid() }, TARGET_UID);
-    assert_eq!(unsafe { libc::getgid() }, TARGET_GID);
+    assert_eq!(rustix::process::getuid().as_raw(), TARGET_UID);
+    assert_eq!(rustix::process::geteuid().as_raw(), TARGET_UID);
+    assert_eq!(rustix::process::getgid().as_raw(), TARGET_GID);
     assert_eq!(
         unsafe { libc::getgroups(0, std::ptr::null_mut()) },
         0,
@@ -510,11 +510,11 @@ fn chown(path: &Path, uid: u32, gid: u32) {
 #[test]
 fn signed_private_projection_preserves_source_identity_and_normal_target_credentials() {
     assert_eq!(
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         0,
         "disposable root native qualification required"
     );
-    assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
     let root = tempfile::Builder::new()
         .prefix("tilo-native-projection-")
         .permissions(std::fs::Permissions::from_mode(0o700))

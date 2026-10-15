@@ -561,10 +561,12 @@ pub struct ReadOnlySource {
     lease: SourceLease,
 }
 enum SourceLease {
+    #[cfg(any(feature = "capture-worker", test))]
     Borrowed(Arc<dyn Send + Sync>),
     Resolved(Arc<crate::setup::migration_handoff::ResolvedSource>),
 }
 impl ReadOnlySource {
+    #[cfg(any(feature = "capture-worker", test))]
     pub(in crate::setup) fn from_resolved(
         root: &Path,
         pin: Arc<PinnedDirectory>,
@@ -627,18 +629,21 @@ impl<R: Runner> SourceScopedRunner<R> {
             target,
         ));
         let mut sources = Vec::new();
+        #[cfg(any(feature = "capture-worker", test))]
         let mut borrowed = false;
         for source in leases {
             let ReadOnlySource { root, pin, lease } = source;
             drop((root, pin));
             match lease {
                 SourceLease::Resolved(source) => sources.push(source),
+                #[cfg(any(feature = "capture-worker", test))]
                 SourceLease::Borrowed(lease) => {
                     drop(lease);
                     borrowed = true;
                 }
             }
         }
+        #[cfg(any(feature = "capture-worker", test))]
         if borrowed {
             // Refuse and retain known native custody instead of silently
             // unmounting a subset through ordinary Drop.
@@ -698,9 +703,11 @@ impl<R: Runner> SourceScopedRunner<R> {
         }
         Ok(files)
     }
+    #[cfg(any(feature = "capture-worker", test))]
     pub(in crate::setup::flatpak_transfer) fn closed_inventory(&self) -> &Inventory {
         &self.inventory
     }
+    #[cfg(any(feature = "capture-worker", test))]
     pub(in crate::setup::flatpak_transfer) fn closed_root(
         &self,
         scope: &Installation,
@@ -710,6 +717,7 @@ impl<R: Runner> SourceScopedRunner<R> {
             .map(PathBuf::as_path)
             .ok_or("Original root missing".into())
     }
+    #[cfg(any(feature = "capture-worker", test))]
     pub(in crate::setup::flatpak_transfer) fn closed_commit(
         &self,
         item: &InstalledRef,

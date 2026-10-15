@@ -70,6 +70,17 @@ class SourceContentTests(unittest.TestCase):
         failures, _ = contract.audit(self.root, staged=True)
         self.assertEqual(len(failures), 3)
 
+    def test_a_repository_without_commits_is_checked_by_its_index(self):
+        # What tools/ci/t-git-index.sh gives a t check: the files present,
+        # indexed, and no commit.
+        self.stage("fixture", b"\x00pinned")
+        oid = self.git("rev-parse", ":fixture").decode().strip()
+        self.manifest([{"path": "fixture", "oid": oid, "reason": "Required regression fixture"}])
+        self.stage("source.txt", b"bad\r\n")
+        failures, count = contract.audit(self.root)
+        self.assertEqual(count, 3)
+        self.assertEqual(failures, ["source.txt: non-LF line endings"])
+
     def test_exact_exception_does_not_allow_replacement_binary(self):
         self.stage("fixture", b"\x00original")
         oid = self.git("rev-parse", ":fixture").decode().strip()
@@ -136,6 +147,8 @@ class SourceContentTests(unittest.TestCase):
                 manifest = json.dumps([]).encode()
                 records = b"100644 blob " + oid.encode() + b"\tsource\0"
                 def git_reply(root, *arguments):
+                    if arguments[0] == "rev-parse":
+                        return b"tree\n"
                     if arguments[0] == "ls-tree":
                         return records
                     if arguments[0] == "show":

@@ -2,7 +2,13 @@
 //! Public declarations are shape only. The fixed root helper must retain the
 //! independently reviewed operation authority and quiescent output transaction.
 //! No mounted source, block device or writable archive is delivered to the user.
-use super::*;
+use super::{
+    Arc, AsRawFd, Duration, ExecutingPeer, File, FromRawFd, Handoff, LIMIT, MetadataExt, OwnedFd,
+    RetainedLaunchGate, RootConsumerChannel, RootRole, SEALS, ServiceAuthority,
+    ServiceCancellation, UnixStream, Write, check_executing_image, io, own_helper,
+    protected_helper, protected_program, receive_fd, receive_json, receive_json_bound, refused,
+    send_json,
+};
 use std::os::fd::AsFd;
 
 static UNKNOWN_DELIVERY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -19,15 +25,14 @@ struct ArchiveFacts {
 impl ArchiveFacts {
     fn measure(file: &File) -> io::Result<Self> {
         let metadata = file.metadata()?;
-        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        let flags = rustix::fs::fcntl_getfl(file)?;
         if !metadata.is_file()
             || metadata.uid() != 0
             || metadata.mode() & 0o777 != 0o600
             || metadata.nlink() != 1
             || metadata.len() == 0
-            || flags < 0
-            || flags & libc::O_PATH != 0
-            || flags & libc::O_ACCMODE != libc::O_RDONLY
+            || flags.contains(rustix::fs::OFlags::PATH)
+            || flags.intersection(rustix::fs::OFlags::ACCMODE) != rustix::fs::OFlags::RDONLY
         {
             return Err(refused(
                 "installed Copy archive is not private read-only output",
@@ -180,15 +185,23 @@ impl CopyRecipient {
     }
 }
 impl RootConsumerChannel {
+    /// # Errors
+    /// Refuses a non-helper caller or changed pinned Shell, importer identity,
+    /// executable or transferred pidfd.
     pub fn verify_installed_copy_recipient(&self, recipient: &CopyRecipient) -> io::Result<()> {
         own_helper()?;
         recipient.check(&self.peer)
     }
     /// Cleanup-only shutdown of this already authenticated private endpoint.
+    /// # Errors
+    /// Refuses a non-helper caller or returns the socket shutdown error.
     pub fn stop_installed_copy_transport(&mut self) -> io::Result<()> {
         own_helper()?;
         self.stream.shutdown(std::net::Shutdown::Both)
     }
+    /// # Errors
+    /// Refuses a retired owner or non-helper caller; reports cancellation,
+    /// serialization failures and failed or timed-out status transfers.
     pub fn send_installed_copy_status(
         &mut self,
         event: &CopyOwnerEvent,
@@ -205,6 +218,9 @@ impl RootConsumerChannel {
         }
         Ok(())
     }
+    /// # Errors
+    /// Refuses non-helper callers, retired owners or budgets above one second;
+    /// reports polling, cancellation, framing and command decoding errors.
     pub fn receive_installed_copy_command(
         &mut self,
         budget: Duration,
@@ -244,6 +260,9 @@ impl RootConsumerChannel {
     }
     /// Seals the already protected operation secret for the private receiver.
     /// No source, recipient or delivery authority is minted by this helper.
+    /// # Errors
+    /// Refuses non-helper callers or invalid secret lengths; reports failures
+    /// creating, protecting, writing, sealing or reopening the anonymous file.
     pub fn seal_installed_copy_secret(secret: &[u8]) -> io::Result<File> {
         own_helper()?;
         if !(32..=128).contains(&secret.len()) {
@@ -272,6 +291,9 @@ impl RootConsumerChannel {
     }
     /// Receives only the actual private importer endpoint endorsed by the
     /// independently authenticated Shell owner. A path/PID is never an endpoint.
+    /// # Errors
+    /// Refuses retired owners or endpoints that are not connected Unix streams;
+    /// reports cancellation, malformed handoffs, socket and acknowledgment failures.
     pub fn receive_installed_copy_endpoint(
         &mut self,
         cancellation: &ServiceCancellation,
@@ -290,7 +312,8 @@ impl RootConsumerChannel {
         let endpoint =
             UnixStream::from(descriptor.ok_or_else(|| refused("installed Copy endpoint missing"))?);
         let mut kind: libc::c_int = 0;
-        let mut size = std::mem::size_of_val(&kind) as libc::socklen_t;
+        let mut size =
+            libc::socklen_t::try_from(std::mem::size_of_val(&kind)).map_err(io::Error::other)?;
         if unsafe {
             libc::getsockopt(
                 endpoint.as_raw_fd(),
@@ -318,6 +341,9 @@ impl RootConsumerChannel {
 impl RootConsumerChannel {
     /// `owner` is the actual Shell peer from the independently certified person
     /// proof. This channel's QPE must match that task, not merely its UID.
+    /// # Errors
+    /// Refuses mismatched or retired Shell owners and unpinned executables;
+    /// reports cancellation and malformed or failed recipient/pidfd transfers.
     pub fn receive_installed_copy_recipient(
         &mut self,
         owner: &ExecutingPeer,
@@ -404,6 +430,9 @@ impl RootConsumerChannel {
     /// Shape-only metadata cannot create this channel: its constructor still
     /// requires mutual QPE from the actual installed root helper. The supplied
     /// authority must be the protected Copy transaction, not a wire declaration.
+    /// # Errors
+    /// Refuses invalid declarations, archive or secret custody, recipient identity,
+    /// cancelled operations and revoked transaction authority.
     pub fn prepare_installed_copy(
         self,
         declaration: CopyDeclaration,
@@ -453,6 +482,8 @@ impl InstalledCopyIssue {
             .ok_or_else(|| refused("installed Copy issue retired"))
     }
     /// Returns the actual retained gate declaration after reattesting its custody.
+    /// # Errors
+    /// Refuses retired issue custody, revoked authority or changed held evidence.
     pub fn declaration(&self) -> io::Result<&CopyDeclaration> {
         let custody = self.custody()?;
         custody.check()?;
@@ -461,6 +492,10 @@ impl InstalledCopyIssue {
     /// Sends bounded expectations and read-only files through this exact gate.
     /// Every timeout/partial frame poisons further transport; retirement remains
     /// possible and retains all authority until the receiver's kernel task exits.
+    /// # Errors
+    /// Refuses retired or already attempted delivery and invalid custody; reports
+    /// cancellation, descriptor transfer, framing and acknowledgment failures.
+    /// Failed transport remains unusable while custody is retained.
     pub fn deliver(&mut self) -> io::Result<()> {
         let custody = self
             .custody
@@ -515,6 +550,10 @@ impl InstalledCopyIssue {
     }
     /// Same authenticated stream only; serialized commands/events remain the
     /// installed app's closed semantic vocabulary. Partial frames are terminal.
+    /// # Errors
+    /// Refuses retired or invalid custody and unavailable delivery; reports
+    /// cancellation, serialization and failed or timed-out frame transfers.
+    /// Transport failure makes further communication unusable.
     pub fn send<T: serde::Serialize>(&mut self, value: &T) -> io::Result<()> {
         let custody = self
             .custody
@@ -536,6 +575,10 @@ impl InstalledCopyIssue {
         result?;
         custody.check()
     }
+    /// # Errors
+    /// Refuses invalid or retired custody; reports cancellation, malformed frames,
+    /// decoding errors and failed or timed-out transfers. Transport failures
+    /// make further communication unusable.
     pub fn receive<T: serde::de::DeserializeOwned>(&mut self) -> io::Result<T> {
         let custody = self
             .custody
@@ -560,6 +603,9 @@ impl InstalledCopyIssue {
     }
     /// Idle polling does not consume a frame or impose an import deadline.
     /// Once any frame starts, its bounded complete-frame budget is terminal.
+    /// # Errors
+    /// Refuses budgets above one second, invalid custody or undelivered archives;
+    /// reports polling, cancellation and complete-frame transfer or decoding errors.
     pub fn receive_timeout<T: serde::de::DeserializeOwned>(
         &mut self,
         budget: Duration,
@@ -610,6 +656,8 @@ impl InstalledCopyIssue {
     /// Cleanup only: stop the exact private receiver channel even when source
     /// authorization has been revoked. This creates no file/source permission
     /// and retains every possibly delivered descriptor until actual task death.
+    /// # Errors
+    /// Refuses a non-helper caller or retired custody; reports socket shutdown failure.
     pub fn cancel_receiver(&mut self) -> io::Result<()> {
         own_helper()?;
         let custody = self
@@ -621,6 +669,9 @@ impl InstalledCopyIssue {
     }
     /// Only actual authenticated task death releases possibly delivered output.
     /// Returns false without consuming custody when the receiver is still live.
+    /// # Errors
+    /// Refuses non-helper callers or retired custody; reports failure to observe
+    /// the receiver's kernel task. Unknown death never releases custody.
     pub fn retire(&mut self) -> io::Result<bool> {
         let custody = self.custody()?;
         own_helper()?;
@@ -662,6 +713,9 @@ pub struct ReceivedInstalledCopy {
     unusable: bool,
 }
 impl RetainedLaunchGate {
+    /// # Errors
+    /// Refuses unauthenticated root peers, mismatched target owners and invalid
+    /// archive/secret evidence; reports cancellation and failed handoff transfers.
     pub fn receive_installed_copy(
         self,
         cancellation: ServiceCancellation,
@@ -671,7 +725,7 @@ impl RetainedLaunchGate {
             let mut io = Handoff::new(&mut stream, &cancellation, Duration::from_secs(30))?;
             let receipt: WireReceipt = receive_json(&mut io)?;
             receipt.validate()?;
-            if receipt.declaration.target_uid != unsafe { libc::getuid() } {
+            if receipt.declaration.target_uid != rustix::process::getuid().as_raw() {
                 return Err(refused("Copy receipt belongs to another owner"));
             }
             role.check()?;
@@ -711,6 +765,8 @@ pub struct InstalledCopyStopFence {
     cancellation: ServiceCancellation,
 }
 impl InstalledCopyStopFence {
+    /// # Errors
+    /// Returns the kernel polling error if task or channel cancellation cannot be observed.
     pub fn cancelled(&self) -> io::Result<bool> {
         if self.cancellation.is_cancelled() {
             return Ok(true);
@@ -738,6 +794,9 @@ impl InstalledCopyStopFence {
     }
 }
 impl ReceivedInstalledCopy {
+    /// # Errors
+    /// Refuses invalid receive custody or returns errors duplicating the exact
+    /// authenticated socket and root pidfd.
     pub fn stop_fence(&self) -> io::Result<InstalledCopyStopFence> {
         self.check()?;
         Ok(InstalledCopyStopFence {
@@ -746,6 +805,9 @@ impl ReceivedInstalledCopy {
             cancellation: self.cancellation.clone(),
         })
     }
+    /// # Errors
+    /// Refuses retired root authority, cancelled or unusable transport, invalid
+    /// declarations and changed archive or sealed-secret evidence.
     pub fn check(&self) -> io::Result<()> {
         self.role.check()?;
         if self.cancellation.is_cancelled() || self.unusable {
@@ -765,18 +827,28 @@ impl ReceivedInstalledCopy {
     pub fn declaration(&self) -> &CopyDeclaration {
         &self.receipt.declaration
     }
+    /// # Errors
+    /// Refuses invalid receive custody or returns the archive descriptor duplication error.
     pub fn clone_home(&self) -> io::Result<Option<File>> {
         self.check()?;
         self.home.as_ref().map(File::try_clone).transpose()
     }
+    /// # Errors
+    /// Refuses invalid receive custody or returns the archive descriptor duplication error.
     pub fn clone_applications(&self) -> io::Result<Option<File>> {
         self.check()?;
         self.applications.as_ref().map(File::try_clone).transpose()
     }
+    /// # Errors
+    /// Refuses invalid receive custody or returns the sealed-secret descriptor duplication error.
     pub fn secret(&self) -> io::Result<File> {
         self.check()?;
         self.secret.try_clone()
     }
+    /// # Errors
+    /// Refuses retired or invalid custody and unavailable delivery; reports
+    /// cancellation, serialization and failed or timed-out frame transfers.
+    /// Transport failure makes further communication unusable.
     pub fn send<T: serde::Serialize>(&mut self, value: &T) -> io::Result<()> {
         self.check()?;
         let result = Handoff::new(
@@ -793,6 +865,10 @@ impl ReceivedInstalledCopy {
     }
     /// No bytes are consumed on idle timeout. Once a frame begins, its absolute
     /// ten-second deadline applies; partial/EOF failure poisons this channel.
+    /// # Errors
+    /// Refuses invalid or retired custody; reports cancellation, malformed frames,
+    /// decoding errors and failed or timed-out transfers. Transport failures
+    /// make further communication unusable.
     pub fn receive<T: serde::de::DeserializeOwned>(
         &mut self,
         budget: Duration,
@@ -838,6 +914,7 @@ impl ReceivedInstalledCopy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     #[test]
     fn oversized_archive_receipt_never_writes_transport() {

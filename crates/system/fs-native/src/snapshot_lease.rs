@@ -108,8 +108,7 @@ fn same_directory(left: &File, right: &File) -> io::Result<bool> {
 
 fn private_parent(parent: &File) -> io::Result<()> {
     let metadata = parent.metadata()?;
-    // SAFETY: geteuid has no arguments and reads process credentials.
-    let owner = unsafe { libc::geteuid() };
+    let owner = rustix::process::geteuid().as_raw();
     if !metadata.is_dir() || metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
         return Err(refusal("capture store must be private to its broker"));
     }

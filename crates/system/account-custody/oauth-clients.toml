@@ -31,6 +31,9 @@ client_secret = "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"
 files = ["https://www.googleapis.com/auth/drive"]
 # Full IMAP and SMTP access; Gmail offers no narrower scope for either.
 mail = ["https://mail.google.com/"]
+# Google's CalDAV endpoint requires the calendar scope (not calendar.events).
+# No Drive, Gmail or Contacts permission is needed to read/write calendars.
+calendar = ["https://www.googleapis.com/auth/calendar"]
 
 [microsoft]
 # Microsoft Entra app registration, "Accounts in any organizational directory
@@ -42,6 +45,9 @@ mail = ["https://mail.google.com/"]
 client_id = "4859a21d-e6df-4983-8725-2dc20060103b"
 
 [microsoft.scopes]
+# Graph identity and Exchange mail need different audience access tokens.
+# Consent to identity separately, then request mail; never combine their scopes.
+identity = ["offline_access", "User.Read"]
 # `offline_access` makes Microsoft issue the refresh token.
 files = ["offline_access", "Files.ReadWrite.All", "User.Read"]
 # Exchange Online's IMAP and SMTP AUTH resources, not Microsoft Graph.

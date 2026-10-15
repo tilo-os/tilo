@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use channel_crypto::{
-    Access, ChannelMember, ChannelSteward, Error, MemoryStewardStore, SignFuture, StewardRecord,
-    StewardSigner, StewardStore, VaultKey,
+    Access, ChannelMember, ChannelSteward, DeviceSigner, Error, MemoryStewardStore, SignFuture,
+    StewardRecord, StewardStore, VaultKey,
 };
 use collab_types::{ArtifactId, ChannelId, ContentRetention, Ed25519PublicKey};
 use ed25519_dalek::SigningKey;
@@ -28,14 +28,14 @@ struct LaterSigner(SigningKey);
 struct Later(Option<[u8; 64]>, bool);
 
 impl Future for Later {
-    type Output = channel_crypto::Result<[u8; 64]>;
+    type Output = Result<[u8; 64], collab_types::signer::SignError>;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if std::mem::replace(&mut self.1, true) {
             Poll::Ready(
                 self.0
                     .take()
-                    .ok_or_else(|| Error::Signer("polled twice".into())),
+                    .ok_or_else(|| collab_types::signer::SignError("polled twice".into())),
             )
         } else {
             context.waker().wake_by_ref();
@@ -44,9 +44,9 @@ impl Future for Later {
     }
 }
 
-impl StewardSigner for LaterSigner {
-    fn device(&self) -> Ed25519PublicKey {
-        public(&self.0)
+impl DeviceSigner for LaterSigner {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.0.verifying_key().to_bytes()
     }
 
     fn sign(&self, message: Vec<u8>) -> SignFuture<'_> {

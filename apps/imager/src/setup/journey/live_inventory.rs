@@ -19,7 +19,7 @@ struct PreparationCustody {
 }
 impl InventoryScratchCustody for PreparationCustody {
     fn check(&self) -> io::Result<()> {
-        let _current = self.ready.acquire_current()?;
+        let _current = self.ready.acquire_preparation_current()?;
         self.prepared.metadata()?;
         self.directory.validate_destination()?;
         self.backing.validate_directory(&self.directory.file)
@@ -33,7 +33,7 @@ pub(super) fn review(prepared: Arc<PreparedIdentity>) -> io::Result<Arc<Inventor
         _ => return Err(changed("Inventory storage needs acknowledged preparation")),
     };
     let acknowledged = ready.resume()?;
-    let current = ready.acquire_current()?;
+    let current = ready.acquire_preparation_current()?;
     let operation = ready.operation_directory();
     if ready.acknowledged_public_key() != Some(prepared.public_key())
         || acknowledged.custody_directory() != prepared.custody_directory()

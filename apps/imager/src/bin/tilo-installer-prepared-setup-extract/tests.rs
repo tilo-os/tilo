@@ -3,9 +3,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::PermissionsExt;
 
-fn private(path: &std::path::Path) {
-    std::fs::create_dir_all(path).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+fn private(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 fn expectation(data: &[u8]) -> Value {
     json!({"schema":1,"operation":"example-home","purpose":"home","filename":"home-example-home.sealed","setup_binding":"example setup","sealed_bytes":data.len(),"plaintext_bytes":10,"entries":1,"runtime_sockets":0,"ciphertext_sha256":Sha256::digest(data).to_vec(),"limits":{"plaintext_bytes":1024,"entries":10,"metadata_bytes":1024}})
@@ -15,8 +15,8 @@ fn production_hardlink_handoff_retains_until_verified_and_retries_without_archiv
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");
     let home = temp.path().join("home");
-    private(&source);
-    private(&home);
+    private(&source).unwrap();
+    private(&home).unwrap();
     let data = [b"TILOMIG1".as_slice(), &[42; 72]].concat();
     let e = expectation(&data);
     let source_fd = fs::directory(source.to_str().unwrap()).unwrap();
@@ -75,8 +75,8 @@ fn production_handoff_conflicting_receiver_leaves_root_ciphertext_intact() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");
     let home = temp.path().join("home");
-    private(&source);
-    private(&home);
+    private(&source).unwrap();
+    private(&home).unwrap();
     let data = [b"TILOMIG1".as_slice(), &[42; 72]].concat();
     let e = expectation(&data);
     let source_fd = fs::directory(source.to_str().unwrap()).unwrap();
@@ -88,7 +88,7 @@ fn production_handoff_conflicting_receiver_leaves_root_ciphertext_intact() {
     )
     .unwrap();
     let dest = home.join(".local/state/tilo/prepared-home");
-    private(&dest);
+    private(&dest).unwrap();
     std::fs::write(
         dest.join("home-example-home.sealed"),
         [b"TILOMIG1".as_slice(), &[43; 72]].concat(),

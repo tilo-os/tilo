@@ -43,7 +43,7 @@ fn leaf(
     if metadata.is_dir() {
         return Err(changed("Directory facts require retained ordered metadata"));
     }
-    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o6000 != 0 {
+    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o6000 != 0 {
         return Err(changed(
             "Quarantine entry has foreign ownership or privilege bits",
         ));
@@ -134,7 +134,7 @@ fn inspect(
     if !metadata.is_dir() {
         return leaf(parent, name, &metadata, cancel);
     }
-    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o6000 != 0 {
+    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o6000 != 0 {
         return Err(changed(
             "Quarantine entry has foreign ownership or privilege bits",
         ));
@@ -217,7 +217,7 @@ fn review_children(
         let name = name?.0.into_os_string();
         let path = relative.join(&name);
         let metadata = metadata_nofollow(&source.file, Path::new(&name))?;
-        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o6000 != 0 {
+        if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o6000 != 0 {
             return Err(changed(
                 "Quarantine entry has foreign ownership or privilege bits",
             ));

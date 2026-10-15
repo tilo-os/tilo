@@ -79,11 +79,28 @@ A deployment that has never booted successfully gets a **try counter** in its bo
 loader entry's file name — `bootc_fedora-44-1+3.conf`. systemd-boot decrements it
 on every attempt, and when it reaches zero it stops offering that entry first.
 
+`tilo-boot-entries.service` adds the counter to every bootc entry except the one
+running now, which it recognises by the `composefs=` identity of the running root.
+On the sealed image every entry has to name a UKI under `EFI/Linux/bootc/`, and the
+identity is read from that UKI's sealed command line; any other entry fails the
+pass. Only a dev image (`/usr/lib/tilo/image-flavour` reads `dev`) also accepts
+bootc's split kernel/initrd entries: `linux` and `initrd` from one
+`EFI/Linux/bootc_composefs-<id>/` directory and exactly one `composefs=` on the
+`options` line. Such a deployment counts and rolls back the same way; it gets no
+repair entry, because that is derived from a UKI.
+
 The counter is only removed when the boot is declared good.
 `tilo-boot-health.service` is what declares it: it is ordered before
 `boot-complete.target`, which `systemd-bless-boot.service` requires, so an
 unblessed boot keeps its spent try. Health means **greetd came up**, i.e. the
 machine reached the point where a person can log in.
+
+Blessing renames the booted entry (`name+2-1.conf` to `name.conf`) on the ESP,
+which stays mounted read-only. `systemd-bless-boot.service` therefore remounts
+it writable in its own private mount namespace, as `tilo-esp-write@` does;
+the global mount never becomes writable. Without that, every rename failed with
+`EROFS`, and a deployment that booted fine spent a try on each boot until the
+boot loader abandoned it.
 
 Three failed boots and the previous deployment becomes the default. Nothing runs
 a rollback command — the boot loader simply declines to keep choosing an entry it
@@ -216,6 +233,16 @@ sudo /usr/libexec/tilo-recovery-boot-check
 ./os/dev/composefs/build.sh 1 && ./os/dev/composefs/install.sh 1
 TILO_CFS_SESSION_OK=0 ./os/dev/composefs/build.sh 2
 ./os/dev/composefs/recovery-series.sh
+
+# The same rollback on the installed image itself, not the probe image: stage a
+# real update, make only it unable to reach the greeter (a greetd drop-in keyed
+# to its composefs identity), and require it to spend exactly its tries before
+# the boot loader goes back by itself. RUNNER is anything that runs a command
+# line in the guest; RESET power-cycles a guest that stopped answering. CI runs
+# it on a published dev disk: Dev / native disk boot diagnostic with
+# boot_assessment_image set.
+RUNNER='./os/dev/vm.sh ssh' SUDO_PASS=tilo \
+  ./os/tests/boot_assessment_rollback.sh registry.tilo.so/tilo/tilo-vm@sha256:<other-digest>
 
 # The state-version refusal, against the compositor binary:
 cargo build -p shell --bin shell

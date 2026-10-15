@@ -60,6 +60,7 @@
     )
 )]
 
+pub mod account_handoff;
 pub mod action_button;
 pub mod backend;
 pub mod control;
@@ -73,12 +74,14 @@ pub mod internal_handoff;
 pub mod keyboard_view;
 pub mod layouts;
 pub mod media_profile;
+pub mod online_accounts;
 pub mod operation;
 pub mod power_readiness;
 pub mod seg_choice;
 pub mod status_log;
 pub mod step_indicator;
 pub mod timezones;
+pub mod windows_hint_source;
 
 pub use disks::{Disk, DiskPartition, parse_lsblk, read_disks};
 pub use installer_app::{InstallState, InstallerApp, Step};

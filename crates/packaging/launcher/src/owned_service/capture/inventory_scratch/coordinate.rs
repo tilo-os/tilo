@@ -1,6 +1,6 @@
 //! Kernel-derived filesystem coordinates for scratch/source overlap refusal.
 //! Metadata reopens confer no source-read or parent-directory permission.
-use super::*;
+use super::{AsRawFd, File, OpenOptionsExt, Path, PathBuf, identity, io, refuse};
 use std::{
     io::Read,
     os::{fd::FromRawFd, unix::ffi::OsStrExt},
@@ -14,8 +14,11 @@ pub(super) struct Coordinate {
 }
 impl Coordinate {
     pub(super) fn overlaps(&self, other: &Self) -> bool {
-        self.device == other.device
-            && (self.path.starts_with(&other.path) || other.path.starts_with(&self.path))
+        if self.device != other.device {
+            return false;
+        }
+        let contains_other = self.path.starts_with(&other.path);
+        contains_other || other.path.starts_with(&self.path)
     }
 }
 #[derive(PartialEq, Eq)]
@@ -147,14 +150,18 @@ fn selected_mount(wanted: u64) -> io::Result<Mount> {
         if fields.len() < 10 {
             return Err(refuse("Kernel mount table malformed"));
         }
-        let id = number(fields[0])?;
+        let id = number(fields.first().ok_or(io::ErrorKind::InvalidData)?)?;
         if id != wanted {
             continue;
         }
         if result.is_some() {
             return Err(refuse("Kernel mount identifier repeated"));
         }
-        let device = fields[2].split(|byte| *byte == b':').collect::<Vec<_>>();
+        let device = fields
+            .get(2)
+            .ok_or(io::ErrorKind::InvalidData)?
+            .split(|byte| *byte == b':')
+            .collect::<Vec<_>>();
         if device.len() != 2 {
             return Err(refuse("Kernel mount device malformed"));
         }
@@ -162,18 +169,25 @@ fn selected_mount(wanted: u64) -> io::Result<Mount> {
             .iter()
             .position(|field| *field == b"-")
             .ok_or_else(|| refuse("Kernel mount filesystem missing"))?;
-        if separator < 6 || fields.len() != separator + 4 {
+        if separator < 6
+            || fields.len() != separator.checked_add(4).ok_or(io::ErrorKind::InvalidData)?
+        {
             return Err(refuse("Kernel mount filesystem malformed"));
         }
-        let filesystem = fields[separator + 1].to_vec();
-        let root = decode(fields[3])?;
-        let point = decode(fields[4])?;
+        let filesystem = fields
+            .get(separator.checked_add(1).ok_or(io::ErrorKind::InvalidData)?)
+            .ok_or(io::ErrorKind::InvalidData)?
+            .to_vec();
+        let root = decode(fields.get(3).ok_or(io::ErrorKind::InvalidData)?)?;
+        let point = decode(fields.get(4).ok_or(io::ErrorKind::InvalidData)?)?;
         literal(&root)?;
         literal(&point)?;
         result = Some(Mount {
             device: (
-                u32::try_from(number(device[0])?).map_err(io::Error::other)?,
-                u32::try_from(number(device[1])?).map_err(io::Error::other)?,
+                u32::try_from(number(device.first().ok_or(io::ErrorKind::InvalidData)?)?)
+                    .map_err(io::Error::other)?,
+                u32::try_from(number(device.get(1).ok_or(io::ErrorKind::InvalidData)?)?)
+                    .map_err(io::Error::other)?,
             ),
             root,
             point,
@@ -286,7 +300,7 @@ mod tests {
             return;
         }
         assert_eq!(
-            unsafe { libc::geteuid() },
+            rustix::process::geteuid().as_raw(),
             0,
             "isolated native root prerequisite"
         );
@@ -463,7 +477,7 @@ mod tests {
             assert_eq!(std::fs::read(marker).unwrap(), b"actual subvolume ancestors and aliases refused; sibling retained; owned mounts and subvolumes retired");
             return;
         }
-        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(rustix::process::geteuid().as_raw(), 0);
         // The native runner supplies only this private writable Btrfs witness,
         // independently from the readonly signed artifacts and SDK closure.
         let witness = Path::new("/run/tilo/btrfs-coordinate-witness");

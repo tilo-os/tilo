@@ -45,7 +45,7 @@ impl PromotionReview {
         destination_security::check_private_file(&directory.file)?;
         let marker = Required {
             schema: 1,
-            operation: operation.clone(),
+            operation,
         };
         let record = entries.finish()?;
         super::super::super::user_transfer::publish_private_artifact(

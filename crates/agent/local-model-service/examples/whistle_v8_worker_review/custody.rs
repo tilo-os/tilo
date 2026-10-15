@@ -21,9 +21,8 @@ pub fn verified(path: &str, limit: usize, digest: &str) -> Result<Zeroizing<Vec<
         .open(path)
         .map_err(|_| SpeechError::ModelReceipt)?;
     let metadata = file.metadata().map_err(|_| SpeechError::ModelReceipt)?;
-    // SAFETY: uid query is argument-free.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o022 != 0
         || metadata.len() == 0
         || metadata.len() > limit as u64

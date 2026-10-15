@@ -338,88 +338,6 @@ fn check_pair(record: &Attempt, expected: &OriginalOutputExpectations<'_>) -> io
     Ok(())
 }
 
-#[cfg(test)]
-mod pair_bounds_tests {
-    use super::*;
-    use crate::setup::portable_transfer::{Limits, Purpose};
-    #[test]
-    fn original_output_pair_refuses_receipt_collision_foreign_binding_and_aggregate_shortfall() {
-        let operation = uuid::Uuid::new_v4().to_string();
-        let applications_operation = uuid::Uuid::new_v4().to_string();
-        let limits = Limits {
-            plaintext_bytes: 64,
-            entries: 1,
-            metadata_bytes: 1024,
-        };
-        let home = crate::setup::portable_home_media::Expectation {
-            schema: 1,
-            operation: operation.clone(),
-            purpose: Purpose::Home,
-            filename: format!("home-{operation}.sealed"),
-            setup_binding: "paired-fixture".into(),
-            sealed_bytes: 32,
-            plaintext_bytes: 8,
-            entries: 1,
-            runtime_sockets: 0,
-            ciphertext_sha256: [1; 32],
-            limits,
-        };
-        let mut applications = crate::setup::flatpak_transfer::portable::Expectation {
-            schema: 1,
-            consumer_protocol: 1,
-            operation: applications_operation.clone(),
-            purpose: Purpose::FlatpakApplications,
-            filename: format!("applications-{applications_operation}.sealed"),
-            setup_binding: "paired-fixture".into(),
-            sealed_bytes: 48,
-            plaintext_bytes: 8,
-            entries: 1,
-            ciphertext_sha256: [2; 32],
-            manifest_sha256: [3; 32],
-            limits,
-        };
-        OriginalOutputExpectations {
-            home: &home,
-            applications: Some(&applications),
-            reserve_bytes: 80,
-        }
-        .validate()
-        .unwrap();
-        assert!(
-            OriginalOutputExpectations {
-                home: &home,
-                applications: Some(&applications),
-                reserve_bytes: 79
-            }
-            .validate()
-            .is_err()
-        );
-        applications.setup_binding = "another-setup".into();
-        assert!(
-            OriginalOutputExpectations {
-                home: &home,
-                applications: Some(&applications),
-                reserve_bytes: 80
-            }
-            .validate()
-            .is_err()
-        );
-        applications.setup_binding = home.setup_binding.clone();
-        applications.operation = home.operation.clone();
-        applications.filename = format!("applications-{}.sealed", home.operation);
-        applications.validate().unwrap();
-        assert!(
-            OriginalOutputExpectations {
-                home: &home,
-                applications: Some(&applications),
-                reserve_bytes: 80
-            }
-            .validate()
-            .is_err(),
-            "distinct ciphertext names still collide at the canonical receipt name"
-        );
-    }
-}
 impl Store {
     pub(in crate::setup::home_capture) fn commit_completed_original_setup(
         &self,
@@ -497,7 +415,7 @@ impl Store {
         parent: &Arc<PinnedDirectory>,
         attempt: &str,
     ) -> io::Result<Arc<PinnedDirectory>> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(failure("Completed original setup requires root custody"));
         }
         parent.validate_destination()?;
@@ -645,9 +563,30 @@ impl Store {
             applications: None,
             reserve_bytes: expected.sealed_bytes,
         };
-        self.mark_original_output_exported_paired(attempt, output, &pair, exit, key, work)
+        self.checkpoint_original_output_exported(attempt, output, &pair, exit, key, work)
     }
     pub(in crate::setup::home_capture) fn mark_original_output_exported_paired(
+        &self,
+        attempt: &str,
+        output: &File,
+        expected: &OriginalOutputExpectations<'_>,
+        exit: &launcher::owned_service::QuiescentExit,
+        key: &launcher::owned_service::ServiceLeaseKey,
+        work: &Path,
+    ) -> io::Result<()> {
+        if expected.applications.is_none() && expected.reserve_bytes == expected.home.sealed_bytes {
+            return self.mark_original_output_exported(
+                attempt,
+                output,
+                expected.home,
+                exit,
+                key,
+                work,
+            );
+        }
+        self.checkpoint_original_output_exported(attempt, output, expected, exit, key, work)
+    }
+    fn checkpoint_original_output_exported(
         &self,
         attempt: &str,
         output: &File,
@@ -690,9 +629,20 @@ impl Store {
             applications: None,
             reserve_bytes: expected.sealed_bytes,
         };
-        self.mark_original_output_verifying_paired(attempt, output, &pair)
+        self.checkpoint_original_output_verifying(attempt, output, &pair)
     }
     pub(in crate::setup::home_capture) fn mark_original_output_verifying_paired(
+        &self,
+        attempt: &str,
+        output: &File,
+        expected: &OriginalOutputExpectations<'_>,
+    ) -> io::Result<()> {
+        if expected.applications.is_none() && expected.reserve_bytes == expected.home.sealed_bytes {
+            return self.mark_original_output_verifying(attempt, output, expected.home);
+        }
+        self.checkpoint_original_output_verifying(attempt, output, expected)
+    }
+    fn checkpoint_original_output_verifying(
         &self,
         attempt: &str,
         output: &File,
@@ -722,9 +672,30 @@ impl Store {
             applications: None,
             reserve_bytes: expected.sealed_bytes,
         };
-        self.mark_original_output_verified_paired(attempt, output, &pair, exit, key, work)
+        self.checkpoint_original_output_verified(attempt, output, &pair, exit, key, work)
     }
     pub(in crate::setup::home_capture) fn mark_original_output_verified_paired(
+        &self,
+        attempt: &str,
+        output: &File,
+        expected: &OriginalOutputExpectations<'_>,
+        exit: &launcher::owned_service::QuiescentExit,
+        key: &launcher::owned_service::ServiceLeaseKey,
+        work: &Path,
+    ) -> io::Result<()> {
+        if expected.applications.is_none() && expected.reserve_bytes == expected.home.sealed_bytes {
+            return self.mark_original_output_verified(
+                attempt,
+                output,
+                expected.home,
+                exit,
+                key,
+                work,
+            );
+        }
+        self.checkpoint_original_output_verified(attempt, output, expected, exit, key, work)
+    }
+    fn checkpoint_original_output_verified(
         &self,
         attempt: &str,
         output: &File,
@@ -1114,7 +1085,7 @@ pub(in crate::setup) fn review_committed_original_selection(
     completed: &Arc<PinnedDirectory>,
 ) -> io::Result<CommittedOriginalSelection> {
     use sha2::Digest;
-    if unsafe { libc::geteuid() } != 0 || uuid::Uuid::parse_str(attempt).is_err() {
+    if rustix::process::geteuid().as_raw() != 0 || uuid::Uuid::parse_str(attempt).is_err() {
         return Err(failure(
             "Readonly committed review requires root and exact attempt",
         ));
@@ -1238,7 +1209,7 @@ fn review_uncommitted_original_selection_plan(
     declaration: &crate::setup::prepared_setup::OriginalSelectionPlan,
 ) -> io::Result<()> {
     use sha2::Digest;
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(failure("Uncommitted review requires root"));
     }
     private.validate_destination()?;
@@ -1376,7 +1347,7 @@ pub(in crate::setup) fn lookup_committed_original_selection(
     declaration: &crate::setup::prepared_setup::OfflineHomePlan,
 ) -> io::Result<Option<CommittedOriginalSelection>> {
     // SAFETY: geteuid only observes the native controller's credentials.
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(failure("Committed lookup requires root custody"));
     }
     private.validate_destination()?;
@@ -1485,7 +1456,7 @@ pub(in crate::setup) fn review_committed_original_applications_selection(
     completed: &Arc<PinnedDirectory>,
 ) -> io::Result<CommittedOriginalApplicationsSelection> {
     use sha2::Digest;
-    if unsafe { libc::geteuid() } != 0 || uuid::Uuid::parse_str(attempt).is_err() {
+    if rustix::process::geteuid().as_raw() != 0 || uuid::Uuid::parse_str(attempt).is_err() {
         return Err(failure(
             "Readonly committed review requires root and exact attempt",
         ));
@@ -1593,7 +1564,7 @@ pub(in crate::setup) fn lookup_committed_original_applications_selection(
     declaration: &crate::setup::prepared_setup::OfflineApplicationsPlan,
 ) -> io::Result<Option<CommittedOriginalApplicationsSelection>> {
     // SAFETY: geteuid only observes the native controller's credentials.
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(failure("Committed lookup requires root custody"));
     }
     private.validate_destination()?;
@@ -1651,4 +1622,87 @@ pub(in crate::setup) fn lookup_committed_original_applications_selection(
     private.validate_destination()?;
     parent.validate_destination()?;
     Ok(Some(facts))
+}
+
+#[cfg(test)]
+mod pair_bounds_tests {
+    use super::*;
+    use crate::setup::portable_transfer::{Limits, Purpose};
+    #[test]
+    fn original_output_pair_refuses_receipt_collision_foreign_binding_and_aggregate_shortfall() {
+        let operation = uuid::Uuid::new_v4().to_string();
+        let applications_operation = uuid::Uuid::new_v4().to_string();
+        let limits = Limits {
+            plaintext_bytes: 64,
+            entries: 1,
+            metadata_bytes: 1024,
+        };
+        let home = crate::setup::portable_home_media::Expectation {
+            schema: 1,
+            operation: operation.clone(),
+            purpose: Purpose::Home,
+            filename: format!("home-{operation}.sealed"),
+            setup_binding: "paired-fixture".into(),
+            sealed_bytes: 32,
+            plaintext_bytes: 8,
+            entries: 1,
+            runtime_sockets: 0,
+            ciphertext_sha256: [1; 32],
+            limits,
+        };
+        let mut applications = crate::setup::flatpak_transfer::portable::Expectation {
+            schema: 1,
+            consumer_protocol: 1,
+            operation: applications_operation.clone(),
+            purpose: Purpose::FlatpakApplications,
+            filename: format!("applications-{applications_operation}.sealed"),
+            setup_binding: "paired-fixture".into(),
+            sealed_bytes: 48,
+            plaintext_bytes: 8,
+            entries: 1,
+            ciphertext_sha256: [2; 32],
+            manifest_sha256: [3; 32],
+            limits,
+        };
+        OriginalOutputExpectations {
+            home: &home,
+            applications: Some(&applications),
+            reserve_bytes: 80,
+        }
+        .validate()
+        .unwrap();
+        assert!(
+            OriginalOutputExpectations {
+                home: &home,
+                applications: Some(&applications),
+                reserve_bytes: 79
+            }
+            .validate()
+            .is_err()
+        );
+        applications.setup_binding = "another-setup".into();
+        assert!(
+            OriginalOutputExpectations {
+                home: &home,
+                applications: Some(&applications),
+                reserve_bytes: 80
+            }
+            .validate()
+            .is_err()
+        );
+        applications.setup_binding = home.setup_binding.clone();
+        applications.operation = home.operation.clone();
+        applications.filename = format!("applications-{}.sealed", home.operation);
+        applications.validate().unwrap();
+        assert!(
+            OriginalOutputExpectations {
+                home: &home,
+                applications: Some(&applications),
+                reserve_bytes: 80
+            }
+            .validate()
+            .is_err(),
+            "distinct ciphertext names still collide at the canonical receipt name"
+        );
+    }
 }

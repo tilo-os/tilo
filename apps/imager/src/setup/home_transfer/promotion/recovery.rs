@@ -481,7 +481,7 @@ fn verify_moved(
         // SAFETY: geteuid only reads the current account identity.
         if !expected.directory
             || !metadata.is_dir()
-            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.uid() != rustix::process::geteuid().as_raw()
             || metadata.mode() & 0o6000 != 0
             || metadata.mode() & 0o777 != expected.mode
         {

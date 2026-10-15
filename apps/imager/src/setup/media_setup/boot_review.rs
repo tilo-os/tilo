@@ -142,7 +142,7 @@ fn review_pending<'a>(
     cancel: &AtomicBool,
 ) -> io::Result<PendingBootReview<'a>> {
     // SAFETY: geteuid only observes the executing root controller's credentials.
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(changed("Boot pending setup review requires root custody"));
     }
     check_cancel(cancel)?;

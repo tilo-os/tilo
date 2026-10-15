@@ -51,15 +51,22 @@ pub(super) fn child_dispatch() -> bool {
         return false;
     };
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         1000,
         "actual source/target owner required"
+    );
+    assert!(
+        matches!(
+            role.to_str(),
+            Some("capture" | "restore" | "restore-applications")
+        ),
+        "unknown qualifier role"
     );
     match role.to_str() {
         Some("capture") => capture_child(),
         Some("restore") => restore_child(),
         Some("restore-applications") => super::paired_apps::restore_child(),
-        _ => panic!("unknown qualifier role"),
+        _ => return false,
     }
     true
 }
@@ -176,7 +183,7 @@ fn capture_child() {
         let url = reqwest::Url::from_directory_path(fixture.join("origin")).unwrap();
         fs::write(
             &definition,
-            format!("[Flatpak Repo]\nTitle=Native Fixture\nUrl={url}\nGPGKey={key}\n",),
+            format!("[Flatpak Repo]\nTitle=Native Fixture\nUrl={url}\nGPGKey={key}\n"),
         )
         .unwrap();
         NativeOfflineRunner
@@ -376,7 +383,7 @@ pub(super) fn publish_pending(
         .unwrap()
         .checked_add(1)
         .unwrap()
-        .checked_mul(u64::from(binding.sector_bytes))
+        .checked_mul(binding.sector_bytes)
         .unwrap();
     let conservative_free = block_devices::migration_ext4::available_bytes(extent).unwrap();
     assert!(
@@ -440,22 +447,6 @@ pub(in crate::setup) struct Committed {
     applications: crate::setup::flatpak_transfer::portable::Expectation,
     key: [u8; 32],
     account_ids: Vec<String>,
-}
-impl Committed {
-    pub(in crate::setup) fn home(&self) -> &HomeExpectation {
-        &self.home
-    }
-    pub(in crate::setup) fn applications(
-        &self,
-    ) -> &crate::setup::flatpak_transfer::portable::Expectation {
-        &self.applications
-    }
-    pub(in crate::setup) fn person(&self) -> &[u8; 32] {
-        &self.key
-    }
-    pub(in crate::setup) fn account_ids(&self) -> &[String] {
-        &self.account_ids
-    }
 }
 pub(super) fn complete(
     setup: &PreparedSetupReview,

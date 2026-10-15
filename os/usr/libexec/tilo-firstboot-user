@@ -177,6 +177,11 @@ fi
 # The strict root helper validates the private plan, regular-account policy and
 # both username/UID availability before any account creation side effect.
 uid_args=()
+online_accounts=0
+if [ -e /etc/tilo/online-accounts ] || [ -L /etc/tilo/online-accounts ]; then
+  online_accounts=1
+  uid_args=(-u 1000)
+fi
 if [ "$retry" -eq 0 ] && { [ -e /var/lib/tilo/migration-plan.json ] || [ -L /var/lib/tilo/migration-plan.json ]; }; then
   required_uid="$(/usr/libexec/tilo-staging-handoff required-user-id --username "$user")" || {
     echo "tilo-firstboot-user: migration ownership validation failed; preserving credential seed" >&2
@@ -185,6 +190,10 @@ if [ "$retry" -eq 0 ] && { [ -e /var/lib/tilo/migration-plan.json ] || [ -L /var
   if [ -n "$required_uid" ]; then
     if [[ ! "$required_uid" =~ ^[1-9][0-9]{0,9}$ ]]; then
       echo "tilo-firstboot-user: migration user-ID response is malformed" >&2
+      exit 1
+    fi
+    if [ "$online_accounts" -eq 1 ] && [ "$required_uid" != 1000 ]; then
+      echo "tilo-firstboot-user: migration UID conflicts with selected account destination" >&2
       exit 1
     fi
     uid_args=(-u "$required_uid")
@@ -254,6 +263,16 @@ if [ ! -f "$seed_helper" ] || [ -L "$seed_helper" ] || [ ! -x "$seed_helper" ] \
     || ! "$seed_helper" "$user"; then
   echo "tilo-firstboot-user: home defaults could not be attested; account remains locked" >&2
   exit 1
+fi
+
+# Import as the actual destination user, while expiration still prevents every
+# login path. Root only opens the private transport and records completion.
+if [ "$online_accounts" -eq 1 ]; then
+  [ "$account_uid" = 1000 ] || exit 1
+  if ! "$seed_helper" --accounts-adopt "$user"; then
+    echo "tilo-firstboot-user: selected account import failed; account remains locked" >&2
+    exit 1
+  fi
 fi
 
 repair_enrolled_device_key

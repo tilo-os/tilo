@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 use tilo_app_package::PackageId;
+use tilo_app_package::trust::TrustFile as _;
 
 pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "so.tilo.agent";
 /// Non-terminal managed launches one launcher holds. A started agent stays

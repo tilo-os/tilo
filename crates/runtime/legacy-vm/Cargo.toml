@@ -49,3 +49,6 @@ tilo-desktop-entry = { path = "../../system/desktop-entry" }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

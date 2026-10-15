@@ -606,6 +606,59 @@ impl AnimationSettle {
     }
 }
 
+/// Who a painted tick's motion belongs to, for the frame trace
+/// ([`metrics::FrameSample::paint_animations`]). Naming a content widget
+/// walks the widget tree, so the label is worked out when the set of
+/// animating sources (or the chrome) changes and kept while it does not:
+/// it names the owners as of the start of that run of motion, which is the
+/// run an idle desktop that keeps painting is stuck in.
+#[derive(Default)]
+struct AnimationTraceLabel {
+    key: Option<(crate::shell::frame::AnimationDemand, bool, u64)>,
+    label: &'static str,
+}
+
+impl AnimationTraceLabel {
+    fn label(
+        &mut self,
+        key: (crate::shell::frame::AnimationDemand, bool, u64),
+        owners: impl FnOnce() -> Vec<String>,
+    ) -> &'static str {
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.label = metrics::intern_animations(&animation_trace_label(&owners(), key.1));
+        }
+        self.label
+    }
+}
+
+/// [`AnimationTraceLabel`]'s text: each owner once, a widget path without
+/// its geometry (which moves with the motion and would make every frame a
+/// new label), `transition` for a compositor transition's frame run, and
+/// `resting-frame` when nothing animates any more and the tick is the one
+/// frame [`AnimationSettle`] owes after motion. Commas would split the CSV
+/// cell, so none survive.
+fn animation_trace_label(owners: &[String], transition: bool) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for owner in owners {
+        let path = owner
+            .split('@')
+            .next()
+            .unwrap_or_default()
+            .replace(',', ";");
+        if !path.is_empty() && !names.contains(&path) {
+            names.push(path);
+        }
+    }
+    if transition {
+        names.push("transition".to_string());
+    }
+    if names.is_empty() {
+        names.push("resting-frame".to_string());
+    }
+    names.join("+")
+}
+
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
 
@@ -921,6 +974,33 @@ fn present_for_app_poll(pump_changed: bool, _deadline_due: bool) -> bool {
     pump_changed
 }
 
+/// App-side scheduling for one native tick. Keep the pump's redraw decision
+/// and the post-paint park together: a poll is work, not necessarily pixels,
+/// and its answered deadline must not schedule that same work again.
+struct NativeAppTick {
+    tick_started: Instant,
+    redraw: bool,
+}
+
+impl NativeAppTick {
+    fn after_pump(frame: &FrameBuilder, changed: bool, tick_started: Instant) -> Self {
+        let deadline_due = frame
+            .next_wake_deadline()
+            .is_some_and(|at| at <= tick_started);
+        Self {
+            tick_started,
+            redraw: present_for_app_poll(changed, deadline_due),
+        }
+    }
+
+    fn park_deadline(&self, frame: &FrameBuilder, pipe_ready: bool) -> Option<Instant> {
+        widget_deadline_for_presenter(
+            pipe_ready,
+            widget_park_deadline(self.tick_started, frame.next_wake_deadline()),
+        )
+    }
+}
+
 /// A `wl_surface.frame` on a commit that did not change the tree, the
 /// layout, or an animation is not a present. Release it on its own.
 /// A callback asked for after this tick presented is released too: the
@@ -970,6 +1050,10 @@ fn widget_deadline_for_presenter(
 ) -> Option<Instant> {
     widget_deadline.filter(|_| pipe_ready)
 }
+
+#[cfg(test)]
+#[path = "native_idle_work_tests.rs"]
+mod idle_work_tests;
 
 /// A widget deadline wakes the loop once. A widget may keep an overdue
 /// deadline until a paint consumes it, while a due deadline alone does not
@@ -1152,15 +1236,13 @@ pub(crate) fn peer_shares_host_security_namespaces(pid: u32) -> bool {
 }
 
 fn unattributed_host_client_allowed(peer_uid: libc::uid_t, shares_namespaces: bool) -> bool {
-    // SAFETY: `geteuid` has no failure mode.
-    peer_uid == unsafe { libc::geteuid() } && shares_namespaces
+    peer_uid == rustix::process::geteuid().as_raw() && shares_namespaces
 }
 
 fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
     let credentials = wayland_peer_credentials(stream)?;
     let pid = u32::try_from(credentials.pid).ok()?;
-    // SAFETY: `geteuid` has no failure mode.
-    if credentials.uid != unsafe { libc::geteuid() } {
+    if credentials.uid != rustix::process::geteuid().as_raw() {
         return None;
     }
     if let Some((identity, custody)) =
@@ -2652,9 +2734,7 @@ fn spawn_agent_mcp(
     let computer =
         std::sync::Arc::new(tilo_runtime::computer::Computer::new(agent_socket, scratch));
     // Viewer invitations keep their ledger with the session's durable state.
-    let viewer_state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+    let viewer_state = tilo_paths::xdg::state_home()
         .map(|state| state.join("tilo"))
         .filter(|path| std::fs::create_dir_all(path).is_ok());
     let viewer = match viewer_state.map(|state| tilo_runtime::viewer::start_from_env(&state)) {
@@ -2728,12 +2808,8 @@ fn control_listener_wake(
     }
 }
 
-/// Directory under `$XDG_RUNTIME_DIR` where a running compositor publishes
-/// facts the next terminal command needs; torn down with the session.
-pub const SESSION_RUNTIME_SUBDIR: &str = "tilo-session";
-
-/// File inside [`SESSION_RUNTIME_SUBDIR`] holding the bare socket name (no
-/// trailing newline), so `WAYLAND_DISPLAY=$(cat …)` is exactly right.
+/// File inside the session directory ([`tilo_paths::login::session_dir`])
+/// holding the bare socket name (no trailing newline), so `WAYLAND_DISPLAY=$(cat …)` is exactly right.
 pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
 
 /// Where [`publish_wayland_display`] writes, given `$XDG_RUNTIME_DIR`. Split
@@ -2742,11 +2818,7 @@ pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
 /// `None` when the variable is unset or not absolute — guessing `/tmp`
 /// would put a session-scoped file somewhere world-writable.
 pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    let dir = PathBuf::from(runtime_dir?);
-    if !dir.is_absolute() {
-        return None;
-    }
-    Some(dir.join(SESSION_RUNTIME_SUBDIR).join(WAYLAND_DISPLAY_FILE))
+    Some(tilo_paths::login::session_dir(runtime_dir)?.join(WAYLAND_DISPLAY_FILE))
 }
 
 /// Publish the compositor's Wayland socket name to
@@ -2779,17 +2851,13 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
 }
 
-/// File inside [`SESSION_RUNTIME_SUBDIR`] naming the room of the workspace in
-/// front: the room a command started now (an app run from a terminal, or by
-/// `tilo-app dev`) joins, as an app the shell starts joins the room it names
-/// with the launcher's `--workspace-id`.
-pub const WORKSPACE_ID_FILE: &str = "workspace-id";
-
-/// [`WORKSPACE_ID_FILE`] beside the published Wayland display, written off
+/// [`tilo_paths::login::WORKSPACE_ID_FILE`] beside the published Wayland display, written off
 /// this thread; `None` where the display has no place.
 fn published_room() -> Option<crate::compositor::published_room::PublishedRoom> {
     let display = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
-    crate::compositor::published_room::PublishedRoom::at(display.with_file_name(WORKSPACE_ID_FILE))
+    crate::compositor::published_room::PublishedRoom::at(
+        display.with_file_name(tilo_paths::login::WORKSPACE_ID_FILE),
+    )
 }
 
 /// Env var naming the compositor's privileged Wayland socket, exported to
@@ -3767,7 +3835,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "search_scope": format!("{:?}", chrome.search_scope),
             "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
-            "tray": crate::tray::Tray::global().state_json(),
+            "tray": crate::tray::global().state_json(),
             // Each tab pill's artwork: `toplevel:` when the window set its
             // own, `theme:` for its application's icon.
             "tab_icons": tab_icons_json(&chrome.tree()),
@@ -9474,8 +9542,7 @@ pub fn run() {
         // Readiness has no identity/key authority. The live trusted onboarding
         // state below gates both its response and the ordinary host-app launch.
         let runtime = crate::shell::launcher::runtime_dir();
-        // SAFETY: getuid has no arguments or memory contract.
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         let pending = tilo_paths::data_local_dir().is_some_and(|data| {
             crate::shell::desktop_continuation::pending_review(
                 &data.join("tilo-imager/migrations/desktop-continuation.json"),
@@ -9920,22 +9987,22 @@ pub fn run() {
     // the action registry. Held for the session; a second watcher already on
     // the bus (a nested session) leaves this one off.
     let tray_handle: Option<
-        crate::session_runtime::Registration<crate::tray::watcher::WatcherHandle>,
+        crate::session_runtime::Registration<tilo_tray_host::watcher::WatcherHandle>,
     > = notif_runtime.map(|rt| {
         crate::session_runtime::Registration::start(
             rt.handle(),
             "tray",
             async move {
-                crate::tray::watcher::serve(
+                tilo_tray_host::watcher::serve(
                     zbus::connection::Builder::session()?,
-                    std::sync::Arc::clone(crate::tray::Tray::global()),
+                    std::sync::Arc::clone(crate::tray::global()),
                 )
                 .await
             },
             |_| {
                 tracing::info!(
                     "tray: serving {} on session bus",
-                    crate::tray::WATCHER_BUS_NAME
+                    tilo_tray_host::WATCHER_BUS_NAME
                 );
             },
         )
@@ -9946,14 +10013,12 @@ pub fn run() {
     // only the compositor draws. Registered on the system bus for this login
     // session; without polkit or logind the requests fail as before.
     let polkit_agent: Option<
-        crate::session_runtime::Registration<crate::polkit_agent::service::AgentHandle>,
+        crate::session_runtime::Registration<tilo_polkit_agent::service::AgentHandle>,
     > = notif_runtime.map(|rt| {
         crate::session_runtime::Registration::start(
             rt.handle(),
             "polkit agent",
-            crate::polkit_agent::service::serve(
-                crate::shell::portal_dialog::PortalDialogQueue::global(),
-            ),
+            crate::polkit_agent::serve(crate::shell::portal_dialog::PortalDialogQueue::global()),
             |_| tracing::info!("polkit: authentication agent registered for this session"),
         )
     });
@@ -10100,6 +10165,7 @@ pub fn run() {
     let mut content_owed = false;
     let mut force_first_paint = true;
     let mut animation_settle = AnimationSettle::default();
+    let mut animation_trace = AnimationTraceLabel::default();
     // When the frame being made was first wanted, for its trace lateness.
     let mut demand_onset = metrics::DemandOnset::default();
     // Each foreign surface's frame counter at the last traced paint, so a
@@ -10328,6 +10394,14 @@ pub fn run() {
         // Keys a control client queued as a physical keyboard's arrive here, with the
         // backend's own events.
         pending_events.extend(test_control_ctx.seat_events.drain(..));
+        // Any input is activity, whoever it is routed to below (a pen or a
+        // pinch can go straight to an app): reset the idle timer and wake the
+        // display if it was dimmed or blanked.
+        apply_session_transitions!(crate::compositor::activity::note_person_input(
+            &mut session,
+            &pending_events,
+            Instant::now(),
+        ));
         input_steps.step("backend-poll");
         let t_backend_poll_done = iter_t0.elapsed();
         if slow_prepaint_phase(t_backend_poll_done) {
@@ -10653,11 +10727,6 @@ pub fn run() {
                     // Instrumentation: the clock starts when the loop takes the event off the
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
-                    // Any input is activity — reset the idle timer and wake the display if it was blanked.
-                    apply_session_transitions!(session.note_activity(Instant::now()));
-                    if let Some(steps) = key_steps.as_mut() {
-                        steps.steps.mark("activity");
-                    }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
@@ -11093,7 +11162,6 @@ pub fn run() {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
-                        apply_session_transitions!(session.note_activity(Instant::now()));
                         apply_shell_gesture(&mut frame_builder, action);
                         session_changed = true;
                     }
@@ -12876,9 +12944,7 @@ pub fn run() {
         let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
         let still_moving = animation_demand.any() || transition_run;
         let animating = animation_settle.due(still_moving);
-        let widget_deadline_due = frame_builder
-            .next_wake_deadline()
-            .is_some_and(|deadline| deadline <= iter_t0);
+        let app_tick = NativeAppTick::after_pump(&frame_builder, apps_changed, iter_t0);
         let output_presentation_count = state.output_presentation_surfaces.len();
         let presentation_frame_changed = update_output_presentation_repaint_pending(
             &mut output_presentation_repaint_pending,
@@ -12956,7 +13022,7 @@ pub fn run() {
             // it kept the shell busy while apps sat still. The callback is
             // fired after dispatch when this tick will not build a frame,
             // and that answer does not schedule another pump.
-            apps: present_for_app_poll(apps_changed, widget_deadline_due),
+            apps: app_tick.redraw,
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
@@ -13125,6 +13191,13 @@ pub fn run() {
                 redraw_reasons.paint_reason_bits(session.is_locked(), transition_run),
                 clients,
             );
+            if animating && !session.is_locked() {
+                let owners = animation_trace
+                    .label((animation_demand, transition_run, revision), || {
+                        frame_builder.animation_owners()
+                    });
+                metrics.mark_paint_animations(owners);
+            }
         }
         if should_paint {
             frame_builder.with_chrome(
@@ -14044,13 +14117,7 @@ pub fn run() {
             cadence_needed,
             frame_clock.next_deadline(),
             [
-                (
-                    "widget",
-                    widget_deadline_for_presenter(
-                        pipe_ready,
-                        widget_park_deadline(iter_t0, frame_builder.next_wake_deadline()),
-                    ),
-                ),
+                ("widget", app_tick.park_deadline(&frame_builder, pipe_ready)),
                 (
                     "lock-animation",
                     lock_animation_park_deadline(
@@ -14743,6 +14810,53 @@ mod tests {
         );
     }
 
+    /// An idle desktop that keeps painting "animation" must say whose motion
+    /// it is in the frame trace, the one record an acceptance run keeps of
+    /// its idle window. The label stays one per owner set, not one per frame.
+    #[test]
+    fn a_traced_animation_names_its_owner_without_its_geometry() {
+        let owners = vec![
+            "notification".to_string(),
+            "content/DesktopSurface/GroupRow/WindowGroup/TileHost@1748,92 1051x976".to_string(),
+            "content/DesktopSurface/GroupRow/WindowGroup/TileHost@20,92 600x976".to_string(),
+        ];
+        assert_eq!(
+            animation_trace_label(&owners, false),
+            "notification+content/DesktopSurface/GroupRow/WindowGroup/TileHost"
+        );
+        assert_eq!(
+            animation_trace_label(&[], true),
+            "transition",
+            "a compositor transition's frame run is named"
+        );
+        assert_eq!(
+            animation_trace_label(&[], false),
+            "resting-frame",
+            "the frame owed after motion ended is named, never blank"
+        );
+        assert!(!animation_trace_label(&["a,b".to_string()], false).contains(','));
+
+        let mut trace = AnimationTraceLabel::default();
+        let demand = crate::shell::frame::AnimationDemand {
+            osk: true,
+            ..Default::default()
+        };
+        let mut walks = 0;
+        for _ in 0..3 {
+            let label = trace.label((demand, false, 7), || {
+                walks += 1;
+                vec!["osk".to_string()]
+            });
+            assert_eq!(label, "osk");
+        }
+        assert_eq!(walks, 1, "the owners are looked up once per set of sources");
+        let _ = trace.label((demand, false, 8), || {
+            walks += 1;
+            vec!["osk".to_string()]
+        });
+        assert_eq!(walks, 2, "a chrome change looks them up again");
+    }
+
     #[test]
     fn an_animation_ends_on_a_painted_resting_frame() {
         let mut settle = AnimationSettle::default();
@@ -14980,8 +15094,7 @@ mod tests {
         }
         // Phase `unattributed_public_clients_fail_closed_outside_host_namespaces`.
         {
-            // SAFETY: `geteuid` has no failure mode.
-            let uid = unsafe { libc::geteuid() };
+            let uid = rustix::process::geteuid().as_raw();
             assert!(unattributed_host_client_allowed(uid, true));
             assert!(!unattributed_host_client_allowed(uid, false));
             assert!(!unattributed_host_client_allowed(

@@ -250,6 +250,7 @@ jobs:
     outputs:
       engine_runtime_only: ${{ steps.engine-mode.outputs.engine_runtime_only }}
       signal_provider_only: ${{ steps.engine-mode.outputs.signal_provider_only }}
+      engine_runtime_required: ${{ steps.engine-dependencies.outputs.engine_runtime_required }}
       builder_image: ${{ steps.builder.outputs.image }}
       apps: ${{ steps.plan.outputs.apps }}
       packages: ${{ steps.plan.outputs.packages }}
@@ -475,6 +476,16 @@ jobs:
           version="0.0.0-${GITHUB_SHA}"
           [[ $version =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]]
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Select the signed engine dependency of the published collection
+        id: engine-dependencies
+        env:
+          SELECTED_APPS: ${{ steps.plan.outputs.apps }}
+          COMPLETE: ${{ steps.plan.outputs.complete }}
+          REQUESTED_PUBLISH: ${{ steps.plan.outputs.publish }}
+          ENGINE_RUNTIME_ONLY: ${{ steps.engine-mode.outputs.engine_runtime_only }}
+          SIGNAL_PROVIDER_ONLY: ${{ steps.engine-mode.outputs.signal_provider_only }}
+        run: python3 -I tools/ci/python.py tools/apps/browser_runtime_release.py dependencies
 
       - name: Retain trusted coordinator plan provenance
         if: github.event.inputs.coordinator_intent != ''
@@ -961,8 +972,10 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0' && needs.plan.outputs.engine_runtime_only != 'true' && needs.plan.outputs.signal_provider_only != 'true'
-    needs: [plan, authorize-publish, build]
+    # A skipped engine job is expected only for collections without its dependency.
+    # always() lets those releases proceed; failed engine publication never does.
+    if: always() && needs.plan.result == 'success' && needs.authorize-publish.result == 'success' && needs.build.result == 'success' && (needs.publish-engine-runtime.result == 'success' || (needs.plan.outputs.engine_runtime_required != 'true' && needs.publish-engine-runtime.result == 'skipped')) && needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0' && needs.plan.outputs.engine_runtime_only != 'true' && needs.plan.outputs.signal_provider_only != 'true'
+    needs: [plan, authorize-publish, build, publish-engine-runtime]
     # Execute tools from the first selected native architecture. Those tools can
     # verify either target archive without executing its application payloads.
     # With both native artifacts, publish-collections.sh selects the tool
@@ -1091,7 +1104,7 @@ jobs:
         run: bash tools/apps/publish-signal-provider.sh
 
   build-engine-runtime:
-    if: needs.plan.outputs.engine_runtime_only == 'true'
+    if: needs.plan.outputs.engine_runtime_only == 'true' || needs.plan.outputs.engine_runtime_required == 'true'
     needs: [plan, authorize-publish]
     name: Browser engine / ${{ matrix.arch }}
     runs-on: ${{ matrix.build_runner }}
@@ -1164,7 +1177,7 @@ jobs:
           retention-days: 1
 
   publish-engine-runtime:
-    if: needs.plan.outputs.engine_runtime_only == 'true' && needs.plan.outputs.publish == 'true'
+    if: (needs.plan.outputs.engine_runtime_only == 'true' || needs.plan.outputs.engine_runtime_required == 'true') && needs.plan.outputs.publish == 'true'
     needs: [plan, authorize-publish, build-engine-runtime]
     runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
     timeout-minutes: 60

@@ -70,6 +70,7 @@ impl CaptureCustody {
 
 #[cfg(any(feature = "capture-worker", test))]
 impl SourceInventory {
+    #[cfg(test)]
     pub(in crate::setup) fn capture_captured_home(
         root: &Arc<PinnedDirectory>,
         custody: Option<&CaptureCustody>,

@@ -578,13 +578,7 @@ impl Drop for ActiveSession {
         self.0.release_mutation();
     }
 }
-/// Source-minted description of namespace replacement intent. Observing this
-/// value admits neither an operation nor canonical history authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum NativeReplacementPurpose {
-    ReplacementRename,
-    AtomicSave,
-}
+pub use crate::external_history::NativeReplacementPurpose;
 struct Work {
     session: ActiveSession,
     owner: Arc<OperationOwner>,

@@ -137,9 +137,9 @@ impl PendingRetainedConsumer {
     pub(super) fn observe_consumer(
         mut self,
         selection: ReviewedConsumerSelection,
-    ) -> Result<RetainedConsumerLease, Self> {
+    ) -> Result<RetainedConsumerLease, Box<Self>> {
         if self.consumer.is_none() {
-            return Err(self);
+            return Err(Box::new(self));
         }
         // Transfer all actual custody before any fallible validation. The root
         // driver retains the returned owner even when its check fails.
@@ -273,15 +273,6 @@ impl RetainedConsumerLease {
             && self.consumer.is_none()
             && self.transport.is_none()
             && self.selection.is_none()
-    }
-
-    /// Retain this exact original consuming helper custody. This does not
-    /// authorize another launch; each adopted editor requires a fresh helper.
-    pub(super) fn managed_consumer(&self) -> io::Result<Arc<Mutex<ManagedConsumingBootstrap>>> {
-        self.managed
-            .as_ref()
-            .map(Arc::clone)
-            .ok_or_else(|| io::ErrorKind::NotConnected.into())
     }
 
     pub(super) fn check(&self, cancel: &AtomicBool) -> io::Result<()> {
@@ -500,54 +491,6 @@ impl RetainedConsumerLease {
             .ok_or(io::ErrorKind::NotConnected)?
             .target_credentials(cancel)
             .map(|(uid, _)| uid)
-    }
-
-    /// Actual root worker loop, not a UI timer or a proof inferred from file
-    /// activity. Refresh the SAME certified Shell epoch even while the app is
-    /// idle so the bounded private proof stream remains live. A failed epoch
-    /// is never retried or replaced; stop the consuming namespace first.
-    pub(super) fn supervise_until_stopped(
-        &mut self,
-        cancel: &AtomicBool,
-        grace: Duration,
-    ) -> io::Result<()> {
-        let mut refresh_at = Instant::now();
-        let refusal = loop {
-            let observed = self
-                .consumer
-                .as_ref()
-                .ok_or(io::ErrorKind::NotConnected)?
-                .observed_stopped();
-            match observed {
-                Ok(true) => {
-                    self.consumer_stopped = true;
-                    break None;
-                }
-                Ok(false) => {}
-                Err(error) => break Some(error),
-            }
-            if cancel.load(Ordering::Acquire) {
-                break Some(io::ErrorKind::Interrupted.into());
-            }
-            if Instant::now() >= refresh_at {
-                let result = self
-                    .selection
-                    .as_ref()
-                    .ok_or(io::ErrorKind::NotConnected)?
-                    .check(cancel);
-                if let Err(error) = result {
-                    break Some(error);
-                }
-                refresh_at = Instant::now()
-                    .checked_add(Duration::from_secs(2))
-                    .ok_or(io::ErrorKind::InvalidInput)?;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        // No observed exit becomes successful completion before actual target
-        // and source worker retirement. Incomplete cleanup retains Self.
-        self.retire(grace)?;
-        refusal.map_or(Ok(()), Err)
     }
 
     /// Shared actual Files custody plus independently supervised editor owners.

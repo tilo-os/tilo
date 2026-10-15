@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Shared by the publishing checks in t.toml (docs/publishing-on-t.md). Sourced, not run.
+#
+# A publishing check learns what it publishes for from t: T_REF is the branch (`main`,
+# `stable`) or `tag:<name>` of the trusted run, T_COMMIT its commit. Everyone pushes to main,
+# so main only ever publishes development artifacts; releases come from stable and release
+# tags, which only the stabilizer pushes.
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
+scratch=${TMPDIR:-/tmp}
+
+die() { printf 'publish: %s\n' "$*" >&2; exit 1; }
+
+# The channel of this run: `dev` on main, `release` on stable and release tags. Anything else
+# (a working tree, an unknown branch) publishes nothing.
+channel() {
+  case ${T_REF:-} in
+    main) echo dev ;;
+    stable | tag:*) echo release ;;
+    '') die 'T_REF is not set: publishing runs only in trusted runs (on = [...] or t dispatch)' ;;
+    *) die "no channel for $T_REF" ;;
+  esac
+}
+
+require_commit() {
+  [[ ${T_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || die "T_COMMIT is not a commit: ${T_COMMIT:-unset}"
+}
+
+# The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH.
+use_cosign() {
+  command -v cosign >/dev/null && return
+  local tools=$scratch/publish-tools
+  mkdir -p "$tools"
+  RUNNER_TEMP=$tools GITHUB_PATH=$tools/path TILO_GITHUB_ASSET_CACHE=$tools/assets \
+    TILO_ASSET_STORE= bash "$repo_root/os/dev/install-cached-cosign.sh" >/dev/null
+  PATH=$tools/tilo-cosign-tools:$PATH
+}
+
+# The manifest digest of the single image in an OCI archive, from its index.json.
+archive_digest() {
+  tar -xOf "$1" index.json | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | head -1 | cut -d'"' -f4
+}
+
+# The simple-signing payload Cosign signs for an image: its repository and manifest digest.
+signing_payload() {
+  printf '{"critical":{"identity":{"docker-reference":"%s"},"image":{"docker-manifest-digest":"%s"},"type":"cosign container image signature"},"optional":null}' "$1" "$2"
+}

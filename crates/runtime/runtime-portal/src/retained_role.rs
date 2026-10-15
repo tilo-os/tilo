@@ -51,8 +51,8 @@ impl VerifiedHelperPeer {
     /// # Errors
     /// Refuses a non-root verifier, wrong/dead task or changed executable.
     pub fn admit(peer: Arc<ExecutingPeer>) -> io::Result<Self> {
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || peer.uid() != 0
             || !peer.current()
         {
@@ -70,8 +70,8 @@ impl VerifiedHelperPeer {
     /// # Errors
     /// Every use observes the same held pidfd/start and fixed installed image.
     pub fn check_current(&self) -> io::Result<()> {
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || self.peer.uid() != 0
             || !self.peer.current()
             || self.peer.start_time()? != self.start
@@ -111,8 +111,8 @@ impl VerifiedDaemonPeer {
     /// # Errors
     /// Refuses a non-root verifier, wrong/dead task or changed executable.
     pub fn admit(peer: Arc<ExecutingPeer>) -> io::Result<Self> {
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || peer.uid() != 0
             || !peer.current()
         {
@@ -130,8 +130,8 @@ impl VerifiedDaemonPeer {
     /// # Errors
     /// Every use observes the same held pidfd/start and fixed installed image.
     pub fn check_current(&self) -> io::Result<()> {
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || self.peer.uid() != 0
             || !self.peer.current()
             || self.peer.start_time()? != self.start

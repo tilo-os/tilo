@@ -3,24 +3,28 @@
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fs;
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 const NATIVE: &str = env!("CARGO_BIN_EXE_tilo-installer-prepared-setup-extract");
-fn run(args: &[&str], input: &[u8]) -> Output {
+fn run(args: &[&str], input: &[u8]) -> TestResult<Output> {
     let mut child = Command::new(NATIVE)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(input).unwrap();
-    child.wait_with_output().unwrap()
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("missing child stdin")?
+        .write_all(input)?;
+    Ok(child.wait_with_output()?)
 }
-fn oracle(args: &[&str], input: &[u8]) -> Output {
+fn oracle(args: &[&str], input: &[u8]) -> TestResult<Output> {
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../os/tests/oracles/tilo-installer-prepared-setup-extract.py");
     let mut child = Command::new("python3")
@@ -29,18 +33,29 @@ fn oracle(args: &[&str], input: &[u8]) -> Output {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(input).unwrap();
-    child.wait_with_output().unwrap()
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("missing child stdin")?
+        .write_all(input)?;
+    Ok(child.wait_with_output()?)
 }
-fn private(path: &Path) {
-    fs::create_dir_all(path).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+fn private(path: &Path) -> TestResult {
+    fs::create_dir_all(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
 }
-fn write(path: &Path, data: &[u8]) {
-    fs::write(path, data).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+fn private_directories(paths: &[&Path]) -> TestResult {
+    for path in paths {
+        private(path)?;
+    }
+    Ok(())
+}
+fn write(path: &Path, data: &[u8]) -> TestResult {
+    fs::write(path, data)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
 }
 fn sealed() -> Vec<u8> {
     [b"TILOMIG1".as_slice(), &[42; 72]].concat()
@@ -48,15 +63,16 @@ fn sealed() -> Vec<u8> {
 fn receipt(data: &[u8]) -> Value {
     json!({"schema":1,"sealed_bytes":data.len(),"ciphertext_sha256":hex::encode(Sha256::digest(data))})
 }
-fn media(root: &Path) {
+fn media(root: &Path) -> TestResult {
     let child = root.join(".tilo-installer");
-    private(&child);
+    private(&child)?;
     let data = sealed();
-    write(&child.join("prepared-setup.sealed"), &data);
+    write(&child.join("prepared-setup.sealed"), &data)?;
     write(
         &child.join("receipt.json"),
-        &serde_json::to_vec(&receipt(&data)).unwrap(),
-    );
+        &serde_json::to_vec(&receipt(&data))?,
+    )?;
+    Ok(())
 }
 fn expectation(kind: &str, data: &[u8]) -> Value {
     let purpose = match kind {
@@ -71,36 +87,56 @@ fn expectation(kind: &str, data: &[u8]) -> Value {
         "browser" => "plan_sha256",
         _ => "runtime_sockets",
     };
-    v[logical] = if kind == "home" {
+    let value = if kind == "home" {
         json!(0)
     } else {
         json!([3; 32].to_vec())
     };
+    if let Value::Object(ref mut fields) = v {
+        fields.insert(logical.into(), value);
+    }
     v
 }
-fn selected_payload(root: &Path, kind: &str) -> Value {
+fn selected_payload(root: &Path, kind: &str) -> TestResult<Value> {
     let data = sealed();
     let e = expectation(kind, &data);
     let mut selection = json!({"schema":1,"prepared_setup":receipt(&data)});
-    selection[kind] = e.clone();
+    selection
+        .as_object_mut()
+        .ok_or("selection must be an object")?
+        .insert(kind.into(), e.clone());
     write(
         &root.join(format!(".tilo-installer/{kind}-selection.json")),
-        &serde_json::to_vec(&selection).unwrap(),
-    );
+        &serde_json::to_vec(&selection)?,
+    )?;
     write(
-        &root.join(format!("{}.receipt.json", e["operation"].as_str().unwrap())),
-        &serde_json::to_vec(&e).unwrap(),
-    );
-    write(&root.join(e["filename"].as_str().unwrap()), &data);
-    e
+        &root.join(format!(
+            "{}.receipt.json",
+            e.get("operation")
+                .ok_or("missing operation")?
+                .as_str()
+                .ok_or("non-string field")?
+        )),
+        &serde_json::to_vec(&e)?,
+    )?;
+    write(
+        &root.join(
+            e.get("filename")
+                .ok_or("missing filename")?
+                .as_str()
+                .ok_or("non-string field")?,
+        ),
+        &data,
+    )?;
+    Ok(e)
 }
-fn extract(root: &Path, out: &Path) -> Output {
+fn extract(root: &Path, out: &Path) -> TestResult<Output> {
     run(
         &[
             "--source-root",
-            root.to_str().unwrap(),
+            root.to_str().ok_or("non-UTF-8 path")?,
             "--out-dir",
-            out.to_str().unwrap(),
+            out.to_str().ok_or("non-UTF-8 path")?,
         ],
         &[],
     )
@@ -111,11 +147,11 @@ fn native_extraction_preflight_retention_and_retry() {
     let source = temp.path().join("media");
     let out = temp.path().join("out");
     let target = temp.path().join("var");
-    private(&source);
-    private(&out);
-    private(&target);
-    media(&source);
-    assert!(extract(&source, &out).status.success());
+    private(&source).unwrap();
+    private(&out).unwrap();
+    private(&target).unwrap();
+    media(&source).unwrap();
+    assert!(extract(&source, &out).unwrap().status.success());
     assert_eq!(
         fs::read(out.join("prepared-setup.sealed")).unwrap(),
         sealed()
@@ -123,6 +159,7 @@ fn native_extraction_preflight_retention_and_retry() {
     for op in ["preflight-profile", "preflight-home"] {
         assert!(
             run(&[op, "--source-dir", out.to_str().unwrap()], &[])
+                .unwrap()
                 .status
                 .success()
         );
@@ -139,6 +176,7 @@ fn native_extraction_preflight_retention_and_retry() {
                 ],
                 &[]
             )
+            .unwrap()
             .status
             .success()
         );
@@ -150,7 +188,8 @@ fn native_extraction_preflight_retention_and_retry() {
     write(
         &out.join("prepared-setup.sealed"),
         &[b"TILOMIG1".as_slice(), &[43; 72]].concat(),
-    );
+    )
+    .unwrap();
     assert!(
         !run(
             &[
@@ -162,6 +201,7 @@ fn native_extraction_preflight_retention_and_retry() {
             ],
             &[]
         )
+        .unwrap()
         .status
         .success()
     );
@@ -173,24 +213,24 @@ fn native_payload_preflight_capacity_and_retention_all_kinds() {
         let root = temp.path().join("media");
         let out = temp.path().join("out");
         let target = temp.path().join("var");
-        private(&root);
-        private(&out);
-        private(&target);
-        media(&root);
-        let e = selected_payload(&root, kind);
-        assert!(extract(&root, &out).status.success(), "{kind}");
+        private_directories(&[&root, &out, &target]).unwrap();
+        media(&root).unwrap();
+        let e = selected_payload(&root, kind).unwrap();
+        assert!(extract(&root, &out).unwrap().status.success(), "{kind}");
         assert!(
             run(
                 &["preflight-home", "--source-dir", out.to_str().unwrap()],
                 &[]
             )
+            .unwrap()
             .status
             .success()
         );
         let bytes = run(
             &["home-required-bytes", "--source-dir", out.to_str().unwrap()],
             &[],
-        );
+        )
+        .unwrap();
         assert!(bytes.status.success());
         assert_eq!(
             String::from_utf8(bytes.stdout)
@@ -211,6 +251,7 @@ fn native_payload_preflight_capacity_and_retention_all_kinds() {
                 ],
                 &[]
             )
+            .unwrap()
             .status
             .success()
         );
@@ -225,6 +266,7 @@ fn native_payload_preflight_capacity_and_retention_all_kinds() {
                 ],
                 &[]
             )
+            .unwrap()
             .status
             .success()
         );
@@ -240,6 +282,7 @@ fn native_payload_preflight_capacity_and_retention_all_kinds() {
                     ],
                     &[]
                 )
+                .unwrap()
                 .status
                 .success()
             );
@@ -252,12 +295,14 @@ fn native_payload_preflight_capacity_and_retention_all_kinds() {
         write(
             &root.join(e["filename"].as_str().unwrap()),
             &[b"TILOMIG1".as_slice(), &[43; 72]].concat(),
-        );
+        )
+        .unwrap();
         assert!(
             !run(
                 &["preflight-home", "--source-dir", out.to_str().unwrap()],
                 &[]
             )
+            .unwrap()
             .status
             .success()
         );
@@ -283,17 +328,17 @@ fn closed_receipt_mutations_match_oracle_and_redact() {
             mutations.push(v);
         }
     }
-    let mut extra = base.clone();
+    let mut extra = base;
     extra["unknown"] = json!("example-private-credential");
     mutations.push(extra);
     for value in mutations {
         let temp = tempfile::tempdir().unwrap();
         let native = temp.path().join("native");
         let python = temp.path().join("python");
-        private(&native);
-        private(&python);
-        write(&native.join("prepared-setup.sealed"), &sealed());
-        write(&python.join("prepared-setup.sealed"), &sealed());
+        private(&native).unwrap();
+        private(&python).unwrap();
+        write(&native.join("prepared-setup.sealed"), &sealed()).unwrap();
+        write(&python.join("prepared-setup.sealed"), &sealed()).unwrap();
         let text = serde_json::to_string(&value).unwrap();
         let n = run(
             &[
@@ -304,7 +349,8 @@ fn closed_receipt_mutations_match_oracle_and_redact() {
                 &text,
             ],
             &[],
-        );
+        )
+        .unwrap();
         let p = oracle(
             &[
                 "preflight",
@@ -314,7 +360,8 @@ fn closed_receipt_mutations_match_oracle_and_redact() {
                 &text,
             ],
             &[],
-        );
+        )
+        .unwrap();
         assert!(!n.status.success());
         assert_eq!(n.status.success(), p.status.success());
         assert!(!String::from_utf8_lossy(&n.stderr).contains("example-private-credential"));
@@ -342,17 +389,18 @@ fn malformed_payload_metadata_matches_oracle() {
             let root = temp.path().join("media");
             let native = temp.path().join("native");
             let python = temp.path().join("python");
-            private(&root);
-            private(&native);
-            private(&python);
-            media(&root);
+            private(&root).unwrap();
+            private(&native).unwrap();
+            private(&python).unwrap();
+            media(&root).unwrap();
             let mut selection = json!({"schema":1,"prepared_setup":receipt(&sealed())});
             selection[kind] = e;
             write(
                 &root.join(format!(".tilo-installer/{kind}-selection.json")),
                 &serde_json::to_vec(&selection).unwrap(),
-            );
-            let n = extract(&root, &native);
+            )
+            .unwrap();
+            let n = extract(&root, &native).unwrap();
             let p = oracle(
                 &[
                     "--source-root",
@@ -361,7 +409,8 @@ fn malformed_payload_metadata_matches_oracle() {
                     python.to_str().unwrap(),
                 ],
                 &[],
-            );
+            )
+            .unwrap();
             assert!(!n.status.success(), "{kind} {selection}");
             assert_eq!(n.status.success(), p.status.success(), "{kind} {selection}");
         }
@@ -372,18 +421,18 @@ fn nofollow_grants_ownership_modes_ambiguity_and_padding() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("media");
     let out = temp.path().join("out");
-    private(&root);
-    private(&out);
-    media(&root);
+    private(&root).unwrap();
+    private(&out).unwrap();
+    media(&root).unwrap();
     let alias = temp.path().join("alias");
     symlink(&root, &alias).unwrap();
-    assert!(!extract(&alias, &out).status.success());
+    assert!(!extract(&alias, &out).unwrap().status.success());
     fs::set_permissions(&out, fs::Permissions::from_mode(0o777)).unwrap();
-    assert!(!extract(&root, &out).status.success());
+    assert!(!extract(&root, &out).unwrap().status.success());
     fs::set_permissions(&out, fs::Permissions::from_mode(0o700)).unwrap();
     let second = temp.path().join("second");
-    private(&second);
-    media(&second);
+    private(&second).unwrap();
+    media(&second).unwrap();
     assert!(
         !run(
             &[
@@ -396,6 +445,7 @@ fn nofollow_grants_ownership_modes_ambiguity_and_padding() {
             ],
             &[]
         )
+        .unwrap()
         .status
         .success()
     );
@@ -403,30 +453,30 @@ fn nofollow_grants_ownership_modes_ambiguity_and_padding() {
     let file = root.join(".tilo-installer/prepared-setup.sealed");
     let mut padded = sealed();
     padded.extend([b' '; 100]);
-    write(&file, &padded);
-    assert!(extract(&root, &out).status.success());
+    write(&file, &padded).unwrap();
+    assert!(extract(&root, &out).unwrap().status.success());
     assert_eq!(
         fs::read(out.join("prepared-setup.sealed")).unwrap(),
         sealed()
     );
     let out2 = temp.path().join("out2");
-    private(&out2);
+    private(&out2).unwrap();
     padded.push(0);
-    write(&file, &padded);
-    assert!(!extract(&root, &out2).status.success());
+    write(&file, &padded).unwrap();
+    assert!(!extract(&root, &out2).unwrap().status.success());
     assert!(!out2.join("prepared-setup.sealed").exists());
     let out3 = temp.path().join("out3");
-    private(&out3);
+    private(&out3).unwrap();
     fs::remove_file(&file).unwrap();
     symlink("/etc/passwd", &file).unwrap();
-    assert!(!extract(&root, &out3).status.success());
+    assert!(!extract(&root, &out3).unwrap().status.success());
 }
 #[test]
 fn authenticated_closed_mutations_redact_and_echo_only_success() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().to_str().unwrap();
     let good = b"{\"schema\":1,\"setup_binding\":\"example-private-credential\"}";
-    let output = run(&["preflight-authenticated", "--source-dir", source], good);
+    let output = run(&["preflight-authenticated", "--source-dir", source], good).unwrap();
     assert!(output.status.success());
     assert_eq!(output.stdout, good);
     let values = [
@@ -438,8 +488,8 @@ fn authenticated_closed_mutations_redact_and_echo_only_success() {
     ];
     for value in values {
         let input = serde_json::to_vec(&value).unwrap();
-        let n = run(&["preflight-authenticated", "--source-dir", source], &input);
-        let p = oracle(&["preflight-authenticated", "--source-dir", source], &input);
+        let n = run(&["preflight-authenticated", "--source-dir", source], &input).unwrap();
+        let p = oracle(&["preflight-authenticated", "--source-dir", source], &input).unwrap();
         assert!(!n.status.success());
         assert_eq!(n.status.success(), p.status.success());
         assert!(n.stdout.is_empty());
@@ -454,10 +504,10 @@ fn target_symlink_chain_and_receipt_permissions_refused() {
     let target = temp.path().join("var");
     let escape = temp.path().join("escape");
     for p in [&root, &out, &target, &escape] {
-        private(p);
+        private(p).unwrap();
     }
-    media(&root);
-    assert!(extract(&root, &out).status.success());
+    media(&root).unwrap();
+    assert!(extract(&root, &out).unwrap().status.success());
     symlink(&escape, target.join("lib")).unwrap();
     assert!(
         !run(
@@ -470,6 +520,7 @@ fn target_symlink_chain_and_receipt_permissions_refused() {
             ],
             &[]
         )
+        .unwrap()
         .status
         .success()
     );
@@ -480,6 +531,7 @@ fn target_symlink_chain_and_receipt_permissions_refused() {
             &["preflight-profile", "--source-dir", out.to_str().unwrap()],
             &[]
         )
+        .unwrap()
         .status
         .success()
     );
@@ -489,19 +541,19 @@ fn browser_padding_and_writable_profiles_are_closed() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("media");
     let out = temp.path().join("out");
-    private(&root);
-    private(&out);
-    media(&root);
-    selected_payload(&root, "browser");
+    private(&root).unwrap();
+    private(&out).unwrap();
+    media(&root).unwrap();
+    selected_payload(&root, "browser").unwrap();
     let path = root.join(".tilo-installer/browser-selection.json");
     let original = fs::read(&path).unwrap();
-    for prefix in [b' ', b'\t', b'\n'] {
+    for prefix in *b" \t\n" {
         let native = temp.path().join(format!("native-{prefix}"));
         let python = temp.path().join(format!("python-{prefix}"));
-        private(&native);
-        private(&python);
-        write(&path, &[&[prefix], original.as_slice()].concat());
-        let n = extract(&root, &native);
+        private(&native).unwrap();
+        private(&python).unwrap();
+        write(&path, &[&[prefix], original.as_slice()].concat()).unwrap();
+        let n = extract(&root, &native).unwrap();
         let p = oracle(
             &[
                 "--source-root",
@@ -510,20 +562,22 @@ fn browser_padding_and_writable_profiles_are_closed() {
                 python.to_str().unwrap(),
             ],
             &[],
-        );
+        )
+        .unwrap();
         assert!(!n.status.success());
         assert_eq!(n.status.success(), p.status.success());
     }
-    write(&path, &original);
-    assert!(extract(&root, &out).status.success());
+    write(&path, &original).unwrap();
+    assert!(extract(&root, &out).unwrap().status.success());
     let profile = out.join("profile.json");
-    write(&profile, b"{\"schema\":1}");
+    write(&profile, b"{\"schema\":1}").unwrap();
     fs::set_permissions(&profile, fs::Permissions::from_mode(0o622)).unwrap();
     assert!(
         !run(
             &["preflight-profile", "--source-dir", out.to_str().unwrap()],
             &[]
         )
+        .unwrap()
         .status
         .success()
     );
@@ -534,11 +588,11 @@ fn authenticated_completed_selection_and_scope_mutations_match_oracle() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("media");
     let out = temp.path().join("out");
-    private(&root);
-    private(&out);
-    media(&root);
-    let home = selected_payload(&root, "home");
-    assert!(extract(&root, &out).status.success());
+    private(&root).unwrap();
+    private(&out).unwrap();
+    media(&root).unwrap();
+    let home = selected_payload(&root, "home").unwrap();
+    assert!(extract(&root, &out).unwrap().status.success());
     let base = json!({"schema":1,"setup_binding":"example setup","completed_home":home,"completed_setup":receipt(&sealed())});
     let input = serde_json::to_vec(&base).unwrap();
     let output = run(
@@ -548,7 +602,8 @@ fn authenticated_completed_selection_and_scope_mutations_match_oracle() {
             out.to_str().unwrap(),
         ],
         &input,
-    );
+    )
+    .unwrap();
     assert!(output.status.success());
     assert_eq!(output.stdout, input);
     let mut mutations = Vec::new();
@@ -564,7 +619,7 @@ fn authenticated_completed_selection_and_scope_mutations_match_oracle() {
             mutations.push(value);
         }
     }
-    let mut scope = base.clone();
+    let mut scope = base;
     scope["computer_apps_scope"] = json!({"schema":1});
     mutations.push(scope);
     for value in mutations {
@@ -576,7 +631,8 @@ fn authenticated_completed_selection_and_scope_mutations_match_oracle() {
                 out.to_str().unwrap(),
             ],
             &input,
-        );
+        )
+        .unwrap();
         let p = oracle(
             &[
                 "preflight-authenticated",
@@ -584,7 +640,8 @@ fn authenticated_completed_selection_and_scope_mutations_match_oracle() {
                 out.to_str().unwrap(),
             ],
             &input,
-        );
+        )
+        .unwrap();
         assert_eq!(n.status.success(), p.status.success(), "{value}");
         if !n.status.success() {
             assert!(n.stdout.is_empty());
@@ -596,32 +653,35 @@ fn authenticated_completed_selection_and_scope_mutations_match_oracle() {
 fn cli_rejects_unrelated_options_and_completed_directory_json_authority() {
     assert!(
         !run(&["selected-generation", "--source-dir", "/"], &[])
+            .unwrap()
             .status
             .success()
     );
     assert!(
         !run(&["preflight-home", "--source-dir", "/", "--encrypted"], &[])
+            .unwrap()
             .status
             .success()
     );
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("media");
     let out = temp.path().join("out");
-    private(&root);
-    private(&out);
-    media(&root);
-    selected_payload(&root, "home");
-    assert!(extract(&root, &out).status.success());
+    private(&root).unwrap();
+    private(&out).unwrap();
+    media(&root).unwrap();
+    selected_payload(&root, "home").unwrap();
+    assert!(extract(&root, &out).unwrap().status.success());
     let path = out.join("portable-home.json");
     let mut locator: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     locator["binding"] =
         json!({"kind":"completed_generation","attempt":"12345678-1234-4234-8234-123456789abc"});
-    write(&path, &serde_json::to_vec(&locator).unwrap());
+    write(&path, &serde_json::to_vec(&locator).unwrap()).unwrap();
     assert!(
         !run(
             &["preflight-home", "--source-dir", out.to_str().unwrap()],
             &[]
         )
+        .unwrap()
         .status
         .success()
     );

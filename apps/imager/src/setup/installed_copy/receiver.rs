@@ -63,9 +63,9 @@ impl InstalledCopyReceiveSession {
         // Authority fixes the actual activated target owner; source UID is never
         // accepted as the receiver's filesystem or application owner.
         // SAFETY: these process credential queries take no pointers or arguments.
-        let effective_uid = unsafe { libc::geteuid() };
+        let effective_uid = rustix::process::geteuid().as_raw();
         // SAFETY: this query observes this process real UID without side effects.
-        let real_uid = unsafe { libc::getuid() };
+        let real_uid = rustix::process::getuid().as_raw();
         if effective_uid != grant.target_uid()
             || real_uid != grant.target_uid()
             || grant.target_uid() == 0
@@ -112,7 +112,7 @@ impl InstalledCopyReceiveSession {
                 Some(PortableHomeReview::review_received(
                     HomeImportGrants {
                         package: grant.home_package_path()?.to_path_buf(),
-                        home: home_path.clone(),
+                        home: home_path,
                         workspace: home_workspace,
                     },
                     expected,
@@ -217,23 +217,22 @@ impl InstalledCopyReceiveSession {
             return Ok(0);
         };
         let runner = CancellableOfflineRunner(self.cancel.clone());
-        let count = match &mut self.home {
-            Some(home) => applications.restore_after_home(
+        let count = if let Some(home) = &mut self.home {
+            applications.restore_after_home(
                 home,
                 &runner,
                 self.grant.home(),
                 &self.applications_workspace,
                 &self.cancel,
-            )?,
-            None => {
-                applications.adopt_user_state(
-                    &runner,
-                    self.grant.home(),
-                    &self.applications_workspace,
-                    &self.cancel,
-                )?;
-                applications.restore(&runner, self.grant.home(), &self.cancel)?
-            }
+            )?
+        } else {
+            applications.adopt_user_state(
+                &runner,
+                self.grant.home(),
+                &self.applications_workspace,
+                &self.cancel,
+            )?;
+            applications.restore(&runner, self.grant.home(), &self.cancel)?
         };
         self.grant.check()?;
         self.applications_restored = true;

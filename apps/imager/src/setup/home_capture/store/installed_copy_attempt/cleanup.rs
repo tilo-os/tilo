@@ -226,25 +226,15 @@ impl CompletedCleanup {
         if fs_native::snapshot_lease::mount_id(&self.stage.file)? != a.target_storage.mount {
             return Err(denied());
         }
-        if !self.stage_removed.load(Ordering::Acquire) {
-            self.stage.validate_destination()?;
-        } else {
+        if self.stage_removed.load(Ordering::Acquire) {
             absent(&self.parent.file, &self.scratch.stage_name)?;
             if self.stage.file.metadata()?.nlink() != 0 {
                 return Err(denied());
             }
-        }
-        if !self.secret_removed.load(Ordering::Acquire) {
-            let named = storage(&store.records)?.open_read(
-                OsStr::new(&secret_name(&a.binding.operation)),
-                Privacy::OwnerOnly,
-            )?;
-            if secret_facts(&named)? != a.secret_identity
-                || secret_facts(&a.secret)? != a.secret_identity
-            {
-                return Err(denied());
-            }
         } else {
+            self.stage.validate_destination()?;
+        }
+        if self.secret_removed.load(Ordering::Acquire) {
             absent(&store.records.file, &secret_name(&a.binding.operation))?;
             let m = a.secret.metadata()?;
             if m.nlink() != 0
@@ -271,6 +261,16 @@ impl CompletedCleanup {
             a.secret.read_exact_at(&mut bytes, 0)?;
             let digest: [u8; 32] = sha2::Sha256::digest(&*bytes).into();
             if digest != a.secret_identity.sha256 {
+                return Err(denied());
+            }
+        } else {
+            let named = storage(&store.records)?.open_read(
+                OsStr::new(&secret_name(&a.binding.operation)),
+                Privacy::OwnerOnly,
+            )?;
+            if secret_facts(&named)? != a.secret_identity
+                || secret_facts(&a.secret)? != a.secret_identity
+            {
                 return Err(denied());
             }
         }

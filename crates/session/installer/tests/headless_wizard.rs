@@ -105,6 +105,45 @@ fn ask(
 }
 
 #[test]
+fn online_accounts_can_be_skipped_without_private_input() {
+    let console = console_control::ConsoleServer::new();
+    let app = InstallerApp::with_disks(Vec::new())
+        .with_backend(Arc::new(Fake::default()))
+        .with_console(console.clone());
+    let mut driver = ui::headless::FrameHarness::new(ui::State::new(), Box::new(app), (1280, 800));
+    let spec = ui::headless::parse_spec(
+        r#"{"actions":[
+          {"invoke":{"resource":"installer","action":"next"}},
+          {"invoke":{"resource":"installer","action":"next"}}
+        ]}"#,
+    )
+    .unwrap();
+    for action in &spec.actions {
+        driver.perform(action).unwrap();
+    }
+    let accounts = ask(&mut driver, &console, r#"{"op":"state_dump"}"#);
+    assert_eq!(accounts["state"]["step"], "accounts");
+    let skipped = ask(
+        &mut driver,
+        &console,
+        r#"{"op":"actions_invoke","provider":"installer","id":"skip-offline@installer.accounts"}"#,
+    );
+    assert!(skipped.get("answer").is_some(), "{skipped}");
+    let storage = ask(&mut driver, &console, r#"{"op":"state_dump"}"#);
+    assert_eq!(storage["state"]["step"], "disk");
+    let off_step = driver.invoke_action(
+        &tilo_actions::ActionAddress::new("installer.accounts", "skip-offline"),
+        &serde_json::Map::new(),
+        false,
+        None,
+    );
+    assert_eq!(
+        off_step.err().map(|error| error.code()),
+        Some("action_unavailable")
+    );
+}
+
+#[test]
 fn the_whole_wizard_runs_headless_through_published_actions() {
     let backend = Arc::new(Fake::default());
     let console = console_control::ConsoleServer::new();
@@ -120,6 +159,7 @@ fn the_whole_wizard_runs_headless_through_published_actions() {
           {{"invoke":{{"resource":"installer.keyboard","action":"set-layout","args":{{"layout":"English (US)"}}}}}},
           {{"invoke":{{"resource":"installer","action":"next"}}}},
           {{"invoke":{{"resource":"installer","action":"next"}}}},
+          {{"invoke":{{"resource":"installer.accounts","action":"skip-offline"}}}},
           {{"invoke":{{"resource":"installer","action":"next","expect_error":"action_failed"}}}},
           {{"invoke":{{"resource":"installer.disk:/dev/vda","action":"select","expect_error":"action_unavailable"}}}},
           {{"invoke":{{"resource":"installer.storage","action":"set-method","args":{{"method":"erase"}}}}}},

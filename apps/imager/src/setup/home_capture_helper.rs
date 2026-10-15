@@ -59,7 +59,7 @@ pub(crate) struct OriginalRequest {
     inventory_bytes: Option<Vec<u8>>,
 }
 impl OriginalRequest {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native-capture-qualification"))]
     pub(in crate::setup) fn channel_for_registration(&self) -> &Rendezvous {
         &self.channel
     }
@@ -351,6 +351,7 @@ fn read_request_bytes(path: &Path, caller: u32, maximum: usize) -> io::Result<Ve
     Ok(bytes)
 }
 
+#[cfg(test)]
 pub(in crate::setup) fn read_request(path: &Path, caller: u32) -> io::Result<Request> {
     let bytes = read_request_bytes(path, caller, MAX_REQUEST)?;
     let request: Request = serde_json::from_slice(&bytes)?;
@@ -432,18 +433,17 @@ fn execute(request: Request, caller: u32, request_directory: &Path) -> io::Resul
                     session.begin(&mut incoming)?;
                     let reply = match incoming.call.action {
                         RpcAction::Run { command, .. } => {
-                            match broker.run_command_reporting(
+                            if let Ok(response) = broker.run_command_reporting(
                                 &std::env::current_exe()?,
                                 command,
                                 incoming.output,
                                 &cancel,
                                 &mut |progress| session.progress(progress),
                             ) {
-                                Ok(response) => RpcReply::Response { response },
-                                Err(_) => {
-                                    broker.finish_failed_command()?;
-                                    RpcReply::Failed
-                                }
+                                RpcReply::Response { response }
+                            } else {
+                                broker.finish_failed_command()?;
+                                RpcReply::Failed
                             }
                         }
                         RpcAction::RegisterOriginal
@@ -509,7 +509,7 @@ fn execute_retained(request: RetainedRequest, caller: u32, directory: &Path) -> 
         cancel.clone(),
     )?;
     let mut status = Status {
-        operation: request.plan.operation_id.clone(),
+        operation: request.plan.operation_id,
         state: super::home_capture::State::Intended,
         expires_unix: None,
     };
@@ -569,7 +569,7 @@ fn execute_original(request: OriginalRequest, caller: u32, directory: &Path) -> 
         )?;
     // Intended is not capture Ready. This path creates no snapshot/worker.
     let mut status = Status {
-        operation: request.plan.operation_id.clone(),
+        operation: request.plan.operation_id,
         state: super::home_capture::State::Intended,
         expires_unix: None,
     };
@@ -645,7 +645,7 @@ pub(crate) fn maybe_run(args: &[String]) -> Result<Option<i32>, String> {
         eprintln!("native capture helper entered");
     }
     // SAFETY: reads process credentials; never changes ownership.
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err("source capture helper requires authorized elevation".into());
     }
     let caller = super::staging::prepared_setup::caller_uid().map_err(|error| error.to_string())?;
@@ -737,7 +737,7 @@ mod tests {
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir()
             .unwrap();
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         let grant: Grant = serde_json::from_value(serde_json::json!({
             "schema":1,"operation":uuid::Uuid::new_v4().to_string(),"caller":uid,
             "home":super::super::migration_store::NativePath::encode(directory.path()),
@@ -835,7 +835,7 @@ mod retained_request_tests {
         let parsed: DispatchRequest = serde_json::from_slice(
             &read_request_bytes(
                 &temp.path().join("request.json"),
-                unsafe { libc::getuid() },
+                rustix::process::getuid().as_raw(),
                 MAX_ORIGINAL_REQUEST,
             )
             .unwrap(),

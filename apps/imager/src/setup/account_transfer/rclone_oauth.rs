@@ -209,8 +209,7 @@ impl SourceWitness {
             std::path::Path::new("rclone/rclone.conf"),
         )
         .map_err(|_| ConnectionError::AccountMissing)?;
-        // SAFETY: geteuid has no pointers or caller preconditions.
-        if m.uid() != unsafe { libc::geteuid() } || !m.is_file() || m.mode() & 0o022 != 0 {
+        if m.uid() != rustix::process::geteuid().as_raw() || !m.is_file() || m.mode() & 0o022 != 0 {
             return Err(ConnectionError::CredentialUnavailable);
         }
         Ok((

@@ -54,10 +54,12 @@ mod migration_journal_log;
 pub mod migration_native;
 #[cfg(any(target_os = "linux", test))]
 mod migration_native_journal;
+pub mod migration_recovery;
 mod migration_review;
 pub mod original_admission;
 #[cfg(target_os = "linux")]
 pub mod service_sessions;
+pub mod windows_inventory;
 #[cfg(target_os = "linux")]
 pub use migration_review::{
     GrantedHomeRoots, GrantedRoot, HomeRootSet, MountedRootChooser, MountedRootSelection, RootKind,
@@ -110,9 +112,6 @@ mod retained_source_relay;
 #[cfg(target_os = "linux")]
 mod retained_source_worker;
 
-#[cfg(target_os = "linux")]
-mod retained_source_session;
-
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub(crate) mod retained_target_projection;
 
@@ -132,9 +131,11 @@ mod retained_open_selection;
 
 #[cfg(target_os = "linux")]
 mod retained_history_read;
+#[cfg(target_os = "linux")]
 mod retained_selected_edit;
 #[cfg(target_os = "linux")]
 mod retained_selected_edit_session;
+#[cfg(target_os = "linux")]
 mod retained_selected_editor_history_read;
 #[cfg(target_os = "linux")]
 mod retained_selected_editor_owner;

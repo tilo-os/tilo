@@ -383,18 +383,7 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
     use tilo_relay_protocol::agents::GrantState;
-
-    /// Wait up to `limit` for `done`, checking every 10 ms.
-    fn within(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
-        let start = Instant::now();
-        while start.elapsed() < limit {
-            if done() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        done()
-    }
+    use tilo_test_env::wait_until;
 
     fn grant_state(file: &Path) -> Option<GrantState> {
         read_state(file)
@@ -422,10 +411,7 @@ mod tests {
             // Its first write (a synced file and a rename) is work, not
             // idling: measure once it is done.
             let first = host.state_file();
-            assert!(
-                within(Duration::from_secs(5), || first.exists()),
-                "the first state was not written"
-            );
+            wait_until("the first state write", || first.exists());
             idle::assert_stays_asleep(&keeper, "agent host with nothing to write");
             let window = Duration::from_secs(2);
             let before = idle::context_switches(&keeper);
@@ -443,22 +429,21 @@ mod tests {
         host.supervisor()
             .add_grant(crate::control::tests::identity_until(&root, expires_at));
         let file = host.state_file();
-        assert!(
-            within(Duration::from_secs(2), || grant_state(&file)
-                == Some(GrantState::Approved)),
-            "the new grant was not written"
-        );
+        wait_until("the new grant's write", || {
+            grant_state(&file) == Some(GrantState::Approved)
+        });
         eprintln!("agent host wrote a change after {:?}", changed.elapsed());
 
-        // With nothing else changing, the grant still expires on time.
-        assert!(
-            within(Duration::from_secs(4), || grant_state(&file)
-                == Some(GrantState::Expired)),
-            "the grant did not expire"
-        );
+        // With nothing else changing, the grant still expires: the host has
+        // no interval, so only the wake it sets for the expiry gets it there.
+        wait_until("the grant's expiry", || {
+            grant_state(&file) == Some(GrantState::Expired)
+        });
         let late = Duration::from_nanos(tilo_clock::unix_now_ns().saturating_sub(expires_at));
         eprintln!("agent host expired the grant {late:?} after its expiry");
-        assert!(late < Duration::from_millis(1_500), "expired {late:?} late");
+        // A wake set from the wrong deadline or unit is minutes off; a synced
+        // write or a stalled thread on a busy runner is not.
+        assert!(late < Duration::from_secs(10), "expired {late:?} late");
         host.shutdown();
     }
 }

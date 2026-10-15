@@ -66,7 +66,11 @@ pub(crate) fn send_request(
     }
     io.write_all(MAGIC)?;
     io.write_all(&[operation.byte()])?;
-    io.write_all(&(bytes.len() as u32).to_be_bytes())?;
+    io.write_all(
+        &u32::try_from(bytes.len())
+            .map_err(io::Error::other)?
+            .to_be_bytes(),
+    )?;
     io.write_all(&bytes)
 }
 pub(crate) fn receive_request(io: &mut Handoff<'_>) -> io::Result<(Operation, PlacementRecord)> {
@@ -233,6 +237,8 @@ mod tests {
     }
     #[test]
     fn cancellation_precedes_initial_framing_io() {
+        use std::io::Read;
+
         let (mut root, mut child) = UnixStream::pair().unwrap();
         let cancel = ServiceCancellation::default();
         cancel.cancel();
@@ -245,7 +251,6 @@ mod tests {
         );
         child.set_nonblocking(true).unwrap();
         let mut bytes = [0; 1];
-        use std::io::Read;
         assert_eq!(
             child.read(&mut bytes).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
@@ -390,6 +395,9 @@ impl ExposureRequest {
 
     /// Retire checks the held actual init and stops/reaps the typed owned outer
     /// internally before detaching. Wire descriptions never grant source access.
+    /// Apply an authenticated exposure request to the held child custody.
+    /// # Errors
+    /// Refuses mismatched scope or kernel witnesses and returns placement or transport errors.
     pub fn apply(
         self,
         owner: &mut ChildExposureOwner,
@@ -424,10 +432,10 @@ impl ExposureRequest {
                 if owner.scope.as_ref().is_some_and(|scope| scope != &record) {
                     return Err(io::ErrorKind::PermissionDenied.into());
                 }
-                if let Some(init) = &owner.init {
-                    if !super::stopped(init)? {
-                        return Err(io::ErrorKind::WouldBlock.into());
-                    }
+                if let Some(init) = &owner.init
+                    && !super::stopped(init)?
+                {
+                    return Err(io::ErrorKind::WouldBlock.into());
                 }
                 // Actual owned outer process wait/reap is mandatory even when
                 // it is still waiting at the unexported view gate.
@@ -499,11 +507,6 @@ impl Drop for ChildExposureOwner {
 
 // Kernel process observations only. These descriptors never grant file access.
 fn verify_init(init: &OwnedFd, launcher: &OwnedFd, pidns: &File, mntns: &File) -> io::Result<()> {
-    let pid = super::kernel_pid(init)?;
-    let launch = super::kernel_pid(launcher)?;
-    if super::stopped(init)? || super::stopped(launcher)? {
-        return Err(io::ErrorKind::PermissionDenied.into());
-    }
     fn status(pid: u32) -> io::Result<Vec<u8>> {
         use std::io::Read as _;
         let mut bytes = Vec::new();
@@ -527,6 +530,11 @@ fn verify_init(init: &OwnedFd, launcher: &OwnedFd, pidns: &File, mntns: &File) -
             .parse()
             .map_err(io::Error::other)
     }
+    let pid = super::kernel_pid(init)?;
+    let launch = super::kernel_pid(launcher)?;
+    if super::stopped(init)? || super::stopped(launcher)? {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
     let outer = parent(pid)?;
     if parent(outer)? != launch {
         return Err(io::ErrorKind::PermissionDenied.into());
@@ -536,12 +544,7 @@ fn verify_init(init: &OwnedFd, launcher: &OwnedFd, pidns: &File, mntns: &File) -
         .split(|b| *b == b'\n')
         .find_map(|row| row.strip_prefix(b"NSpid:"))
         .ok_or(io::ErrorKind::InvalidData)?;
-    if ids
-        .split(|b| b.is_ascii_whitespace())
-        .filter(|v| !v.is_empty())
-        .last()
-        != Some(b"1".as_slice())
-    {
+    if ids.split(u8::is_ascii_whitespace).rfind(|v| !v.is_empty()) != Some(b"1".as_slice()) {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     for (held, name) in [(pidns, "pid"), (mntns, "mnt")] {

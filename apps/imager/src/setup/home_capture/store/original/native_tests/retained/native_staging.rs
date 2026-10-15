@@ -223,7 +223,7 @@ fn dump(disk: &File) -> io::Result<String> {
     result
 }
 pub(super) fn review(disk: &File, home: &Path) -> io::Result<Plan> {
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(denied());
     }
     let metadata = disk.metadata()?;

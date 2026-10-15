@@ -4,8 +4,8 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 pub(super) fn output(target: &crate::model::TargetDrive, source: &Path) {
-    assert_eq!(unsafe { libc::getuid() }, 0);
-    assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(rustix::process::getuid().as_raw(), 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
     assert!(target.is_media_target());
     assert_eq!(target.tran.as_deref(), Some("usb"));
     assert_eq!(target.stable_id.as_deref(), Some("tilo-install-target"));
@@ -24,17 +24,15 @@ pub(super) fn output(target: &crate::model::TargetDrive, source: &Path) {
                     .any(|part| part.maj_min.as_deref() == Some(&source_number))
         })
         .collect();
-    let [source_disk] = parents.as_slice() else {
-        panic!("unique actual source parent required")
-    };
+    assert_eq!(parents.len(), 1, "unique actual source parent required");
+    let source_disk = parents[0];
     assert_ne!(source_disk.name, target.dev_path());
     let outputs: Vec<_> = devices
         .iter()
         .filter(|disk| disk.name == target.dev_path())
         .collect();
-    let [output] = outputs.as_slice() else {
-        panic!("unique selected output required")
-    };
+    assert_eq!(outputs.len(), 1, "unique selected output required");
+    let output = outputs[0];
     assert!(output.all_mountpoints().is_empty());
     assert!(
         output

@@ -179,11 +179,7 @@ fn actual_hash(file: &ProtectedFile) -> io::Result<String> {
         hash.update(&buffer[..count]);
     }
     file.validate()?;
-    Ok(hash
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    Ok(hex::encode(hash.finalize()))
 }
 
 /// Runs the actual factory once; there is no receipt or synthetic proof input.
@@ -193,7 +189,7 @@ pub fn qualify(
 ) -> io::Result<()> {
     // SAFETY: these libc queries have no pointer arguments or side effects.
     if args.into_iter().next().is_some()
-        || unsafe { libc::geteuid() } != 0
+        || rustix::process::geteuid().as_raw() != 0
         || std::env::current_exe()? != Path::new(HELPER)
     {
         return Err(invalid());
@@ -225,8 +221,8 @@ pub fn qualify_applications(
     output: &mut impl Write,
 ) -> io::Result<()> {
     if args.into_iter().next().is_some()
-        || unsafe { libc::getuid() } != 0
-        || unsafe { libc::geteuid() } != 0
+        || rustix::process::getuid().as_raw() != 0
+        || rustix::process::geteuid().as_raw() != 0
         || std::env::current_exe()? != Path::new(HELPER)
     {
         return Err(invalid());
@@ -268,10 +264,7 @@ pub fn qualify_applications(
         subset_protocol: 2,
         prepared_helper_sha256: helper_sha,
         qualification_script_sha256: script_sha,
-        native_qualification_sha256: Sha256::digest(serde_json::to_vec(&native)?)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect(),
+        native_qualification_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&native)?)),
     };
     capability.validate()?;
     let original = before.into_capability(qualified.receipt_sha256())?;
@@ -452,7 +445,7 @@ impl ActualFacts {
             runtime_openpgp_table_sha256: hash(&runtime.join("lib/tilo-capture-openpgp.json"))?,
             capture_pins: self.pins,
             runtime_helpers: self.helpers,
-            qualifier_receipt_sha256: receipt.iter().map(|b| format!("{b:02x}")).collect(),
+            qualifier_receipt_sha256: hex::encode(receipt),
         };
         proof.validate()?;
         Ok(proof)

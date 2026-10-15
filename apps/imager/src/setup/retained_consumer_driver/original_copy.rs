@@ -257,12 +257,7 @@ fn run_reviewed(
         }
     };
     let received = drive_receive(
-        &mut issue,
-        &mut owner,
-        &artifacts,
-        importer.clone(),
-        cancel,
-        &transport,
+        &mut issue, &mut owner, &artifacts, importer, cancel, &transport,
     );
     if received.is_err() {
         let _ = issue.cancel_receiver();

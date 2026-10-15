@@ -31,8 +31,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
-#[cfg(any(test, target_os = "macos", target_os = "windows"))]
-use ui::time::Instant;
 
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceIdentity, TargetDrive,
@@ -130,6 +128,9 @@ pub struct WriteRequest {
     /// setup machine before elevation; the privileged writer only copies it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_stage: Option<std::path::PathBuf>,
+    /// Private exact Windows suggestions and independent recovery receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) windows_preparation: Option<crate::windows_media::WindowsMedia>,
     /// Provision a distinct migration data filesystem after verified imaging.
     #[serde(default)]
     pub provision_migration_data: bool,
@@ -148,6 +149,25 @@ pub struct OfflineLayout {
     pub setup: crate::model::PreparedSetupExpectation,
     pub source_plans: Vec<Vec<u8>>,
     pub target_number: u64,
+}
+
+fn validate_windows_preparation(req: &WriteRequest) -> io::Result<()> {
+    if let Some(held) = &req.windows_preparation {
+        if !req.source.installable
+            || req.provision_migration_data
+            || req.handoff_stage.is_some()
+            || req.profile.prepared_setup.is_some()
+            || req.profile.enroll_local_identity
+            || req.target.stable_id.as_ref().is_none_or(String::is_empty)
+        {
+            return Err(io::Error::other(
+                "Windows media requires a reviewed stable target and live-session new identity",
+            ));
+        }
+        held.prepared.verify()?;
+        crate::profile::encode_profile_block_with_windows(&req.profile, Some(&held.prepared))?;
+    }
+    Ok(())
 }
 
 impl WriteRequest {
@@ -180,6 +200,9 @@ impl WriteRequest {
 /// device. The live app hands a `Started` request to [`spawn_job`], which
 /// chooses the backend; with the allow-gate off the request is refused.
 pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
+    if let Err(error) = validate_windows_preparation(req) {
+        return JobStart::InvalidProfile(error.to_string());
+    }
     if req.provision_migration_data
         && (!cfg!(target_os = "linux")
             || !req.source.installable
@@ -224,6 +247,7 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     JobStart::Started
 }
 
+#[cfg(test)]
 use crate::profile::write_profile_block_bound;
 pub use crate::profile::{encode_profile_block, write_profile_block};
 
@@ -473,7 +497,7 @@ pub(crate) fn with_locked_media_root<T>(
     callback: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
     // SAFETY: credential getters observe only this process.
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let _lock = acquire_target_write_lock(target)?;
@@ -931,6 +955,13 @@ fn run_job_file_bound(
     should_cancel: &impl Fn() -> bool,
     mut on_progress: impl FnMut(Progress),
 ) -> JobResult {
+    if let Err(error) = validate_windows_preparation(req).and_then(|()| {
+        req.windows_preparation
+            .as_ref()
+            .map_or(Ok(()), |held| held.validate(&req.target))
+    }) {
+        return JobResult::WriteFailed(error.to_string());
+    }
     let source_path = Path::new(&req.source.path);
     let mut source = match OpenOptions::new().read(true).open(source_path) {
         Ok(file) => file,
@@ -1128,7 +1159,10 @@ fn run_job_file_bound(
     #[cfg(not(target_os = "linux"))]
     let profile_offset: Option<u64> = None;
     if req.source.installable {
-        let block = match encode_profile_block(&req.profile) {
+        let block = match crate::profile::encode_profile_block_with_windows(
+            &req.profile,
+            req.windows_preparation.as_ref().map(|held| &held.prepared),
+        ) {
             Ok(block) => block,
             Err(error) => return JobResult::VerifyFailed(error.to_string()),
         };
@@ -1189,6 +1223,13 @@ fn run_system_job(
     mut on_progress: impl FnMut(Progress),
     authenticated_caller: Option<u32>,
 ) -> JobResult {
+    if let Err(error) = validate_windows_preparation(req).and_then(|()| {
+        req.windows_preparation
+            .as_ref()
+            .map_or(Ok(()), |held| held.validate(&req.target))
+    }) {
+        return JobResult::WriteFailed(error.to_string());
+    }
     let src = std::path::PathBuf::from(&req.source.path);
     let dst = std::path::PathBuf::from(req.target.dev_path());
     let mut prepared = false;
@@ -1286,9 +1327,13 @@ fn run_system_job(
                 result = JobResult::VerifyFailed(format!(
                     "could not revalidate the drive before embedding the setup profile: {error}"
                 ));
-            } else if let Err(error) =
-                write_profile_block_bound(&dst, req.target.size, &req.profile, should_cancel)
-            {
+            } else if let Err(error) = crate::profile::write_windows_profile_block_bound(
+                &dst,
+                req.target.size,
+                &req.profile,
+                req.windows_preparation.as_ref().map(|held| &held.prepared),
+                should_cancel,
+            ) {
                 result = if error.kind() == io::ErrorKind::Interrupted {
                     JobResult::Cancelled
                 } else {
@@ -1863,7 +1908,7 @@ fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> io::
 /// caller-named source path with root authority.
 #[cfg(target_os = "linux")]
 fn bind_linux_helper_source(request: &mut WriteRequest, _caller_uid: u32) -> io::Result<()> {
-    if unsafe { libc::geteuid() } != 0 {
+    if tilo_process::effective_uid() != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "write helper must run through pkexec",
@@ -2334,23 +2379,8 @@ fn run_finite_status(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut child = command.spawn()?;
-    let deadline = ui::time::now()
-        .checked_add(timeout)
-        .unwrap_or_else(Instant::now);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status);
-        }
-        if ui::time::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "platform media command timed out",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    bounded_command::wait_or_kill(&mut child, timeout)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "platform media command timed out"))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -2424,6 +2454,45 @@ pub fn spawn_job(
     };
     control.bind_worker(joined);
     (JobStart::Started, Some(rx), Some(control))
+}
+
+fn validate_pending_source_disks(req: &WriteRequest) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if let Some(pending) = &req.offline_layout {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        revalidate_target(&req.target)?;
+        let target = std::fs::symlink_metadata(req.target.dev_path())?;
+        if !target.file_type().is_block_device() || target.rdev() != pending.target_number {
+            return Err(io::Error::other("Pending raw media identity changed"));
+        }
+        crate::setup::migration_handoff::validate_offline_source_disks(
+            &pending.source_plans,
+            target.rdev(),
+        )?;
+        revalidate_target(&req.target)?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = req;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_pending_descriptor(req: &WriteRequest, device: &std::fs::File) -> io::Result<()> {
+    if let Some(pending) = &req.offline_layout {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        attest_target_descriptor(&req.target, device)?;
+        let held = device.metadata()?;
+        if !held.file_type().is_block_device() || held.rdev() != pending.target_number {
+            return Err(io::Error::other(
+                "Opened pending raw media identity changed",
+            ));
+        }
+        crate::setup::migration_handoff::validate_offline_source_disks(
+            &pending.source_plans,
+            held.rdev(),
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2538,6 +2607,7 @@ mod tests {
             action: Action::Flash,
             profile: InstallProfile::default(),
             handoff_stage: None,
+            windows_preparation: None,
             provision_migration_data: false,
             #[cfg(target_os = "linux")]
             offline_layout: None,
@@ -2658,7 +2728,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             let mut env = tilo_test_env::ScopedEnv::new();
             #[cfg(target_os = "linux")]
-            env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
+            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
             let work = tempfile::Builder::new()
                 .prefix("tilo-imager-write-")
                 .tempdir()
@@ -2703,7 +2773,7 @@ mod tests {
             let request_path = work.path().join("request.json");
             std::fs::write(&request_path, b"{}").unwrap();
             std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-            env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
+            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
 
             let error = read_linux_helper_request(&request_path).unwrap_err();
 
@@ -2725,7 +2795,7 @@ mod tests {
             std::fs::write(&outside, b"root-only payload").unwrap();
             symlink(&outside, &request).unwrap();
             std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-            env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
+            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
 
             let error = read_linux_helper_request(&request).unwrap_err();
 
@@ -3659,43 +3729,4 @@ mod tests {
             .expect("relocated backup");
         assert_ne!(old, profile);
     }
-}
-
-fn validate_pending_source_disks(req: &WriteRequest) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
-    if let Some(pending) = &req.offline_layout {
-        use std::os::unix::fs::{FileTypeExt, MetadataExt};
-        revalidate_target(&req.target)?;
-        let target = std::fs::symlink_metadata(req.target.dev_path())?;
-        if !target.file_type().is_block_device() || target.rdev() != pending.target_number {
-            return Err(io::Error::other("Pending raw media identity changed"));
-        }
-        crate::setup::migration_handoff::validate_offline_source_disks(
-            &pending.source_plans,
-            target.rdev(),
-        )?;
-        revalidate_target(&req.target)?;
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = req;
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn validate_pending_descriptor(req: &WriteRequest, device: &std::fs::File) -> io::Result<()> {
-    if let Some(pending) = &req.offline_layout {
-        use std::os::unix::fs::{FileTypeExt, MetadataExt};
-        attest_target_descriptor(&req.target, device)?;
-        let held = device.metadata()?;
-        if !held.file_type().is_block_device() || held.rdev() != pending.target_number {
-            return Err(io::Error::other(
-                "Opened pending raw media identity changed",
-            ));
-        }
-        crate::setup::migration_handoff::validate_offline_source_disks(
-            &pending.source_plans,
-            held.rdev(),
-        )?;
-    }
-    Ok(())
 }

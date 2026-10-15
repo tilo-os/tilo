@@ -25,7 +25,10 @@ impl Owned {
             if std::time::Instant::now() >= deadline {
                 self.0.kill().unwrap();
                 self.0.wait().unwrap();
-                panic!("Owned native input child timeout");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "Owned native input child timeout"
+                );
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -77,7 +80,7 @@ fn spawn(role: &str, stream: &UnixStream, control: &UnixStream, source: &Path, u
 }
 fn fixture() -> tempfile::TempDir {
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "Native credential-drop fixture requires isolated root"
     );
@@ -126,7 +129,7 @@ fn mounted_input_fixture_child() {
         .unwrap();
     let source = std::path::PathBuf::from(std::env::var_os("TILO_MOUNTED_INPUT_SOURCE").unwrap());
     if role == "late-broker" {
-        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(rustix::process::geteuid().as_raw(), 0);
         let mut pid = [0; 4];
         control.read_exact(&mut pid).unwrap();
         let mut channel = HostChannel::authenticate(stream, u32::from_ne_bytes(pid), 1000).unwrap();
@@ -139,8 +142,8 @@ fn mounted_input_fixture_child() {
         control.write_all(b"R").unwrap();
         return; // Real admitted root process retires before any descriptor ACK.
     }
-    assert_eq!(unsafe { libc::geteuid() }, 1000);
-    assert_eq!(unsafe { libc::getegid() }, 1001);
+    assert_eq!(rustix::process::geteuid().as_raw(), 1000);
+    assert_eq!(rustix::process::getegid().as_raw(), 1001);
     if role == "late-sender" {
         let mut pid = [0; 4];
         control.read_exact(&mut pid).unwrap();

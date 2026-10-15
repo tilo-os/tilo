@@ -22,7 +22,10 @@ pub const PROVIDER: &str = "installer";
 pub const OPERATION_TYPE: &str = "installer.operation";
 
 /// Handler table for the host's publication check.
-pub const HANDLERS: &[&str] = &[OPERATION_TYPE];
+pub const HANDLERS: &[&str] = &[OPERATION_TYPE, ONLINE_ACCOUNT_OPERATION_TYPE];
+
+/// Fixed online-account controls; private form fields never enter this payload.
+pub const ONLINE_ACCOUNT_OPERATION_TYPE: &str = "installer.online-accounts-control";
 
 /// Resource ids. They name wizard concerns, not screen positions, so an
 /// address stays valid across layouts, themes and text scales.

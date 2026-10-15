@@ -33,7 +33,7 @@ fn refused() -> io::Error {
     )
 }
 fn root() -> io::Result<()> {
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(refused());
     }
     Ok(())
@@ -203,9 +203,8 @@ pub(in crate::setup) fn with_proof_deadline_at<T>(
                     );
                 }
             })
-            .map_err(|error| {
+            .inspect_err(|_| {
                 interrupt.interrupt();
-                error
             })?;
         let mut fence = ProofFence {
             interrupt: interrupt.clone(),
@@ -823,7 +822,7 @@ mod tests {
     fn unclassified_observation_refuses_root_sender_and_unprivileged_receiver() {
         let (mut host, mut sender) = UnixStream::pair().unwrap();
         let nonce = challenge();
-        if unsafe { libc::getuid() } == 0 && unsafe { libc::geteuid() } == 0 {
+        if rustix::process::getuid().as_raw() == 0 && rustix::process::geteuid().as_raw() == 0 {
             let worker = std::thread::spawn(move || process_binding::complete(&mut sender));
             host.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             host.set_write_timeout(Some(Duration::from_secs(5)))
@@ -931,11 +930,11 @@ mod tests {
     fn stalled_initial_qpe_is_interrupted_by_actual_cancellation() {
         use std::io::Read;
         assert_eq!(
-            unsafe { libc::getuid() },
+            rustix::process::getuid().as_raw(),
             0,
             "explicit native root qualifier"
         );
-        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(rustix::process::geteuid().as_raw(), 0);
         let (host, mut peer) = UnixStream::pair().unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let peer_cancel = cancel.clone();
@@ -1013,18 +1012,18 @@ mod different_uid_native {
     #[test]
     fn root_observes_actual_nonroot_task_without_inferring_original_credentials() {
         if std::env::var_os(CHILD).is_some() {
-            assert_eq!(unsafe { libc::getuid() }, 1004);
+            assert_eq!(rustix::process::getuid().as_raw(), 1004);
             assert_eq!(unsafe { libc::getgid() }, 1005);
             let mut stream = unsafe { UnixStream::from_raw_fd(42) };
             process_binding::complete(&mut stream).expect("actual dropped task binding");
             return;
         }
         assert_eq!(
-            unsafe { libc::getuid() },
+            rustix::process::getuid().as_raw(),
             0,
             "explicit native root qualifier"
         );
-        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(rustix::process::geteuid().as_raw(), 0);
         let executable =
             File::open("/proc/self/exe").expect("exact running executable, including memfd");
         let (mut root_stream, child_stream) = UnixStream::pair().expect("owned private stream");

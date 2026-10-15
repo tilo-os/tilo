@@ -88,7 +88,7 @@ fn owner(path: &Path, uid: u32, gid: u32, mode: u32) {
 #[test]
 fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_owners() {
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "isolated native root qualification required"
     );
@@ -267,7 +267,7 @@ fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_
                 assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
             }
             // Reopen does not install source-owner credentials in the receiver.
-            assert_eq!(unsafe { libc::geteuid() }, 0);
+            assert_eq!(rustix::process::geteuid().as_raw(), 0);
             assert_eq!(context.original().uid(), 1000);
             Ok(())
         })
@@ -335,7 +335,7 @@ fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_
 #[test]
 fn actual_foreign_mounted_participant_record_binds_its_own_filesystem_and_kernel_caller() {
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "isolated native root qualification required"
     );
@@ -587,7 +587,7 @@ fn actual_foreign_mounted_participant_record_binds_its_own_filesystem_and_kernel
                 std::fs::metadata(&file)?.ino()
             );
             assert_eq!(
-                unsafe { libc::geteuid() },
+                rustix::process::geteuid().as_raw(),
                 0,
                 "Source owners never become receiver credentials"
             );

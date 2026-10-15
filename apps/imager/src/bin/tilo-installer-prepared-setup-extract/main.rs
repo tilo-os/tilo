@@ -165,6 +165,8 @@ mod cli {
         s.parse().map_err(|_| invalid())
     }
     fn capacity(args: &Args) -> Result<u128> {
+        const UNENCRYPTED_RESERVED: u64 = 4 * 1024u64.pow(3) + 2 * 1024 * 1024;
+        const MINIMUM_ROOT: u128 = 32 * 1024u128.pow(3);
         let required = total_required(args.get("--source-dir")?)?;
         if required == 0 {
             return Ok(0);
@@ -180,9 +182,13 @@ mod cli {
         }
         let size = if disk {
             if args.encrypted {
-                let reserved = 2 * 1024 * 1024
-                    + configured(&std::env::var("TILO_ESP_SIZE").unwrap_or_else(|_| "2G".into()))?
-                    + configured(&std::env::var("TILO_BOOT_SIZE").unwrap_or_else(|_| "1G".into()))?;
+                let reserved =
+                    configured(&std::env::var("TILO_ESP_SIZE").unwrap_or_else(|_| "2G".into()))?
+                        .checked_add(configured(
+                            &std::env::var("TILO_BOOT_SIZE").unwrap_or_else(|_| "1G".into()),
+                        )?)
+                        .and_then(|n| n.checked_add(2 * 1024 * 1024))
+                        .ok_or_else(invalid)?;
                 let helper = std::env::var("TILO_STORE_VOLUME")
                     .unwrap_or_else(|_| "/usr/libexec/tilo-store-volume".into());
                 let output = media::command(
@@ -211,46 +217,95 @@ mod cli {
                 }
                 size
             } else {
-                raw.saturating_sub(4 * 1024u64.pow(3) + 2 * 1024 * 1024)
+                raw.saturating_sub(UNENCRYPTED_RESERVED)
             }
         } else {
             raw
         };
         let usable = u128::from(size.saturating_sub(32 * 1024 * 1024)) * 94 / 100;
-        if usable < u128::from(32 * 1024u64.pow(3)) + required {
+        if usable < required.checked_add(MINIMUM_ROOT).ok_or_else(invalid)? {
             return Err(invalid());
         }
         Ok(required)
     }
+    fn extract(args: &Args) -> Result<()> {
+        args.only(
+            &["--device", "--source-root", "--out-dir"],
+            &["--out-dir"],
+            false,
+        )?;
+        let devices = args.list("--device");
+        let explicit = args.list("--source-root");
+        if !devices.is_empty() && !explicit.is_empty() {
+            return Err(invalid());
+        }
+        let mut grants = if devices.is_empty() {
+            None
+        } else {
+            Some(media::Grants::acquire(&devices)?)
+        };
+        let roots = grants.as_ref().map_or(explicit, |g| g.roots.clone());
+        let result = (|| {
+            if let Some(receipt) = setup::extract(&roots, args.get("--out-dir")?)? {
+                for kind in payload::KINDS {
+                    payload::stage(&roots, args.get("--out-dir")?, &receipt, &devices, kind)?;
+                }
+            }
+            Ok(())
+        })();
+        let cleanup = grants.as_mut().map_or(Ok(()), media::Grants::release);
+        result.and(cleanup)
+    }
+    fn deliver(args: &Args, op: &str) -> Result<()> {
+        let account = setup::account(args.get("--username")?)?;
+        if op == "deliver-user" {
+            let digest = setup::carry(
+                "/var/lib/tilo/prepared-setup",
+                &account.home,
+                &[".local", "state", "tilo", "prepared-setup"],
+                account.uid,
+                account.gid,
+            )?;
+            setup::deliver_binding(&account, &digest)?;
+        } else {
+            for kind in payload::KINDS {
+                let (_, _, name) = payload::names(kind)?;
+                let source = format!("/var/lib/tilo/{name}");
+                match std::fs::symlink_metadata(&source) {
+                    Ok(_) => {
+                        payload::deliver_to(
+                            &source,
+                            &account.home,
+                            account.uid,
+                            account.gid,
+                            kind,
+                        )?;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(())
+    }
+    fn preflight(args: &Args) -> Result<()> {
+        args.only(
+            &["--source-dir", "--receipt"],
+            &["--source-dir", "--receipt"],
+            false,
+        )?;
+        let text = args.get("--receipt")?;
+        if text.len() > 1024 {
+            return Err(invalid());
+        }
+        let value = serde_json::from_str(text).map_err(|_| invalid())?;
+        setup::preflight(args.get("--source-dir")?, &value)?;
+        Ok(())
+    }
     pub fn run() -> Result<()> {
         let args = Args::parse()?;
         let Some(op) = args.operation.as_deref() else {
-            args.only(
-                &["--device", "--source-root", "--out-dir"],
-                &["--out-dir"],
-                false,
-            )?;
-            let devices = args.list("--device");
-            let explicit = args.list("--source-root");
-            if !devices.is_empty() && !explicit.is_empty() {
-                return Err(invalid());
-            }
-            let mut grants = if devices.is_empty() {
-                None
-            } else {
-                Some(media::Grants::acquire(&devices)?)
-            };
-            let roots = grants.as_ref().map_or(explicit, |g| g.roots.clone());
-            let result = (|| {
-                if let Some(receipt) = setup::extract(&roots, args.get("--out-dir")?)? {
-                    for kind in payload::KINDS {
-                        payload::stage(&roots, args.get("--out-dir")?, &receipt, &devices, kind)?;
-                    }
-                }
-                Ok(())
-            })();
-            let cleanup = grants.as_mut().map_or(Ok(()), media::Grants::release);
-            return result.and(cleanup);
+            return extract(&args);
         };
         match op {
             "selected-generation" => {
@@ -258,17 +313,7 @@ mod cli {
                 println!("{}", payload::selected()?);
             }
             "preflight" => {
-                args.only(
-                    &["--source-dir", "--receipt"],
-                    &["--source-dir", "--receipt"],
-                    false,
-                )?;
-                let text = args.get("--receipt")?;
-                if text.len() > 1024 {
-                    return Err(invalid());
-                }
-                let value = serde_json::from_str(text).map_err(|_| invalid())?;
-                setup::preflight(args.get("--source-dir")?, &value)?;
+                preflight(&args)?;
             }
             "preflight-profile" => {
                 args.only(&["--source-dir"], &["--source-dir"], false)?;
@@ -313,35 +358,7 @@ mod cli {
                 if op == "deliver-home-user" && args.values.contains_key("--receipt") {
                     return Err(invalid());
                 }
-                let account = setup::account(args.get("--username")?)?;
-                if op == "deliver-user" {
-                    let digest = setup::carry(
-                        "/var/lib/tilo/prepared-setup",
-                        &account.home,
-                        &[".local", "state", "tilo", "prepared-setup"],
-                        account.uid,
-                        account.gid,
-                    )?;
-                    setup::deliver_binding(&account, &digest)?;
-                } else {
-                    for kind in payload::KINDS {
-                        let (_, _, name) = payload::names(kind)?;
-                        let source = format!("/var/lib/tilo/{name}");
-                        match std::fs::symlink_metadata(&source) {
-                            Ok(_) => {
-                                payload::deliver_to(
-                                    &source,
-                                    &account.home,
-                                    account.uid,
-                                    account.gid,
-                                    kind,
-                                )?;
-                            }
-                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(e) => return Err(e),
-                        }
-                    }
-                }
+                deliver(&args, op)?;
             }
             "preflight-home" | "retain-home" => {
                 let retain = op == "retain-home";

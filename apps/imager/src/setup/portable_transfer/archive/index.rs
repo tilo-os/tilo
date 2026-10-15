@@ -251,10 +251,7 @@ impl Records {
 }
 pub(super) mod native_path {
     use super::*;
-    pub fn serialize<S: serde::Serializer>(
-        path: &PathBuf,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: serde::Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::Error> {
         serde::Serialize::serialize(
             &crate::setup::migration_store::NativePath::encode(path),
             serializer,

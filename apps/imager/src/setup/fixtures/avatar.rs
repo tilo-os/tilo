@@ -1,6 +1,6 @@
 // Original 70-byte, 1×1 RGBA PNG avatar, kept as readable source.
 // SHA-256: 8e233cd5079dc6f6c882d2c866055a569fdb9f89f4f2ef6f3a897c2bb71faf7e
-&[
+[
     // PNG signature
     0x89u8, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     // IHDR: 1×1, 8-bit RGBA

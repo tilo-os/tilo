@@ -90,7 +90,7 @@ impl OriginalCopyReadAdmission {
         owner: Arc<dyn launcher::owned_service::ServiceAuthority>,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         migration::check_cancel(cancel)?;
@@ -422,7 +422,7 @@ impl launcher::owned_service::ServiceAuthority for ReadCustody {
         &self,
     ) -> io::Result<Option<launcher::owned_service::OriginalMountedBinding>> {
         self.check()?;
-        Ok(self.mounted.clone())
+        Ok(self.mounted)
     }
     fn check(&self) -> io::Result<()> {
         self.read.revalidate(&AtomicBool::new(false))

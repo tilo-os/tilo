@@ -532,6 +532,12 @@ fn stage_request(
     let migration = None;
     #[cfg(not(target_os = "linux"))]
     let _ = cancel;
+    #[cfg(target_os = "linux")]
+    if let Some(prepared) = &intent.prepared_custody {
+        prepared
+            .validate_recovery_for_stage(&plan, cancel)
+            .map_err(|error| refusal("recovery-unverified", error.to_string()))?;
+    }
     let component_paths =
         (link.runtime.component_paths)(selected).map_err(|error| refusal("paths", error))?;
     let manifest_path = manifest_dir.join("manifest.json");
@@ -588,27 +594,25 @@ pub(super) fn staging_consumer(
         let mut intent = intent;
         #[cfg(target_os = "linux")]
         if let Some(prepared) = &intent.prepared_custody {
-            match prepared
+            if let Ok((fresh, artifact, expected)) = prepared
                 .refreshed_for_transfer(cancel.signal())
                 .and_then(|fresh| {
                     let artifact = fresh.staging_artifact()?;
                     let expected =
                         serde_json::to_value(fresh.expectation()).map_err(std::io::Error::other)?;
                     Ok((fresh, artifact, expected))
-                }) {
-                Ok((fresh, artifact, expected)) => {
-                    intent.profile.insert("prepared_setup".into(), expected);
-                    intent.prepared_setup = Some(artifact);
-                    intent.prepared_custody = Some(fresh);
-                }
-                Err(_) => {
-                    let outcome = refusal(
-                        "prepared-source",
-                        "Selected browser contents could not be prepared",
-                    );
-                    link.finish(Action::Stage, &outcome);
-                    return Err(outcome.message.unwrap_or_default());
-                }
+                })
+            {
+                intent.profile.insert("prepared_setup".into(), expected);
+                intent.prepared_setup = Some(artifact);
+                intent.prepared_custody = Some(fresh);
+            } else {
+                let outcome = refusal(
+                    "prepared-source",
+                    "Selected browser contents could not be prepared",
+                );
+                link.finish(Action::Stage, &outcome);
+                return Err(outcome.message.unwrap_or_default());
             }
         }
         #[cfg(target_os = "linux")]

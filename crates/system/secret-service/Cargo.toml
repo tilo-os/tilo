@@ -17,6 +17,7 @@ name = "tilo-secret-service"
 path = "src/main.rs"
 
 [dependencies]
+tilo-paths.workspace = true
 # The vault's at-rest envelope, the store key derivation and the Secret
 # Service session encryption all live in tilo-seal.
 tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
@@ -41,6 +42,15 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# tests/identity_custody.rs: where the production identity and vault code
+# keep their keys when this service answers, is locked, or is absent.
+runtime-identity = { path = "../../runtime/runtime-identity" }
+tilo-secret-vault = { path = "../secret-vault" }
+ed25519-dalek.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

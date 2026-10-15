@@ -74,7 +74,7 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
                          'apps/imager/release-catalog.json',
                          'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
                          'apps/imager/packaging/qualify-capture-release.py',
-                         'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py',
+                         'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py', 'tools/ci/native-store-virtio.py',
                          'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
                          'scripts/headless-examples/_control.py',
                          'scripts/browser/cef-lock.json', 'scripts/browser/build-host.py',

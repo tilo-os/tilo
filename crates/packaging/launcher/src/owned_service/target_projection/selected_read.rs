@@ -1,15 +1,19 @@
 //! Exact lookup-bound readonly reopen by the signed fully dropped worker.
 //! Source FsSession/role remains the authority; the held LL rule only enables
 //! asking this exact backend. No arbitrary callback, root path, or edit upgrade.
-use super::*;
+use super::{AsRawFd, File, FromRawFd, Record, UnixStream, io, refused, validate_name};
+#[cfg(test)]
+use super::{OpenOptionsExt, Read, Write};
 use super::{
     observation::{Facts, measure},
     selected_lookup as lookup,
 };
 use crate::{ordinary_namespace::Handoff, owned_service::ServiceCancellation};
+use getrandom::rand_core::TryRng as _;
 use std::os::fd::AsFd;
 use std::{ffi::CString, time::Duration};
 const MAGIC: [u8; 4] = *b"TOR1";
+#[derive(Clone, Copy)]
 pub(super) struct ReadRequest<'a> {
     pub view: &'a File,
     pub parent: &'a File,
@@ -44,16 +48,17 @@ fn send_file(io: &mut Handoff<'_>, marker: u8, file: &File) -> io::Result<()> {
     Ok(())
 }
 fn open_readonly(parent: &File, leaf: &[u8]) -> io::Result<File> {
-    validate_name(leaf)?;
-    let leaf = CString::new(leaf).map_err(io::Error::other)?;
     #[repr(C)]
     struct OpenHow {
         flags: u64,
         mode: u64,
         resolve: u64,
     }
+    validate_name(leaf)?;
+    let leaf = CString::new(leaf).map_err(io::Error::other)?;
     let how = OpenHow {
-        flags: (libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64,
+        flags: u64::try_from(libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .map_err(io::Error::other)?,
         mode: 0,
         resolve: 0x01 | 0x02 | 0x04 | 0x08,
     };
@@ -69,7 +74,7 @@ fn open_readonly(parent: &File, leaf: &[u8]) -> io::Result<File> {
     if raw < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(unsafe { File::from_raw_fd(raw as i32) })
+    Ok(unsafe { File::from_raw_fd(i32::try_from(raw).map_err(io::Error::other)?) })
 }
 pub(super) fn check_read_held(file: &File, facts: &Facts) -> io::Result<()> {
     lookup::check_kernel_identity(file, facts)?;
@@ -172,7 +177,11 @@ pub(super) fn serve_request(
                 .raw_os_error()
                 .filter(|value| (1..=4095).contains(value))
                 .unwrap_or(libc::EACCES);
-            io.write_all(&(errno as u32).to_be_bytes())?;
+            io.write_all(
+                &u32::try_from(errno)
+                    .map_err(io::Error::other)?
+                    .to_be_bytes(),
+            )?;
             return Ok(());
         }
     };
@@ -190,7 +199,6 @@ pub(super) fn request(
     let encoded = lookup::encoding(request.components)?;
     let digest = lookup::components_sha256(request.components)?;
     let mut nonce = [0; 32];
-    use getrandom::rand_core::TryRng as _;
     getrandom::SysRng
         .try_fill_bytes(&mut nonce)
         .map_err(io::Error::other)?;
@@ -215,7 +223,7 @@ pub(super) fn request(
     )?;
     if status != 0 {
         return Ok(Response::Refused(io::Error::from_raw_os_error(
-            status as i32,
+            i32::try_from(status).map_err(io::Error::other)?,
         )));
     }
     let mut encoded = [0; super::observation::FACT_BYTES];
@@ -242,7 +250,6 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let mut nonce = [0; 16];
-            use getrandom::rand_core::TryRng as _;
             getrandom::SysRng.try_fill_bytes(&mut nonce).unwrap();
             let path = std::env::temp_dir().join(format!(
                 "tilo-selected-read-{}-{}",

@@ -199,12 +199,7 @@ pub(super) fn publish(acl: &Path) -> Result<()> {
     let person = existing_person(&paths)?;
     let dir = std::env::var_os("TILO_IDENTITY_DIR")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
-                .map(|p| p.join("tilo/identity"))
-        })
+        .or_else(|| Some(tilo_paths::xdg::config_home()?.join("tilo/identity")))
         .context("existing identity directory unavailable")?;
     let identity = protected_identity(&dir, person)?;
     let policy = capabilities(acl)?;

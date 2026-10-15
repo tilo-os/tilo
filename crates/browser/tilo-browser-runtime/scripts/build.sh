@@ -194,9 +194,11 @@ mkdir -p "$out/app"
 cp "$crate/web/app/index.html" "$out/app/index.html"
 # The live plane's MoQ library is bundled from the published @moq/net pinned
 # in scripts/moq-browser/package-lock.json, never committed, never from a
-# local development copy in web/.
+# local development copy in web/. npm ci writes node_modules beside the lock
+# file: TILO_MOQ_BROWSER_DIR names a writable copy of scripts/moq-browser for
+# builds whose source tree is read-only (t's checks).
 if [[ $moq_kept == 0 ]]; then
-  (cd "$repo/scripts/moq-browser" && npm ci --no-audit --no-fund --silent && node build.mjs "$out/media-moq-library.mjs")
+  (cd "${TILO_MOQ_BROWSER_DIR:-$repo/scripts/moq-browser}" && npm ci --no-audit --no-fund --silent && node build.mjs "$out/media-moq-library.mjs")
 fi
 
 kept fonts.json || python3 - "$repo" "$out" <<'PY'
@@ -253,8 +255,9 @@ metadata = dict(revision=sys.argv[2], dirty=bool(sys.argv[3]), profile=sys.argv[
                 cargoProfile=sys.argv[8], bundle=sys.argv[9])
 if metadata['wasmOpt']:
     metadata.update(wasmOptVersion=sys.argv[10], wasmOptFlags=sys.argv[11])
+# Never this file itself: an --update run finds the previous one in place.
 metadata['files'] = {str(p.relative_to(out)): hashlib.sha256(p.read_bytes()).hexdigest()
-                     for p in sorted(out.rglob('*')) if p.is_file()}
+                     for p in sorted(out.rglob('*')) if p.is_file() and p != out / 'build.json'}
 (out / 'build.json').write_text(json.dumps(metadata, indent=2) + '\n')
 PY
 echo "bundle: $out ($(du -sh "$out/pkg/tilo_browser_runtime_bg.wasm" | cut -f1) wasm, $profile)"

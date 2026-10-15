@@ -31,7 +31,7 @@ impl ParticipantNamespace {
     /// use the same held-device kernel no-replay backend as authenticated Home.
     pub(in crate::setup) fn mount_for_export(entry: &EntryBinding) -> io::Result<Self> {
         entry.validate()?;
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let facts = Facts::read()?;

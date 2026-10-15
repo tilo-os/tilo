@@ -707,13 +707,19 @@ impl SettingsApp {
     }
 }
 
+// Account setup and nearby device pairing share the app's collaboration connection.
 impl ui::widget::Collaborative for SettingsApp {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
-        self.accounts.remote.take_collab_requests()
+        let mut requests = self.accounts.remote.take_collab_requests();
+        requests.extend(ui::widget::Collaborative::take_collab_requests(
+            self.device_mesh.remote_mut(),
+        ));
+        requests
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
         self.accounts.remote.handle_collab_event(event);
+        ui::widget::Collaborative::handle_collab_event(self.device_mesh.remote_mut(), event);
     }
 }
 

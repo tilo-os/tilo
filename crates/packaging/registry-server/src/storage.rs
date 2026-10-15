@@ -194,18 +194,11 @@ impl Storage {
     /// Returns an error when a stored index cannot be read or no longer
     /// matches its name.
     pub fn load_version_index(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        let Some(path) = self.version_index_path(blake3_hex) else {
-            return Ok(None);
-        };
-        let Some(bytes) = read_if_exists(&path, "version index")? else {
-            return Ok(None);
-        };
-        if blake3::hash(&bytes).to_hex().as_str() != blake3_hex {
-            return Err(StorageError::Parse(
-                "version index content does not match its name".into(),
-            ));
-        }
-        Ok(Some(bytes))
+        read_named(
+            self.version_index_path(blake3_hex),
+            "version index",
+            blake3_hex,
+        )
     }
 
     fn snapshot_transaction_path(&self) -> PathBuf {
@@ -353,9 +346,7 @@ impl Storage {
             let path = self
                 .payload_blob_path(&hash.to_hex())
                 .ok_or_else(|| StorageError::Encode("invalid payload blob name".into()))?;
-            if !path.exists() {
-                atomic_write(&path, bytes)?;
-            }
+            write_once(&path, bytes)?;
             self.write_payload_twin(hash, bytes)?;
         }
         let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None)
@@ -363,9 +354,7 @@ impl Storage {
         let path = self
             .thin_package_path(&decoded.meta.id.to_hex())
             .ok_or_else(|| StorageError::Encode("invalid package root".into()))?;
-        if !path.exists() {
-            atomic_write(&path, &thin)?;
-        }
+        write_once(&path, &thin)?;
         Ok(Some(StoredPackage {
             meta: decoded.meta,
             blobs,
@@ -411,9 +400,7 @@ impl Storage {
         let path = self
             .artifact_path(&digest)
             .ok_or_else(|| StorageError::Encode("invalid artifact digest".into()))?;
-        if !path.exists() {
-            atomic_write(&path, tapp_bytes)?;
-        }
+        write_once(&path, tapp_bytes)?;
         self.write_artifact_twin(&digest, tapp_bytes)?;
         Ok(digest)
     }
@@ -437,9 +424,7 @@ impl Storage {
         let path = self
             .program_upload_path(&digest)
             .ok_or_else(|| StorageError::Encode("invalid program digest".into()))?;
-        if !path.exists() {
-            atomic_write(&path, bytes)?;
-        }
+        write_once(&path, bytes)?;
         Ok(digest)
     }
 
@@ -448,21 +433,11 @@ impl Storage {
     /// # Errors
     /// Returns an error if the file cannot be read or no longer matches its name.
     pub fn load_program_upload(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        let Some(path) = self.program_upload_path(blake3_hex) else {
-            return Ok(None);
-        };
-        let Some(bytes) = read_if_exists(&path, "program upload")? else {
-            return Ok(None);
-        };
-        if !blake3::hash(&bytes)
-            .to_hex()
-            .eq_ignore_ascii_case(blake3_hex)
-        {
-            return Err(StorageError::Parse(
-                "program upload does not match its name".into(),
-            ));
-        }
-        Ok(Some(bytes))
+        read_named(
+            self.program_upload_path(blake3_hex),
+            "program upload",
+            blake3_hex,
+        )
     }
 
     /// Publish an approved program as a payload blob, served at
@@ -480,9 +455,7 @@ impl Storage {
         let path = self
             .payload_blob_path(&digest)
             .ok_or_else(|| StorageError::Encode("invalid program digest".into()))?;
-        if !path.exists() {
-            atomic_write(&path, bytes)?;
-        }
+        write_once(&path, bytes)?;
         self.write_payload_twin(&hash, bytes)?;
         Ok(digest)
     }
@@ -506,9 +479,7 @@ impl Storage {
         let path = self
             .upload_path(&digest)
             .ok_or_else(|| StorageError::Encode("invalid upload digest".into()))?;
-        if !path.exists() {
-            atomic_write(&path, tapp_bytes)?;
-        }
+        write_once(&path, tapp_bytes)?;
         Ok(digest)
     }
 
@@ -518,21 +489,7 @@ impl Storage {
     /// Returns an error when a stored upload cannot be read or no longer
     /// matches its name.
     pub fn load_upload(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        let Some(path) = self.upload_path(blake3_hex) else {
-            return Ok(None);
-        };
-        let Some(bytes) = read_if_exists(&path, "upload")? else {
-            return Ok(None);
-        };
-        if !blake3::hash(&bytes)
-            .to_hex()
-            .eq_ignore_ascii_case(blake3_hex)
-        {
-            return Err(StorageError::Parse(
-                "upload content does not match its name".into(),
-            ));
-        }
-        Ok(Some(bytes))
+        read_named(self.upload_path(blake3_hex), "upload", blake3_hex)
     }
 
     /// An imported artifact, re-checked against its digest.
@@ -541,21 +498,7 @@ impl Storage {
     /// Returns an error when a stored artifact cannot be read or no longer
     /// matches its name.
     pub fn load_artifact(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        let Some(path) = self.artifact_path(blake3_hex) else {
-            return Ok(None);
-        };
-        let Some(bytes) = read_if_exists(&path, "artifact")? else {
-            return Ok(None);
-        };
-        if !blake3::hash(&bytes)
-            .to_hex()
-            .eq_ignore_ascii_case(blake3_hex)
-        {
-            return Err(StorageError::Parse(
-                "artifact content does not match its name".into(),
-            ));
-        }
-        Ok(Some(bytes))
+        read_named(self.artifact_path(blake3_hex), "artifact", blake3_hex)
     }
 
     /// The payload blob named `blake3_hex`, re-checked against its name, or
@@ -575,20 +518,7 @@ impl Storage {
                 "payload blob exceeds the object size limit".into(),
             ));
         }
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(StorageError::Io(format!("read payload blob: {error}"))),
-        };
-        if !blake3::hash(&bytes)
-            .to_hex()
-            .eq_ignore_ascii_case(blake3_hex)
-        {
-            return Err(StorageError::Parse(
-                "payload blob content does not match its name".into(),
-            ));
-        }
-        Ok(Some(bytes))
+        read_named(Some(path), "payload blob", blake3_hex)
     }
 
     /// Stage exact package bytes under their BLAKE3. A package is kept once:
@@ -1135,15 +1065,7 @@ impl Storage {
     /// read, or [`StorageError::Parse`] if it fails to decode as a
     /// [`RegistryEntry`].
     pub fn load_entry(&self, package_id: &str) -> Result<Option<RegistryEntry>, StorageError> {
-        let path = self.entry_path(package_id);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| StorageError::Io(format!("read entry: {e}")))?;
-        let parsed: RegistryEntry =
-            serde_json::from_str(&text).map_err(|e| StorageError::Parse(e.to_string()))?;
-        Ok(Some(parsed))
+        load_json(&self.entry_path(package_id), "entry")
     }
 
     /// Atomic-rename write of one entry.
@@ -1586,9 +1508,7 @@ impl<'a> SnapshotLock<'a> {
                 .storage
                 .version_index_path(&index.blake3_hex)
                 .ok_or_else(|| StorageError::Parse("invalid version index name".into()))?;
-            if !path.exists() {
-                atomic_write(&path, &index.bytes)?;
-            }
+            write_once(&path, &index.bytes)?;
             keep.insert(index.blake3_hex.clone());
         }
         if let Ok(Some(previous)) = self.storage.load_compact_snapshot() {
@@ -2313,6 +2233,40 @@ pub struct ServerIdentity {
 
 fn is_hex_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Write content-addressed `bytes` to `path` unless they are already there:
+/// a file named by its digest never changes.
+fn write_once(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+    if path.exists() {
+        return Ok(());
+    }
+    atomic_write(path, bytes)
+}
+
+/// The bytes at `path`, which is named by their BLAKE3 `blake3_hex`, or
+/// `None` without a valid name or a file. Stored bytes that no longer match
+/// their name are an error, never served.
+fn read_named(
+    path: Option<PathBuf>,
+    what: &str,
+    blake3_hex: &str,
+) -> Result<Option<Vec<u8>>, StorageError> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let Some(bytes) = read_if_exists(&path, what)? else {
+        return Ok(None);
+    };
+    if !blake3::hash(&bytes)
+        .to_hex()
+        .eq_ignore_ascii_case(blake3_hex)
+    {
+        return Err(StorageError::Parse(format!(
+            "{what} content does not match its name"
+        )));
+    }
+    Ok(Some(bytes))
 }
 
 fn read_if_exists(path: &Path, what: &str) -> Result<Option<Vec<u8>>, StorageError> {

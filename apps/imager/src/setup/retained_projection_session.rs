@@ -103,31 +103,9 @@ pub(super) struct RetainedProjectionSession {
     target_stopped: bool,
 }
 impl RetainedProjectionSession {
-    pub(super) fn start(
-        input: Arc<InstalledRetainedLaunchInput>,
-        name: &OsStr,
-        cancel: Arc<AtomicBool>,
-    ) -> io::Result<Self> {
-        Self::start_selection(input, Some(name), cancel, None, None)
-    }
-    /// Use only the installed actor's retained Home grant. A selected file
-    /// never confers access to its parent directory.
-    pub(super) fn start_home(
-        input: Arc<InstalledRetainedLaunchInput>,
-        cancel: Arc<AtomicBool>,
-    ) -> io::Result<Self> {
-        Self::start_selection(input, None, cancel, None, None)
-    }
-    /// Only an independently reviewed ordinary selection can bind the target
-    /// endpoint context to a concrete ConsumerLaunchBinding. Source proof stays
-    /// separately sealed from the actual retained source worker admission.
-    pub(super) fn start_home_for_consumer(
-        input: Arc<InstalledRetainedLaunchInput>,
-        selection: &super::retained_consumer_selection::ReviewedConsumerSelection,
-        cancel: Arc<AtomicBool>,
-    ) -> io::Result<Self> {
-        Self::start_home_for_consumer_with_history(input, selection, cancel, None)
-    }
+    /// Only the installed Home grant and an independently reviewed ordinary
+    /// selection can bind the endpoint to a concrete ConsumerLaunchBinding.
+    /// Optional history enrollment must belong to that same retained input.
     pub(super) fn start_home_for_consumer_with_history(
         input: Arc<InstalledRetainedLaunchInput>,
         selection: &super::retained_consumer_selection::ReviewedConsumerSelection,
@@ -273,43 +251,31 @@ impl RetainedProjectionSession {
             working: Some(working),
             target_stopped: false,
         };
-        match receive.recv_timeout(Duration::from_secs(15)) {
-            Ok(endpoint) => {
-                owner.endpoint = Some(Arc::clone(&endpoint));
-                let relay =
-                    match source_connection.serve(input, cancel, Arc::clone(&endpoint), history) {
-                        Ok(relay) => relay,
-                        Err(error) => {
-                            owner.retire()?;
-                            return Err(error);
-                        }
-                    };
-                owner.relay = Some(relay);
-                if let Err(error) = endpoint.observe_ready() {
+        if let Ok(endpoint) = receive.recv_timeout(Duration::from_secs(15)) {
+            owner.endpoint = Some(Arc::clone(&endpoint));
+            let relay = match source_connection.serve(input, cancel, Arc::clone(&endpoint), history)
+            {
+                Ok(relay) => relay,
+                Err(error) => {
                     owner.retire()?;
                     return Err(error);
                 }
-                Ok(owner)
+            };
+            owner.relay = Some(relay);
+            if let Err(error) = endpoint.observe_ready() {
+                owner.retire()?;
+                return Err(error);
             }
-            Err(_) => {
-                let cleanup = owner.retire();
-                // Endpoint-only late handoffs carry no relay callbacks. Drain
-                // after actual supervisor exit before allowing source release.
-                drop(receive);
-                Err(cleanup.err().unwrap_or_else(|| {
-                    io::Error::other("Target projection did not establish its held endpoint")
-                }))
-            }
+            Ok(owner)
+        } else {
+            let cleanup = owner.retire();
+            // Endpoint-only late handoffs carry no relay callbacks. Drain
+            // after actual supervisor exit before allowing source release.
+            drop(receive);
+            Err(cleanup.err().unwrap_or_else(|| {
+                io::Error::other("Target projection did not establish its held endpoint")
+            }))
         }
-    }
-    /// Internal synchronous proof seam for trusted qualification code only.
-    /// Production app exports require a lease in their consuming NamespaceOwner;
-    /// this callback is not an export-lifetime authority boundary.
-    pub(super) fn with_view(
-        &self,
-        use_view: impl FnOnce(&File) -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.with_consumer_view(use_view)
     }
     /// Root actor only: the caller retains this complete owner through the
     /// consuming ordinary namespace's observed stop. A descriptor alone is

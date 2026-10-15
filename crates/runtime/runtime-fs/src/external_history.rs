@@ -596,5 +596,6 @@ mod tests {
 
 mod reservation;
 pub use reservation::{
-    NativeReservationDescription, NativeReservationFacts, NativeReservationLocator,
+    NativeReplacementPurpose, NativeReservationDescription, NativeReservationFacts,
+    NativeReservationLocator,
 };

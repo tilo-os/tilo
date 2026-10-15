@@ -130,7 +130,10 @@ pub(crate) fn read_goa(
     identity: String,
 ) -> Result<GoaCredentials, SecretError> {
     on_bus(move || {
-        if uid == 0 || unsafe { libc::getuid() } != uid || unsafe { libc::geteuid() } != uid {
+        if uid == 0
+            || rustix::process::getuid().as_raw() != uid
+            || rustix::process::geteuid().as_raw() != uid
+        {
             return Err(SecretError::Denied);
         }
         let connection = owner_bus(uid)?;

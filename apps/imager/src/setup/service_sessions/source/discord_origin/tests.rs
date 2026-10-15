@@ -49,9 +49,14 @@ fn actual_engine_selects_current_origin_value_preserves_raw_dom_and_original_sto
     assert!(!format!("{captured:?}").contains("synthetic-current-value"));
     assert_eq!(bytes(profile.path()), before);
     assert!(
-        before
-            .keys()
-            .any(|name| name.ends_with(".ldb") || name.ends_with(".sst")),
+        before.keys().any(|name| {
+            matches!(
+                std::path::Path::new(name)
+                    .extension()
+                    .and_then(|ext| ext.to_str()),
+                Some("ldb" | "sst")
+            )
+        }),
         "fixture must exercise real tables as well as WAL"
     );
 }
@@ -248,7 +253,7 @@ fn origin_only_session_seals_imports_raw_dom_value_without_a_cookie_store() {
     );
     assert_ne!(session.source_snapshot_digest, [0; 32]);
     assert!(!format!("{session:?}").contains("synthetic-private"));
-    let mut changed = declaration.clone();
+    let mut changed = declaration;
     changed.ciphertext_sha256[0] ^= 1;
     let fresh = sessions::private_stage().unwrap();
     assert!(

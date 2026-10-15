@@ -77,3 +77,4 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }

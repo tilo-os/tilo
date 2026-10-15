@@ -1,7 +1,10 @@
 //! Fixed held-object metadata and bounded selected lookup operations.
 //! No content access or source permission constructor exists.
-use super::*;
+#[cfg(test)]
+use super::Write;
+use super::{AsRawFd, File, MetadataExt, Read, Record, UnixStream, io, namespaces, refused};
 use crate::{ordinary_namespace::Handoff, owned_service::ServiceCancellation};
+use getrandom::rand_core::TryRng as _;
 use std::os::fd::AsFd;
 use std::time::Duration;
 pub(super) const MAGIC: [u8; 4] = *b"TOM1";
@@ -33,7 +36,6 @@ impl Facts {
         bytes
     }
     pub(super) fn decode(bytes: &[u8]) -> io::Result<Self> {
-        let mut cursor = std::io::Cursor::new(bytes);
         fn u64_value(cursor: &mut std::io::Cursor<&[u8]>) -> io::Result<u64> {
             let mut bytes = [0; 8];
             cursor.read_exact(&mut bytes)?;
@@ -44,6 +46,7 @@ impl Facts {
             cursor.read_exact(&mut bytes)?;
             Ok(u32::from_be_bytes(bytes))
         }
+        let mut cursor = std::io::Cursor::new(bytes);
         if bytes.len() != FACT_BYTES {
             return Err(refused("Target observation facts length differs"));
         }
@@ -115,7 +118,7 @@ pub(super) fn serve(mut stream: UnixStream, record: &Record) -> io::Result<()> {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(error) => return Err(error),
-        };
+        }
         let cancellation = ServiceCancellation::default();
         let mut io = Handoff::new(&mut stream, &cancellation, Duration::from_secs(10))?;
         let mut rest = [0; 3];
@@ -123,7 +126,7 @@ pub(super) fn serve(mut stream: UnixStream, record: &Record) -> io::Result<()> {
         let lookup = rest == *b"OL1";
         let read = rest == *b"OR1";
         let exposure = rest == *b"ME1";
-        if first != [b'T'] || (!lookup && !read && !exposure && rest != *b"OM1") {
+        if first != *b"T" || (!lookup && !read && !exposure && rest != *b"OM1") {
             return Err(refused("Target observation request differs"));
         }
         let mut nonce = [0; 32];
@@ -170,73 +173,84 @@ pub(super) fn serve(mut stream: UnixStream, record: &Record) -> io::Result<()> {
             )?;
             continue;
         }
-        let facts = match measure(&file) {
-            Ok(facts) => facts,
-            Err(error)
-                if exposure
-                    && error
-                        .raw_os_error()
-                        .is_some_and(|code| (1..=4095).contains(&code)) =>
-            {
-                // Actual native operation refusal keeps FUSE/session custody;
-                // it is neither an object measurement nor a source grant.
-                super::shim::verify_dropped(record.uid, record.gid)?;
-                if namespaces()? != record.namespaces {
-                    return Err(refused("Exposure worker namespace changed"));
-                }
-                io.write_all(&nonce)?;
-                io.write_all(&context)?;
-                io.write_all(&source)?;
-                io.write_all(&[1])?;
-                io.write_all(
-                    &error
-                        .raw_os_error()
-                        .ok_or(io::ErrorKind::InvalidData)?
-                        .to_be_bytes(),
-                )?;
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        if facts.fs_type != 0x65735546
-            || if exposure {
-                admitted_view.as_ref().is_none_or(|root: &Facts| {
-                    (
-                        facts.dev,
-                        facts.ino,
-                        facts.mode & libc::S_IFMT,
-                        facts.uid,
-                        facts.gid,
-                    ) != (root.dev, root.ino, libc::S_IFDIR, record.uid, record.gid)
-                        || facts.mount_id == root.mount_id
-                        || Some(facts.mount_id) != record.clone_mount_id
-                })
-            } else {
-                facts.mount_id != record.mount_id.ok_or(io::ErrorKind::InvalidData)?
-            }
-        {
-            return Err(refused(
-                "Target observation is not exact admitted FUSE mount",
-            ));
-        }
-        if admitted_view.is_none() {
-            if facts.mode & libc::S_IFMT != libc::S_IFDIR {
-                return Err(refused("Initial observation is not admitted view"));
-            }
-            admitted_view = Some(facts);
-        }
-        super::shim::verify_dropped(record.uid, record.gid)?;
-        if namespaces()? != record.namespaces {
-            return Err(refused("Target observation namespace retired"));
-        }
-        io.write_all(&nonce)?;
-        io.write_all(&context)?;
-        io.write_all(&source)?;
-        if exposure {
-            io.write_all(&[0])?;
-        }
-        io.write_all(&facts.encode())?;
+        serve_measurement(&mut io, &file, record, &nonce, exposure, &mut admitted_view)?;
     }
+}
+fn serve_measurement(
+    io: &mut Handoff<'_>,
+    file: &File,
+    record: &Record,
+    nonce: &[u8; 32],
+    exposure: bool,
+    admitted_view: &mut Option<Facts>,
+) -> io::Result<()> {
+    let facts = match measure(file) {
+        Ok(facts) => facts,
+        Err(error)
+            if exposure
+                && error
+                    .raw_os_error()
+                    .is_some_and(|code| (1..=4095).contains(&code)) =>
+        {
+            // Actual native operation refusal keeps FUSE/session custody;
+            // it is neither an object measurement nor a source grant.
+            super::shim::verify_dropped(record.uid, record.gid)?;
+            if namespaces()? != record.namespaces {
+                return Err(refused("Exposure worker namespace changed"));
+            }
+            io.write_all(nonce)?;
+            io.write_all(&record.context_sha256)?;
+            io.write_all(&record.source_view_sha256)?;
+            io.write_all(&[1])?;
+            io.write_all(
+                &error
+                    .raw_os_error()
+                    .ok_or(io::ErrorKind::InvalidData)?
+                    .to_be_bytes(),
+            )?;
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    if facts.fs_type != 0x6573_5546
+        || if exposure {
+            admitted_view.as_ref().is_none_or(|root: &Facts| {
+                (
+                    facts.dev,
+                    facts.ino,
+                    facts.mode & libc::S_IFMT,
+                    facts.uid,
+                    facts.gid,
+                ) != (root.dev, root.ino, libc::S_IFDIR, record.uid, record.gid)
+                    || facts.mount_id == root.mount_id
+                    || Some(facts.mount_id) != record.clone_mount_id
+            })
+        } else {
+            facts.mount_id != record.mount_id.ok_or(io::ErrorKind::InvalidData)?
+        }
+    {
+        return Err(refused(
+            "Target observation is not exact admitted FUSE mount",
+        ));
+    }
+    if admitted_view.is_none() {
+        if facts.mode & libc::S_IFMT != libc::S_IFDIR {
+            return Err(refused("Initial observation is not admitted view"));
+        }
+        *admitted_view = Some(facts);
+    }
+    super::shim::verify_dropped(record.uid, record.gid)?;
+    if namespaces()? != record.namespaces {
+        return Err(refused("Target observation namespace retired"));
+    }
+    io.write_all(nonce)?;
+    io.write_all(&record.context_sha256)?;
+    io.write_all(&record.source_view_sha256)?;
+    if exposure {
+        io.write_all(&[0])?;
+    }
+    io.write_all(&facts.encode())?;
+    Ok(())
 }
 pub(super) fn request(
     stream: &mut UnixStream,
@@ -257,7 +271,6 @@ pub(super) fn request_exposure(
     cancellation: &ServiceCancellation,
 ) -> io::Result<ExposureResponse> {
     let mut nonce = [0; 32];
-    use getrandom::rand_core::TryRng as _;
     getrandom::SysRng
         .try_fill_bytes(&mut nonce)
         .map_err(io::Error::other)?;
@@ -316,7 +329,6 @@ fn request_with_magic(
     magic: [u8; 4],
 ) -> io::Result<Facts> {
     let mut nonce = [0; 32];
-    use getrandom::rand_core::TryRng as _;
     getrandom::SysRng
         .try_fill_bytes(&mut nonce)
         .map_err(io::Error::other)?;
@@ -448,8 +460,8 @@ mod exposure_frame_tests {
             0
         );
         assert_eq!(
-            decoded.fs_flags & libc::ST_RDONLY as u64,
-            independent.f_flag & libc::ST_RDONLY as u64
+            decoded.fs_flags & libc::ST_RDONLY,
+            independent.f_flag & libc::ST_RDONLY
         );
         assert_eq!(
             Facts::decode(&encoded[..52]).unwrap_err().kind(),

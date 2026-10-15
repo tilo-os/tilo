@@ -110,13 +110,19 @@ impl RootHistoryReadEnrollment {
     }
     pub(in crate::setup) fn enrollment_context_digest(&self) -> io::Result<[u8; 32]> {
         self.check()?;
-        let value = self.daemon().context_digest()?;
+        let value = match self {
+            Self::Files(enrollment) => enrollment.enrollment_context_digest()?,
+            Self::SelectedEditor(_) => self.daemon().context_digest()?,
+        };
         self.check()?;
         Ok(value)
     }
     pub(in crate::setup) fn source_owner(&self) -> io::Result<[u8; 32]> {
         self.check()?;
-        let value = self.daemon().source_owner()?;
+        let value = match self {
+            Self::Files(enrollment) => enrollment.source_owner()?,
+            Self::SelectedEditor(_) => self.daemon().source_owner()?,
+        };
         self.check()?;
         Ok(value)
     }

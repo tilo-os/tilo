@@ -137,11 +137,10 @@ struct Fixture {
 }
 /// Explicit live material for the authenticated selected-app receiver constructor.
 /// Retain this owner until the original source epoch and signing tools retire.
+#[cfg(feature = "native-capture-qualification")]
 pub(in crate::setup) struct RunnableFixture(Fixture);
+#[cfg(feature = "native-capture-qualification")]
 impl RunnableFixture {
-    pub(in crate::setup) fn create() -> Self {
-        Self::from_fixture(Fixture::create_runnable())
-    }
     /// Install through the same actual native CLI into the admitted disposable
     /// GPT Home before capture. This material builder supplies no source grant.
     pub(in crate::setup) fn create_in(actual_home: &Path) -> Self {
@@ -155,7 +154,7 @@ impl RunnableFixture {
             .unwrap();
         let before = held.metadata().unwrap();
         // SAFETY: observe current native original account, never impersonate it.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         assert_ne!(uid, 0, "runnable USER installation needs original account");
         assert!(before.is_dir() && before.uid() == uid && before.mode() & 0o7022 == 0);
         validate_fixture_branches(actual_home, uid);
@@ -295,9 +294,6 @@ impl Fixture {
     fn create() -> Self {
         Self::create_variant(false)
     }
-    fn create_runnable() -> Self {
-        Self::create_variant(true)
-    }
     fn create_variant(runnable: bool) -> Self {
         Self::create_variant_at(runnable, None)
     }
@@ -404,7 +400,7 @@ impl Fixture {
         let expected = Expectation {
             schema: 1,
             consumer_protocol: 1,
-            operation: operation.clone(),
+            operation,
             purpose: Purpose::FlatpakApplications,
             filename: package.file_name().unwrap().to_str().unwrap().into(),
             setup_binding: "native-binding".into(),
@@ -777,7 +773,7 @@ fn real_signed_offline_target_restores_and_rejects_invalid_authority() {
     // Root cannot own a production user installation. Re-exec only this test
     // under an unrelated unprivileged UID; every fixture is created by that owner.
     // SAFETY: geteuid has no preconditions and only reads current credentials.
-    if unsafe { libc::geteuid() } == 0 {
+    if rustix::process::geteuid().as_raw() == 0 {
         assert!(
             std::env::var_os("TILO_NATIVE_FLATPAK_OWNER_CHILD").is_none(),
             "test failed to drop root authority"
@@ -1026,7 +1022,7 @@ fn runnable_existing_home_alias_refuses_before_native_installation() {
     fs::write(outside.join("untouched"), b"outside source authority").unwrap();
     let before = fs::symlink_metadata(&outside).unwrap();
     // SAFETY: actual owner of these generated disposable directories.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     for edge in [".local", ".var"] {
         symlink(&outside, home.join(edge)).unwrap();
         assert!(std::panic::catch_unwind(|| validate_fixture_branches(&home, uid)).is_err());

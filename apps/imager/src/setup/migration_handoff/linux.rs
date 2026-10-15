@@ -417,7 +417,7 @@ impl RetainedSource {
         namespace: &Path,
     ) -> io::Result<std::fs::File> {
         self.validate()?;
-        if self.mode != AccessMode::ReadWrite || unsafe { libc::geteuid() } != 0 {
+        if self.mode != AccessMode::ReadWrite || rustix::process::geteuid().as_raw() != 0 {
             return Err(refusal(
                 "Retained caller requires a root-held writable source lease",
             ));
@@ -434,7 +434,7 @@ impl RetainedSource {
         namespace: &Path,
     ) -> io::Result<std::fs::File> {
         self.validate()?;
-        if self.mode != AccessMode::ReadWrite || unsafe { libc::geteuid() } != 0 {
+        if self.mode != AccessMode::ReadWrite || rustix::process::geteuid().as_raw() != 0 {
             return Err(refusal(
                 "Retained namespace requires actual root writable lease",
             ));
@@ -448,7 +448,7 @@ impl RetainedSource {
     }
     pub(in crate::setup) fn retained_directory(&self) -> io::Result<std::fs::File> {
         self.validate()?;
-        if self.mode != AccessMode::ReadWrite || unsafe { libc::geteuid() } != 0 {
+        if self.mode != AccessMode::ReadWrite || rustix::process::geteuid().as_raw() != 0 {
             return Err(refusal(
                 "Retained projection requires root writable custody",
             ));
@@ -811,6 +811,7 @@ pub(in crate::setup) fn resolve_flatpak_source(
 
 /// Accept only a freshly granted read-only mount. This does not mount anything
 /// and never interprets the plan's locator as an ambient path.
+#[cfg(all(test, feature = "native-capture-qualification"))]
 pub(in crate::setup) fn resolve(plan: &Plan, mountpoint: &Path) -> io::Result<ResolvedSource> {
     resolve_with(plan, mountpoint, &Facts::read()?, true)
 }
@@ -898,7 +899,7 @@ fn resolve_mode_with_retained(
     }
     if mode == AccessMode::ReadWrite {
         // SAFETY: reads current process credentials only; no ownership changes.
-        if plan.home.original_uid != unsafe { libc::geteuid() } && permit.is_none() {
+        if plan.home.original_uid != rustix::process::geteuid().as_raw() && permit.is_none() {
             return Err(refusal(
                 "Shared writable files require matching original user ownership; an explicit UID mapping service is needed",
             ));
@@ -1117,7 +1118,7 @@ fn mount_root_role_volume(
     volume: &SourceVolume,
     facts: &Facts,
 ) -> io::Result<(PathBuf, Arc<MountedVolume>)> {
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     if facts.covering(Path::new("/run"))?.private {
@@ -1522,7 +1523,7 @@ impl ResolvedSource {
         &self,
         namespace: &Path,
     ) -> io::Result<std::fs::File> {
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         self.open_control_file(

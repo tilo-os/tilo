@@ -92,7 +92,7 @@ fn system_controlled(metadata: &std::fs::Metadata) -> io::Result<bool> {
         return Ok(false);
     }
     // SAFETY: these calls only read process credential values.
-    if unsafe { libc::geteuid() } == 0 || unsafe { libc::getegid() } == gid {
+    if rustix::process::geteuid().as_raw() == 0 || rustix::process::getegid().as_raw() == gid {
         return Ok(true);
     }
     // SAFETY: count-only query has no output buffer.
@@ -158,7 +158,7 @@ fn validate_node(
 #[cfg(target_os = "linux")]
 fn require_root_observer() -> io::Result<()> {
     // SAFETY: these calls only read process credentials.
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(())
@@ -210,7 +210,7 @@ impl Directory {
 
     pub(super) fn open_system_namespace(path: &Path) -> io::Result<Self> {
         // SAFETY: geteuid only reads current process credentials.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::Error::other(
                 "system enrollment publication requires root",
             ));
@@ -466,7 +466,7 @@ impl Directory {
 
     fn require_system_publication(&self) -> io::Result<()> {
         // SAFETY: geteuid only reads the current process credential.
-        if !self.system_namespace || self.public_read || unsafe { libc::geteuid() } != 0 {
+        if !self.system_namespace || self.public_read || rustix::process::geteuid().as_raw() != 0 {
             return Err(io::Error::other(
                 "public projection normalization requires root publication authority",
             ));
@@ -579,8 +579,8 @@ mod tests {
         let path = root.path().canonicalize().unwrap();
         let ordinary = Directory::open(&path).unwrap();
         ordinary.publish("record", b"retained-original").unwrap();
-        let uid = unsafe { libc::geteuid() };
-        if unsafe { libc::getuid() } != 0 || uid != 0 {
+        let uid = rustix::process::geteuid().as_raw();
+        if rustix::process::getuid().as_raw() != 0 || uid != 0 {
             assert!(Directory::observe_owner(File::open(&path).unwrap(), uid).is_err());
             return;
         }

@@ -385,7 +385,7 @@ impl SourceReadContext {
         geometry: Option<Arc<CompletedOriginalGeometry>>,
     ) -> io::Result<Self> {
         // SAFETY: reads only this process's current effective user ID.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let mut record = source.open_original_record(namespace)?;
@@ -429,11 +429,11 @@ impl SourceReadContext {
             None
         };
         let result = Self {
-            source,
             intent,
             geometry,
             record,
             inventory,
+            source,
         };
         result.revalidate()?;
         Ok(result)

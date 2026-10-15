@@ -399,7 +399,7 @@ mod tests {
     // sandbox qualification callback is replaced by its explicit test response.
     fn python_contract() -> Vec<u8> {
         let scripts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../os/scripts");
-        let script = r#"
+        let script = r"
 import importlib.util, json, pathlib, sys, tempfile
 scripts = pathlib.Path(sys.argv[1])
 def load(name):
@@ -449,7 +449,7 @@ with tempfile.TemporaryDirectory() as temporary:
     receipt.write_text(json.dumps(sdk, sort_keys=True, separators=(',', ':')))
     # Exercise the installed verifier's strict saved-receipt reader too.
     print(json.dumps(verifier.read_receipt(receipt, sdk), sort_keys=True, separators=(',', ':')))
-"#;
+";
         let output = std::process::Command::new("python3")
             .arg("-I")
             .arg("-c")

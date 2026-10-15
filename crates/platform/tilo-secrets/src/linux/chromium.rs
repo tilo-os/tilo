@@ -119,8 +119,8 @@ pub(crate) fn read_chromium(
 ) -> Result<Option<Secret>, SecretError> {
     on_bus(move || {
         if uid == 0
-            || unsafe { libc::getuid() } != uid
-            || unsafe { libc::geteuid() } != uid
+            || rustix::process::getuid().as_raw() != uid
+            || rustix::process::geteuid().as_raw() != uid
             || !matches!(application, "chrome" | "chromium" | "Slack")
         {
             return Err(SecretError::Denied);

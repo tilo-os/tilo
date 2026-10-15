@@ -36,6 +36,7 @@ mod audio_output;
 pub(super) mod committed_document;
 #[path = "directory_client.rs"]
 mod directory_client;
+#[cfg(unix)]
 #[path = "managed_sender_transport.rs"]
 mod managed_sender_transport;
 #[path = "native_initial.rs"]
@@ -3450,7 +3451,13 @@ impl CollaborationManager {
     ) -> Self {
         let sdk = match Self::start_sdk(source, identity) {
             Ok((sdk, _init)) => sdk,
-            Err(error) => return Self::offline(error.to_string()),
+            Err(error) => {
+                // A route was asked for, so this document was meant to sync:
+                // failing to reach the service is working offline.
+                let mut manager = Self::offline(error.to_string());
+                manager.sync_expected = true;
+                return manager;
+            }
         };
         let mut manager = Self::with_transport(Box::new(sdk));
         let RouteSpec {

@@ -76,6 +76,25 @@ class CommandFailureTest(unittest.TestCase):
         failure, _ = self.failure(stdout, "compiler progress")
         self.assertEqual(str(failure), "`tilo-vm --json swap app:osk` exited 1: install refused")
 
+    def test_failed_build_keeps_error_before_long_exception_command(self):
+        stderr = "compiler progress\n" * 300 + "underlying assembly refusal\n" + "exception argv\n" * 1000
+        _, log = self.failure('{"error": "builder sent no layer"}', stderr)
+        self.assertIn(stderr.rstrip(), log)
+
+    def test_successful_build_progress_remains_abbreviated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "tilo-vm.log"
+            vm = TiloVm("tilo-vm", "owned", "acceptance", log)
+            progress = "head\n" + "progress\n" * 2000 + "tail\n"
+            result = subprocess.CompletedProcess([], 0, progress, "")
+            with patch("acceptance.vm.subprocess.run", return_value=result):
+                self.assertEqual(vm.run("swap", "shell"), progress)
+            retained = log.read_text()
+            self.assertIn("\n[…]\n", retained)
+            self.assertLess(len(retained), len(progress))
+            self.assertIn("head\n", retained)
+            self.assertTrue(retained.endswith("tail\n"))
+
     def test_plain_text_errors_retain_existing_fallback(self):
         failure, _ = self.failure("progress", "error: linker failed")
         self.assertEqual(failure.reason(), "`tilo-vm --json swap app:osk` exited 1: error: linker failed")

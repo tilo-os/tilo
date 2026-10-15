@@ -97,7 +97,10 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int, int]:
                     f"depends directly on private text crate `{dependency}`; use `ui`",
                 )
             )
-        if "ui" not in dependencies:
+        # An app model crate (`apps/*-model`) is data shared with an app, not
+        # an app: it may have no UI at all.
+        is_model = manifest_path.parent.name.endswith("-model")
+        if "ui" not in dependencies and not is_model:
             violations.append(
                 Violation(manifest_path, 1, "app does not depend on the shared `ui` crate")
             )

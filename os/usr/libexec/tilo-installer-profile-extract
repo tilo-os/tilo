@@ -11,7 +11,7 @@ readonly out_file="$out_dir/profile.json"
 readonly error_file="$out_dir/profile.error"
 
 install -d -m 0755 "$out_dir"
-rm -f "$out_file" "$error_file"
+rm -f "$out_file" "$error_file" "$out_dir/windows-media.block" "$out_dir"/windows-media.block.*
 
 report_error() {
   printf '%s\n' "$*" > "$error_file"
@@ -107,13 +107,17 @@ for disk in "${candidates[@]}"; do
   fi
   valid=$((valid + 1))
   install -m 0644 "$payload" "$out_file.$valid"
+  # Preserve the exact same medium's tail for password-authenticated Windows
+  # suggestions. This remains ciphertext and confers no identity authority.
+  install -m 0644 "$tail_file" "$out_dir/windows-media.block.$valid"
 done
 
 if [ "$valid" -eq 1 ]; then
   mv "$out_file.1" "$out_file"
+  mv "$out_dir/windows-media.block.1" "$out_dir/windows-media.block"
   rm -f "$error_file"
 elif [ "$valid" -gt 1 ]; then
-  rm -f "$out_file".*
+  rm -f "$out_file".* "$out_dir"/windows-media.block.*
   report_error "More than one attached device contains a Tilo installation profile. Remove the extra media and reboot."
 fi
 

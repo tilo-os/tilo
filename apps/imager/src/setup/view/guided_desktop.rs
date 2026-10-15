@@ -58,17 +58,14 @@ impl SetupApp {
                 )),
             };
             preparation.pending = None;
-            match result {
-                Ok(()) => {
-                    preparation.delivered = true;
-                    self.status = super::super::strings::t("installer-desktop-ready");
-                    self.status_is_error = false;
-                }
-                Err(_) => {
-                    preparation.failed = true;
-                    self.status = super::super::strings::t("installer-desktop-delivery-failed");
-                    self.status_is_error = true;
-                }
+            if result == Ok(()) {
+                preparation.delivered = true;
+                self.status = super::super::strings::t("installer-desktop-ready");
+                self.status_is_error = false;
+            } else {
+                preparation.failed = true;
+                self.status = super::super::strings::t("installer-desktop-delivery-failed");
+                self.status_is_error = true;
             }
             self.composed.invalidate();
             return true;

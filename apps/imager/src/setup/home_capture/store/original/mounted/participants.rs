@@ -104,7 +104,9 @@ impl ParticipantSet {
         peer: &HostChannel,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<Self> {
-        if unsafe { libc::geteuid() } != 0 || primary_store.operation != primary.home.operation_id {
+        if rustix::process::geteuid().as_raw() != 0
+            || primary_store.operation != primary.home.operation_id
+        {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         check_cancel(cancel)?;

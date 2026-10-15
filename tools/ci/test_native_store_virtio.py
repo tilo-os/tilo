@@ -104,6 +104,27 @@ class VirtioFixture(unittest.TestCase):
                     stores.device(self.receipt()['disks'][0])
                 run.assert_not_called()
 
+    def test_observer_requires_attempt_and_checks_actual_unmounted_devices(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(stores, 'device') as device:
+            directory = Path(temporary)
+            rows = self.receipt()['disks']
+            with self.assertRaisesRegex(ValueError, 'attempt was not observed'):
+                stores.observe(directory, rows)
+            device.assert_not_called()
+            (directory / 'format-started').touch()
+            device.side_effect = ValueError('disk is mounted (including root)')
+            with self.assertRaisesRegex(ValueError, 'mounted'):
+                stores.observe(directory, rows)
+            device.assert_called_once_with(rows[0])
+
+    def test_observer_refuses_unretired_endpoint(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(stores, 'device'):
+            directory = Path(temporary)
+            (directory / 'format-started').touch()
+            (directory / 'a').mkdir()
+            with self.assertRaisesRegex(ValueError, 'endpoint not retired'):
+                stores.observe(directory, self.receipt()['disks'])
+
     def test_prior_format_attempt_refuses_without_device_access(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(stores, 'device') as device:
             directory = Path(tmp)

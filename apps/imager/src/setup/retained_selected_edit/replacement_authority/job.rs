@@ -137,7 +137,9 @@ impl OwnedReplacementJob {
         source.begin_pending(pending.clone())?;
         let request = uuid::Uuid::from_bytes(pending.observation().operation).to_string();
         let daemon = &pending.seed().daemon;
-        let reply = if !state.attempted {
+        let reply = if state.attempted {
+            daemon.replacement_command(&request, None)
+        } else {
             let handoff = source
                 .connect_pending_handoff(&pending)
                 .map_err(|e| e.to_string())?;
@@ -146,8 +148,6 @@ impl OwnedReplacementJob {
             // remains in the actual seed registry even if this client drops.
             state.attempted = true;
             daemon.replacement_command(&request, state.handoff.as_ref())
-        } else {
-            daemon.replacement_command(&request, None)
         }
         .map_err(|e| e.to_string())?;
         match reply {
@@ -301,7 +301,7 @@ impl WorkspaceJobBackend for OwnedReplacementJob {
             if let Err(handoff) =
                 source.retain_completed_handoff(handoff, proof.clone(), continuity, finished)
             {
-                state.handoff = Some(handoff);
+                state.handoff = Some(*handoff);
                 return Err(
                     "Completed source handoff ownership not transferred; custody retained".into(),
                 );
@@ -330,29 +330,26 @@ impl WorkspaceJobBackend for OwnedReplacementJob {
         // Keep the actual removed registry owner until the fallible source gate
         // transition succeeds. A client disappearing cannot abandon this phase.
         if let Err(error) = source.finish_completed_transfer(&proof) {
-            match pending.seed().replacements.lock() {
-                Ok(mut owners) => {
-                    if owners.contains_key(&self.operation) {
-                        // An impossible conflicting owner must not drop either
-                        // actual continuation. Its source gate stays closed.
-                        pending
-                            .seed()
-                            .transfer_failed
-                            .store(true, std::sync::atomic::Ordering::Release);
-                        std::mem::forget(transferred);
-                        return Err("Completed transfer registry conflict; custody retained".into());
-                    }
-                    owners.insert(self.operation, transferred);
-                }
-                Err(_) => {
-                    // Poison makes has_unresolved_replacement refuse retirement.
-                    // Preserve this genuine owner for the root helper lifetime.
+            if let Ok(mut owners) = pending.seed().replacements.lock() {
+                if owners.contains_key(&self.operation) {
+                    // An impossible conflicting owner must not drop either
+                    // actual continuation. Its source gate stays closed.
                     pending
                         .seed()
                         .transfer_failed
                         .store(true, std::sync::atomic::Ordering::Release);
                     std::mem::forget(transferred);
+                    return Err("Completed transfer registry conflict; custody retained".into());
                 }
+                owners.insert(self.operation, transferred);
+            } else {
+                // Poison makes has_unresolved_replacement refuse retirement.
+                // Preserve this genuine owner for the root helper lifetime.
+                pending
+                    .seed()
+                    .transfer_failed
+                    .store(true, std::sync::atomic::Ordering::Release);
+                std::mem::forget(transferred);
             }
             return Err(error);
         }

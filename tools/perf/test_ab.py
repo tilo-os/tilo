@@ -12,8 +12,10 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -272,6 +274,63 @@ class EndToEnd(unittest.TestCase):
 
 
 class Groups(unittest.TestCase):
+    def test_hosting_runs_the_keystroke_gate_when_present_and_propagates_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / "hosting-load.json").write_text("{}")
+            ctx = ab.RunContext(repo, {"relay_load": repo / "relay_load"}, {}, repo,
+                                ENV, repo / "env.json",
+                                argparse.Namespace(hosting_relay_cpus=0, hosting_minutes=3))
+            with mock.patch.object(ab, "call") as call, mock.patch.object(
+                    ab.adapters, "hosting_load", return_value=[]) as adapt:
+                self.assertEqual(ab.run_hosting(ctx), [])
+                self.assertEqual(call.call_count, 1)
+                self.assertEqual(call.call_args.args[0][0], ctx.bins["relay_load"])
+                ctx.bins["keystroke_writes"] = repo / "keystroke_writes"
+                call.reset_mock()
+                self.assertEqual(ab.run_hosting(ctx), [])
+                self.assertEqual(call.call_count, 2)
+                self.assertEqual(call.call_args_list[0].args,
+                                 ([ctx.bins["keystroke_writes"]], repo / "keystroke-writes.log", repo))
+                self.assertEqual(call.call_args_list[1].args[0][0], ctx.bins["relay_load"])
+                call.reset_mock()
+                adapt.reset_mock()
+                call.side_effect = RuntimeError("keystroke write gate failed")
+                with self.assertRaisesRegex(RuntimeError, "keystroke write gate failed"):
+                    ab.run_hosting(ctx)
+                self.assertEqual(call.call_count, 1)
+                adapt.assert_not_called()
+
+    def test_idle_timing_is_an_explicit_executable_not_a_pr_test(self):
+        root = HERE.parents[1]
+        manifest = tomllib.loads((root / "crates/session/shell/Cargo.toml").read_text())
+        target = next(target for target in manifest["example"] if target["name"] == "idle-wakeups")
+        self.assertFalse(target["test"])
+        self.assertFalse(target["bench"])
+        self.assertEqual(target["required-features"], ["scheduled-idle-benchmark"])
+        self.assertNotIn("scheduled-idle-benchmark", manifest["features"]["default"])
+        fixture = (root / "crates/session/shell/tests/idle_wakeups.rs").read_text()
+        self.assertNotIn("fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget", fixture)
+        benchmark = (root / "crates/session/shell/examples/idle-wakeups.rs").read_text()
+        self.assertIn("fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget", benchmark)
+        self.assertNotIn("#[test]", benchmark)
+        group = ab.GROUPS["wakeups"]
+        self.assertFalse(group.tests)
+        self.assertEqual(set(group.binaries), {"shell", "idle-wakeups"})
+        self.assertTrue(any("--bin" in command and "shell" == command[-1] for command in group.builds))
+
+    def test_idle_ab_uses_the_old_test_only_for_historical_refs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            selected = ab.GROUPS["wakeups"]
+            legacy = ab.side_group(selected, repo)
+            self.assertEqual(set(legacy.tests), {"it"})
+            self.assertEqual(set(legacy.binaries), {"shell"})
+            source = repo / "crates/session/shell/examples/idle-wakeups.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text("fn main() {}")
+            self.assertIs(ab.side_group(selected, repo), selected)
+
     def test_every_build_lane_but_footprint_has_an_ab_group(self):
         workflow = (HERE.parents[1] / ".forgejo/workflows/perf-scheduled.yml").read_text()
         for name in ab.GROUPS:

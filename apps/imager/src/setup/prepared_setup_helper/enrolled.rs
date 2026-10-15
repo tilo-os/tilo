@@ -27,7 +27,7 @@ pub fn run(
     output: &mut impl Write,
 ) -> io::Result<()> {
     // SAFETY: geteuid has no input pointers or preconditions.
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(failed());
     }
     let mut args = args.into_iter();

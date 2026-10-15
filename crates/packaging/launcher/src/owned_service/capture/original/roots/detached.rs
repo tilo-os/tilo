@@ -1,6 +1,9 @@
 //! Fresh, nonrecursive detached copies of already authenticated held roots.
 //! Neither caller paths nor serialized records can construct this custody.
-use super::*;
+use super::{
+    AsRawFd, Component, File, FromRawFd, Inputs, MetadataExt, OpenOptionsExt, OsStrExt, Path,
+    PathBuf, Projection, RawFd, check_input, identity, io, refused, root, validate,
+};
 use sha2::{Digest, Sha256};
 
 pub(in crate::owned_service::capture::original) struct DetachedRoots {
@@ -143,12 +146,12 @@ impl Topology {
             if fields.len() < 10 || !fields.contains(&b"-".as_slice()) {
                 return Err(refused("Approved root mount topology is malformed"));
             }
-            let id = number(fields[0])?;
+            let id = number(fields.first().ok_or(io::ErrorKind::InvalidData)?)?;
             if id == 0 || !ids.insert(id) {
                 return Err(refused("Approved root mount identifier differs"));
             }
-            number(fields[1])?;
-            let point = decode(fields[4])?;
+            number(fields.get(1).ok_or(io::ErrorKind::InvalidData)?)?;
+            let point = decode(fields.get(4).ok_or(io::ErrorKind::InvalidData)?)?;
             literal(&point)?;
             if id != held.2 && point.starts_with(&name) {
                 return Err(refused(
@@ -156,18 +159,24 @@ impl Topology {
                 ));
             }
             if id == held.2 {
-                let device = fields[2].split(|byte| *byte == b':').collect::<Vec<_>>();
+                let device = fields
+                    .get(2)
+                    .ok_or(io::ErrorKind::InvalidData)?
+                    .split(|byte| *byte == b':')
+                    .collect::<Vec<_>>();
                 if device.len() != 2
-                    || (number(device[0])?, number(device[1])?)
-                        != (
-                            u64::from(libc::major(held.0)),
-                            u64::from(libc::minor(held.0)),
-                        )
+                    || (
+                        number(device.first().ok_or(io::ErrorKind::InvalidData)?)?,
+                        number(device.get(1).ok_or(io::ErrorKind::InvalidData)?)?,
+                    ) != (
+                        u64::from(libc::major(held.0)),
+                        u64::from(libc::minor(held.0)),
+                    )
                     || !name.starts_with(&point)
                 {
                     return Err(refused("Approved root kernel mount coordinate differs"));
                 }
-                literal(&decode(fields[3])?)?;
+                literal(&decode(fields.get(3).ok_or(io::ErrorKind::InvalidData)?)?)?;
                 selected = true;
             }
         }
@@ -336,7 +345,7 @@ mod tests {
     }
     fn child() {
         assert_eq!(
-            unsafe { libc::geteuid() },
+            rustix::process::geteuid().as_raw(),
             0,
             "native root prerequisite required"
         );

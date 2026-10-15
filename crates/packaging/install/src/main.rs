@@ -25,7 +25,7 @@ use clap::{Args, Parser, Subcommand};
 use install::shim;
 use package_store::{Admission, InstalledPackage, PackageStore, StoreError};
 use tilo_app_package::trust::{
-    AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
+    AttestorScope, RevocationList, RevokedKey, TrustFile, TrustedAttestor, TrustedAttestors,
     default_revoked_keys_path, default_trusted_attestors_path,
 };
 use tilo_app_package::{

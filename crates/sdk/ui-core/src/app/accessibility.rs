@@ -614,6 +614,7 @@ impl App {
     }
 
     fn set_focused_node(&mut self, new_id: Option<NodeId>) {
+        self.mark_semantic_tree_stale();
         self.suspend_history_focus(new_id);
         if new_id.is_some_and(|node| self.is_history_node(node)) {
             self.remember_history_content();
@@ -1244,6 +1245,7 @@ impl App {
     /// move/press/release sequence through the widget tree preserves the same
     /// behavior as hardware input instead of reporting a false success.
     fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
+        self.mark_semantic_tree_stale();
         self.refresh_control_action_availability();
         if self.layout.root_node.is_none() {
             return false;
@@ -1282,8 +1284,99 @@ impl App {
 
     /// Node identity is preserved for everything that recurred, so a
     /// consumer reacts to just the diff.
+    ///
+    /// A refresh after nothing the tree is read from changed (no input, no
+    /// document or widget change, no layout, no focus move since the last
+    /// refresh: [`Self::mark_semantic_tree_stale`]) is that empty diff
+    /// without walking the widgets, so a frame that changed nothing costs
+    /// the host's accessibility walk nothing. Any such change publishes on
+    /// the refresh that follows it.
     pub fn refresh_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
+        if self.semantic_tree_current() {
+            return self.unchanged_semantic_tree();
+        }
+        self.accessibility.semantic_tree_builds =
+            self.accessibility.semantic_tree_builds.wrapping_add(1);
+        self.rebuild_semantic_tree()
+    }
+
+    /// Something the semantic tree is read from may have changed: the next
+    /// [`Self::refresh_semantic_tree`] walks the widgets again.
+    pub(super) fn mark_semantic_tree_stale(&mut self) {
+        self.accessibility.semantic_tree_stale = true;
+        self.accessibility.semantic_tree_marks =
+            self.accessibility.semantic_tree_marks.wrapping_add(1);
+    }
+
+    /// The refreshes that walked the widgets and rebuilt the semantic tree,
+    /// rather than finding that nothing it is read from had changed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn semantic_tree_builds_for_test(&self) -> u64 {
+        self.accessibility.semantic_tree_builds
+    }
+
+    /// Whether the tree already says what a walk would find: nothing it is
+    /// read from changed since it was built, no sync or layout is pending
+    /// that would change it, and no presentation the change tracking does
+    /// not follow (the palette, the close dialog, a History review) is up.
+    fn semantic_tree_current(&self) -> bool {
+        !self.accessibility.semantic_tree_stale
+            && !self.needs_sync
+            && !self.layout.layout_dirty
+            && !self.layout.structure_dirty
+            && !self.semantic_tree_untracked()
+    }
+
+    /// Presentations the tree is read from without the widget, document and
+    /// layout changes [`Self::mark_semantic_tree_stale`] follows: each
+    /// refresh while one is up walks again, and so does the first after it.
+    /// A framework History at rest is tracked: what changes it refreshes it
+    /// (`refresh_framework_history`), and that invalidates the widgets.
+    fn semantic_tree_untracked(&self) -> bool {
+        self.close_admission.dialog.is_some()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.review_is_open())
+            || self.history_layout.is_some()
+            || self.history_chrome_enabled
+            || self
+                .actions
+                .action_palette
+                .as_ref()
+                .is_some_and(|palette| palette.is_presented())
+    }
+
+    /// The refresh of a tree nothing changed under: an empty diff.
+    ///
+    /// Debug builds prove it by walking the widgets anyway. A walk that
+    /// finds a change the tracking missed fails a test outright, and is
+    /// published (and logged) in any other debug build, so a missed change
+    /// is never stale where it can be seen.
+    fn unchanged_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
+        if !cfg!(debug_assertions) {
+            return crate::a11y_tree::TreeDelta::default();
+        }
+        let delta = self.rebuild_semantic_tree();
+        assert!(
+            delta.is_empty() || !cfg!(any(test, feature = "test-support")),
+            "the semantic tree changed with nothing marking it stale: {delta:?}"
+        );
+        if !delta.is_empty() {
+            tracing::error!(
+                ?delta,
+                "the semantic tree changed with nothing marking it stale"
+            );
+        }
+        delta
+    }
+
+    /// Walk the widgets and diff what they declare against the tree.
+    fn rebuild_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
         let _entry = self.enter_wake_scope();
+        // Built from what is there now; a presentation the tracking does
+        // not follow leaves it stale, so leaving it walks again.
+        self.accessibility.semantic_tree_stale = self.semantic_tree_untracked();
         if let Some(palette) = self
             .actions
             .action_palette

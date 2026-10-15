@@ -252,6 +252,11 @@ pub fn install(
             "network" => {
                 invoke(console, INSTALLER, "next", json!({}))?;
             }
+            "accounts" => {
+                // This scenario has no online account credentials. Use the
+                // published offline choice rather than filling private inputs.
+                invoke(console, "installer.accounts", "skip-offline", json!({}))?;
+            }
             "disk" => disk_step(console, &state, choices, pace)?,
             "account" => {
                 invoke(
@@ -606,7 +611,8 @@ mod tests {
                     self.preferences["locale"] = args["locale"].clone();
                 }
                 ("keyboard", "next@installer") => self.step = "network",
-                ("network", "next@installer") => self.step = "disk",
+                ("network", "next@installer") => self.step = "accounts",
+                ("accounts", "skip-offline@installer.accounts") => self.step = "disk",
                 ("disk", "set-method@installer.storage") => {
                     self.method = args["method"].as_str().unwrap().into();
                 }
@@ -770,6 +776,7 @@ mod tests {
                 [
                     "keyboard",
                     "network",
+                    "accounts",
                     "disk",
                     "account",
                     "options",
@@ -777,6 +784,10 @@ mod tests {
                     "install",
                     "power-off"
                 ]
+            );
+            assert!(
+                fake.calls
+                    .contains(&"skip-offline@installer.accounts".into())
             );
             assert_eq!(installed.target, "/dev/vdb");
             assert_eq!(installed.composefs.as_deref(), Some("cafe"));

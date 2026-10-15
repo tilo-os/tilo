@@ -89,6 +89,10 @@ type DocExports = HashMap<u64, (Vec<automerge::ChangeHash>, Arc<[u8]>)>;
 /// one inode's writes, reads and commits never wait for another's.
 pub type WriteStages = HashMap<u64, Arc<Stage>>;
 
+/// Writes the namespace to disk unless the copy there already holds it
+/// ([`QuickFS::set_durability_hook`]).
+pub type DurabilityHook = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
+
 #[derive(Serialize)]
 struct VersionMetadataDigest {
     path: Option<String>,
@@ -460,6 +464,34 @@ mod staging_limit_tests {
     }
 }
 
+/// The record ids from `ino` up to the root, or `None` when one of them has
+/// no record id.
+fn record_ancestry(ns: &mut Namespace, ino: u64) -> Option<Vec<fs_protocol::FileRecordId>> {
+    let mut ancestry = Vec::new();
+    let mut cursor = Some(ino);
+    while let Some(current) = cursor {
+        ancestry.push(ns.record_id_for(current)?);
+        cursor = ns.parent_ino(current);
+    }
+    Some(ancestry)
+}
+
+/// Pinned when the record or a folder above it is pinned, else automatic.
+fn inherited_policy(
+    registry: &AvailabilityRegistry,
+    ancestry: &[fs_protocol::FileRecordId],
+) -> AvailabilityPolicy {
+    if ancestry.iter().any(|id| {
+        registry
+            .get(*id)
+            .is_some_and(|record| record.policy == AvailabilityPolicy::Pinned)
+    }) {
+        AvailabilityPolicy::Pinned
+    } else {
+        AvailabilityPolicy::Automatic
+    }
+}
+
 /// Name of the sibling that preserves bytes which could not be committed to
 /// their own record, derived from the bytes so a retry finds the same copy.
 fn unsaved_copy_name(name: &[u8], bytes: &[u8]) -> Vec<u8> {
@@ -707,8 +739,9 @@ pub struct QuickFS {
     history_jobs: history_jobs::HistoryJobs,
     checked_history_workspace: Option<uuid::Uuid>,
     mount_lifetime: uuid::Uuid,
-    /// Run after a record group is durable, to persist what depends on it.
-    durability_hook: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
+    /// Makes the namespace on disk hold the current placements: run after a
+    /// record group is durable (native plane), and by `fsync`/`fsyncdir`.
+    durability_hook: std::sync::OnceLock<DurabilityHook>,
     /// Namespace deltas of the changeset being published, broadcast once it
     /// is durable (`None` outside a changeset).
     deferred_deltas: Mutex<Option<Vec<Vec<u8>>>>,
@@ -1648,9 +1681,34 @@ impl QuickFS {
         self.persist_buffer(ino, PersistIntent::Close)
     }
 
-    /// `fsync`: make the buffer durable.
+    /// `fsync`: make the buffer durable, and the name it is reached by.
+    ///
+    /// Staged bytes alone would come back after a crash only as a sibling
+    /// copy when the namespace on disk does not place the file yet: a file
+    /// created, written and synced within the persister's settle time
+    /// (`namespace_persist::QUIET`). So the namespace is made durable too.
     fn fsync_inode(&self, ino: u64) -> Result<(), i32> {
-        self.persist_buffer(ino, PersistIntent::Sync)
+        self.persist_buffer(ino, PersistIntent::Sync)?;
+        self.sync_namespace()
+    }
+
+    /// Make the namespace on disk hold every placement made so far: what
+    /// `fsync` of a directory promises for the names in it. Without a hook
+    /// (no persistent namespace) there is nothing to make durable.
+    fn sync_namespace(&self) -> Result<(), i32> {
+        let Some(hook) = self.durability_hook.get() else {
+            return Ok(());
+        };
+        hook().map_err(|error| {
+            eprintln!("the namespace could not be made durable: {error}");
+            EIO
+        })
+    }
+
+    /// Sets how the namespace is made durable: after each native changeset,
+    /// and for every `fsync` and `fsyncdir`. Set once.
+    pub fn set_durability_hook(&self, hook: DurabilityHook) {
+        let _ = self.durability_hook.set(hook);
     }
 
     /// `release` of kernel handle `fh`: commit a writable handle's bytes if
@@ -3932,12 +3990,7 @@ impl QuickFS {
             let parent = ns
                 .parent_ino(ino)
                 .and_then(|parent_ino| ns.record_id_for(parent_ino));
-            let mut ancestry = Vec::new();
-            let mut cursor = Some(ino);
-            while let Some(current) = cursor {
-                ancestry.push(ns.record_id_for(current)?);
-                cursor = ns.parent_ino(current);
-            }
+            let ancestry = record_ancestry(&mut ns, ino)?;
             (record_id, kind, parent, attr.size, ancestry)
         };
         let (mut record, effective_policy) = {
@@ -3948,16 +4001,7 @@ impl QuickFS {
                 .get(record_id)
                 .cloned()
                 .unwrap_or_else(|| RecordAvailability::new(record_id, kind));
-            let policy = if ancestry.iter().any(|id| {
-                registry
-                    .get(*id)
-                    .is_some_and(|record| record.policy == AvailabilityPolicy::Pinned)
-            }) {
-                AvailabilityPolicy::Pinned
-            } else {
-                AvailabilityPolicy::Automatic
-            };
-            (record, policy)
+            (record, inherited_policy(&registry, &ancestry))
         };
         record.parent = parent;
         match self.sync_state_for(ino)? {
@@ -6516,6 +6560,28 @@ impl Filesystem for QuickFS {
         }
     }
 
+    /// `fsync` of a directory: the names in it survive a crash. Left
+    /// unimplemented, the kernel would take the `ENOSYS` as success for every
+    /// later directory sync while a rename or create stayed in memory until
+    /// the persister's next write.
+    fn fsyncdir(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        if !self.ino_in_view(ino.0) {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
+        match self.sync_namespace() {
+            Ok(()) => reply.ok(),
+            Err(errno) => reply.error(to_errno(errno)),
+        }
+    }
+
     fn release(
         &self,
         _req: &Request,
@@ -7069,14 +7135,18 @@ impl Filesystem for QuickFS {
                 reply.error(to_errno(libc::ENODATA));
                 return;
             };
-            let record_id = self.ns().record_id_for(ino.0);
-            let policy = record_id.and_then(|id| {
-                registry
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .effective_policy(id)
-                    .ok()
-                    .flatten()
+            // The policy `user.tilo.availability` reports: the file's own
+            // or a folder's above it. The registry's row for the file alone
+            // would say nothing about a file created in a pinned folder
+            // until a restart registered it.
+            let ancestry = record_ancestry(&mut self.ns(), ino.0);
+            let policy = ancestry.map(|ancestry| {
+                inherited_policy(
+                    &registry
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    &ancestry,
+                )
             });
             match policy {
                 Some(policy) => reply_xattr_bytes(

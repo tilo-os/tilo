@@ -13,8 +13,7 @@ use std::os::unix::net::UnixListener;
 use std::path::Path;
 
 pub use tilo_control::{
-    ADMIN_CONTROL_SOCKET_FILE, TEST_CONTROL_ENV, TEST_CONTROL_RUNTIME_SUBDIR,
-    TEST_CONTROL_SOCKET_FILE, admin_socket_path, default_socket_path,
+    TEST_CONTROL_ENV, TEST_CONTROL_SOCKET_FILE, admin_socket_path, default_socket_path,
 };
 
 /// Bind a listener at `path` that only this user can connect to.
@@ -111,7 +110,7 @@ mod tests {
             let socket = std::fs::symlink_metadata(&path).unwrap();
             assert!(socket.file_type().is_socket());
             assert_eq!(socket.permissions().mode() & 0o777, 0o600);
-            assert_eq!(socket.uid(), unsafe { libc::geteuid() });
+            assert_eq!(socket.uid(), rustix::process::geteuid().as_raw());
             UnixStream::connect(&path).unwrap();
             // The staging directory is gone.
             assert_eq!(

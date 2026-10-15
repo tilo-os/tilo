@@ -486,7 +486,7 @@ impl ApplicationImport {
                         "--user".into(),
                         "--if-not-exists".into(),
                         "--from".into(),
-                        trust.remote.to_owned(),
+                        trust.remote.clone(),
                         file.to_str()
                             .ok_or_else(|| changed("Non-UTF8 approved definition"))?
                             .into(),
@@ -588,7 +588,7 @@ fn import_commit(
                 "pull-local".into(),
                 "--untrusted".into(),
                 "--gpg-verify".into(),
-                format!("--remote={}", remote),
+                format!("--remote={remote}"),
                 source
                     .to_str()
                     .ok_or_else(|| changed("Non-UTF8 offline repository"))?

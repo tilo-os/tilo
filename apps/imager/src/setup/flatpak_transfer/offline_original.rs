@@ -1,19 +1,27 @@
 //! Protected original selection -> held source projections -> canonical exporter.
 //! No serialized claim grants access outside the root-admitted worker capsule.
-use super::portable::{NativeOfflineRunner, PortableFlatpakSource};
-use super::{HandoffInventory, ReadOnlySource, SourceScopedRunner};
-use crate::setup::{home_capture::SourceReadContext, migration::PinnedDirectory};
+#[cfg(any(feature = "capture-worker", test))]
+use super::ReadOnlySource;
+use super::portable::NativeOfflineRunner;
+#[cfg(any(feature = "capture-worker", test))]
+use super::portable::PortableFlatpakSource;
+use super::{HandoffInventory, SourceScopedRunner};
+use crate::setup::home_capture::SourceReadContext;
+#[cfg(any(feature = "capture-worker", test))]
+use crate::setup::migration::PinnedDirectory;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(any(feature = "capture-worker", test))]
+use std::path::{Path, PathBuf};
 use std::{
     fs::File,
     io::{self, Read, Seek, Write},
     os::fd::{AsRawFd, FromRawFd},
     os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
     sync::Arc,
 };
 
+#[cfg(any(feature = "capture-worker", test))]
 pub(in crate::setup) const PROJECTION_ROOT: &str = "/run/tilo/migration/flatpak-source";
 pub(in crate::setup) const INVENTORY_PATH: &str = "/run/tilo/migration/flatpak-inventory.json";
 const MAX_ROOTS: usize = 64;
@@ -31,7 +39,7 @@ pub(in crate::setup) struct OriginalFlatpakProjection {
     pub(in crate::setup) inode: u64,
     pub(in crate::setup) owner: u32,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::setup) struct OriginalFlatpakClaim {
     schema: u32,
@@ -42,6 +50,42 @@ pub(in crate::setup) struct OriginalFlatpakClaim {
     projections: Vec<OriginalFlatpakProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     selected_data_ids: Option<Vec<String>>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OriginalFlatpakClaimWire {
+    schema: u32,
+    operation: String,
+    original_uid: u32,
+    inventory_sha256: [u8; 32],
+    inventory_len: u64,
+    projections: Vec<OriginalFlatpakProjection>,
+    #[serde(default)]
+    selected_data_ids: Option<Vec<String>>,
+}
+impl<'de> Deserialize<'de> for OriginalFlatpakClaim {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        OriginalFlatpakClaimWire::deserialize(deserializer)?
+            .try_into()
+            .map_err(serde::de::Error::custom)
+    }
+}
+impl TryFrom<OriginalFlatpakClaimWire> for OriginalFlatpakClaim {
+    type Error = io::Error;
+
+    fn try_from(wire: OriginalFlatpakClaimWire) -> io::Result<Self> {
+        let claim = Self {
+            schema: wire.schema,
+            operation: wire.operation,
+            original_uid: wire.original_uid,
+            inventory_sha256: wire.inventory_sha256,
+            inventory_len: wire.inventory_len,
+            projections: wire.projections,
+            selected_data_ids: wire.selected_data_ids,
+        };
+        claim.validate_shape(&claim.operation)?;
+        Ok(claim)
+    }
 }
 /// Native protected-record authority, not a serialized inventory or pathname.
 /// The root source reader creates this only from its exact Store-owned child.
@@ -295,7 +339,7 @@ impl OriginalFlatpakSources {
     /// Only the verified root-owned original record can select source roots.
     pub(in crate::setup) fn review(original: &SourceReadContext) -> io::Result<Option<Self>> {
         // SAFETY: read-only native effective credential query.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(refused(
                 "Original application admission requires root controller",
             ));
@@ -452,6 +496,7 @@ impl OriginalFlatpakClaim {
     /// Call only after the canonical OriginalWrite request authenticates this
     /// claim in its admitted digest. Fixed capsule mounts supply authority; a
     /// password-sealed declaration or claim bytes alone never supplies it.
+    #[cfg(any(feature = "capture-worker", test))]
     pub(in crate::setup) fn review_reader(
         &self,
         operation: &str,
@@ -464,6 +509,7 @@ impl OriginalFlatpakClaim {
         }
         self.review_material_reader(operation, false, cancel)
     }
+    #[cfg(feature = "capture-worker")]
     pub(in crate::setup) fn review_applications_reader(
         &self,
         operation: &str,
@@ -476,6 +522,7 @@ impl OriginalFlatpakClaim {
         }
         self.review_material_reader(operation, true, cancel)
     }
+    #[cfg(any(feature = "capture-worker", test))]
     fn review_material_reader(
         &self,
         operation: &str,
@@ -485,7 +532,7 @@ impl OriginalFlatpakClaim {
         self.validate_shape(operation)?;
         crate::setup::migration::check_cancel(cancel)?;
         // SAFETY: read-only current credentials. Root worker fallback forbidden.
-        if unsafe { libc::geteuid() } != self.original_uid {
+        if rustix::process::geteuid().as_raw() != self.original_uid {
             return Err(refused("Original application reader credentials differ"));
         }
         let inventory = self.read_inventory()?;
@@ -549,6 +596,7 @@ impl OriginalFlatpakClaim {
         .map_err(io::Error::other)
     }
 }
+#[cfg(any(feature = "capture-worker", test))]
 pub(in crate::setup) fn projection_path(index: u32) -> PathBuf {
     Path::new(PROJECTION_ROOT).join(index.to_string())
 }
@@ -583,6 +631,7 @@ fn sealed_inventory(bytes: &[u8]) -> io::Result<File> {
     Ok(readonly)
 }
 impl OriginalFlatpakClaim {
+    #[cfg(any(feature = "capture-worker", test))]
     fn read_inventory(&self) -> io::Result<HandoffInventory> {
         use std::os::unix::fs::OpenOptionsExt;
         let file = std::fs::OpenOptions::new()
@@ -612,70 +661,6 @@ impl OriginalFlatpakClaim {
         HandoffInventory::parse(&bytes).map_err(io::Error::other)
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn value() -> serde_json::Value {
-        serde_json::json!({"schema":1,"operation":"11111111-2222-4333-8444-555555555555", "original_uid":1000,"inventory_len":10,"inventory_sha256":vec![1u8;32],"projections":[{"index":0,"device":1,"inode":2,"owner":1000}]})
-    }
-    #[test]
-    fn original_flatpak_descriptor_is_bounded_and_rejects_unreviewed_authority() {
-        let mut raw = value();
-        raw["inventory"] = serde_json::json!({});
-        assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
-        for uid in [0, u32::MAX] {
-            let mut raw = value();
-            raw["original_uid"] = serde_json::json!(uid);
-            let claim: OriginalFlatpakClaim = serde_json::from_value(raw).unwrap();
-            assert!(claim.validate_shape(&claim.operation).is_err());
-        }
-        let mut raw = value();
-        raw["inventory_len"] = serde_json::json!(INVENTORY_LIMIT + 1);
-        let claim: OriginalFlatpakClaim = serde_json::from_value(raw).unwrap();
-        assert!(claim.validate_shape(&claim.operation).is_err());
-        let mut raw = value();
-        raw["projections"] = serde_json::json!([{"index":1,"device":1,"inode":2,"owner":1000}]);
-        let claim: OriginalFlatpakClaim = serde_json::from_value(raw).unwrap();
-        assert!(claim.validate_shape(&claim.operation).is_err());
-        let claim: OriginalFlatpakClaim = serde_json::from_value(value()).unwrap();
-        assert!(
-            claim
-                .review_reader(&claim.operation, &std::sync::atomic::AtomicBool::new(false))
-                .is_err()
-        );
-        assert!(serde_json::to_vec(&claim).unwrap().len() < 64 * 1024);
-    }
-    #[test]
-    fn protected_inventory_admission_refuses_writable_and_unprotected_files() {
-        use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("inventory.json");
-        let bytes = b"exact inventory";
-        std::fs::write(&path, bytes).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let original = std::fs::read(&path).unwrap();
-        let digest = Sha256::digest(bytes).into();
-        let result = read_protected_inventory(File::open(&path).unwrap(), 15, digest);
-        assert!(result.is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        let result = read_protected_inventory(sealed_inventory(bytes).unwrap(), 15, digest);
-        assert!(result.is_err());
-    }
-    #[test]
-    fn original_inventory_memfd_is_readonly_and_irreversibly_sealed() {
-        let mut file = sealed_inventory(b"exact inventory").unwrap();
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, b"exact inventory");
-        assert!(file.write_all(b"changed").is_err());
-        // SAFETY: live fixture descriptor and read-only kernel query.
-        assert_eq!(
-            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } & SEALS,
-            SEALS
-        );
-    }
-}
-
 /// The canonical launcher pins the signed /usr/bin/ostree ELF and its closure.
 /// Ambient environment never selects an executable or dependency search path.
 pub(in crate::setup::flatpak_transfer) fn configure_ostree(
@@ -710,4 +695,79 @@ pub(in crate::setup::flatpak_transfer) fn configure_ostree(
         // Use only the already granted private app directory after sealed proof.
         .env("TMPDIR", "/run/tilo/app");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn value() -> serde_json::Value {
+        serde_json::json!({"schema":1,"operation":"11111111-2222-4333-8444-555555555555", "original_uid":1000,"inventory_len":10,"inventory_sha256":vec![1u8;32],"projections":[{"index":0,"device":1,"inode":2,"owner":1000}]})
+    }
+    #[test]
+    fn original_flatpak_descriptor_is_bounded_and_rejects_unreviewed_authority() {
+        let mut raw = value();
+        raw["inventory"] = serde_json::json!({});
+        assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
+        for uid in [0, u32::MAX] {
+            let mut raw = value();
+            raw["original_uid"] = serde_json::json!(uid);
+            assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
+        }
+        let mut raw = value();
+        raw["inventory_len"] = serde_json::json!(INVENTORY_LIMIT + 1);
+        assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
+        let mut raw = value();
+        raw["projections"] = serde_json::json!([{"index":1,"device":1,"inode":2,"owner":1000}]);
+        assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
+        let claim: OriginalFlatpakClaim = serde_json::from_value(value()).unwrap();
+        assert!(
+            claim
+                .review_reader(&claim.operation, &std::sync::atomic::AtomicBool::new(false))
+                .is_err()
+        );
+        assert!(serde_json::to_vec(&claim).unwrap().len() < 64 * 1024);
+    }
+    #[test]
+    fn original_claim_deserialization_preserves_selected_data_scope() {
+        let claim: OriginalFlatpakClaim = serde_json::from_value(value()).unwrap();
+        assert_eq!(claim.selected_data_ids(), None);
+        let mut raw = value();
+        raw["selected_data_ids"] = serde_json::json!(["org.example.App"]);
+        let claim: OriginalFlatpakClaim = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(
+            claim.selected_data_ids(),
+            Some(&["org.example.App".to_owned()][..])
+        );
+        raw["selected_data_ids"] = serde_json::json!([]);
+        assert!(serde_json::from_value::<OriginalFlatpakClaim>(raw).is_err());
+    }
+    #[test]
+    fn protected_inventory_admission_refuses_writable_and_unprotected_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("inventory.json");
+        let bytes = b"exact inventory";
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let digest = Sha256::digest(bytes).into();
+        let result = read_protected_inventory(File::open(&path).unwrap(), 15, digest);
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let result = read_protected_inventory(sealed_inventory(bytes).unwrap(), 15, digest);
+        assert!(result.is_err());
+    }
+    #[test]
+    fn original_inventory_memfd_is_readonly_and_irreversibly_sealed() {
+        let mut file = sealed_inventory(b"exact inventory").unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"exact inventory");
+        assert!(file.write_all(b"changed").is_err());
+        // SAFETY: live fixture descriptor and read-only kernel query.
+        assert_eq!(
+            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } & SEALS,
+            SEALS
+        );
+    }
 }

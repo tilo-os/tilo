@@ -9,6 +9,8 @@ mod pending_source;
 mod read_handle;
 mod revocations;
 pub use coordinator::ExternalHistoryRuntime;
+// Cap'n Proto capabilities are confined to the daemon's local executor.
+type LocalFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 use runtime_fs::external_history::replacement_control;
 use std::os::fd::AsFd;
 
@@ -223,7 +225,7 @@ impl ExternalHistoryFactory {
         Ok(Some(value))
     }
     fn check_current(&self) -> io::Result<()> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
         }
         let actual = own_program()?.metadata()?;
@@ -488,7 +490,7 @@ pub(crate) struct ExternalSourceAdmission {
 impl ExternalSourceAdmission {
     fn verify_refreshed(
         &mut self,
-        proof: SignedRetainedPersonProof,
+        proof: &SignedRetainedPersonProof,
         challenge: [u8; 32],
     ) -> io::Result<()> {
         let revocations = self
@@ -519,7 +521,7 @@ impl ExternalSourceAdmission {
             .clone();
         match &self.proof.epoch {
             Some(epoch) => epoch.revalidate_for_retained_helper(
-                &proof,
+                proof,
                 &challenge,
                 &self.proof.shell,
                 self.factory.credentials.cert(),
@@ -534,7 +536,7 @@ impl ExternalSourceAdmission {
                     self.factory.credentials.cert(),
                     &revocations,
                     &self.helper,
-                )?)
+                )?);
             }
         }
         self.factory.check_current()?;
@@ -579,37 +581,70 @@ impl ExternalSourceAdmission {
             })
         })();
         self.proof.stream = Some(stream);
-        let result = result.and_then(|(proof, challenge)| self.verify_refreshed(proof, challenge));
+        let result = result.and_then(|(proof, challenge)| self.verify_refreshed(&proof, challenge));
         if result.is_err() {
             self.revoke_proof();
         }
         result
     }
-    async fn refresh_async(&mut self, cancel: &AtomicBool, deadline: Instant) -> io::Result<()> {
-        self.check_proof_role()?;
-        let stream = self.proof.stream.take().ok_or_else(refused)?;
-        let returned = owned_io::exchange(stream, cancel, deadline, |stream| {
-            let challenge = nonce();
-            stream.write_all(&challenge)?;
-            let bytes = wire_frame::Framing::little_endian(MAX_PROOF_BYTES)
-                .reject_empty()
-                .read(stream)
-                .map_err(io::Error::other)?
-                .ok_or_else(refused)?;
-            Ok((SignedRetainedPersonProof::decode(&bytes)?, challenge))
-        })
-        .await;
-        let result = match returned {
-            Ok((stream, result)) => {
-                self.proof.stream = Some(stream);
-                result.and_then(|(proof, challenge)| self.verify_refreshed(proof, challenge))
+    fn refresh_shared<'a>(
+        admission: &'a std::rc::Rc<std::cell::RefCell<Self>>,
+        cancel: &'a AtomicBool,
+        deadline: Instant,
+    ) -> LocalFuture<'a, io::Result<()>> {
+        Box::pin(async move {
+            let stream = {
+                let mut current = admission.try_borrow_mut().map_err(|_| refused())?;
+                current.check_proof_role()?;
+                current.proof.stream.take().ok_or_else(refused)?
+            };
+            // A missing stream serializes refreshes fail-closed. Cancellation must
+            // not leave a live admission after losing custody of its proof IO.
+            let mut turn = ProofRefreshTurn {
+                admission,
+                completed: false,
+            };
+            let returned = owned_io::exchange(stream, cancel, deadline, |stream| {
+                let challenge = nonce();
+                stream.write_all(&challenge)?;
+                let bytes = wire_frame::Framing::little_endian(MAX_PROOF_BYTES)
+                    .reject_empty()
+                    .read(stream)
+                    .map_err(io::Error::other)?
+                    .ok_or_else(refused)?;
+                Ok((SignedRetainedPersonProof::decode(&bytes)?, challenge))
+            })
+            .await;
+            let result = match returned {
+                Ok((stream, result)) => {
+                    let mut current = admission.try_borrow_mut().map_err(|_| refused())?;
+                    current.proof.stream = Some(stream);
+                    // Recheck live state, never a snapshot from before the await.
+                    current.check_proof_role()?;
+                    result
+                        .and_then(|(proof, challenge)| current.verify_refreshed(&proof, challenge))
+                }
+                Err(error) => Err(error),
+            };
+            if result.is_ok() {
+                turn.completed = true;
             }
-            Err(error) => Err(error),
-        };
-        if result.is_err() {
-            self.revoke_proof();
+            result
+        })
+    }
+}
+
+struct ProofRefreshTurn<'a> {
+    admission: &'a std::rc::Rc<std::cell::RefCell<ExternalSourceAdmission>>,
+    completed: bool,
+}
+impl Drop for ProofRefreshTurn<'_> {
+    fn drop(&mut self) {
+        if !self.completed
+            && let Ok(mut admission) = self.admission.try_borrow_mut()
+        {
+            admission.revoke_proof();
         }
-        result
     }
 }
 

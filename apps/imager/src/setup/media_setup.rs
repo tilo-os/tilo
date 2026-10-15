@@ -308,7 +308,7 @@ fn delivery_directory(root: &Arc<PinnedDirectory>) -> io::Result<Arc<PinnedDirec
             // Root helper owns a protected custody namespace. This applies only
             // to fresh creation; existing nonroot/0755 trees are never repaired.
             #[cfg(unix)]
-            let mode = if unsafe { libc::geteuid() } == 0 {
+            let mode = if rustix::process::geteuid().as_raw() == 0 {
                 0o700
             } else {
                 0o755

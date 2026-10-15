@@ -30,9 +30,9 @@ mod actor {
             std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT")
                 .expect("explicit owned native actor fixture required"),
         );
-        assert_eq!(unsafe { libc::getuid() }, 1000);
-        assert_eq!(unsafe { libc::geteuid() }, 1000);
-        assert_eq!(unsafe { libc::getgid() }, 1001);
+        assert_eq!(rustix::process::getuid().as_raw(), 1000);
+        assert_eq!(rustix::process::geteuid().as_raw(), 1000);
+        assert_eq!(rustix::process::getgid().as_raw(), 1001);
         let home = root.join("home");
         let grants = root.join("grants");
         std::fs::create_dir(&grants).unwrap();
@@ -244,9 +244,9 @@ fn full_prepare_shared_files_via_owned_gpt_and_actual_root_helper() {
 /// artifact authentication; this is not an alternate helper implementation.
 pub(in crate::setup) fn enter_owned_journey(selector: &str) -> bool {
     if std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT").is_some() {
-        assert_eq!(unsafe { libc::getuid() }, 1000);
-        assert_eq!(unsafe { libc::geteuid() }, 1000);
-        assert_eq!(unsafe { libc::getgid() }, 1001);
+        assert_eq!(rustix::process::getuid().as_raw(), 1000);
+        assert_eq!(rustix::process::geteuid().as_raw(), 1000);
+        assert_eq!(rustix::process::getgid().as_raw(), 1001);
         return true;
     }
     run_owned_actor(selector);
@@ -291,8 +291,8 @@ pub(in crate::setup) fn assert_journey_registration(preview: &super::super::Inst
 
 fn run_owned_actor(selector: &str) {
     use std::os::unix::ffi::OsStrExt;
-    assert_eq!(unsafe { libc::getuid() }, 0);
-    assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(rustix::process::getuid().as_raw(), 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
     let source = PathBuf::from(
         std::env::var_os("TILO_ORIGINAL_SOURCE_GPT_STORE").expect("owned GPT provider required"),
     );

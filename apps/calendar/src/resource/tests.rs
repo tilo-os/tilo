@@ -1,12 +1,12 @@
 use super::*;
 use crate::model::{Id, key};
+use accounts::person::PersonAccounts;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Replica, scope_contains};
 
 #[test]
 fn read_only_upload_refusal_keeps_the_event_and_queued_outbox_in_the_source_record() {
     let server = test_http::Responder::silent();
-    use accounts::person::PersonAccounts;
     let person = "cb".repeat(32);
     let mut settings = TestApp::<person_accounts::AccountsOwner>::for_person(&person).unwrap();
     let mut app = TestApp::<CalendarShell>::for_person(&person).expect("test app");
@@ -57,7 +57,7 @@ fn read_only_upload_refusal_keeps_the_event_and_queued_outbox_in_the_source_reco
         "Keep my local edit"
     );
     assert!(
-        state.remote.get(&id.to_string()).is_none(),
+        !state.remote.contains_key(&id.to_string()),
         "a refusal cannot claim server confirmation"
     );
     server.assert_untouched();

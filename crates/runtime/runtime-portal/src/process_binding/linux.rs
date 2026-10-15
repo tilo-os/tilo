@@ -331,7 +331,7 @@ pub fn receive_nonroot_for_authentication(
     socket: &impl AsFd,
     challenge: &[u8; 32],
 ) -> io::Result<ExecutingPeer> {
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(refused("native unclassified authentication requires root"));
     }
     let mut receiver = Receiver::new(*challenge, 0);

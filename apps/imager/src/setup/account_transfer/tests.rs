@@ -603,7 +603,7 @@ music_streaming = ["streaming", "user-read-private"]
         serde_json::json!({"id":"ada-spotify","account_id":"stable-ada","display_name":"Ada"});
     let (endpoint, api) =
         super::spotify_identity::profile_server(vec![profile.clone(), profile.clone(), profile]);
-    let mut connector = Connector::with_custodian(stage.clone(), custodian.clone());
+    let mut connector = Connector::with_custodian(stage.clone(), custodian);
     connector.spotify_api = Some(endpoint);
     let selected = connect_spotify_test_slots(&connector);
     api.join().unwrap();

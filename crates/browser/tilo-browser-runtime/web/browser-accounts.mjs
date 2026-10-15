@@ -2,8 +2,11 @@ import {requestResult} from './storage-inline.mjs';
 import {transactionComplete} from './host-core.mjs';
 
 /** Inspect canonical storage keys, fetching only Settings' personal accounts.
- * No credential/custody database, writer lease, or profile registry is opened. */
-export async function readBrowserAccounts({origin, runtime, indexedDB = globalThis.indexedDB}) {
+ * No credential/custody database, writer lease, or profile registry is opened.
+ * With `currentDevice(profile)` (`peer.mjs` `profileDevice`), only the
+ * namespace a profile's peer keeps its state in now counts: one a host set up
+ * again left behind is never offered for that host. */
+export async function readBrowserAccounts({origin, runtime, indexedDB = globalThis.indexedDB, currentDevice}) {
   const host = new URL(origin).host;
   const request = indexedDB.open('tilo-browser-records-v1');
   // A first visit has no accounts. Abort upgrade rather than create a database.
@@ -27,6 +30,7 @@ export async function readBrowserAccounts({origin, runtime, indexedDB = globalTh
           const [profile, device] = JSON.parse(namespace);
           const match = /^tilo-identity:([a-f0-9]{64})@(.+)$/u.exec(profile);
           if (match?.[2] === host && typeof device === 'string' && device.length <= 256
+            && (!currentDevice || currentDevice(profile) === device)
             && key === runtime.browser_accounts_key(match[1])) {
             if (++requested > 64) throw Error('Account lookup exceeds its profile budget');
             const read = store.get(item.key);

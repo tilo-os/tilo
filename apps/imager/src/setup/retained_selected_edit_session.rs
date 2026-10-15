@@ -179,19 +179,18 @@ impl RetainedSelectedEditSession {
                 })?,
         );
         owner.target_stopped = false;
-        let endpoint = match receive.recv_timeout(Duration::from_secs(15)) {
-            Ok(endpoint) => endpoint,
-            Err(_) => {
-                // Retire before dropping a late endpoint handoff. An uncertain
-                // stop leaves owner alive; Drop also refuses to release custody.
-                drop(selected);
-                drop(admission);
-                let cleanup = owner.retire();
-                drop(receive);
-                return Err(cleanup
-                    .err()
-                    .unwrap_or_else(|| io::Error::other("Edited target endpoint did not arrive")));
-            }
+        let endpoint = if let Ok(endpoint) = receive.recv_timeout(Duration::from_secs(15)) {
+            endpoint
+        } else {
+            // Retire before dropping a late endpoint handoff. An uncertain
+            // stop leaves owner alive; Drop also refuses to release custody.
+            drop(selected);
+            drop(admission);
+            let cleanup = owner.retire();
+            drop(receive);
+            return Err(cleanup
+                .err()
+                .unwrap_or_else(|| io::Error::other("Edited target endpoint did not arrive")));
         };
         owner.endpoint = Some(endpoint.clone());
         owner.relay = Some(RetainedSelectedEditRelay::serve(
@@ -311,20 +310,6 @@ impl RetainedSelectedEditSession {
         self.admission
             .as_ref()
             .ok_or_else(|| io::ErrorKind::NotConnected.into())
-    }
-    pub(super) fn with_consumer_observation(
-        &self,
-        use_observation: impl FnOnce(
-            &launcher::owned_service::target_projection::ObservedTargetObject<'_>,
-        ) -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.check()?;
-        let endpoint = self.endpoint.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        let observation = endpoint.observe_held_view()?;
-        let result = use_observation(&observation);
-        observation.check()?;
-        self.check()?;
-        result
     }
     /// Call only after the consuming ordinary NamespaceOwner is observed stopped.
     /// The target FUSE stop precedes relay stop, and all admission/filter/endpoint

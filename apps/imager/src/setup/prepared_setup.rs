@@ -139,7 +139,7 @@ pub struct Manifest {
     /// Exact verified Home ciphertext bound inside the completed setup package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_home: Option<super::portable_home_media::Expectation>,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub completed_applications_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_profile: Option<PublicInstallProfile>,
@@ -323,7 +323,7 @@ impl OfflineHomePlan {
         if !self.source.categories.flatpak && self.mounted_witness.is_none() {
             return geometry(&self.source);
         }
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "Original installation geometry requires root custody",
@@ -389,10 +389,6 @@ impl OfflineHomePlan {
         self.sealed_reservation
     }
 }
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
 impl Manifest {
     pub fn new(
         setup_binding: String,

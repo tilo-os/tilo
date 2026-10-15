@@ -1,10 +1,12 @@
 //! Immutable mounted-root registration on the existing protected source Store.
 //! No caller-authored group facts and no coherent epoch or output are minted.
 use super::*;
+#[cfg(all(test, feature = "native-capture-qualification"))]
+use crate::setup::GrantedHomeRoots;
 mod epoch;
 mod participants;
 use crate::setup::{
-    GrantedHomeRoots, RootKind,
+    RootKind,
     migration::check_cancel,
     migration_handoff::{EntryBinding, EntryKind},
 };
@@ -225,7 +227,7 @@ impl Store {
         peer: &HostChannel,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<(MountedWitness, ParticipantSet, File, Vec<u8>)> {
-        if unsafe { libc::geteuid() } != 0 || self.operation != plan.operation_id {
+        if rustix::process::geteuid().as_raw() != 0 || self.operation != plan.operation_id {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let caller = peer.original_caller_facts()?;
@@ -375,6 +377,7 @@ impl SourceReadContext {
     /// Actual source inputs for the namespace bootstrap. This callback retains
     /// protected record and readonly source custody throughout use. Caller IDs
     /// remain the original admitted reader, not any mounted-entry owner.
+    #[cfg(all(test, feature = "native-capture-qualification"))]
     pub(in crate::setup::home_capture) fn with_mounted_sources<T>(
         &self,
         witness: &MountedWitness,
@@ -387,6 +390,7 @@ impl SourceReadContext {
 
     /// Native retained custody for the later signed namespace admission. JSON
     /// witnesses only select an exact independently verified protected record.
+    #[cfg(all(test, feature = "native-capture-qualification"))]
     pub(in crate::setup::home_capture) fn retain_mounted_sources(
         &self,
         witness: &MountedWitness,
@@ -418,6 +422,7 @@ impl SourceReadContext {
 
     /// Reopen the finite mounted record in this existing readonly same-source
     /// lease. Returned data contains metadata, not a group-setting capability.
+    #[cfg(all(test, feature = "native-capture-qualification"))]
     pub(in crate::setup::home_capture) fn verify_mounted_witness(
         &self,
         witness: &MountedWitness,

@@ -609,7 +609,7 @@ fn maybe_file(parent: &File, leaf: &str) -> io::Result<Option<File>> {
 }
 impl InstalledCopyAttempt {
     /// Existing protected checkpoints grant only recovery input, never delivery.
-    pub(in crate::setup) fn prepare_recovery(
+    pub(in crate::setup::home_capture) fn prepare_recovery(
         store: Arc<Mutex<Store>>,
         source: Arc<OriginalCopyReadAdmission>,
         target: Arc<ExecutingPeer>,
@@ -813,6 +813,13 @@ impl InstalledCopyAttempt {
 impl InstalledCopyRecovery {
     pub(in crate::setup) fn check(&self, cancel: &AtomicBool) -> io::Result<()> {
         self.attempt.check(cancel)?;
+        let (home, applications) = self.expectations();
+        if let Some(home) = home {
+            home.validate()?;
+        }
+        if let Some(applications) = applications {
+            applications.validate()?;
+        }
         self.stage.validate_destination()?;
         self.output.validate()?;
         let store = self

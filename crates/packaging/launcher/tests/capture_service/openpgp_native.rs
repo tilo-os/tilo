@@ -82,7 +82,13 @@ fn key(root: &Path, name: &str) -> (PathBuf, String) {
         .map(|line| line.split(':').nth(9).unwrap().to_owned())
         .collect();
     assert_eq!(fingerprints.len(), 1);
-    (home, fingerprints[0].clone())
+    (
+        home,
+        fingerprints
+            .first()
+            .expect("one generated fingerprint")
+            .clone(),
+    )
 }
 
 fn populate_source(root: &Path, source: &Path) {
@@ -92,7 +98,13 @@ fn populate_source(root: &Path, source: &Path) {
     for (name, fingerprint) in [("approved-key-id", &signer), ("wrong-key-id", &other)] {
         assert_eq!(fingerprint.len(), 40);
         assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        std::fs::write(source.join(name), &fingerprint[24..]).unwrap();
+        std::fs::write(
+            source.join(name),
+            fingerprint
+                .get(24..)
+                .expect("fingerprint has a key-id suffix"),
+        )
+        .unwrap();
     }
     let tree = root.join("commit-tree");
     std::fs::create_dir(&tree).unwrap();
@@ -232,7 +244,7 @@ fn signed_original_openpgp_capsule_accepts_approved_commit_and_refuses_wrong_key
         return;
     }
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "isolated root qualifier required"
     );

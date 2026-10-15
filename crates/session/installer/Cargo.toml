@@ -14,6 +14,11 @@ name = "tilo-installer"
 path = "src/main.rs"
 
 [dependencies]
+accounts = { path = "../../system/accounts" }
+account-custody = { path = "../../system/account-custody" }
+calendar = { path = "../../../apps/calendar", default-features = false, features = ["live"] }
+tilo-dav = { path = "../../system/tilo-dav", features = ["client"] }
+tilo-seal = { path = "../../system/tilo-seal" }
 # Mirrors the dep set used by the `ui`-based system apps (greeter /
 # file-explorer): the toolkit plus the trait crates its `Widget` impls
 # reference directly.
@@ -29,6 +34,8 @@ bounded-command = { path = "../../system/bounded-command" }
 libc.workspace = true
 tilo-power-mgmt = { path = "../../system/power", default-features = false }
 zeroize.workspace = true
+url.workspace = true
+rustix = { workspace = true, features = ["process"] }
 serde_json.workspace = true
 sha2.workspace = true
 serde.workspace = true
@@ -36,9 +43,11 @@ uuid.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 console-control = { path = "../console-control" }
 install-profile-model = { path = "../install-profile-model" }
+staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }

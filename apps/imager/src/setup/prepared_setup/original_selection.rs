@@ -163,7 +163,7 @@ impl OfflineApplicationsPlan {
         if !self.source.categories.flatpak && self.mounted_witness.is_none() {
             return geometry(&self.source);
         }
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "Original installation geometry requires root custody",

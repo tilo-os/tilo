@@ -1474,13 +1474,13 @@ pub fn surface_in_root<A: ResourceApp, S: 'static>(
 }
 
 fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) -> Option<&mut S> {
-    root.typed::<A::Resource>()?;
     fn find<S: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut S> {
-        if widget.as_any().is_some_and(|any| any.is::<S>()) {
+        if widget.as_any().is_some_and(<dyn std::any::Any>::is::<S>) {
             return widget.as_any_mut()?.downcast_mut::<S>();
         }
         widget.children_mut().into_iter().find_map(find::<S>)
     }
+    root.typed::<A::Resource>()?;
     find::<S>(root.content.as_mut())
 }
 

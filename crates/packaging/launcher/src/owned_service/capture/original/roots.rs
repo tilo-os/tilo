@@ -1,6 +1,9 @@
 //! Finite root-service source projections, before source credential application.
 //! Inputs must come from retained protected source contexts, never public paths.
-use super::*;
+use super::{
+    AsRawFd, Deserialize, Facts, File, FromRawFd, MAX_BYTES, MetadataExt, OpenOptionsExt, RawFd,
+    SEALS, Seek, Serialize, Write, io, readonly, refused, root,
+};
 use std::{
     ffi::CString,
     os::unix::ffi::OsStrExt,
@@ -18,7 +21,7 @@ const FIRST_FD: RawFd = 1800;
 const LIMIT: usize = 256;
 // Linux UAPI mount.h; libc exposes these only on GNU, while the shim also
 // supports Linux musl. Empty endpoints name held descriptors, never paths.
-const MOVE_MOUNT_EMPTY_ENDPOINTS: libc::c_uint = 0x00000004 | 0x00000040;
+const MOVE_MOUNT_EMPTY_ENDPOINTS: libc::c_uint = 0x0000_0004 | 0x0000_0040;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Projection {
@@ -27,7 +30,7 @@ pub(super) struct Projection {
     pub(super) identity: (u64, u64, u32, u32, u32),
     mount: u64,
 }
-/// Actual readonly O_PATH source descriptor. Root is required at construction;
+/// Actual readonly `O_PATH` source descriptor. Root is required at construction;
 /// this type supplies no credentials or public app-selected source authority.
 pub struct OriginalMountedInput {
     placement: PathBuf,
@@ -37,7 +40,7 @@ impl OriginalMountedInput {
     /// The root broker must first verify its protected per-root source record.
     /// This constructor validates only native descriptor shape, not that record.
     /// # Errors
-    /// Refuses non-root, nonliteral placement or non-readonly O_PATH input.
+    /// Refuses non-root, nonliteral placement or non-readonly `O_PATH` input.
     pub fn from_reviewed(placement: PathBuf, file: File) -> io::Result<Self> {
         root()?;
         placement_shape(placement.as_os_str().as_bytes())?;
@@ -83,20 +86,21 @@ impl Inputs {
             }
             result.projections.push(Projection {
                 placement: input.placement.as_os_str().as_bytes().to_vec(),
-                descriptor: FIRST_FD + i32::try_from(index).map_err(io::Error::other)?,
+                descriptor: FIRST_FD
+                    .checked_add(i32::try_from(index).map_err(io::Error::other)?)
+                    .ok_or(io::ErrorKind::InvalidData)?,
                 identity,
                 mount: super::super::inventory_scratch::identity(&input.file)?.2,
             });
             result.files.push(input.file);
         }
         validate(&result.projections)?;
-        if let Some(expected) = expected {
-            if expected == [0; 32]
+        if let Some(expected) = expected
+            && (expected == [0; 32]
                 || original_mounted_table_sha256(&protocol::identities(&result.projections))?
-                    != expected
-            {
-                return Err(refused("Protected mounted input table differs"));
-            }
+                    != expected)
+        {
+            return Err(refused("Protected mounted input table differs"));
         }
         result.check()?;
         Ok(result)
@@ -141,7 +145,10 @@ impl Inputs {
     }
 }
 pub(in crate::owned_service::capture) fn reserved_fd(fd: RawFd) -> bool {
-    (FIRST_FD..FIRST_FD + LIMIT as i32).contains(&fd) || protocol::reserved(fd)
+    fd.checked_sub(FIRST_FD)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .is_some_and(|offset| offset < LIMIT)
+        || protocol::reserved(fd)
 }
 fn identity(file: &File) -> io::Result<(u64, u64, u32, u32, u32)> {
     let m = file.metadata()?;
@@ -161,7 +168,7 @@ fn placement_shape(bytes: &[u8]) -> io::Result<()> {
     if bytes.is_empty()
         || bytes.len() > 4096
         || bytes.contains(&0)
-        || bytes[0] == b'/'
+        || bytes.first() == Some(&b'/')
         || bytes
             .split(|c| *c == b'/')
             .any(|part| part.is_empty() || part == b"." || part == b"..")
@@ -179,7 +186,10 @@ pub(super) fn validate(projections: &[Projection]) -> io::Result<()> {
     let mut old: Vec<PathBuf> = Vec::with_capacity(projections.len());
     for (index, p) in projections.iter().enumerate() {
         placement_shape(&p.placement)?;
-        if p.descriptor != FIRST_FD + i32::try_from(index).map_err(io::Error::other)?
+        if p.descriptor
+            != FIRST_FD
+                .checked_add(i32::try_from(index).map_err(io::Error::other)?)
+                .ok_or(io::ErrorKind::InvalidData)?
             || !matches!(p.identity.4 & libc::S_IFMT, libc::S_IFDIR | libc::S_IFREG)
         {
             return Err(refused("Original root table kind or descriptor changed"));
@@ -368,7 +378,7 @@ mod tests {
             .map(|index| {
                 projection(
                     format!("root-{index:04}").as_bytes(),
-                    FIRST_FD + index as i32,
+                    FIRST_FD + i32::try_from(index).unwrap(),
                 )
             })
             .collect::<Vec<_>>();

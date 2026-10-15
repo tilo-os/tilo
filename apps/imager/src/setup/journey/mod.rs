@@ -34,6 +34,7 @@ pub(crate) mod portable_source;
 #[cfg(target_os = "linux")]
 pub(crate) mod prepared_media;
 mod promotion;
+mod recovery;
 #[cfg(unix)]
 mod restart_controller;
 #[cfg(all(test, target_os = "linux"))]
@@ -47,6 +48,7 @@ mod storage;
 mod transfer;
 #[cfg(test)]
 mod visual_tests;
+mod windows;
 
 #[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
 pub(in crate::setup) fn paint_native_flatpak_inventory(
@@ -91,6 +93,55 @@ pub enum InstallerPreviewEffect {
     /// Read the preview's choices, excluding secrets.
     #[effect(returns, kind = "read")]
     ReadPreview,
+    /// Query native Windows root metadata without granting any folder.
+    #[effect(returns)]
+    FindWindowsRoots,
+    /// Select an exact folder through the platform picker.
+    #[effect(returns)]
+    ChooseWindowsRoot { role: String },
+    /// Independently grant one exact Windows root, including redirected libraries.
+    #[effect(returns)]
+    SelectWindowsRoot {
+        #[param(secret, "Absolute independently selected directory")]
+        source: String,
+        role: String,
+    },
+    /// Decide whether an inventoried root is copied, retained, or excluded.
+    #[effect(returns)]
+    ReviewWindowsRoot {
+        source_id: String,
+        decision: String,
+        reason: Option<String>,
+    },
+    /// Decide how one inventoried category is preserved.
+    #[effect(returns)]
+    ReviewWindowsCategory {
+        source_id: String,
+        category: String,
+        decision: String,
+        reason: Option<String>,
+    },
+    /// Set the explicit reason used by exclusion controls.
+    #[effect(returns)]
+    SetWindowsExclusionReason { value: String },
+    /// Set the private encryption password for offline sign-in suggestions.
+    #[effect(returns)]
+    SetWindowsPreparationPassword {
+        #[param(secret, "Private export password, not a sign-in credential")]
+        value: String,
+    },
+    /// Choose the mounted backup destination using the platform picker.
+    #[effect(returns)]
+    ChooseWindowsExport,
+    /// Export verified local copies and encrypted suggestions to a granted directory.
+    #[effect(returns)]
+    ExportWindowsPreparation {
+        #[param(
+            secret,
+            "Absolute selected backup destination, separate from the image target"
+        )]
+        destination: String,
+    },
     /// Continue an unfinished preparation after verifying its exact identity custody.
     #[effect(returns)]
     ResumeInstallerPreparation,
@@ -327,6 +378,38 @@ pub enum InstallerPreviewEffect {
     /// Recheck belongings after migration consent, without copying or signing in.
     #[effect(returns)]
     CheckBelongings,
+    /// Choose a recovery directory using the ordinary folder picker for an exact Windows root.
+    #[effect(returns)]
+    ChooseRecoveryDestination { source_id: String },
+    /// Select an exact recovery directory without opening a picker; creates a private durable receipt directory beside the output.
+    #[effect(returns)]
+    SelectRecoveryDirectory {
+        source_id: String,
+        directory: String,
+    },
+    /// Select an exact external recovery directory and private journal for a granted Windows root.
+    #[effect(returns)]
+    ReviewRecoveryDestination {
+        source_id: String,
+        directory: String,
+        journal: String,
+    },
+    /// Reattach exact source, saved output and journal grants after interruption or restart.
+    #[effect(returns)]
+    ReviewExistingRecoveryCopy {
+        source_id: String,
+        output: String,
+        journal: String,
+    },
+    /// Begin the reviewed durable recovery copy without deleting its source.
+    #[effect(returns)]
+    StartRecoveryCopy,
+    /// Resume the reviewed recovery output, rechecking hashes and source identity.
+    #[effect(returns)]
+    RetryRecoveryCopy,
+    /// Stop recovery and keep verified partial output for explicit retry.
+    #[effect(returns)]
+    CancelRecoveryCopy,
     /// Inspect this computer's disk again. Never writes to disk.
     #[effect(returns)]
     CheckStorage,
@@ -438,7 +521,12 @@ pub fn view(cx: &mut ViewCx<Imager>) -> ui::widget::Element {
     let shown = media.clone();
     cx.switch(&shown, move |cx, showing_media| {
         if *showing_media {
-            let app = crate::app::ImagerApp::new();
+            let app = crate::app::ImagerApp::new().with_windows_preparation(
+                suspended
+                    .borrow()
+                    .as_ref()
+                    .and_then(|preview| preview.windows.media_handoff()),
+            );
             #[cfg(target_os = "linux")]
             let app = app
                 .with_prepared_media(prepared.get())
@@ -469,7 +557,10 @@ pub fn view(cx: &mut ViewCx<Imager>) -> ui::widget::Element {
     })
 }
 
+struct OriginalAvatar(Option<String>);
+
 pub struct InstallerPreview {
+    windows: windows::Preparation,
     journey: Journey,
     linux: bool,
     capabilities: capabilities::GuidedCapabilities,
@@ -482,7 +573,7 @@ pub struct InstallerPreview {
     password_next_focus: Rc<Cell<bool>>,
     avatar: Option<String>,
     avatar_picker: Option<ui::PortalChannel>,
-    profile_avatar_original: Option<Option<String>>,
+    profile_avatar_original: Option<OriginalAvatar>,
     flatpak_access_details: bool,
     migration_source_location: bool,
     #[cfg(not(unix))]
@@ -544,6 +635,7 @@ pub struct InstallerPreview {
     migration_selection: migration_selection::Selection,
     #[cfg(target_os = "linux")]
     portable_source: portable_source::Selection,
+    recovery: super::migration_recovery::Flow,
     belongings: belongings::Belongings,
     belongings_worker: Option<std::sync::mpsc::Receiver<belongings::Belongings>>,
 }
@@ -629,6 +721,8 @@ impl Default for InstallerPreview {
             migration_selection: migration_selection::Selection::default(),
             #[cfg(target_os = "linux")]
             portable_source: portable_source::Selection::default(),
+            recovery: super::migration_recovery::Flow::default(),
+            windows: windows::Preparation::default(),
             belongings: belongings::Belongings::default(),
             belongings_worker: None,
             journey,
@@ -924,7 +1018,7 @@ impl InstallerPreview {
                 ));
             }
         }
-        content
+        content.push(Box::new(self.recovery_content()))
     }
 
     fn presentation_theme(&self, theme: &Theme) -> Theme {
@@ -947,6 +1041,39 @@ impl InstallerPreview {
     // exports and transfer operations remain model-level capabilities; they do
     // not become unavailable merely because their controls are offscreen.
     fn effect_page_admitted(&self, id: &str) -> bool {
+        if recovery::is_recovery_action(id) {
+            return self.recovery_admitted();
+        }
+        if matches!(
+            id,
+            "find-windows-roots"
+                | "choose-windows-root"
+                | "select-windows-root"
+                | "review-windows-root"
+                | "review-windows-category"
+                | "set-windows-exclusion-reason"
+                | "set-windows-preparation-password"
+                | "choose-windows-export"
+                | "export-windows-preparation"
+        ) {
+            return self.windows.enabled && self.live;
+        }
+        if self.windows.enabled && self.live {
+            return matches!(
+                id,
+                "read-preview"
+                    | "find-windows-roots"
+                    | "choose-windows-root"
+                    | "select-windows-root"
+                    | "review-windows-root"
+                    | "review-windows-category"
+                    | "set-windows-exclusion-reason"
+                    | "set-windows-preparation-password"
+                    | "choose-windows-export"
+                    | "export-windows-preparation"
+                    | "prepare-usb"
+            );
+        }
         let page = self.journey.page;
         match id {
             "choose-preview-avatar" | "select-preview-avatar" | "set-preview-name" => {
@@ -998,8 +1125,8 @@ impl InstallerPreview {
                     && self.journey.migrate == Some(true)
                     && self.belongings_worker.is_none()
             }
-            "toggle-preview-details" => page == Page::Belongings,
-            "select-migration-home"
+            "toggle-preview-details"
+            | "select-migration-home"
             | "grant-mounted-home-location"
             | "continue-mounted-home-review"
             | "cancel-mounted-home-permission"
@@ -1007,6 +1134,13 @@ impl InstallerPreview {
             "check-storage" => page == Page::Storage && self.live,
             "toggle-storage-details" => page == Page::Storage && self.direct_route_enabled(),
             "set-storage-size" => page == Page::Storage,
+            "choose-recovery-destination"
+            | "select-recovery-directory"
+            | "review-recovery-destination"
+            | "review-existing-recovery-copy"
+            | "start-recovery-copy"
+            | "retry-recovery-copy"
+            | "cancel-recovery-copy" => self.recovery_admitted(),
             "edit-preview"
             | "prepare-usb"
             | "prepare-direct-installation"
@@ -1018,6 +1152,9 @@ impl InstallerPreview {
     }
 
     fn apply(&mut self, effect: InstallerPreviewEffect) -> Result<(), &'static str> {
+        if self.windows.enabled && self.live && !recovery::is_recovery_effect(&effect) {
+            return self.apply_windows(effect);
+        }
         #[cfg(unix)]
         if self.live
             && !{
@@ -2074,10 +2211,102 @@ impl InstallerPreview {
                 }
                 self.journey.edit(&section)?;
                 if section == "profile" {
-                    self.profile_avatar_original = Some(self.avatar.clone());
+                    self.profile_avatar_original = Some(OriginalAvatar(self.avatar.clone()));
                 }
                 #[cfg(target_os = "linux")]
                 self.belongings.sessions.begin_edit();
+            }
+            InstallerPreviewEffect::ChooseRecoveryDestination { source_id }
+                if self.recovery_admitted() =>
+            {
+                if !self.belongings.windows.as_ref().is_some_and(|inventory| {
+                    inventory.roots.iter().any(|r| r.source_id == source_id)
+                }) {
+                    return Err("installer-recovery-source-required");
+                }
+                self.recovery
+                    .choose(source_id)
+                    .map_err(|_| "installer-recovery-review-failed")?;
+                #[cfg(target_os = "linux")]
+                {
+                    self.direct.prepared_belongings = None;
+                }
+            }
+            InstallerPreviewEffect::SelectRecoveryDirectory {
+                source_id,
+                directory,
+            } if self.recovery_admitted() => {
+                let inventory = self
+                    .belongings
+                    .windows
+                    .as_ref()
+                    .ok_or("installer-recovery-source-required")?;
+                self.recovery
+                    .review_directory(inventory, &source_id, std::path::Path::new(&directory))
+                    .map_err(|_| "installer-recovery-review-failed")?;
+                #[cfg(target_os = "linux")]
+                {
+                    self.direct.prepared_belongings = None;
+                }
+            }
+            InstallerPreviewEffect::ReviewRecoveryDestination {
+                source_id,
+                directory,
+                journal,
+            } if self.recovery_admitted() => {
+                let inventory = self
+                    .belongings
+                    .windows
+                    .as_ref()
+                    .ok_or("installer-recovery-source-required")?;
+                self.recovery
+                    .review(
+                        inventory,
+                        &source_id,
+                        std::path::Path::new(&directory),
+                        std::path::Path::new(&journal),
+                    )
+                    .map_err(|_| "installer-recovery-review-failed")?;
+                #[cfg(target_os = "linux")]
+                {
+                    self.direct.prepared_belongings = None;
+                }
+            }
+            InstallerPreviewEffect::ReviewExistingRecoveryCopy {
+                source_id,
+                output,
+                journal,
+            } if self.recovery_admitted() => {
+                let inventory = self
+                    .belongings
+                    .windows
+                    .as_ref()
+                    .ok_or("installer-recovery-source-required")?;
+                self.recovery
+                    .review_existing(
+                        inventory,
+                        &source_id,
+                        std::path::Path::new(&output),
+                        std::path::Path::new(&journal),
+                    )
+                    .map_err(|_| "installer-recovery-review-failed")?;
+                #[cfg(target_os = "linux")]
+                {
+                    self.direct.prepared_belongings = None;
+                }
+            }
+            InstallerPreviewEffect::StartRecoveryCopy if self.recovery_admitted() => {
+                self.recovery
+                    .start(false)
+                    .map_err(|_| "installer-recovery-copy-failed")?;
+            }
+            InstallerPreviewEffect::RetryRecoveryCopy if self.recovery_admitted() => {
+                self.recovery
+                    .start(true)
+                    .map_err(|_| "installer-recovery-copy-failed")?;
+            }
+            InstallerPreviewEffect::CancelRecoveryCopy if self.recovery_admitted() => {
+                self.recovery.cancel();
             }
             InstallerPreviewEffect::CheckStorage if page == Page::Storage && self.live => {
                 self.storage.review_capacity();
@@ -2173,6 +2402,7 @@ impl InstallerPreview {
                 self.direct.belongings_pending = true;
                 self.direct.belongings_continue = false;
             }
+            #[cfg(target_os = "linux")]
             InstallerPreviewEffect::ExportPreparedBelongings { destination } if self.live => {
                 let prepared = self
                     .direct
@@ -2334,13 +2564,17 @@ impl InstallerPreview {
                     self.journey.back()?;
                     if cancel_profile {
                         self.avatar_picker = None;
-                        self.avatar = self.profile_avatar_original.take().flatten();
+                        self.avatar = self
+                            .profile_avatar_original
+                            .take()
+                            .and_then(|original| original.0);
                     }
                     #[cfg(unix)]
                     #[cfg(target_os = "linux")]
                     if restore_browser {
                         self.belongings.sessions.cancel_edit();
                     }
+                    #[cfg(unix)]
                     if restore_browser {
                         self.belongings
                             .browser
@@ -2970,6 +3204,10 @@ impl InstallerPreview {
     }
 
     fn drain(&mut self) -> bool {
+        if self.windows.enabled && self.live {
+            let changed = self.poll_windows();
+            self.dirty |= changed;
+        }
         #[cfg(target_os = "linux")]
         let navigation_changed = if let Some(returning) = &self.media_return
             && let Some(reason) = returning.get()
@@ -3136,7 +3374,11 @@ impl InstallerPreview {
         #[cfg(not(target_os = "linux"))]
         let portable_changed = false;
         let avatar_changed = self.poll_avatar();
-        let storage_changed = self.storage.poll();
+        let storage_changed = self.storage.poll()
+            | self.recovery.poll()
+            | self
+                .recovery
+                .poll_selection(self.belongings.windows.as_ref());
         let transfer_changed = self.user_transfer.poll();
         let promotion_changed = self.home_promotion.poll();
         #[cfg(target_os = "linux")]
@@ -3198,7 +3440,7 @@ impl InstallerPreview {
                     self.journey.name = metadata.display_name;
                 }
                 if let Some(label) = prepared.enrolled_device_label() {
-                    self.journey.device_name = label.to_owned();
+                    label.clone_into(&mut self.journey.device_name);
                 }
                 if let Err(error) = self.personal.adopt_for_journey(
                     prepared,
@@ -3322,7 +3564,9 @@ impl InstallerPreview {
 
     fn button(&self, id: &str, label: &str, effect: InstallerPreviewEffect) -> Button {
         let commands = self.commands.clone();
-        let mut enabled = !self.personal_busy() && !self.migration_busy();
+        let mut enabled = !self.personal_busy()
+            && !self.migration_busy()
+            && !(self.windows.enabled && self.windows.busy());
         if self.journey.page == Page::Profile
             && matches!(effect, InstallerPreviewEffect::ContinuePreview)
             && self.avatar_picker.is_some()
@@ -3564,8 +3808,7 @@ impl InstallerPreview {
         let commands = self.commands.clone();
         let choice = key.strip_prefix("purpose-").unwrap_or(key).to_string();
         let icon = match key {
-            "computer" | "purpose-computer" => Icon::Monitor,
-            "purpose-server" => Icon::Monitor,
+            "computer" | "purpose-computer" | "purpose-server" => Icon::Monitor,
             "another" => Icon::Usb,
             "desktop" | "device" | "current" => Icon::MonitorSmartphone,
             "migrate" => Icon::Folder,
@@ -3768,12 +4011,10 @@ impl InstallerPreview {
             t("installer-preview-migration-intro")
         } else if matches!(j.page, Page::Identity | Page::Connect) {
             String::new()
+        } else if j.page == Page::Password && j.destination == Some(Destination::Desktop) {
+            t("installer-desktop-password-intro")
         } else {
-            if j.page == Page::Password && j.destination == Some(Destination::Desktop) {
-                t("installer-desktop-password-intro")
-            } else {
-                t(&format!("installer-preview-{key}-intro"))
-            }
+            t(&format!("installer-preview-{key}-intro"))
         };
         #[cfg(target_os = "linux")]
         let intro =
@@ -4886,6 +5127,9 @@ impl InstallerPreview {
     }
 
     fn composition(&self, theme: &Theme) -> Box<dyn Widget> {
+        if self.windows.enabled && self.live {
+            return self.windows_view();
+        }
         #[cfg(unix)]
         if self.live && self.restart.blocks() {
             return self.restart_view();
@@ -4940,6 +5184,7 @@ impl InstallerPreview {
             && self.media_preparation.needs_source_review();
         #[cfg(not(target_os = "linux"))]
         let changed_source = false;
+        #[cfg(target_os = "linux")]
         if changed_source {
             actions = actions.push(Box::new(
                 self.button(
@@ -5152,6 +5397,7 @@ impl InstallerPreview {
         status["guided_capabilities"] = serde_json::json!({
             "prepared_installation": self.guided_host_available(),
         });
+        status["windows_preparation"] = self.windows.projection();
         status["accounts"] = self.accounts.projection();
         status["account_jobs"] = serde_json::json!(self.account_actions.status());
         status["account_answer"] = self.account_answer.clone();
@@ -5192,6 +5438,7 @@ impl InstallerPreview {
                 "can_return": self.direct.active && self.direct.navigation.get(),
             });
         }
+        status["recovery"] = self.recovery.report();
         status["belongings"] = self.belongings.report();
         status["belongings"]["apps"] = serde_json::json!(self.flatpak_apps());
         status["flatpak_access_details"] = serde_json::json!(
@@ -5346,6 +5593,21 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
                     t("installer-preview-wrong-page"),
                 ));
             }
+        }
+        if self.windows.enabled && self.live {
+            if self.windows.busy() {
+                for declaration in InstallerPreviewEffect::declarations() {
+                    if declaration.id != "read-preview" && self.effect_page_admitted(declaration.id)
+                    {
+                        statuses.push(EffectStatus::unavailable(
+                            ActionRef::<InstallerPreviewEffect, ()>::new(declaration.id, &[]),
+                            "exporting",
+                            t(self.windows.busy_label()),
+                        ));
+                    }
+                }
+            }
+            return statuses;
         }
         if matches!(self.journey.page, Page::Destination | Page::Migration)
             && !self.guided_host_available()
@@ -5627,6 +5889,7 @@ impl Widget for InstallerPreview {
     }
     fn needs_animation_frame(&self) -> bool {
         self.dirty
+            || self.windows.busy()
             || self.pending_slide.is_some()
             || self.slide.is_some()
             || self.storage.checking()
@@ -5648,7 +5911,7 @@ impl Widget for InstallerPreview {
             }
     }
     fn needs_idle_sync(&self) -> bool {
-        self.avatar_picker.is_some() || self.migration_choosing()
+        self.windows.choosing() || self.avatar_picker.is_some() || self.migration_choosing()
     }
     fn take_structure_dirty(&mut self) -> bool {
         self.dirty
@@ -5669,7 +5932,9 @@ fn review_source_label(label: &str) -> String {
 #[cfg(all(test, unix))]
 mod purpose_tests;
 
-#[cfg(test)]
+// This fixture exercises the Unix identity/restart controller. Windows has
+// its own inventory and recovery journey tests in windows.rs.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::ImagerShell;
@@ -8072,7 +8337,7 @@ mod tests {
             true
         );
         app.effect(&InstallerPreviewEffect::SetPreviewFlatpakApp {
-            app: home_id.clone(),
+            app: home_id,
             included: false,
         })
         .unwrap();
@@ -9746,7 +10011,7 @@ mod tests {
         // A distinct, valid one-pixel synthetic PNG exercises the actual decoder.
         std::fs::write(
             &changed_path,
-            &[
+            [
                 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0,
                 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 144,
                 140, 186, 244, 31, 0, 4, 26, 2, 69, 204, 253, 167, 130, 0, 0, 0, 0, 73, 69, 78, 68,
@@ -9782,6 +10047,8 @@ mod tests {
         assert_eq!(wait_for_personal(&mut app)["page"], "devices");
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        assert_eq!(status(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
         assert_eq!(status(&mut app)["page"], "review");
         app.settle();
         let identity = app
@@ -10596,7 +10863,7 @@ mod tests {
                     .or_else(|| find(&resource.children, id))
             })
         }
-        find(&app.harness().resources(), id).unwrap_or_else(|| panic!("missing public effect {id}"))
+        find(&app.harness().resources(), id).expect("public effect must be published")
     }
 
     #[test]

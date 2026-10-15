@@ -271,7 +271,7 @@ fn block_pin(directory: &File, device: u64) -> io::Result<File> {
     // /dev/dm-N and /dev/nvme... are real endpoints. Root retains a read-only
     // descriptor; an ordinary caller pins the same node without reading payload.
     let name = std::ffi::CString::new(name.as_bytes()).map_err(io::Error::other)?;
-    let access = if unsafe { libc::geteuid() } == 0 {
+    let access = if rustix::process::geteuid().as_raw() == 0 {
         libc::O_RDONLY | libc::O_NONBLOCK
     } else {
         libc::O_PATH
@@ -300,7 +300,7 @@ fn sequence(directory: &File, block: &File) -> io::Result<u64> {
     if value == 0 {
         return Err(refused("Backing disk sequence missing"));
     }
-    if unsafe { libc::geteuid() } == 0 {
+    if rustix::process::geteuid().as_raw() == 0 {
         let mut actual = 0u64;
         if unsafe { libc::ioctl(block.as_raw_fd(), DISKSEQ, &raw mut actual) } < 0 {
             return Err(io::Error::last_os_error());

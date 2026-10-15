@@ -6,6 +6,7 @@
 //! tests can use deterministic recording implementations.  The default is
 //! always an explicit cancellation/unavailable result, never fabricated data.
 
+use super::reply::Ended;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Read;
@@ -32,6 +33,20 @@ impl<T> PortalResult<T> {
             Self::Success(_) => 0,
             Self::Cancelled => 1,
             Self::Unavailable(_) | Self::Failed(_) => 2,
+        }
+    }
+
+    /// The service's value, or how the request ended without one.
+    ///
+    /// # Errors
+    ///
+    /// [`Ended::Cancelled`] when the user declined, [`Ended::Failed`] when
+    /// the service is unavailable or failed.
+    pub fn into_result(self) -> Result<T, Ended> {
+        match self {
+            Self::Success(value) => Ok(value),
+            Self::Cancelled => Err(Ended::Cancelled),
+            Self::Unavailable(_) | Self::Failed(_) => Err(Ended::Failed),
         }
     }
 }
@@ -939,27 +954,7 @@ pub(crate) fn document_portal_path_from_uri(uri: &str) -> Result<PathBuf, String
 }
 
 fn document_portal_root() -> PathBuf {
-    tilo_paths::xdg::runtime_dir()
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", nix_uid())))
-        .join("doc")
-}
-
-fn nix_uid() -> u32 {
-    // `id -u` is intentionally not spawned. Linux exposes the effective uid
-    // through procfs; absent procfs the standard runtime-dir path below will
-    // simply fail closed during canonicalisation.
-    fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|status| {
-            status
-                .lines()
-                .find(|line| line.starts_with("Uid:"))?
-                .split_whitespace()
-                .nth(1)?
-                .parse()
-                .ok()
-        })
-        .unwrap_or(0)
+    tilo_paths::xdg::runtime_dir_or_default().join("doc")
 }
 
 fn document_portal_path_from_uri_at(uri: &str, root: &Path) -> Result<PathBuf, String> {

@@ -27,7 +27,7 @@ pub struct OriginalFlatpakProjection {
     pub inode: u64,
     pub owner: u32,
 }
-/// These facts must be included in the authenticated OriginalReadClaim digest.
+/// These facts must be included in the authenticated `OriginalReadClaim` digest.
 /// Root-authored inventory bytes alone are not a source access grant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,7 +76,7 @@ impl FlatpakSources {
         Ok(())
     }
     pub(super) fn check(&self) -> io::Result<()> {
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
         }
         self.custody.check()?;
@@ -118,8 +118,8 @@ impl FlatpakSources {
         pairs.extend(
             self.sources
                 .iter()
-                .enumerate()
-                .map(|(index, file)| (file.as_raw_fd(), FIRST_SOURCE_FD + index as RawFd)),
+                .zip(FIRST_SOURCE_FD..)
+                .map(|(file, fd)| (file.as_raw_fd(), fd)),
         );
         pairs
     }
@@ -131,10 +131,10 @@ impl FlatpakSources {
             INVENTORY_FD.to_string(),
             ORIGINAL_FLATPAK_INVENTORY_PATH.into(),
         ];
-        for index in 0..self.sources.len() {
+        for (index, fd) in (0..self.sources.len()).zip(FIRST_SOURCE_FD..) {
             mounts.extend([
                 "--ro-bind-fd".into(),
-                (FIRST_SOURCE_FD + index as RawFd).to_string(),
+                fd.to_string(),
                 format!("{ORIGINAL_FLATPAK_SOURCE_PATH}/{index}"),
             ]);
         }
@@ -171,6 +171,8 @@ impl CaptureAdmission {
     /// Attach only after the exact sealed inventory facts enter this admission's
     /// root-authenticated read claim. The caller retains source guards through
     /// child quiescence; original credentials are changed by the existing shim.
+    /// # Errors
+    /// Refuses duplicate sources, invalid claim bindings, changed descriptors or retired custody.
     pub fn with_original_flatpak_sources(
         mut self,
         binding: OriginalFlatpakBinding,

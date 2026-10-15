@@ -148,7 +148,7 @@ pub(in crate::setup) fn caller_uid() -> io::Result<u32> {
     }
     #[cfg(unix)]
     // SAFETY: reads this helper's credentials, never changes ownership.
-    let owner = unsafe { libc::geteuid() };
+    let owner = rustix::process::geteuid().as_raw();
     #[cfg(not(unix))]
     let owner = 0;
     Ok(owner)

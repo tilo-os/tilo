@@ -34,6 +34,20 @@ use crate::operation::{
 /// wizard would show.
 type Blocked = Option<(&'static str, String)>;
 
+// Only fixed controls cross the action door. Identity fields and requests stay
+// in AccountsForm's process-local queue, never in action parameters or history.
+const ONLINE_ACCOUNTS: &str = "installer.accounts";
+const ONLINE_OPERATION_TYPE: &str = crate::operation::ONLINE_ACCOUNT_OPERATION_TYPE;
+
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OnlineControl {
+    Add,
+    Retry,
+    Cancel,
+    SkipOffline,
+}
+
 /// Keep guidance within publication limits without silently dropping it.
 fn with_guidance(mut resource: Resource, id: &str, guidance: &str) -> Resource {
     for (index, sentence) in guidance.split(". ").enumerate() {
@@ -197,6 +211,7 @@ impl InstallerApp {
         root = root
             .with_child(self.keyboard_resource())
             .with_child(self.network_resource())
+            .with_child(self.online_accounts_resource())
             .with_child(self.storage_resource())
             .with_child(self.account_resource())
             .with_child(self.options_resource())
@@ -218,6 +233,105 @@ impl InstallerApp {
             InstallState::Done => "done",
             InstallState::Failed => "failed",
         }
+    }
+
+    fn online_accounts_resource(&self) -> Resource {
+        use crate::online_accounts::view::AccountsStatus;
+        let status = self.accounts_controller.as_ref().map_or(
+            if self.accounts_initialized {
+                AccountsStatus::Failed
+            } else {
+                AccountsStatus::Ready
+            },
+            crate::online_accounts::AccountsController::status,
+        );
+        let badge = match status {
+            AccountsStatus::Ready => "ready",
+            AccountsStatus::SigningIn => "signing-in",
+            AccountsStatus::ReviewCalendars => "review-calendars",
+            AccountsStatus::Failed => "failed",
+            AccountsStatus::Added => "added",
+        };
+        let mut resource = Resource::new(
+            ONLINE_ACCOUNTS,
+            "installer.online-accounts",
+            "Online accounts",
+        )
+        .with_presentation(ResourcePresentation {
+            badge: Some(badge.into()),
+            ..ResourcePresentation::default()
+        });
+        for (id, label, control) in [
+            (
+                "add",
+                if status == AccountsStatus::ReviewCalendars {
+                    "Confirm selected calendars"
+                } else {
+                    "Sign in using private form"
+                },
+                OnlineControl::Add,
+            ),
+            ("retry", "Retry using private form", OnlineControl::Retry),
+            ("cancel", "Cancel sign-in", OnlineControl::Cancel),
+            (
+                "skip-offline",
+                "Continue offline",
+                OnlineControl::SkipOffline,
+            ),
+        ] {
+            let blocked = self.off_step(Step::Accounts).or_else(|| match control {
+                OnlineControl::Add | OnlineControl::Retry
+                    if status == AccountsStatus::SigningIn =>
+                {
+                    Some((
+                        "signing_in",
+                        "Wait for sign-in to finish or cancel it".into(),
+                    ))
+                }
+                OnlineControl::Retry if status != AccountsStatus::Failed => Some((
+                    "not_failed",
+                    "Retry is available after a failed sign-in".into(),
+                )),
+                _ => None,
+            });
+            resource = resource.with_action(gate(
+                ActionSpec::typed_operation(
+                    id,
+                    label,
+                    "",
+                    OperationKind::Effect,
+                    ONLINE_OPERATION_TYPE,
+                    Vec::new(),
+                    move |_| {
+                        EncodedAction::encode_operation(ONLINE_OPERATION_TYPE, &control)
+                            .unwrap_or_else(|_| EncodedAction {
+                                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                                payload: Vec::new(),
+                            })
+                    },
+                ),
+                blocked,
+            ));
+        }
+        resource
+    }
+
+    fn apply_online_control(&mut self, payload: &[u8]) -> Applied {
+        self.require_step(Step::Accounts)?;
+        let control: OnlineControl = serde_json::from_slice(payload)
+            .map_err(|_| "Invalid online account control".to_string())?;
+        match control {
+            OnlineControl::Add | OnlineControl::Retry => self
+                .accounts_form
+                .submit(matches!(control, OnlineControl::Retry))
+                .map_err(|_| {
+                    "Check the private account form or wait for sign-in to finish".to_string()
+                })?,
+            OnlineControl::Cancel => self.accounts_form.cancel(),
+            OnlineControl::SkipOffline => self.accounts_form.skip_offline(),
+        }
+        self.sync_accounts();
+        Ok(ActionOutput::default())
     }
 
     fn next_spec(&self) -> ActionSpec {
@@ -921,6 +1035,9 @@ impl InstallerApp {
 
     /// Decode and apply one encoded installer operation.
     pub(super) fn apply_encoded(&mut self, encoded: &EncodedAction) -> Applied {
+        if encoded.type_id == ONLINE_OPERATION_TYPE {
+            return self.apply_online_control(&encoded.payload);
+        }
         if encoded.type_id != OPERATION_TYPE {
             return Err(format!("not an installer operation: {}", encoded.type_id));
         }

@@ -186,7 +186,7 @@ impl VerifiedInboxLease<'_> {
         self.grant.validate()?;
         let actual = file.metadata()?;
         // SAFETY: getuid observes only current process credentials.
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         let digest: [u8; 32] =
             Sha256::digest(serde_json::to_vec(&self.layout.source_plans)?).into();
         if !self.grant.inbox_active.load(Ordering::Acquire)
@@ -534,7 +534,7 @@ pub(in crate::setup) fn run_helper_with_boot(
     let path = Path::new(args.get(at + 1).ok_or(io::ErrorKind::InvalidInput)?);
     let digest = args.get(at + 2).ok_or(io::ErrorKind::InvalidInput)?;
     // SAFETY: geteuid has no arguments and observes only current credentials.
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let (bytes, caller) = crate::write::read_linux_helper_request(path)?;

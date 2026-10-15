@@ -94,7 +94,7 @@ fn verify_target(home: &Path, before: &[Vec<u8>]) {
 }
 pub(super) fn owner(source_home: &Path, app: InstalledRef) {
     assert_ne!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "ordinary source and target credentials required"
     );

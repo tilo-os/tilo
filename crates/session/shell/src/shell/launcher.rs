@@ -157,6 +157,9 @@ struct TrustedServiceLaunch {
     identity: ServiceLaunchIdentity,
     registered_at: Instant,
     continuation_instance: Option<u64>,
+    /// The broker's ticket for the launch that started this process: the
+    /// startup token the compositor gave it, never read back from the app.
+    launch_ticket: Option<u64>,
 }
 
 static TRUSTED_SERVICE_LAUNCHES: std::sync::LazyLock<Mutex<HashMap<u32, TrustedServiceLaunch>>> =
@@ -259,13 +262,14 @@ pub(crate) fn verified_running_packages() -> Vec<String> {
 #[cfg(any(test, target_os = "linux"))]
 #[cfg(test)]
 fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
-    register_trusted_window_launch(pid, identity, None);
+    register_trusted_window_launch(pid, identity, None, None);
 }
 
 fn register_trusted_window_launch(
     pid: u32,
     identity: ServiceLaunchIdentity,
     continuation_instance: Option<u64>,
+    launch_ticket: Option<u64>,
 ) {
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
@@ -279,6 +283,7 @@ fn register_trusted_window_launch(
             identity,
             registered_at: Instant::now(),
             continuation_instance,
+            launch_ticket,
         },
     );
 }
@@ -343,6 +348,7 @@ pub(crate) fn authenticated_window_launch(
                 tilo_action_broker::services::AuthenticatedApplicationLaunch {
                     creation: launch.identity.application_creation.clone(),
                     continuation_instance: launch.continuation_instance,
+                    launch_ticket: launch.launch_ticket,
                 },
             );
         }
@@ -369,6 +375,7 @@ fn take_in_process_window_launch(
         tilo_action_broker::services::AuthenticatedApplicationLaunch {
             creation: launch.identity.application_creation,
             continuation_instance: launch.continuation_instance,
+            launch_ticket: None,
         },
     )
 }
@@ -1842,20 +1849,7 @@ fn write_capabilities_file(
 
 /// `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
 pub fn runtime_dir() -> PathBuf {
-    if let Some(dir) = tilo_paths::xdg::runtime_dir() {
-        return dir;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // Darwin supplies a per-user temporary directory through TMPDIR.
-        std::env::temp_dir()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // SAFETY: getuid always succeeds.
-        let uid = unsafe { libc::getuid() };
-        PathBuf::from(format!("/run/user/{uid}"))
-    }
+    tilo_paths::xdg::runtime_dir_or_default()
 }
 
 /// Every installed package, GUI or not, freshly read from the registry.
@@ -4426,7 +4420,7 @@ fn start_launch(
                 .iter()
                 .find(|(key, _)| key == "TILO_CONTINUITY_INSTANCE")
                 .and_then(|(_, value)| value.parse::<u64>().ok());
-            register_trusted_window_launch(child.id(), identity, instance);
+            register_trusted_window_launch(child.id(), identity, instance, startup_token);
         }
         let workspace_id = command
             .service_identity
@@ -5395,6 +5389,23 @@ pub fn retire_pending_placement_after_grace(package_id: &str) {
 fn pending_placement_deadline(grace: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(grace).unwrap_or(now)
+}
+
+/// Give `package_id`'s waiting launch `extra` before its window is due, on
+/// top of the usual start-up allowance, counted from now. An install that
+/// precedes the start holds it for as long as the install may take, then
+/// passes [`Duration::ZERO`] once the app can actually start.
+pub(crate) fn hold_presentation_for(package_id: &str, extra: Duration) {
+    let session = LaunchSession::current();
+    let mut pending = lock(&session.pending);
+    if let Some(note) = pending
+        .iter_mut()
+        .rev()
+        .find(|note| note.key == package_id && note.claimed_by.is_none())
+    {
+        note.present_before =
+            pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT.saturating_add(extra));
+    }
 }
 
 fn retire_pending_placement_at(package_id: &str, deadline: Instant) {
@@ -7766,7 +7777,7 @@ mod tests {
             compat_entry_generation: 0,
             application_creation: None,
         };
-        register_trusted_window_launch(pid, identity, Some(42));
+        register_trusted_window_launch(pid, identity, Some(42), Some(9));
         assert!(authenticated_window_launch(pid, "so.tilo.notes", "private-window-room").is_none());
         assert!(authenticated_window_launch(pid, "so.tilo.code", "other-room").is_none());
         assert!(
@@ -7780,6 +7791,7 @@ mod tests {
         let bound = authenticated_window_launch(pid, "so.tilo.code", "private-window-room")
             .expect("original exact launcher record");
         assert_eq!(bound.continuation_instance, Some(42));
+        assert_eq!(bound.launch_ticket, Some(9), "the launch's own ticket");
         // Kernel start time is part of the retained record, not app-reported identity.
         lock(&TRUSTED_SERVICE_LAUNCHES)
             .get_mut(&pid)

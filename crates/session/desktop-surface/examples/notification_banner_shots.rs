@@ -25,7 +25,7 @@ impl NotificationHost for Fixture {
         if tilo_desktop_surface::is_host_offer(notice) {
             notice.actions.iter().rev().cloned().collect()
         } else {
-            Vec::new()
+            notice.actions.clone()
         }
     }
     fn dismiss(&self, _: u64) {}
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PathBuf::from,
     );
     std::fs::create_dir_all(&out)?;
-    let error = std::env::args().nth(2).as_deref() == Some("error");
+    let variant = std::env::args().nth(2);
     for (name, theme, width) in [
         ("dark", Theme::dark(), 440_u32),
         ("light", Theme::light(), 440),
@@ -65,12 +65,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let host = Fixture::default();
         // What a person meets: something a collaborator did, an ask that
         // waits for an answer, and a failure they did not cause.
-        let notices = if error {
+        let notices = if variant.as_deref() == Some("error") {
             vec![
                 Notification::new("Couldn't open Notes", "Try again from Search.")
                     .with_app_name("Applications")
                     .with_severity(NotificationSeverity::Error),
             ]
+        } else if variant.as_deref() == Some("not-saved") {
+            vec![not_saved()?]
         } else {
             let mut ask = HostAction {
                 id: "keep-identity".into(),
@@ -117,4 +119,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     Ok(())
+}
+
+/// A note's save that gave up while it was out of sight, as the desktop
+/// shows the notification Notes raises: named, a warning, with the one
+/// choice the note gives.
+fn not_saved() -> Result<Notification, Box<dyn std::error::Error>> {
+    let t0 = ui::time::Instant::now();
+    let mut surface = ui::SaveStatusSurface::new();
+    surface.set(ui::SaveState::Saving, t0);
+    let late = t0
+        .checked_add(ui::SAVE_GIVE_UP)
+        .ok_or("the give-up instant is out of range")?;
+    let _ = surface.take_notice(late, Some("Launch checklist"), "Notes");
+    let unseen = late
+        .checked_add(ui::SAVE_STALL)
+        .ok_or("the unseen instant is out of range")?;
+    let notice = surface
+        .take_notice(unseen, Some("Launch checklist"), "Notes")
+        .ok_or("a save nobody saw give up is notified")?;
+    let mut shown = Notification::new(notice.title, notice.body)
+        .with_app_name("Notes")
+        .with_severity(NotificationSeverity::Warning);
+    shown.actions = vec![("default".into(), notice.action)];
+    Ok(shown)
 }

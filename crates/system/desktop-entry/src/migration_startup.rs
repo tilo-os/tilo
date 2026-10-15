@@ -338,8 +338,7 @@ fn bounded(file: File, limit: usize) -> io::Result<Vec<u8>> {
 
 fn owned_private(file: &File, private: bool) -> io::Result<()> {
     let metadata = file.metadata()?;
-    // SAFETY: geteuid has no arguments or memory accesses.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     if metadata.uid() != uid || metadata.mode() & if private { 0o077 } else { 0o022 } != 0 {
         return Err(invalid(
             "migration startup policy has foreign or public custody",

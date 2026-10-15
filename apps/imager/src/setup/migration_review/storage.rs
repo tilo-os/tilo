@@ -360,15 +360,12 @@ impl<T: IndexValue> Builder<T> {
                 .runs
                 .get_mut(level)
                 .ok_or_else(|| changed("Inventory run level missing"))?;
-            match slot.take() {
-                Some(previous) => {
-                    file = merge::<T>(previous, file, &self.factory, cancel)?;
-                    level += 1;
-                }
-                None => {
-                    *slot = Some(file);
-                    return Ok(());
-                }
+            if let Some(previous) = slot.take() {
+                file = merge::<T>(previous, file, &self.factory, cancel)?;
+                level += 1;
+            } else {
+                *slot = Some(file);
+                return Ok(());
             }
         }
     }

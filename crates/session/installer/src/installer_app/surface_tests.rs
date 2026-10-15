@@ -111,6 +111,169 @@ fn state(app: &mut InstallerApp, doc: &mut AutoCommit) -> Value {
     console(app, doc, &json!({"op": "state_dump"}))["state"].clone()
 }
 
+fn input_value(widget: &dyn Widget, id: &str) -> Option<String> {
+    if widget.test_id() == Some(id) {
+        return widget.accessibility()?.value;
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| input_value(child, id))
+}
+
+fn finish_private_unlock(app: &mut InstallerApp) {
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(15))
+        .unwrap();
+    while app.windows_hints.is_pending() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "private unlock did not finish"
+        );
+        app.sync_accounts();
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn prepared_media_unlock_is_private_review_and_skip_preserves_medium() {
+    use account_custody::hints::{
+        AccountHint, Provider,
+        media::{BLOCK_BYTES, Prepared},
+    };
+    let hint = AccountHint {
+        provider: Provider::Nextcloud,
+        email: "local-only@example.org".into(),
+        server: "https://private-cloud.example.org".into(),
+    };
+    let prepared = Prepared::seal(
+        b"prepared-password",
+        "12345678-1234-1234-1234-123456789abc",
+        std::slice::from_ref(&hint),
+        b"verified copies",
+    )
+    .unwrap();
+    let mut block = vec![0; BLOCK_BYTES];
+    prepared.embed(&mut block).unwrap();
+    let original = block.clone();
+    let (mut app, mut doc) = app(&FakeBackend::new());
+    app.apply_media_profile(crate::media_profile::MediaProfile {
+        purpose: String::new(),
+        device_label: String::new(),
+        prepared_setup: None,
+        windows_preparation: Some(prepared.expectation),
+        hostname: None,
+        username: None,
+        full_name: None,
+        locale: None,
+        keyboard: None,
+        timezone: None,
+        filesystem: None,
+        repairs: Vec::new(),
+    });
+    app.step = Step::Accounts;
+    app.accounts_initialized = true;
+    app.windows_hints
+        .private_test_unlock(&app.accounts_form, &block, "wrong-password");
+    app.sync_accounts();
+    finish_private_unlock(&mut app);
+    assert!(app.accounts_form.choose_hint(0).is_err());
+    app.windows_hints
+        .private_test_unlock(&app.accounts_form, &block, "prepared-password");
+    app.sync_accounts();
+    finish_private_unlock(&mut app);
+    app.accounts_form.choose_hint(0).unwrap();
+    assert_eq!(app.accounts_form.email.with(Clone::clone), hint.email);
+    assert_eq!(app.accounts_form.server.with(Clone::clone), hint.server);
+    assert!(!app.accounts_form.mail.with(|v| *v));
+    assert!(!app.accounts_form.calendar.with(|v| *v));
+    let local_view = app.accounts_form.view();
+    assert_eq!(
+        input_value(local_view.as_ref(), "installer.online.email"),
+        Some(hint.email.clone())
+    );
+    assert_eq!(
+        input_value(local_view.as_ref(), "installer.online.server"),
+        Some(hint.server.clone())
+    );
+    for request in [
+        json!({"op": "state_dump"}),
+        json!({"op": "actions_enumerate"}),
+    ] {
+        let public = console(&mut app, &mut doc, &request).to_string();
+        for private in [
+            &hint.email,
+            &hint.server,
+            "prepared-password",
+            "wrong-password",
+        ] {
+            assert!(!public.contains(private));
+        }
+    }
+    crate::online_accounts::hints::WindowsReview::private_test_skip(&app.accounts_form);
+    app.sync_accounts();
+    assert!(app.accounts_form.email.with(String::is_empty));
+    assert!(app.accounts_form.choose_hint(0).is_err());
+    assert_eq!(block, original);
+    assert!(app.accounts_controller.is_none());
+}
+
+#[test]
+fn calendar_review_confirmation_uses_selected_private_collections() {
+    let (directory, controller) = crate::online_accounts::calendar_tests::reviewing();
+    let selected_calendar = controller.calendars()[0].0.clone();
+    let (mut app, mut doc) = app(&FakeBackend::new());
+    app.step = Step::Accounts;
+    app.accounts_initialized = true;
+    app.accounts_controller = Some(controller);
+    app.sync_accounts();
+    assert!(
+        app.accounts_controller
+            .as_ref()
+            .unwrap()
+            .selected()
+            .is_empty()
+    );
+    let public = console(&mut app, &mut doc, &json!({"op": "actions_enumerate"})).to_string();
+    assert!(public.contains("Confirm selected calendars"));
+    assert!(!public.contains("cloud.example"));
+    // Confirm with nothing selected cannot commit a grant.
+    assert!(
+        refused(&invoke(
+            &mut app,
+            &mut doc,
+            "add@installer.accounts",
+            &json!({})
+        ))
+        .is_some()
+    );
+    assert!(
+        app.accounts_controller
+            .as_ref()
+            .unwrap()
+            .selected()
+            .is_empty()
+    );
+    app.accounts_form.select_calendar_for_test(0);
+    let reply = invoke(&mut app, &mut doc, "add@installer.accounts", &json!({}));
+    assert!(refused(&reply).is_none(), "{reply}");
+    let controller = app.accounts_controller.as_ref().unwrap();
+    assert!(controller.status() == crate::online_accounts::view::AccountsStatus::Added);
+    assert_eq!(controller.selected().len(), 1);
+    let root = std::fs::read_dir(directory.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let store = accounts::AccountStore::load_in(&root);
+    let account = store.get(&controller.selected()[0]).unwrap();
+    assert_eq!(
+        account.config["calendar"]["calendars"][0]["id"],
+        selected_calendar
+    );
+}
+
 #[test]
 fn linux_without_unallocated_space_never_falls_back_to_erase() {
     for filesystem in ["ext4", "btrfs", "crypto_LUKS"] {
@@ -198,10 +361,16 @@ fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
     {
         let backend = FakeBackend::new();
         let (mut app, _doc) = app(&backend);
-        let handlers: HashSet<String> = op::HANDLERS.iter().map(|h| (*h).to_owned()).collect();
+        let handlers: HashSet<String> = op::HANDLERS
+            .iter()
+            .copied()
+            .chain(["installer.online-accounts-control"])
+            .map(str::to_owned)
+            .collect();
         for step in [
             Step::Keyboard,
             Step::Network,
+            Step::Accounts,
             Step::Disk,
             Step::Account,
             Step::Options,
@@ -506,6 +675,10 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
     );
     assert_eq!(
         invoke(&mut app, doc, "next@installer", &json!({}))["answer"]["step"],
+        "accounts"
+    );
+    assert_eq!(
+        invoke(&mut app, doc, "skip-offline@installer.accounts", &json!({}))["answer"]["step"],
         "disk"
     );
 

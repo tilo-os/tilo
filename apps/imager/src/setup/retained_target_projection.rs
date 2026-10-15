@@ -28,8 +28,8 @@ pub(crate) fn run() -> io::Result<()> {
     let (uid, gid) = admitted.credentials();
     let name = admitted.presentation_name();
     if uid == 0
-        || unsafe { libc::getuid() } != uid
-        || unsafe { libc::geteuid() } != uid
+        || rustix::process::getuid().as_raw() != uid
+        || rustix::process::geteuid().as_raw() != uid
         || unsafe { libc::getgid() } != gid
         || unsafe { libc::getegid() } != gid
     {

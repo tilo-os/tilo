@@ -559,7 +559,7 @@ fn protected_consumer_requirement_follows_exact_authenticated_selected_grants() 
     let source = fixture.path().join("source");
     let copied = fixture.path().join("copied");
     let fresh = connect(&source, "Fresh", "original-private-password");
-    let copy = Connector::new(copied.clone());
+    let copy = Connector::new(copied);
     copy.import_tilo(&source, &fresh).unwrap();
     let password = b"several unrelated installation words";
     let binding = b"consumer-proof-operation";

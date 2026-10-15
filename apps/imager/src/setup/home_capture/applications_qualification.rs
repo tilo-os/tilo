@@ -97,7 +97,7 @@ fn digest(file: &File) -> io::Result<String> {
     ) {
         return Err(invalid());
     }
-    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hex::encode(hash.finalize()))
 }
 struct OwnedRoot {
     root: std::sync::Arc<PinnedDirectory>,
@@ -144,9 +144,6 @@ impl Drop for OwnedRoot {
     fn drop(&mut self) {
         // On an uncertain child exit leave this precisely owned subtree retained.
         // Never delete files while an unobserved receiving writer might still run.
-        if self.retired {
-            return;
-        }
     }
 }
 fn directory(path: &Path, mode: u32, owner: Option<(u32, u32)>) -> io::Result<()> {
@@ -202,11 +199,7 @@ fn copy_setup(
         hash.update(&buffer[..n]);
         destination.write_all(&buffer[..n])?;
     }
-    let actual = hash
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    let actual = hex::encode(hash.finalize());
     if bytes != expected.sealed_bytes || actual != expected.ciphertext_sha256 {
         return Err(invalid());
     }

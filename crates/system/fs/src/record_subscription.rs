@@ -142,11 +142,15 @@ impl RecordSubscriptionStore {
         let state = match std::fs::metadata(&path) {
             Ok(metadata) => {
                 validate_owner_only_permissions(&metadata)?;
-                if metadata.len() > MAX_RECORD_SUBSCRIPTION_FILE_BYTES {
-                    return Err(RecordSubscriptionStoreError::StateTooLarge);
+                let too_large = RecordSubscriptionStoreError::StateTooLarge;
+                match tilo_files::native::bounded::read_or(
+                    &path,
+                    MAX_RECORD_SUBSCRIPTION_FILE_BYTES,
+                    too_large,
+                )? {
+                    Some(bytes) => decode_document(&bytes, now_ms)?,
+                    None => BTreeMap::new(),
                 }
-                let bytes = std::fs::read(&path)?;
-                decode_document(&bytes, now_ms)?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(error) => return Err(error.into()),

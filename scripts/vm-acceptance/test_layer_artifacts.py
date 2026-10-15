@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -24,7 +25,7 @@ BUILDER = "registry.tilo.so/tilo/tilo-builder@sha256:" + "b" * 64
 
 class HandoffTests(unittest.TestCase):
     def setUp(self):
-        root = HERE.parents[1] / "target/layer-artifact-tests"
+        root = Path(os.environ.get("CARGO_TARGET_DIR") or HERE.parents[1] / "target") / "layer-artifact-tests"
         root.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=root)
         self.addCleanup(self.temp.cleanup)

@@ -724,7 +724,7 @@ fn authenticated_completed_setup_binds_exact_home_before_adoption() {
     )
     .unwrap();
     let args = [
-        ("--package", package.clone()),
+        ("--package", package),
         ("--receipt", receipt),
         ("--quarantine", root.join("completed-installer-auth")),
     ]

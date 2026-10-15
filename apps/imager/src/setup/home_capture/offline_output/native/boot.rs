@@ -133,12 +133,11 @@ impl BootMedium {
         // The synchronous carrier has returned and relinquished all mount FDs.
         // Close our pinned directory before requesting owned unmount.
         lease.root = None;
-        match lease.daemon.unmount(&lease.selected.name) {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                quarantine(lease);
-                Err(refused("Selected boot medium owned unmount failed"))
-            }
+        if lease.daemon.unmount(&lease.selected.name) == Ok(()) {
+            Ok(())
+        } else {
+            quarantine(lease);
+            Err(refused("Selected boot medium owned unmount failed"))
         }
     }
 }
@@ -199,7 +198,7 @@ pub(in crate::setup) fn with_boot_medium<T>(
     callback: impl FnOnce(&BootMedium) -> io::Result<T>,
 ) -> io::Result<T> {
     require_raw(held_raw)?;
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(refused("Boot medium requires the root controller"));
     }
     check_cancel(cancel)?;

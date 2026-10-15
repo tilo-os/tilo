@@ -31,7 +31,7 @@ fn imported_rclone_registration_refreshes_after_portable_reseal_without_touching
         server.provider(),
         "different-tilo-client",
     );
-    let connector = Connector::with_custodian(target.clone(), custodian.clone());
+    let connector = Connector::with_custodian(target.clone(), custodian);
     let id = connector.import_rclone(&roots, selected).unwrap();
     assert_eq!(server.refreshes(), 1);
     assert_eq!(connector.import_rclone(&roots, selected).unwrap(), id);

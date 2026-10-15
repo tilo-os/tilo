@@ -146,3 +146,6 @@ rustix = { workspace = true, features = ["event", "net", "process", "std"] }
 # so every answer belongs to exactly one manifest.
 ash = { version = "0.38", default-features = false, features = ["std"] }
 libloading = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

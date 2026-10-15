@@ -92,7 +92,10 @@ impl Backend for Native {
     }
     fn mount(&self, device: &str) -> io::Result<PathBuf> {
         // SAFETY: these calls read the current process credentials.
-        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let (uid, gid) = (
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        );
         self.0
             .mount_setup(device, uid, gid)
             .map(PathBuf::from)

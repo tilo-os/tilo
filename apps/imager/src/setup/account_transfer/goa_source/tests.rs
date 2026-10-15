@@ -614,13 +614,13 @@ fn expired_imported_goa_grant_renews_automatically_after_reseal_under_original_c
         .custodian
         .oauth_access_token(&id, OAuthCloud::GoogleDrive.oauth_use(), false)
         .unwrap();
-    assert!(access.as_str() == "automatically-renewed-access");
+    assert_eq!(access.as_str(), "automatically-renewed-access");
     assert_eq!(issuer.refreshes(), 2);
     let cached = restored
         .custodian
         .oauth_access_token(&id, OAuthCloud::GoogleDrive.oauth_use(), false)
         .unwrap();
-    assert!(cached.as_str() == access.as_str());
+    assert_eq!(cached.as_str(), access.as_str());
     assert_eq!(issuer.refreshes(), 2);
     assert_original_requests(&issuer);
     restored.disconnect(&id).unwrap();

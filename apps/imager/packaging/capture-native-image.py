@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import selectors
 import signal
 import subprocess
@@ -46,6 +47,21 @@ def protect_runtime_trust(root):
             bind(path, path, True)
 
 
+def admit_native_stores(stage, provenance):
+    """Validate the owned real-disk contract before exposing it across pivot."""
+    if (provenance is None or not provenance.is_absolute()
+            or provenance.parent.parent != Path('/var/tmp')
+            or not re.fullmatch('native-store-private-[0-9a-f]{16}', provenance.parent.name)):
+        raise ValueError('explicit owned virtio provenance required; loops cannot qualify')
+    spec = importlib.util.spec_from_file_location('owned_virtio', stage / 'native-store-virtio.py')
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    rows = helper.provenance(provenance.parent, provenance)
+    for row in rows:
+        helper.device(row)
+    return provenance.parent
+
+
 def native(args):
     if os.getuid() != 0 or os.geteuid() != 0:
         raise ValueError('native namespace requires the authorized operator')
@@ -61,7 +77,8 @@ def native(args):
             try:
                 command = [sys.executable, '-B', __file__, '--child', '--native-root', root,
                            '--stage', args.stage, '--evidence', args.evidence,
-                           '--pidns-fd', str(witness), '--mode', args.mode]
+                           '--pidns-fd', str(witness), '--mode', args.mode,
+                           '--native-store-provenance', args.native_store_provenance]
                 if args.case:
                     command += ['--case', args.case]
                 child = subprocess.Popen(list(map(str, ['unshare', '--mount', '--pid', '--net',
@@ -108,6 +125,10 @@ def native(args):
     checked(['mount', '--make-rprivate', '/'], stdout=subprocess.DEVNULL)
     checked(['ip', 'link', 'set', 'lo', 'up'], stdout=subprocess.DEVNULL)
     checked(['mount', '--bind', root, root], stdout=subprocess.DEVNULL)
+    stores = admit_native_stores(args.stage, args.native_store_provenance)
+    bind(stores, root / str(stores).lstrip('/'))
+    bind(args.native_store_provenance,
+         root / str(args.native_store_provenance).lstrip('/'), True)
     bind(args.stage, root / 'qualified', True)
     bind(args.evidence, root / 'evidence')
     # mount(8) closes inherited FDs, so name this process's held witness,
@@ -139,8 +160,8 @@ def native(args):
     if args.mode == 'list':
         command = ['/qualified/imager-tests', '--list']
     elif args.mode == 'observe':
-        command = ['/usr/bin/python3', '-I', '/qualified/native-store-autoclear.py', 'observe',
-                   '--journal', '/evidence/owned/associations.json']
+        command = ['/usr/bin/python3', '-I', '/qualified/native-store-virtio.py', 'observe',
+                   str(stores), str(args.native_store_provenance)]
     else:
         command = ['/usr/bin/python3', '-I', '-c', qualifier.CONTAINER_RUNNER]
     # A mere chroot makes CLONE_NEWUSER fail with EPERM, disabling CEF's
@@ -158,7 +179,8 @@ def native(args):
         raise OSError(ctypes.get_errno(), 'owned old root retirement failed')
     os.rmdir('/.qualification-old-root')
     os.execve(command[0], command, {'PATH': '/usr/bin:/usr/sbin', 'LANG': 'C', 'LC_ALL': 'C',
-                                   'TILO_CAPTURE_EXACT_CASE': args.case or ''})
+                                   'TILO_CAPTURE_EXACT_CASE': args.case or '',
+                                   'TILO_NATIVE_STORE_VIRTIO_PROVENANCE': str(args.native_store_provenance)})
 
 
 def main():
@@ -172,6 +194,7 @@ def main():
     parser.add_argument('--native-root', type=Path)
     parser.add_argument('--child', action='store_true')
     parser.add_argument('--pidns-fd', type=int)
+    parser.add_argument('--native-store-provenance', type=Path, required=True)
     args = parser.parse_args()
     if args.archive or args.child:
         native(args)
@@ -196,7 +219,8 @@ def main():
         # Privileged imports must not leave root-owned bytecode in the
         # operator's staged input tree, preventing its normal retirement.
         command = ['sudo', '-n', sys.executable, '-B', __file__, '--archive', archive,
-                   '--stage', args.stage, '--evidence', args.evidence, '--mode', args.mode]
+                   '--stage', args.stage, '--evidence', args.evidence, '--mode', args.mode,
+                   '--native-store-provenance', args.native_store_provenance]
         if args.case:
             command += ['--case', args.case]
         child = subprocess.Popen(list(map(str, command)), stdin=subprocess.PIPE)

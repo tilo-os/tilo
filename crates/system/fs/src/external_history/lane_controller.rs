@@ -1,7 +1,9 @@
-//! One daemon-owned LocalSet retains real non-Send source capabilities across
+//! One daemon-owned `LocalSet` retains real non-Send source capabilities across
 //! separately authenticated storage connections. There is no new listener.
 use super::coordinator::AcknowledgedReplacement;
-use super::*;
+use super::{
+    Arc, AtomicBool, Duration, ExternalSourceAdmission, UnixStream, io, owned_lane, refused,
+};
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -81,7 +83,7 @@ impl Controller {
                         while active.get() < 64 {
                             match receiver.try_recv() {
                                 Ok(lane) => {
-                                    active.set(active.get() + 1);
+                                    active.set(active.get().saturating_add(1));
                                     let active = Rc::clone(&active);
                                     let registry = Rc::clone(&registry);
                                     tokio::task::spawn_local(async move {
@@ -93,7 +95,7 @@ impl Controller {
                                         )
                                         .await;
                                         let _ = lane.completion.send(result);
-                                        active.set(active.get() - 1);
+                                        active.set(active.get().saturating_sub(1));
                                     });
                                 }
                                 Err(mpsc::TryRecvError::Empty) => break,

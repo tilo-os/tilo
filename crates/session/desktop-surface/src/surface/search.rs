@@ -151,6 +151,15 @@ impl DesktopHandle {
         withdrawn
     }
 
+    /// Whether the host offers the action `id` (see [`Self::set_host_actions`]).
+    pub fn offers_host_action(&self, id: &str) -> bool {
+        self.shared
+            .borrow()
+            .host_actions
+            .iter()
+            .any(|action| action.id == id)
+    }
+
     /// The host actions the person chose since the last call, by id.
     pub fn take_host_choices(&self) -> Vec<String> {
         std::mem::take(&mut self.shared.borrow_mut().host_choices)
