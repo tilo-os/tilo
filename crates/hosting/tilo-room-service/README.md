@@ -266,9 +266,9 @@ that change: `plan` picks the newest main commit with both images (or
 and platform in the registry and prints the exact manifest diff and pull
 request body (`--infra <checkout> --apply` edits a checkout); `propose` opens
 the pull request on a `promote/` branch with `INFRA_PROMOTION_TOKEN`; `drift`
-reports which revision each service runs and how far main is ahead. t's
-`cloud-drift` check runs `drift` every Monday, and `t dispatch cloud-promotion
---ref stable` the promotion (`t.toml`). Promotions are batched: each
+reports which revision each service runs and how far main is ahead. The
+`Release / Cloud promotion` workflow (`cloud-promotion.yml`) runs `drift`
+every Monday and the promotion on a manual run. Promotions are batched: each
 web entry deploy makes open tabs offer a reload.
 
 Locally, `dev/run.py` runs the persistent room as production does: this

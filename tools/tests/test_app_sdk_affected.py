@@ -1,0 +1,531 @@
+import contextlib
+import importlib.util
+import io
+import hashlib
+from pathlib import Path
+import re
+import sys
+import tempfile
+import unittest
+from unittest import mock
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tools'))
+SPEC = importlib.util.spec_from_file_location('app_sdk_affected', ROOT / 'tools/ci/app_sdk_affected.py')
+selector = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(selector)
+
+
+def package(root: Path, rel: str, name: str, deps: tuple[str, ...] = ()) -> dict:
+    manifest = root / rel / 'Cargo.toml'
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(f'[package]\nname = "{name}"\n')
+    return {
+        'name': name,
+        'manifest_path': str(manifest),
+        'dependencies': [{'name': d, 'path': str(root / dep_dirs[d])} for d in deps],
+    }
+
+
+dep_dirs = {
+    'ui': 'crates/ui',
+    'shell': 'crates/session/shell',
+    'tilo-app-cli': 'crates/dev/tilo-app-cli',
+    'browser-runtime-input': 'crates/browser/runtime-input',
+    'browser-runtime-leaf': 'crates/browser/runtime-leaf',
+}
+
+
+class AppSdkAffectedTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.metadata = {'packages': [
+            package(self.root, 'crates/ui', 'ui'),
+            package(self.root, 'crates/session/shell', 'shell', ('ui',)),
+            package(self.root, 'crates/dev/tilo-app-cli', 'tilo-app-cli'),
+            # The CLI builds this through a subprocess, not a Cargo dependency.
+            package(self.root, 'crates/browser/tilo-browser-compute', 'tilo-browser-compute'),
+            # Only the runtime reaches this chain; no app depends on it.
+            package(self.root, 'crates/browser/runtime-leaf', 'browser-runtime-leaf'),
+            package(self.root, 'crates/browser/runtime-input', 'browser-runtime-input',
+                    ('browser-runtime-leaf',)),
+            package(self.root, 'crates/browser/tilo-browser-runtime', 'tilo-browser-runtime',
+                    ('browser-runtime-input',)),
+            package(self.root, 'crates/browser/tilo-web-desktop', 'tilo-web-desktop'),
+            package(self.root, 'apps/calculator', 'calculator', ('ui',)),
+        ]}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def check(self, *paths: str) -> bool:
+        return selector.affected(self.root, list(paths), self.metadata, 'base', 'head')[0]
+
+    def run_selection(self, paths, lane="both"):
+        output = self.root / 'github-output'
+        with (mock.patch.object(sys, 'argv', ['app_sdk_affected.py', '--lane', lane,
+                                             '--github-output', str(output)]),
+              mock.patch.object(selector.Path, 'cwd', return_value=self.root),
+              mock.patch.object(selector, 'comparison_merge_base', return_value='base'),
+              mock.patch.object(selector, 'changed_files', return_value=list(paths)) as changed,
+              mock.patch.object(selector, 'cargo_metadata', return_value=self.metadata) as metadata,
+              contextlib.redirect_stdout(io.StringIO())):
+            self.assertEqual(selector.main(), 0)
+        changed.assert_called_once()
+        metadata.assert_called_once_with(self.root)
+        return output.read_text().splitlines()
+
+    def test_combined_selection_preserves_distinct_native_and_web_decisions(self):
+        self.other_app()
+        self.assertEqual(self.run_selection(['apps/other/src/main.rs']),
+                         ['affected=true', 'linux_affected=false'])
+
+    def test_combined_selection_keeps_both_lanes_for_shared_source(self):
+        self.assertEqual(self.run_selection(['crates/ui/src/lib.rs']),
+                         ['affected=true', 'linux_affected=true'])
+
+    def test_combined_selection_omits_both_for_unrelated_source(self):
+        self.assertEqual(self.run_selection(['docs/example.md']),
+                         ['affected=false', 'linux_affected=false'])
+
+    def test_existing_single_lane_output_stays_compatible(self):
+        self.assertEqual(self.run_selection(['crates/ui/src/lib.rs'], 'linux'),
+                         ['linux_affected=true'])
+
+    def test_a_crate_an_app_depends_on_runs_the_lanes(self):
+        self.assertTrue(self.check('crates/ui/src/lib.rs'))
+
+    def test_an_app_or_the_sdk_runs_the_lanes(self):
+        self.assertTrue(self.check('apps/calculator/src/main.rs'))
+        self.assertTrue(self.check('crates/dev/tilo-app-cli/src/main.rs'))
+
+    def linux(self, *paths: str) -> bool:
+        return selector.affected(self.root, list(paths), self.metadata,
+                                 'base', 'head', lane='linux')[0]
+
+    def other_app(self):
+        # Match observed Cargo metadata: every native consumer has a source target.
+        for member in self.metadata['packages']:
+            source = Path(member['manifest_path']).parent / 'src/lib.rs'
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text('pub fn fixture() {}\n')
+            member['targets'] = [{'kind': ['lib'], 'src_path': str(source)}]
+        app = package(self.root, 'apps/other', 'other', ('ui',))
+        source = self.root / 'apps/other/src/main.rs'
+        source.parent.mkdir()
+        source.write_text('fn main() {}\n')
+        self.metadata['packages'].append(app)
+        return app, source
+
+    def test_other_app_source_keeps_web_and_native_app_tests_not_linux_sdk(self):
+        self.other_app()
+        self.assertTrue(self.check('apps/other/src/main.rs'))
+        self.assertFalse(self.linux('apps/other/src/main.rs'))
+        self.assertTrue(self.linux('apps/calculator/src/main.rs'))
+        self.assertTrue(self.linux('apps/other/Cargo.toml'))
+        self.assertTrue(self.linux('apps/other/locales/en-US.ftl'))
+        self.assertTrue(self.linux('apps/other/src/main.rs', 'crates/ui/src/lib.rs'))
+
+    def test_runtime_subprocess_and_dependencies_keep_both_lanes(self):
+        runtime = package(self.root, 'crates/runtime/runtime-dylib', 'runtime-dylib', ('ui',))
+        self.metadata['packages'].append(runtime)
+        for path in ('crates/runtime/runtime-dylib/src/lib.rs', 'crates/ui/src/lib.rs'):
+            self.assertTrue(self.check(path))
+            self.assertTrue(self.linux(path))
+
+    def test_app_consumed_by_a_native_root_keeps_linux_sdk(self):
+        app, _ = self.other_app()
+        sdk = next(p for p in self.metadata['packages'] if p['name'] == 'tilo-app-cli')
+        sdk['dependencies'].append({'name': app['name'], 'path': str(self.root / 'apps/other')})
+        self.assertTrue(self.linux('apps/other/src/main.rs'))
+
+    def test_native_source_reference_and_alias_keep_linux_sdk(self):
+        _, source = self.other_app()
+        sdk = self.root / 'crates/dev/tilo-app-cli/src/lib.rs'
+        sdk.parent.mkdir(exist_ok=True)
+        sdk.write_text('include!("../../../../apps/other/src/main.rs");\n')
+        self.assertTrue(self.linux('apps/other/src/main.rs'))
+        sdk.write_text('pub fn sdk() {}\n')
+        self.assertFalse(self.linux('apps/other/src/main.rs'))
+        alias = sdk.parent / 'app'
+        alias.symlink_to(source.parent, target_is_directory=True)
+        self.assertTrue(self.linux('apps/other/src/main.rs'))
+
+    def test_unobserved_native_consumer_keeps_linux_sdk(self):
+        self.other_app()
+        sdk = next(p for p in self.metadata['packages'] if p['name'] == 'tilo-app-cli')
+        source = Path(sdk['targets'][0]['src_path'])
+        source.unlink()
+        self.assertTrue(self.linux('apps/other/src/main.rs'))
+
+    def test_deleted_unknown_and_symlinked_app_sources_keep_linux_sdk(self):
+        _, source = self.other_app()
+        self.assertTrue(self.linux('apps/other/src/unknown.rs'))
+        source.unlink()
+        self.assertTrue(self.linux('apps/other/src/main.rs'))
+        target = source.parent / 'real.rs'
+        target.write_text('fn main() {}\n')
+        source.symlink_to(target)
+        self.assertTrue(self.linux('apps/other/src/main.rs'))
+
+    def test_missing_calculator_observation_and_global_inputs_keep_linux_sdk(self):
+        self.other_app()
+        self.assertTrue(self.linux('apps/other/src/main.rs', 'tools/ci/app_sdk_affected.py'))
+        self.metadata['packages'] = [p for p in self.metadata['packages'] if p['name'] != 'calculator']
+        self.assertTrue(self.linux('apps/other/src/main.rs'))
+
+    def test_private_compute_without_cargo_dependents_runs_the_lanes(self):
+        for path in ('crates/browser/tilo-browser-compute/src/lib.rs',
+                     'crates/browser/tilo-browser-compute/web/compute-worker.mjs'):
+            with self.subTest(path=path):
+                self.assertTrue(self.check(path))
+
+    def test_browser_runtime_code_and_font_loader_assets_run_the_lanes(self):
+        for path in ('crates/browser/tilo-browser-runtime/src/browser.rs',
+                     'crates/browser/tilo-browser-runtime/web/font-loader.mjs'):
+            with self.subTest(path=path):
+                self.assertTrue(self.check(path))
+
+    def test_desktop_bundle_and_its_smoke_script_run_the_lanes(self):
+        for path in ('crates/browser/tilo-web-desktop/src/lib.rs',
+                     'crates/browser/tilo-web-desktop/scripts/smoke.mjs'):
+            with self.subTest(path=path):
+                self.assertTrue(self.check(path))
+
+    def test_runtime_only_transitive_dependencies_run_the_lanes(self):
+        self.assertTrue(self.check('crates/browser/runtime-input/src/lib.rs'))
+        self.assertTrue(self.check('crates/browser/runtime-leaf/src/lib.rs'))
+
+    def test_workflow_events_watch_the_selector_and_graph(self):
+        workflow = (ROOT / '.forgejo/workflows/app-sdk.yml').read_text()
+        for event, following in (('pull_request', 'push'), ('push', 'workflow_dispatch')):
+            section = workflow.split(f'  {event}:\n', 1)[1].split(f'  {following}:', 1)[0]
+            for path in ('tools/ci/app_sdk_affected.py', 'tools/ci/workspace_graph.py'):
+                with self.subTest(event=event, path=path):
+                    self.assertIn(f'      - "{path}"', section)
+
+    def test_a_crate_no_app_reaches_skips_the_lanes(self):
+        self.assertFalse(self.check('crates/session/shell/src/lib.rs'))
+        self.assertFalse(self.check('os/Containerfile', 'docs/ci.md'))
+
+    def integration_fixture(self):
+        shell = next(p for p in self.metadata['packages'] if p['name'] == 'shell')
+        test_root = self.root / 'crates/session/shell/tests/it.rs'
+        test_root.parent.mkdir()
+        test_root.write_text('#[path = "peer_sync_test.rs"]\nmod peer_sync_test;\n')
+        (test_root.parent / 'peer_sync_test.rs').write_text('#[test]\nfn peer_sync() {}\n')
+        source = self.root / 'crates/session/shell/src/lib.rs'
+        source.parent.mkdir()
+        source.write_text('pub fn production() {}\n')
+        shell['targets'] = [
+            {'kind': ['test'], 'src_path': str(test_root)},
+            {'kind': ['lib'], 'src_path': str(source)},
+        ]
+        calculator = next(p for p in self.metadata['packages'] if p['name'] == 'calculator')
+        calculator['dependencies'].append({'name': 'shell',
+                                          'path': str(source.parent.parent)})
+        return shell, test_root, source
+
+    def test_only_audited_integration_module_avoids_sdk_rebuild(self):
+        self.integration_fixture()
+        self.assertFalse(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+        self.assertTrue(self.check('crates/session/shell/src/lib.rs'))
+        self.assertTrue(self.check('crates/session/shell/tests/it.rs'))
+        self.assertTrue(self.check('crates/session/shell/tests/unknown.rs'))
+        self.assertTrue(self.check('crates/session/shell/tests/fixtures/network-boundary.rs'))
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs',
+                                   'crates/ui/src/lib.rs'))
+
+    def test_source_reference_and_missing_observation_keep_sdk_selected(self):
+        _, test_root, source = self.integration_fixture()
+        source.write_text('#[path = "../tests/peer_sync_test.rs"]\nmod imported;\n')
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+        source.unlink()
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+        test_root.unlink()
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+
+    def test_standalone_binary_and_build_script_keep_sdk_selected(self):
+        shell, test_root, _ = self.integration_fixture()
+        module = test_root.parent / 'peer_sync_test.rs'
+        module.write_text('fn main() {}\n')
+        shell['targets'].append({'kind': ['bin'], 'src_path': str(module)})
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+        shell['targets'].pop()
+        script = test_root.parent.parent / 'build.rs'
+        script.write_text('fn main() {}\n')
+        shell['targets'].append({'kind': ['custom-build'], 'src_path': str(script)})
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+
+    def test_other_workspace_source_can_make_module_an_sdk_input(self):
+        self.integration_fixture()
+        consumer = self.root / 'apps/calculator/src/main.rs'
+        consumer.parent.mkdir()
+        consumer.write_text('const FIXTURE: &str = include_str!("peer_sync_test.rs");\n')
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+
+    def shell_unit_fixture(self):
+        shell = next(p for p in self.metadata['packages'] if p['name'] == 'shell')
+        directory = Path(shell['manifest_path']).parent
+        manifest = Path(shell['manifest_path'])
+        manifest.write_text('[package]\nname = "shell"\nedition = "2024"\n')
+        # Exercise a known audited fixture, independently of later main
+        # manifest changes that intentionally restore the production lanes.
+        path = 'crates/session/shell/src/shell/frame_retained_tests.rs'
+        declaration, build, _ = selector.AUDITED_UNIT_MODULES[path]
+        audit = mock.patch.dict(selector.AUDITED_UNIT_MODULES, {
+            path: (declaration, build, hashlib.sha256(manifest.read_bytes()).hexdigest())})
+        audit.start()
+        self.addCleanup(audit.stop)
+        host = directory / 'src/shell/frame.rs'
+        host.parent.mkdir(parents=True)
+        host.write_text('#[cfg(test)]\n#[path = "frame_retained_tests.rs"]\nmod retained_tests;\n')
+        module = host.parent / 'frame_retained_tests.rs'
+        module.write_text('#[test]\nfn paints_real_frames() {}\n')
+        library = directory / 'src/lib.rs'
+        library.write_text('#[path = "shell/frame.rs"]\nmod frame;\n')
+        shell['targets'] = [{'kind': ['lib'], 'src_path': str(library), 'test': True}]
+        # Make the SDK consumer reachable so an unaudited shell input keeps it.
+        cli = next(p for p in self.metadata['packages'] if p['name'] == 'tilo-app-cli')
+        cli['dependencies'].append({'name': 'shell', 'path': str(directory)})
+        return module.relative_to(self.root).as_posix(), host, directory
+
+    def test_shell_unit_oracle_omits_sdk_and_retains_ordinary_native_tests(self):
+        from ci.affected_packages import make_plan
+        path, _, _ = self.shell_unit_fixture()
+        self.assertFalse(self.check(path))
+        self.assertFalse(self.linux(path))
+        plan = make_plan(self.metadata, self.root, [path], 2)
+        self.assertIn('shell', plan['selected'])
+        self.assertIn('shell', plan['tested'])
+        self.assertFalse(plan['full'])
+        self.assertTrue(self.check(path, 'crates/session/shell/src/shell/frame.rs'))
+
+    def test_shell_unit_manifest_or_automatic_build_script_restores_sdk(self):
+        path, _, directory = self.shell_unit_fixture()
+        script = directory / 'build.rs'
+        script.write_text('fn main() {}\n')
+        self.assertTrue(self.check(path))
+        self.assertTrue(self.linux(path))
+        script.unlink()
+        manifest = directory / 'Cargo.toml'
+        manifest.write_text(manifest.read_text() + '\n# Different inputs need another audit.\n')
+        self.assertTrue(self.check(path))
+
+    def test_shell_unit_custom_build_target_restores_sdk(self):
+        path, _, directory = self.shell_unit_fixture()
+        shell = next(p for p in self.metadata['packages'] if p['name'] == 'shell')
+        shell['targets'] = [{'kind': ['custom-build'], 'src_path': str(directory / 'generator.rs')}]
+        self.assertTrue(self.check(path))
+
+    def test_shell_unit_guard_or_sdk_reader_restores_sdk(self):
+        path, host, _ = self.shell_unit_fixture()
+        host.write_text('#[path = "frame_retained_tests.rs"]\nmod production;\n')
+        self.assertTrue(self.check(path))
+        host.write_text('#[cfg(test)]\n#[path = "frame_retained_tests.rs"]\nmod retained_tests;\n')
+        reader = self.root / 'crates/dev/tilo-app-cli/src/reader.rs'
+        reader.parent.mkdir(parents=True)
+        reader.write_text('const INPUT: &str = include_str!("frame_retained_tests.rs");\n')
+        self.assertTrue(self.check(path))
+        self.assertTrue(self.linux(path))
+
+    def unit_module_fixture(self):
+        self.other_app()
+        ui = next(p for p in self.metadata['packages'] if p['name'] == 'ui')
+        directory = self.root / 'crates/sdk/ui-core'
+        directory.mkdir(parents=True)
+        manifest = directory / 'Cargo.toml'
+        manifest.write_text('[package]\nname = "ui"\n')
+        ui['manifest_path'] = str(manifest)
+        for member in self.metadata['packages']:
+            for dependency in member['dependencies']:
+                if dependency['name'] == 'ui':
+                    dependency['path'] = str(directory)
+        source = directory / 'src/lib.rs'
+        source.parent.mkdir()
+        source.write_text('#[path = "app/host.rs"]\nmod host;\n')
+        host = source.parent / 'app/host.rs'
+        host.parent.mkdir()
+        host.write_text('#[cfg(test)]\n#[path = "bound_component_tests.rs"]\n'
+                        'mod bound_component_tests;\n')
+        module = host.parent / 'bound_component_tests.rs'
+        module.write_text('#[test]\nfn primary_text() {}\n')
+        script = directory / 'build.rs'
+        script.write_bytes((ROOT / 'crates/sdk/ui-core/build.rs').read_bytes())
+        ui['targets'] = [{'kind': ['lib'], 'src_path': str(source)},
+                         {'kind': ['custom-build'], 'src_path': str(script)}]
+        return module.relative_to(self.root).as_posix(), host, script
+
+    def test_audited_unit_module_omits_sdk_but_keeps_native_consumers_and_tests(self):
+        from ci.affected_packages import make_plan
+        path, _, _ = self.unit_module_fixture()
+        self.assertFalse(self.check(path))
+        self.assertFalse(self.linux(path))
+        plan = make_plan(self.metadata, self.root, [path], 2)
+        self.assertTrue({'ui', 'shell', 'calculator'} <= set(plan['selected']))
+        self.assertIn('ui', plan['tested'])
+        self.assertFalse(plan['full'])
+
+    def test_unit_module_without_exact_test_guard_keeps_sdk(self):
+        path, host, _ = self.unit_module_fixture()
+        host.write_text('#[path = "bound_component_tests.rs"]\nmod production;\n')
+        self.assertTrue(self.check(path))
+        self.assertTrue(self.linux(path))
+
+    def test_unit_module_mixed_with_production_or_build_input_keeps_sdk(self):
+        path, _, _ = self.unit_module_fixture()
+        self.assertTrue(self.check(path, 'crates/sdk/ui-core/src/lib.rs'))
+        self.assertTrue(self.check(path, 'crates/sdk/ui-core/build.rs'))
+        self.assertTrue(self.check(path, 'crates/sdk/ui-core/tests/fixtures/test_image.png.hex'))
+
+    def test_changed_or_missing_audited_build_script_keeps_sdk(self):
+        path, _, script = self.unit_module_fixture()
+        script.write_text(script.read_text() + '\n// New inputs require a new audit.\n')
+        self.assertTrue(self.check(path))
+        script.unlink()
+        self.assertTrue(self.check(path))
+
+    def test_unit_module_as_non_test_target_keeps_sdk(self):
+        path, _, _ = self.unit_module_fixture()
+        ui = next(p for p in self.metadata['packages'] if p['name'] == 'ui')
+        ui['targets'].append({'kind': ['bin'], 'src_path': str(self.root / path)})
+        self.assertTrue(self.check(path))
+
+    def test_sdk_fixture_and_example_source_readers_keep_unit_module_affected(self):
+        path, _, _ = self.unit_module_fixture()
+        reader = self.root / 'crates/dev/tilo-app-cli/tests/read_module.rs'
+        reader.parent.mkdir()
+        reader.write_text('const DATA: &str = include_str!("bound_component_tests.rs");\n')
+        self.assertTrue(self.check(path))
+        reader.unlink()
+        reader = self.root / 'apps/calculator/examples/nested/reader.rs'
+        reader.parent.mkdir(parents=True)
+        reader.write_text('include!("bound_component_tests.rs");\n')
+        self.assertTrue(self.check(path))
+
+    def test_unit_module_alias_and_unobserved_input_keep_sdk(self):
+        path, _, _ = self.unit_module_fixture()
+        alias = self.root / 'crates/dev/tilo-app-cli/src/source_alias'
+        alias.symlink_to(self.root / path)
+        self.assertTrue(self.check(path))
+        alias.unlink()
+        (self.root / path).unlink()
+        self.assertTrue(self.check(path))
+        self.assertTrue(self.check('crates/sdk/ui-core/src/app/new_unit_tests.rs'))
+
+    def test_second_reference_in_declaration_file_keeps_sdk(self):
+        path, host, _ = self.unit_module_fixture()
+        host.write_text(host.read_text() + 'const DATA: &str = '
+                        'include_str!("bound_component_tests.rs");\n')
+        self.assertTrue(self.check(path))
+
+    def test_generated_sdk_template_source_reader_keeps_sdk(self):
+        path, _, _ = self.unit_module_fixture()
+        reader = self.root / 'crates/dev/tilo-app-cli/templates/starter/src/lib.rs.in'
+        reader.parent.mkdir(parents=True)
+        reader.write_text('include!("bound_component_tests.rs");\n')
+        self.assertTrue(self.check(path))
+
+    def standalone_fixture(self, name='calculator'):
+        pkg = next(p for p in self.metadata['packages'] if p['name'] == name)
+        path = Path(pkg['manifest_path']).parent / 'tests/native_flow.rs'
+        path.parent.mkdir()
+        path.write_text('#[test]\nfn native_flow() {}\n')
+        source = path.parent.parent / 'src/main.rs'
+        source.parent.mkdir()
+        source.write_text('fn main() {}\n')
+        pkg['targets'] = [{'kind': ['test'], 'src_path': str(path)},
+                          {'kind': ['bin'], 'src_path': str(source)}]
+        return pkg, path, source
+
+    def test_standalone_app_test_does_not_rebuild_sdk_but_app_source_does(self):
+        _, path, source = self.standalone_fixture()
+        self.assertFalse(self.check(str(path.relative_to(self.root))))
+        self.assertTrue(self.check(str(source.relative_to(self.root))))
+        self.assertTrue(self.check(str(path.relative_to(self.root)),
+                                   'apps/calculator/src/main.rs'))
+        path.unlink()
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_sdk_owned_integration_targets_remain_inputs(self):
+        _, path, _ = self.standalone_fixture('tilo-app-cli')
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+        caps = package(self.root, 'crates/caps', 'tilo-caps')
+        self.metadata['packages'].append(caps)
+        _, path, _ = self.standalone_fixture('tilo-caps')
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_app_test_reused_by_sdk_test_remains_an_input(self):
+        _, path, _ = self.standalone_fixture()
+        sdk_test = self.root / 'crates/dev/tilo-app-cli/tests/it.rs'
+        sdk_test.parent.mkdir()
+        sdk_test.write_text('const FIXTURE: &str = include_str!("native_flow.rs");\n')
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_app_test_binary_build_script_and_nested_inputs_fail_closed(self):
+        pkg, path, _ = self.standalone_fixture()
+        relative = str(path.relative_to(self.root))
+        pkg['targets'].append({'kind': ['bin'], 'src_path': str(path)})
+        self.assertTrue(self.check(relative))
+        pkg['targets'].pop()
+        pkg['targets'].append({'kind': ['custom-build'],
+                               'src_path': str(path.parent.parent / 'build.rs')})
+        self.assertTrue(self.check(relative))
+        pkg['targets'].pop()
+        self.assertTrue(self.check('apps/calculator/tests/fixtures/data.rs'))
+        self.assertTrue(self.check('apps/calculator/tests/unknown.rs'))
+        self.assertTrue(self.check('apps/calculator/tests/it.rs'))
+
+    def test_sdk_workflow_tests_stay_inside_exempt_packages(self):
+        workflow = (ROOT / '.forgejo/workflows/app-sdk.yml').read_text()
+        for command in re.findall(r'cargo test[^\n]+', workflow):
+            # A tool outside the workspace, under a path that always keeps
+            # the lanes (GLOBAL_INPUTS).
+            manifest = re.search(r'--manifest-path (\S+)', command)
+            if manifest:
+                self.assertTrue(manifest.group(1).startswith(selector.GLOBAL_INPUTS), command)
+                self.assertNotRegex(command, r'-p ')
+                continue
+            names = re.findall(r'-p ([a-z0-9-]+)', command)
+            self.assertTrue(names, command)
+            self.assertTrue(set(names) <= selector.SDK_PACKAGES, command)
+
+    def test_source_alias_cannot_be_a_separate_test_input(self):
+        _, path, source = self.standalone_fixture()
+        path.unlink()
+        path.symlink_to(source)
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_sdk_test_directory_alias_retains_its_dependency_fixture(self):
+        _, path, _ = self.standalone_fixture()
+        (path.parent / 'mod.rs').write_text('mod native_flow;\n')
+        sdk_tests = self.root / 'crates/dev/tilo-app-cli/tests'
+        sdk_tests.mkdir()
+        (sdk_tests / 'it.rs').write_text('mod shared;\n')
+        (sdk_tests / 'shared').symlink_to(path.parent, target_is_directory=True)
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_sdk_test_extensionless_or_broken_alias_retains_lanes(self):
+        _, path, _ = self.standalone_fixture()
+        sdk_tests = self.root / 'crates/dev/tilo-app-cli/tests'
+        sdk_tests.mkdir()
+        (sdk_tests / 'it.rs').write_text('const X: &str = include_str!("fixture");\n')
+        alias = sdk_tests / 'fixture'
+        alias.symlink_to(path)
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+        alias.unlink()
+        alias.symlink_to(path.parent / 'missing')
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_repository_wide_inputs_run_the_lanes(self):
+        self.assertTrue(self.check('rust-toolchain.toml'))
+        self.assertTrue(self.check('.forgejo/workflows/app-sdk.yml'))
+        self.assertTrue(self.check('crates/stray-file.rs'))
+        self.assertTrue(self.check('tools/ci/app_sdk_affected.py'))
+        self.assertTrue(self.check('tools/ci/workspace_graph.py'))
+
+
+if __name__ == '__main__':
+    unittest.main()
