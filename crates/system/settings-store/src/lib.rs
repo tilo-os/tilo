@@ -181,10 +181,10 @@ pub fn settings_path_in(root: &Path) -> PathBuf {
     root.join(SESSION_DIR).join(FILE)
 }
 
-/// Move a settings document left at `<root>/settings.json` to `path`, unless
-/// a document is already there. A rename within one directory tree is atomic,
-/// so two processes resolving the path at once move it once; the loser finds
-/// it gone. Failing leaves the old document where it was and reads start from
+/// Move a settings document left at `<root>/settings.json` into
+/// [`SESSION_DIR`], unless a document is already there. The move never
+/// replaces one, so two processes resolving the path at once move it once.
+/// Failing leaves the old document where it was and reads start from
 /// defaults, as for any unreadable document.
 ///
 /// Remembers the last path it found settled, so the readers that poll the
@@ -197,28 +197,41 @@ fn adopt_legacy_document(root: &Path, path: &Path) {
     if settled.as_deref() == Some(path) {
         return;
     }
-    if std::fs::symlink_metadata(path).is_err() {
-        let legacy = root.join(FILE);
-        let is_document = std::fs::symlink_metadata(&legacy).is_ok_and(|meta| meta.is_file());
-        if !is_document {
-            return;
-        }
-        let moved = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::rename(&legacy, path));
-        if let Err(error) = moved
-            && std::fs::symlink_metadata(path).is_err()
-        {
-            eprintln!(
-                "settings-store: could not move {} to {}: {error}",
-                legacy.display(),
-                path.display()
-            );
-            return;
-        }
+    match move_legacy_document(root) {
+        Ok(true) => *settled = Some(path.to_path_buf()),
+        Ok(false) => {}
+        Err(error) => eprintln!(
+            "settings-store: could not move {} into {}: {error}",
+            root.join(FILE).display(),
+            root.join(SESSION_DIR).display()
+        ),
     }
-    *settled = Some(path.to_path_buf());
+}
+
+/// Whether the document is in [`SESSION_DIR`] under `root` once this returns:
+/// it was there, or the one left at the old path moved there.
+fn move_legacy_document(root: &Path) -> Result<bool, tilo_files::FsError> {
+    use tilo_files::{FsError, Kind, Location, VPath, blocking};
+    let invalid = |_| FsError::InvalidPath("settings document path");
+    let dir = match tilo_files::Dir::open(Location::Native(root.to_path_buf())) {
+        Ok(dir) => dir,
+        Err(FsError::NotFound) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let current = VPath::new(&format!("{SESSION_DIR}/{FILE}")).map_err(invalid)?;
+    if blocking::metadata(&dir, &current).is_ok() {
+        return Ok(true);
+    }
+    let legacy = VPath::new(FILE).map_err(invalid)?;
+    match blocking::metadata(&dir, &legacy) {
+        Ok(meta) if meta.kind == Kind::File && !meta.symlink => {}
+        _ => return Ok(false),
+    }
+    blocking::create_dir_all(&dir, &VPath::new(SESSION_DIR).map_err(invalid)?)?;
+    match blocking::rename_noreplace(&dir, &legacy, &current) {
+        Ok(()) | Err(FsError::AlreadyExists | FsError::NotFound) => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 /// Read and parse the whole document. Returns an empty object for a missing, unreadable or
