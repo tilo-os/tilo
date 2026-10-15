@@ -528,6 +528,20 @@ files = [
   { from = "tilo-image-policy-check", to = "/usr/libexec/tilo-image-policy-check", mode = "0755" },
 ]
 
+# Dual boot: run by hand after the first Tilo boot to enlist it after Windows
+# in the firmware boot order (docs/windows-first-tilo-boot-order.md). The
+# installer image, and so every target it installs, inherits it from here.
+[[component]]
+name = "boot-order"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-boot-order"]
+bins = ["tilo-boot-order"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-boot-order", to = "/usr/libexec/tilo-boot-order", mode = "0755" },
+]
+
 # Downloaded, Tilo-signed system extensions: tilo-extension-activate.service at
 # boot, tilo-extension@VERB:ID.service on demand, the refresh timer and the
 # NetworkManager hook all start it; a swap takes effect at its next start.
