@@ -75,6 +75,8 @@ mod legacy_on_kvm;
 mod live_plane;
 #[path = "multi_host.rs"]
 mod multi_host;
+#[path = "offloadable_action.rs"]
+mod offloadable_action;
 #[cfg(unix)]
 #[path = "out_of_band_join_modes.rs"]
 mod out_of_band_join_modes;
