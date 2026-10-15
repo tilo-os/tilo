@@ -48,6 +48,12 @@ test-support = ["tilo-host/test-support", "dep:tilo-test-env"]
 # report the shell's `ux-bench` binary drives. Off by default, so the shared
 # runtime apps load does not ship it.
 ux-bench = []
+# Hyphenation patterns (hypher) are not linked into text layout: the program
+# fetches their code the first time text hyphenates and hands it over
+# (`defer_hyphenation`, `install_hyphenation`); until then text breaks only
+# between words. The browser desktop uses this to keep them out of its start
+# module.
+lazy-hyphenation = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests

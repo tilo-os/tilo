@@ -378,6 +378,9 @@ pub use state::{
     RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
 };
 pub use text_break::discretionary_hyphen_breaks;
+pub use text_break::{Hyphenate, MakeHyphenation, builtin_hyphenation, hyphenation_generation};
+#[cfg(feature = "lazy-hyphenation")]
+pub use text_break::{defer_hyphenation, hyphenation_load_failed, install_hyphenation};
 pub use theme::{
     AppearanceIntent, ContentSurface, Theme, WindowAppearance, resolve_theme_layers, workspace_hue,
 };

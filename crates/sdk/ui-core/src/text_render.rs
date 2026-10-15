@@ -506,6 +506,9 @@ impl std::hash::Hash for Hyphenation {
             Self::Auto(language) => {
                 1_u8.hash(state);
                 language.hash(state);
+                // Layouts made before the patterns' code arrived (where it
+                // loads on first use) have no hyphens: make them again.
+                crate::text_break::hyphenation_generation().hash(state);
             }
             Self::Custom(hyphenator) => {
                 2_u8.hash(state);
