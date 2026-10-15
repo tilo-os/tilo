@@ -1217,6 +1217,8 @@ name = "sdk-macos"
 requires = ["os=macos", "arch=arm64"]
 run = """
 set -eu
+# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.
+unset WGPU_BACKEND WGPU_ADAPTER_NAME
 python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TMPDIR/font-artifacts"
 export TILO_FONT_ASSET_CACHE="$TMPDIR/font-artifacts" TILO_FONT_ASSETS_OFFLINE=1
 cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
@@ -1255,6 +1257,8 @@ name = "apps-macos"
 requires = ["os=macos", "arch=arm64"]
 run = """
 set -eu
+# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.
+unset WGPU_BACKEND WGPU_ADAPTER_NAME
 python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TMPDIR/font-artifacts"
 export TILO_FONT_ASSET_CACHE="$TMPDIR/font-artifacts" TILO_FONT_ASSETS_OFFLINE=1
 packages=$(python3 tools/ci/macos_apps.py)
@@ -1770,6 +1774,8 @@ name = "runtime-macos-app"
 requires = ["os=macos", "arch=arm64"]
 run = """
 set -eu
+# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.
+unset WGPU_BACKEND WGPU_ADAPTER_NAME
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 out=${CARGO_TARGET_DIR:-$PWD/target}/dist-macos
 rm -rf "$out"
