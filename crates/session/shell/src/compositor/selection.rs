@@ -60,6 +60,7 @@ use tilo_clock::unix_now_ms;
 
 #[cfg(target_os = "linux")]
 use crate::compositor::state::{ClientState, State};
+use tilo_lock::MutexRecover as _;
 
 /// Mime type the mirror understands; `text/plain`/`UTF8_STRING`/`STRING`
 /// aliases are also offered for X11-heritage clients via Xwayland.
@@ -1030,10 +1031,7 @@ struct DragTransferCompletion {
 
 impl Drop for DragTransferCompletion {
     fn drop(&mut self) {
-        let mut capture = self
-            .capture
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut capture = self.capture.lock_recover();
         if self.uri {
             capture.uri_transfer_complete = true;
         } else {
@@ -1079,10 +1077,7 @@ pub struct DragLabel(Arc<Mutex<crate::compositor::drag_feedback::DragVisual>>);
 
 impl DragLabel {
     pub fn set(&self, label: Option<String>) {
-        let mut visual = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut visual = self.0.lock_recover();
         if label.is_none() {
             *visual = crate::compositor::drag_feedback::DragVisual::default();
         } else {
@@ -1091,25 +1086,15 @@ impl DragLabel {
     }
 
     pub fn get(&self) -> Option<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .label
-            .clone()
+        self.0.lock_recover().label.clone()
     }
 
     pub fn set_preview(&self, preview: crate::compositor::drag_feedback::DragPreview) {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .preview = Some(preview);
+        self.0.lock_recover().preview = Some(preview);
     }
 
     pub fn snapshot(&self) -> crate::compositor::drag_feedback::DragVisual {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.0.lock_recover().clone()
     }
 }
 
@@ -1712,10 +1697,7 @@ fn request_dragged_name(
     // Our copy of the write end must close too, or the read below never sees
     // EOF — the client's copy closing alone isn't enough.
     drop(writer);
-    capture
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .uri_transfer_complete = false;
+    capture.lock_recover().uri_transfer_complete = false;
     let completion = DragTransferCompletion {
         capture: capture.clone(),
         uri: true,
@@ -1751,10 +1733,7 @@ fn request_dragged_name(
                 if !previewable.is_empty() {
                     request_path_drag_preview(&previewable, label.clone());
                 }
-                capture
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .paths = Some(paths);
+                capture.lock_recover().paths = Some(paths);
             }
         });
 }
@@ -1844,14 +1823,8 @@ fn request_dragged_content(
     drop(writer);
     let suffix = drag_content_suffix(mime);
     let (max_content_bytes, wait_timeout) = drag_content_limit(mime);
-    capture
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .wait_timeout = wait_timeout;
-    capture
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .raw_transfer_complete = false;
+    capture.lock_recover().wait_timeout = wait_timeout;
+    capture.lock_recover().raw_transfer_complete = false;
     let completion = DragTransferCompletion {
         capture: capture.clone(),
         uri: false,
@@ -1926,9 +1899,7 @@ fn request_dragged_content(
                         visual.set_preview(preview);
                     }
                 }
-                let mut state = capture
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut state = capture.lock_recover();
                 if state.disposition == 2 {
                     drop(state);
                     let _ = std::fs::remove_file(path);
@@ -2060,14 +2031,8 @@ impl ClientDndGrabHandler for State {
             if target.is_none()
                 && let Some(placement) = self.selection.shell_drop_placement.take()
             {
-                capture
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .disposition = 1;
-                let wait_timeout = capture
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .wait_timeout;
+                capture.lock_recover().disposition = 1;
+                let wait_timeout = capture.lock_recover().wait_timeout;
                 self.selection.pending_shell_drop = Some(PendingShellDrop {
                     placement,
                     wait_timeout,
@@ -2077,9 +2042,7 @@ impl ClientDndGrabHandler for State {
             } else {
                 self.selection.shell_drop_placement = None;
                 let raw = {
-                    let mut state = capture
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut state = capture.lock_recover();
                     state.disposition = 2;
                     state.raw_path.take()
                 };
@@ -2104,10 +2067,7 @@ pub fn pump_pending_shell_drop(
         return false;
     };
     let (paths, unused_raw) = {
-        let mut capture = pending
-            .capture
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut capture = pending.capture.lock_recover();
         let workspace_root = std::path::Path::new("/var/workspace").canonicalize().ok();
         let from_uri: Vec<_> = capture
             .paths
@@ -2144,12 +2104,7 @@ pub fn pump_pending_shell_drop(
                 .open_dropped_path_with_placement(path, placement);
         }
         if !changed {
-            let raw = pending
-                .capture
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .raw_path
-                .take();
+            let raw = pending.capture.lock_recover().raw_path.take();
             if let Some(path) = raw {
                 let _ = std::fs::remove_file(path);
             }
@@ -2157,10 +2112,7 @@ pub fn pump_pending_shell_drop(
         return changed;
     }
     let transfers_complete = {
-        let capture = pending
-            .capture
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let capture = pending.capture.lock_recover();
         capture.uri_transfer_complete && capture.raw_transfer_complete
     };
     if transfers_complete || pending.queued_at.elapsed() > pending.wait_timeout {
@@ -2168,10 +2120,7 @@ pub fn pump_pending_shell_drop(
             return false;
         };
         let raw = {
-            let mut capture = pending
-                .capture
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut capture = pending.capture.lock_recover();
             capture.disposition = 2;
             capture.raw_path.take()
         };

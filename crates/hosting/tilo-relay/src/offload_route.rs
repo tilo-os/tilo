@@ -15,7 +15,7 @@
 //! handler.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fs::document_media::DocumentMedia;
@@ -23,6 +23,7 @@ use runtime_fs::blobs::BlobScope;
 use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
 
 use crate::offload::{Offloader, RanOn};
+use tilo_lock::MutexRecover as _;
 
 /// Local runs awaited at once before the oldest are forgotten.
 const MAX_RUNNING_HERE: usize = 64;
@@ -78,10 +79,7 @@ impl OffloadRoute {
         }
         let key = (request.room.clone(), request.inputs.clone());
         if let Ok(bytes) = self.offloader.input_bytes(&inputs).await {
-            let mut running = self
-                .running_here
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut running = self.running_here.lock_recover();
             // A local run the door never reports (it failed) is forgotten
             // rather than kept forever.
             if running.len() >= MAX_RUNNING_HERE {
@@ -107,10 +105,7 @@ impl OffloadRoute {
                 .await
                 .map_err(|error| format!("an output could not be kept: {error}"))?;
         }
-        self.running_here
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&key);
+        self.running_here.lock_recover().remove(&key);
         Ok(Offloaded::Ran {
             output: run.output,
             device: hex::encode(worker),
@@ -140,8 +135,7 @@ impl ActionOffload for OffloadRoute {
     fn ran_here(&self, request: &OffloadRequest, elapsed: Duration) {
         let bytes = self
             .running_here
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .remove(&(request.room.clone(), request.inputs.clone()));
         if let Some(bytes) = bytes {
             self.offloader

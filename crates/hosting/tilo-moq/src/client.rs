@@ -7,9 +7,10 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use tilo_lock::MutexRecover as _;
 
 const SEND_AGE: Duration = Duration::from_millis(100);
 const RECEIVE_AGE: Duration = Duration::from_millis(200);
@@ -191,10 +192,7 @@ impl Shared {
     }
     fn check(&self) -> Result<(), ClientError> {
         if !self.current() {
-            self.state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .end(Status::Denied);
+            self.state.lock_recover().end(Status::Denied);
             return Err(ClientError::Denied);
         }
         Ok(())
@@ -263,7 +261,7 @@ impl Client {
             broadcast
                 .announce(moq_net::origin::Route::default())
                 .map_err(|_| ClientError::Unavailable)?;
-            let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = shared.state.lock_recover();
             state.track = Some(track);
             state.broadcast = Some(broadcast);
             drop(state);
@@ -307,11 +305,7 @@ impl Client {
     }
     pub fn status(&self) -> Status {
         let _ = self.shared.check();
-        self.shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .status
+        self.shared.state.lock_recover().status
     }
     /// Called only after the shell's independent local capture consent/lease.
     /// This operation cannot widen the owner's granted publication direction.
@@ -325,11 +319,7 @@ impl Client {
         if self.shared.scope.publication.is_none() {
             return Err(ClientError::Denied);
         }
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.shared.state.lock_recover();
         if state.status != Status::Live {
             return Err(ClientError::Unavailable);
         }
@@ -346,11 +336,7 @@ impl Client {
     pub fn try_send(&self, frame: CapturedOpus) -> Result<(), ClientError> {
         self.shared.check()?;
         let now = Instant::now();
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.shared.state.lock_recover();
         if state.status != Status::Live {
             return Err(ClientError::Unavailable);
         }
@@ -415,11 +401,7 @@ impl Client {
     }
     pub fn try_recv(&self) -> Option<ReceivedOpus> {
         self.shared.check().ok()?;
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.shared.state.lock_recover();
         state.expire(Instant::now());
         if state.status != Status::Live {
             return None;
@@ -433,11 +415,7 @@ impl Client {
         state.received.get_mut(&name)?.pop_front()
     }
     pub fn counters(&self) -> Counters {
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.shared.state.lock_recover();
         state.expire(Instant::now());
         Counters {
             queued_received: state.received.values().map(VecDeque::len).sum(),
@@ -445,23 +423,11 @@ impl Client {
         }
     }
     pub fn stop_publication(&self) {
-        self.shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear_publication();
+        self.shared.state.lock_recover().clear_publication();
     }
     pub fn close(&self) {
-        self.shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .end(Status::Closed);
-        let task = self
-            .task
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        self.shared.state.lock_recover().end(Status::Closed);
+        let task = self.task.lock_recover().take();
         if let Some(task) = task {
             task.abort();
         }
@@ -554,11 +520,7 @@ async fn run(
         carrier::connect(&url, &trust, &grant, publish, subscribe, CONNECT_TIMEOUT).await;
     drop(grant);
     let Ok(connected) = connected else {
-        shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .end(Status::Failed);
+        shared.state.lock_recover().end(Status::Failed);
         return;
     };
     let session = connected.session.clone();
@@ -567,7 +529,7 @@ async fn run(
         return;
     }
     {
-        let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = shared.state.lock_recover();
         if state.status != Status::Connecting {
             session.abort(moq_net::Error::Cancel);
             return;
@@ -586,10 +548,10 @@ async fn run(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
-            _ = session.closed() => { shared.state.lock().unwrap_or_else(PoisonError::into_inner).end(Status::Failed); break; }
+            _ = session.closed() => { shared.state.lock_recover().end(Status::Failed); break; }
             _ = tick.tick() => {
                 if shared.check().is_err() { break; }
-                let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut state = shared.state.lock_recover();
                 if state.status != Status::Live { break; }
                 state.expire(Instant::now());
             }
@@ -597,7 +559,7 @@ async fn run(
                 // A closed remote publication can return under the same exact
                 // namespace with a restarted sequence. Retire this carrier so
                 // its owner obtains a fresh proof/generation and decoder state.
-                shared.state.lock().unwrap_or_else(PoisonError::into_inner).end(Status::Failed);
+                shared.state.lock_recover().end(Status::Failed);
                 break;
             }
         }
@@ -692,7 +654,7 @@ fn deliver(
     object: VoiceObject,
     last: &Mutex<Option<Delivered>>,
 ) -> bool {
-    let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = shared.state.lock_recover();
     if state.status != Status::Live {
         return false;
     }
@@ -739,7 +701,7 @@ fn account(
     object: &VoiceObject,
     last: &Mutex<Option<Delivered>>,
 ) -> bool {
-    let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut last = last.lock_recover();
     if let Some(prior) = *last {
         if object.sequence <= prior.sequence {
             state.counters.duplicate_dropped = state.counters.duplicate_dropped.saturating_add(1);
@@ -760,7 +722,7 @@ fn account(
 /// Drop one grouped object that arrived past its group's read budget,
 /// counting it and what it skipped. Returns false when the carrier must stop.
 fn drop_late(shared: &Shared, object: &VoiceObject, last: &Mutex<Option<Delivered>>) -> bool {
-    let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = shared.state.lock_recover();
     if state.status != Status::Live {
         return false;
     }

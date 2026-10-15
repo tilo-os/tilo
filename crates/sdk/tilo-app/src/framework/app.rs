@@ -39,6 +39,7 @@ use super::live::Live;
 use super::root::ResourceRoot;
 use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
+use tilo_lock::MutexRecover as _;
 
 /// A framework app: one resource type and a view of it.
 ///
@@ -349,9 +350,7 @@ pub(crate) fn leaked<T: Send + Sync + 'static>(
 ) -> &'static T {
     static TABLE: OnceLock<Mutex<HashMap<TypeId, Leaked>>> = OnceLock::new();
     let table = TABLE.get_or_init(Mutex::default);
-    let mut table = table
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut table = table.lock_recover();
     let entry = *table
         .entry(key)
         .or_insert_with(|| Box::leak(Box::new(make())) as Leaked);

@@ -13,6 +13,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use crate::auth::PeerRole;
 use crate::store::{CommitRecord, WorkspaceStore};
 use crate::transport::Envelope;
+use tilo_lock::MutexRecover as _;
 
 /// Membership set for a workspace on this relay. Populated by the
 /// admin (`bind-workspace`) via the workspace-directory CRDT and
@@ -198,10 +199,7 @@ pub(crate) struct CommitClaim {
 
 impl Drop for CommitClaim {
     fn drop(&mut self) {
-        self.claims
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.key);
+        self.claims.lock_recover().remove(&self.key);
     }
 }
 
@@ -469,10 +467,7 @@ impl WorkspaceRuntime {
         op: [u8; 16],
     ) -> Result<CommitClaim, Arc<AsyncMutex<()>>> {
         let key = (author, op);
-        let mut claims = self
-            .commit_claims
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut claims = self.commit_claims.lock_recover();
         if let Some(held) = claims.get(&key) {
             return Err(held.clone());
         }

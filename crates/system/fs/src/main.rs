@@ -45,6 +45,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+use tilo_lock::MutexRecover as _;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Tilo collaborative filesystem", long_about = None)]
@@ -367,9 +368,7 @@ mod share_mount_tests {
                 metadata_hash: ContentHash([0x56; 32]),
             });
             apply_shared_snapshot(&namespace, &history, &second).unwrap();
-            let guard = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let guard = namespace.lock_recover();
             assert_eq!(guard.ino_for_record_id(record_id), Some(ino));
             assert_eq!(guard.getattr(ino).unwrap().size, 456);
             drop(guard);
@@ -1728,10 +1727,7 @@ impl ReplicaWait {
 
     fn new(namespace: &Arc<Mutex<Namespace>>) -> Self {
         Self {
-            changes: namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .subscribe_changes(),
+            changes: namespace.lock_recover().subscribe_changes(),
             retry: Self::FIRST_RETRY,
         }
     }
@@ -1765,10 +1761,7 @@ impl ReplicaWait {
 /// The namespace's generation for change detection: its Automerge heads
 /// (every change moves them), not a hash of a full save every heartbeat.
 fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> Vec<automerge::ChangeHash> {
-    namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .heads()
+    namespace.lock_recover().heads()
 }
 
 #[allow(
@@ -3021,9 +3014,7 @@ impl ShareRefreshTask {
             return Ok(());
         };
         let observed_at_ms = observation.observed_at_ms;
-        let mut registry = availability
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registry = availability.lock_recover();
         registry.observe_replica(
             revision.record_id,
             self.actor.device,
@@ -3052,9 +3043,7 @@ fn track_shared_revision(
     let Some(availability) = availability else {
         return Ok(());
     };
-    let mut registry = availability
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut registry = availability.lock_recover();
     let mut record = registry
         .get(revision.record_id)
         .cloned()
@@ -3089,9 +3078,7 @@ async fn refresh_host_replica_observation(
         .request_bearer_link_replica_ack(link, request)
         .await?;
     let observed_at_ms = observation.observed_at_ms;
-    let mut registry = availability
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut registry = availability.lock_recover();
     registry.observe_replica(
         revision.record_id,
         local_device,
@@ -3143,9 +3130,7 @@ fn apply_shared_snapshot(
     // whose referenced history node is absent locally.
     append_snapshot_history(history, snapshot)?;
     {
-        let mut namespace = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut namespace = namespace.lock_recover();
         namespace.enable_signed_content_authority();
         let ino = match namespace.ino_for_record_id(snapshot.record_id) {
             Some(ino) => ino,
@@ -3358,9 +3343,7 @@ fn persist_namespace_generation(
     // Keep the namespace lock through the durable replacement. Transactional
     // projections use the same lock, preventing two same-process writers from
     // sharing native::atomic's process-scoped temporary pathname.
-    let mut namespace = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut namespace = namespace.lock_recover();
     let bytes = namespace.save();
     let digest = *blake3::hash(&bytes).as_bytes();
     // Bytes this process produced with `save()` (now, or at its last write
@@ -3368,8 +3351,7 @@ fn persist_namespace_generation(
     // again costs a full document load per save, under the namespace lock.
     // Anything else found on disk is still fully validated.
     let last = persisted_generations()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .get(path)
         .map(|generation| generation.digest);
     fs::durable_backup::write(path, &bytes, |candidate| {
@@ -3381,8 +3363,7 @@ fn persist_namespace_generation(
     // After `save()`, which may have completed record ids.
     let heads = namespace.heads();
     persisted_generations()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .insert(path.to_path_buf(), PersistedGeneration { digest, heads });
     Ok(digest)
 }
@@ -3392,13 +3373,9 @@ fn persist_namespace_generation(
 /// idle namespace costs a heads comparison, not a full save, which is what
 /// lets every `fsync` ask for it.
 fn persist_namespace_changes(namespace: &Arc<Mutex<Namespace>>, path: &Path) -> Result<()> {
-    let heads = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .heads();
+    let heads = namespace.lock_recover().heads();
     let written = persisted_generations()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .get(path)
         .is_some_and(|generation| generation.heads == heads);
     if written {
@@ -3466,10 +3443,7 @@ fn restore_peer_sync_states(namespace: &mut Namespace, path: &Path) {
 /// Writes the sync progress beside the namespace document, returning
 /// whether it did. Encoded under the namespace lock, written outside it.
 fn persist_peer_sync_states(namespace: &Arc<Mutex<Namespace>>, path: &Path) -> bool {
-    let bytes = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .encode_peer_sync_states();
+    let bytes = namespace.lock_recover().encode_peer_sync_states();
     if let Err(error) = tilo_files::native::atomic::write(path, &bytes) {
         eprintln!(
             "sync progress persist to {} failed: {error}",
@@ -4112,8 +4086,7 @@ async fn seed_from_dir(
             let ft = entry.file_type()?;
             if ft.is_dir() {
                 let ino = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .create_dir(parent_ino, &name, unix_now_ms())
                     .ok_or_else(|| {
                         anyhow::anyhow!("seeding {name:?}: parent inode {parent_ino} vanished")
@@ -4124,19 +4097,20 @@ async fn seed_from_dir(
                 let codec = fs::fs::document_codec_for(&name);
                 if let Some(c) = codec {
                     // Recognized rich-text format → seed as a CRDT document.
-                    let mut ns = namespace
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut ns = namespace.lock_recover();
                     if let Some(ino) = ns.create_document(parent_ino, &name, &c, unix_now_ms()) {
                         ns.import_document(ino, &data, unix_now_ms(), &document_content);
                     }
                 } else {
                     let size = data.len() as u64;
                     let hash = store.write_content(&data).await?;
-                    namespace
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .create_file(parent_ino, &name, hash.as_ref(), size, unix_now_ms());
+                    namespace.lock_recover().create_file(
+                        parent_ino,
+                        &name,
+                        hash.as_ref(),
+                        size,
+                        unix_now_ms(),
+                    );
                 }
             }
         }

@@ -32,6 +32,7 @@ use crate::custody::{OutboxEntry, PeerRecord, PeerStore};
 use crate::document::{
     Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame, sign_frame,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -392,18 +393,12 @@ pub struct PeerEvents(Queue);
 impl PeerEvents {
     /// Take every event produced since the last call.
     pub fn drain(&self) -> Vec<PeerEvent> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain(..)
-            .collect()
+        self.0.lock_recover().drain(..).collect()
     }
 }
 
 fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
-    shared
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    shared.lock_recover()
 }
 
 /// Apply `change` to the status, bump its generation and wake the watchers
@@ -1234,10 +1229,7 @@ impl Task {
                 let Some(queue) = queue.upgrade() else {
                     return false;
                 };
-                queue
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push_back(event.clone());
+                queue.lock_recover().push_back(event.clone());
                 true
             });
             shared.wakes.clone()

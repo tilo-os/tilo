@@ -11,10 +11,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 use crate::DeviceKind;
 use crate::broker::Policy;
+use tilo_lock::MutexRecover as _;
 
 /// What the person decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,7 +93,7 @@ impl DeviceGrants {
     /// The decisions as the file holds them now: read again when another
     /// process changed it; none when it no longer reads.
     fn current(&self) -> std::sync::MutexGuard<'_, Loaded> {
-        let mut loaded = self.loaded.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut loaded = self.loaded.lock_recover();
         if modified(&self.path) != loaded.modified {
             *loaded = read(&self.path).unwrap_or(Loaded {
                 modified: None,
@@ -173,7 +174,7 @@ impl DeviceGrants {
     }
 
     fn update(&self, change: impl FnOnce(&mut BTreeMap<Key, Decision>)) -> io::Result<()> {
-        let mut loaded = self.loaded.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut loaded = self.loaded.lock_recover();
         let mut next = read(&self.path)?.decisions;
         change(&mut next);
         self.persist(&next)?;

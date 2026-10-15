@@ -4,7 +4,7 @@
 
 use std::any::TypeId;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -19,6 +19,7 @@ use crate::model::{Doc, ModelError};
 use crate::path::Edit;
 use crate::reader::Demand;
 use crate::vocabulary::{Builds, Built, Declaration, Vocabulary, vocabulary};
+use tilo_lock::MutexRecover as _;
 
 /// A resource type. Implement it by hand for a type with its own storage
 /// layout and merge semantics (a timeline, a rich-text document, a photo edit
@@ -1977,7 +1978,7 @@ static SCHEMAS: OnceLock<Mutex<CompiledSchemas>> = OnceLock::new();
 #[doc(hidden)]
 pub fn reset_type_schemas() {
     if let Some(cache) = SCHEMAS.get() {
-        let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut store = cache.lock_recover();
         store.epoch = store.epoch.wrapping_add(1);
         store.entries.clear();
     }
@@ -1986,9 +1987,7 @@ pub fn reset_type_schemas() {
 /// Which generation of app code built what is cached from the resource
 /// types: it changes when [`reset_type_schemas`] forgets them.
 pub(crate) fn type_epoch() -> u64 {
-    SCHEMAS.get().map_or(0, |cache| {
-        cache.lock().unwrap_or_else(PoisonError::into_inner).epoch
-    })
+    SCHEMAS.get().map_or(0, |cache| cache.lock_recover().epoch)
 }
 
 /// `build`'s schema for the resource `vocabulary`, retained for this
@@ -2022,7 +2021,7 @@ fn cached_schema(
     build: &dyn Fn() -> Option<serde_json::Value>,
 ) -> Option<Arc<serde_json::Value>> {
     let epoch = {
-        let store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let store = cache.lock_recover();
         if let Some(found) = store.entries.get(&key) {
             let _phase = crate::profiling::Phase::start("schema.cached_clone");
             return found.clone();
@@ -2031,7 +2030,7 @@ fn cached_schema(
     };
     // Build outside the lock: a schema may publish another resource's.
     let value = build().map(Arc::new);
-    let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut store = cache.lock_recover();
     // A build started before a code reload cannot repopulate the new cache.
     if store.epoch == epoch {
         store.entries.insert(key, value.clone());

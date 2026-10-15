@@ -24,7 +24,7 @@
 //! same answer as for an action that does not exist.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
@@ -45,6 +45,7 @@ use crate::host_authority::HostOperation;
 use crate::peer::WorkspaceRegistry;
 use crate::placement::{ComputeRequirements, NoEligibleWorker, PlacementCandidate};
 use crate::workspace::SharedWorkspace;
+use tilo_lock::MutexRecover as _;
 
 /// The provider compute placement is answered under. It is the host's, not
 /// an app's, so a caller may name it without reading a catalogue first.
@@ -267,10 +268,7 @@ impl ComputeActions {
     }
 
     fn ledger(&self) -> std::sync::MutexGuard<'_, InvocationLedger<InvocationState>> {
-        self.shared
-            .ledger
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.shared.ledger.lock_recover()
     }
 
     /// Whether `caller` may drive this host's compute.

@@ -24,6 +24,7 @@ use agent_provider_config::{
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use std::future::Future;
+use tilo_lock::MutexRecover as _;
 use tilo_model_gateway::{
     EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, Frame, MAX_DELTA_EVENTS,
     MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, Response, TraceEvent, VisionImage,
@@ -577,9 +578,7 @@ static VAULT_WRITES: Mutex<()> = Mutex::new(());
 
 fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
     let _ = configured_profile(profile_id)?;
-    let _serial = VAULT_WRITES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = VAULT_WRITES.lock_recover();
     let mut key = Zeroizing::new(api_key);
     if key.trim().is_empty() || key.len() > 16 * 1024 {
         return Err("API key is empty or too large".into());
@@ -594,9 +593,7 @@ fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
 
 fn remove_key(profile_id: &str) -> Result<(), String> {
     let _ = configured_profile(profile_id)?;
-    let _serial = VAULT_WRITES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = VAULT_WRITES.lock_recover();
     let mut vault = SecretVault::open();
     vault.remove(&vault_id(profile_id)?);
     vault.save();
@@ -790,9 +787,7 @@ impl ProfileCache {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, CacheState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// The profile and key for `(profile id, model id)`: the kept ones while

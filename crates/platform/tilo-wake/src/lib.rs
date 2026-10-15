@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, Weak};
+use tilo_lock::MutexRecover as _;
 
 type Sink = Arc<dyn Fn(WakeEvent) + Send + Sync>;
 
@@ -96,11 +97,7 @@ impl WakeScope {
         sink: impl Fn(WakeEvent) + Send + Sync + 'static,
     ) -> Result<(), WakeBindError> {
         let (pending, requires_sync) = {
-            let mut destination = self
-                .route
-                .destination
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut destination = self.route.destination.lock_recover();
             if !self.route.open.load(Ordering::Acquire) {
                 return Err(WakeBindError::Closed);
             }
@@ -125,11 +122,7 @@ impl WakeScope {
     /// observable here (a sink is bound and received them, or the scope is
     /// closed), so a caller must assume a model-dirty wake.
     pub fn take_unbound(&self) -> Option<(bool, bool)> {
-        let mut destination = self
-            .route
-            .destination
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut destination = self.route.destination.lock_recover();
         if !self.route.open.load(Ordering::Acquire) || destination.sink.is_some() {
             return None;
         }
@@ -144,11 +137,7 @@ impl WakeScope {
     /// presentation frames from model changes. Sink delivery and receiver-side
     /// authorization still run normally. A closed scope returns `None`.
     pub fn take_pending(&self) -> Option<(bool, bool)> {
-        let mut destination = self
-            .route
-            .destination
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut destination = self.route.destination.lock_recover();
         if !self.route.open.load(Ordering::Acquire) {
             return None;
         }
@@ -319,10 +308,7 @@ impl WakeHandle {
             return;
         };
         let sink = {
-            let mut destination = route
-                .destination
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut destination = route.destination.lock_recover();
             if !route.open.load(Ordering::Acquire) {
                 return;
             }

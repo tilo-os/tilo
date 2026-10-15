@@ -56,6 +56,7 @@ pub use subrect::{
     encode_subrect_rgba_to_xbgr2101010_transformed, swizzle_subrect_rgba_to_xrgb8888,
     swizzle_subrect_rgba_to_xrgb8888_composited, swizzle_subrect_rgba_to_xrgb8888_transformed,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Errors the bridge can return; each variant maps to an operator-visible message and the DRM backend logs+skips the frame.
 #[derive(Debug, thiserror::Error)]
@@ -144,10 +145,7 @@ impl DeviceErrorLatch {
         let latch = Self::default();
         let sink = latch.clone();
         device.on_uncaptured_error(std::sync::Arc::new(move |error: wgpu::Error| {
-            let mut slot = sink
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut slot = sink.0.lock_recover();
             if slot.is_none() {
                 *slot = Some(error.to_string());
             }
@@ -156,10 +154,7 @@ impl DeviceErrorLatch {
     }
 
     fn take(&self) -> Option<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+        self.0.lock_recover().take()
     }
 }
 

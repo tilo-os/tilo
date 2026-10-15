@@ -18,6 +18,7 @@ use crate::portal::{
     LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
     OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome,
 };
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
 struct Log {
@@ -57,9 +58,7 @@ pub struct HostRecorder {
 
 impl HostRecorder {
     fn log(&self) -> MutexGuard<'_, Log> {
-        self.log
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.log.lock_recover()
     }
 
     /// Every text copy, in order.

@@ -59,7 +59,7 @@ mod upload;
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
 use cloud_source::{
@@ -76,6 +76,7 @@ use serde::{Deserialize, Serialize};
 pub use reqwest::Url;
 
 use crate::api::{About, ErrorBody, File, FileList, RevisionEntry, RevisionList};
+use tilo_lock::MutexRecover as _;
 
 /// Google's API origin.
 pub const DEFAULT_API: &str = "https://www.googleapis.com/";
@@ -179,7 +180,7 @@ pub(crate) struct Inner {
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 impl GDrive {

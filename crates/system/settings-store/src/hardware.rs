@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
+use tilo_lock::MutexRecover as _;
 
 mod profiles;
 
@@ -354,9 +355,7 @@ pub fn publisher_identity_in(dir: &std::path::Path) -> std::io::Result<(u32, u64
     let start_ticks = process_start_ticks(pid)
         .ok_or_else(|| std::io::Error::other("this process has no readable start time"))?;
     let path = publisher_lease_path(dir, pid, start_ticks);
-    let mut leases = LEASES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut leases = LEASES.lock_recover();
     if !leases.iter().any(|(held, _)| *held == path) {
         tilo_files::native::create_dir_all(dir)?;
         let lease = advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive)

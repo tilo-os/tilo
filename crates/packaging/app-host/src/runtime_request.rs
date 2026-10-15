@@ -13,10 +13,11 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use package_store::{Catalog, InstalledPackage};
 use runtime_portal::runtime_request::{Phase, Request, Response, read_message, write_message};
+use tilo_lock::MutexRecover as _;
 
 /// How the host installs a runtime: reports progress, then succeeds or says why not.
 pub type Installer =
@@ -147,13 +148,10 @@ impl RuntimeRequests {
             };
         }
         if (self.installed)(runtime) {
-            self.jobs
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(runtime);
+            self.jobs.lock_recover().remove(runtime);
             return Response::Installed;
         }
-        let mut jobs = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut jobs = self.jobs.lock_recover();
         match jobs.get(runtime) {
             Some(Job::Running {
                 phase,
@@ -197,7 +195,7 @@ impl RuntimeRequests {
                 let jobs = Arc::clone(&host.jobs);
                 let key = runtime.clone();
                 let outcome = (host.installer)(&runtime, &mut |phase, received, total| {
-                    jobs.lock().unwrap_or_else(PoisonError::into_inner).insert(
+                    jobs.lock_recover().insert(
                         key.clone(),
                         Job::Running {
                             phase,
@@ -206,7 +204,7 @@ impl RuntimeRequests {
                         },
                     );
                 });
-                let mut jobs = jobs.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut jobs = jobs.lock_recover();
                 match outcome {
                     Ok(()) => {
                         jobs.remove(&runtime);

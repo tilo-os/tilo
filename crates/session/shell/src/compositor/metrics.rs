@@ -18,6 +18,7 @@ use trace_writer::TraceWriter;
 
 use std::io::Write;
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 /// One loop iteration's timings, in microseconds; a `u32` covers 71 minutes, far past where these numbers are interesting.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -218,11 +219,7 @@ impl InternedLabels {
         if label.is_empty() {
             return "";
         }
-        let mut labels = self
-            .0
-            .get_or_init(Default::default)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut labels = self.0.get_or_init(Default::default).lock_recover();
         if let Some(known) = labels.get(label).copied() {
             return known;
         }

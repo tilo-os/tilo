@@ -8,7 +8,7 @@
 //! distinct I and l, a slashed zero) is used for it with no code change.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cosmic_text::fontdb;
 use skrifa::raw::TableProvider;
@@ -16,6 +16,7 @@ use skrifa::raw::tables::gsub::{SingleSubst, SubstitutionSubtables};
 use skrifa::{FontRef, MetadataProvider, Tag};
 
 use crate::text_render::TextKind;
+use tilo_lock::MutexRecover as _;
 
 /// Characters a "distinct I and l" stylistic set or character variant is
 /// expected to touch: capital I, lowercase l, their accented forms and the
@@ -291,11 +292,7 @@ pub(crate) fn caps(db: &fontdb::Database, id: fontdb::ID) -> Option<Arc<FaceCaps
         face.style == fontdb::Style::Italic,
     );
     let cache = CACHE.get_or_init(Mutex::default);
-    if let Some(found) = cache
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&key)
-    {
+    if let Some(found) = cache.lock_recover().get(&key) {
         return found.clone();
     }
     let monospaced = face.monospaced;
@@ -303,10 +300,5 @@ pub(crate) fn caps(db: &fontdb::Database, id: fontdb::ID) -> Option<Arc<FaceCaps
         .with_face_data(id, |data, index| FaceCaps::read(data, index, monospaced))
         .flatten()
         .map(Arc::new);
-    cache
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .entry(key)
-        .or_insert(read)
-        .clone()
+    cache.lock_recover().entry(key).or_insert(read).clone()
 }

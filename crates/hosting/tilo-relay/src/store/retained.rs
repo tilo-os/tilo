@@ -18,6 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tilo_automerge_isolate::{Applied, Dependencies};
+use tilo_lock::MutexRecover as _;
 use tilo_relay_store::durable::SELECTION_PREFIX;
 #[cfg(unix)]
 pub(crate) use tilo_relay_store::durable::stamp;
@@ -257,12 +258,9 @@ type Digests = std::collections::HashMap<[u64; 2], ([i64; 5], [u8; 32])>;
 /// it was hashed with still holds those bytes.
 #[cfg(unix)]
 fn digests() -> std::sync::MutexGuard<'static, Digests> {
-    use std::sync::{Mutex, OnceLock, PoisonError};
+    use std::sync::{Mutex, OnceLock};
     static DIGESTS: OnceLock<Mutex<Digests>> = OnceLock::new();
-    DIGESTS
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+    DIGESTS.get_or_init(Mutex::default).lock_recover()
 }
 
 #[cfg(unix)]

@@ -18,6 +18,7 @@ use crate::clock::unix_now_ms;
 use crate::eviction::{EvictionCoordinator, EvictionPlan, EvictionQueue, EvictionRequestId};
 use crate::namespace::NodeKind;
 use crate::{FileHistoryStore, Hydrator, Namespace};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Clone)]
 pub struct StorageAuthority {
@@ -142,10 +143,7 @@ impl StorageAuthority {
 
     /// The live files the namespace knows about, filtered to regular files.
     fn logical_files(&self) -> Vec<LogicalFile> {
-        let mut ns = self
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut ns = self.namespace.lock_recover();
         ns.live_node_ids()
             .into_iter()
             .filter_map(|identity| {
@@ -251,8 +249,7 @@ impl StorageAuthority {
         let online = !self.hydrator.known_peers().is_empty();
         let dirty = self
             .dirty
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .keys()
             .copied()
             .collect::<HashSet<_>>();
@@ -260,12 +257,7 @@ impl StorageAuthority {
             .availability
             .as_ref()
             .map_or_else(Vec::new, |registry| {
-                registry
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .records()
-                    .cloned()
-                    .collect()
+                registry.lock_recover().records().cloned().collect()
             });
         // One captured registry generation and one superset history catalog
         // serve every row. A failed/changed catalog yields no reclaimable UI
@@ -327,11 +319,7 @@ impl StorageAuthority {
                     .push(format!("{} changed since preview", file.path));
                 continue;
             }
-            let still_dirty = self
-                .dirty
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains_key(&file.inode);
+            let still_dirty = self.dirty.lock_recover().contains_key(&file.inode);
             if still_dirty {
                 report
                     .skipped
@@ -392,12 +380,8 @@ impl StorageAuthority {
                     // replacement namespace revision. Holding both guards
                     // therefore prevents either local or remote mutation from
                     // slipping between token validation and backend GC.
-                    let dirty = dirty
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let mut namespace = namespace
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let dirty = dirty.lock_recover();
+                    let mut namespace = namespace.lock_recover();
                     validate_live_eviction_token(
                         &mut namespace,
                         &dirty,

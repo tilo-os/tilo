@@ -16,7 +16,7 @@
 //! decision.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
@@ -38,6 +38,7 @@ use tilo_action_policy::roles::governance;
 
 use super::authority::RoomOp;
 use super::{GovernedRoom, Rooms};
+use tilo_lock::MutexRecover as _;
 
 /// How long a grant's token admits new carrier sessions.
 const GRANT_TTL: Duration = Duration::from_secs(60);
@@ -112,7 +113,7 @@ pub(super) struct Calls {
 
 impl Calls {
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     fn grant(&self, state: &State, id: &[u8; 32]) -> Option<VoiceGrant> {

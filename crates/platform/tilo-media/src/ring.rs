@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use tilo_lock::MutexRecover as _;
 
 /// A fixed-capacity FIFO byte buffer. Writing past `capacity` overwrites the
 /// oldest bytes still in the ring.
@@ -115,10 +116,7 @@ impl PrefetchProgress {
 
     /// Drain up to `max` buffered bytes from the ring (the most-recent window).
     pub fn drain(&self, max: usize) -> Vec<u8> {
-        self.ring
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain(max)
+        self.ring.lock_recover().drain(max)
     }
 }
 
@@ -161,8 +159,7 @@ impl Prefetcher {
                     match reader.read(&mut scratch) {
                         Ok(0) => break, // EOF
                         Ok(n) => {
-                            ring.lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            ring.lock_recover()
                                 .push_slice(scratch.get(..n).unwrap_or(&[]));
                             bytes_read.fetch_add(n as u64, Ordering::Relaxed);
                         }

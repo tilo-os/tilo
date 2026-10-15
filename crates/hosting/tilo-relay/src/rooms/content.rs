@@ -9,12 +9,13 @@
 //! the same bounded pieces a member answers with; the member keeps the
 //! content once every piece arrived and the bytes hash to what it asked.
 
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, RwLock};
 
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::peer_handle;
 
 use super::Rooms;
+use tilo_lock::RwLockRecover as _;
 
 /// The bytes of one piece, as members answer.
 const PIECE_BYTES: usize = 192 * 1024;
@@ -34,22 +35,14 @@ pub(super) struct ContentSlot(RwLock<Option<Arc<dyn RoomContent>>>);
 
 impl ContentSlot {
     fn get(&self) -> Option<Arc<dyn RoomContent>> {
-        self.0
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.0.read_recover().clone()
     }
 }
 
 impl Rooms {
     /// Answer members' requests for content from `content`.
     pub fn serve_content(&self, content: Arc<dyn RoomContent>) {
-        *self
-            .inner
-            .content
-            .0
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = Some(content);
+        *self.inner.content.0.write_recover() = Some(content);
     }
 
     /// The pieces answering `body`, a presence `room`'s member published,

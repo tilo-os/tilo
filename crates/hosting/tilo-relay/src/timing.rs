@@ -20,6 +20,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 /// Whether timings are being recorded.
 pub(crate) fn enabled() -> bool {
@@ -63,11 +64,7 @@ fn windows() -> &'static Mutex<BTreeMap<&'static str, Window>> {
             .spawn(|| {
                 loop {
                     std::thread::sleep(Duration::from_secs(1));
-                    let taken = std::mem::take(
-                        &mut *windows()
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner),
-                    );
+                    let taken = std::mem::take(&mut *windows().lock_recover());
                     let second = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |since| since.as_secs());
@@ -93,9 +90,7 @@ pub(crate) fn window(step: &'static str, started: Option<Instant>) {
         return;
     };
     let us = micros(started.elapsed());
-    let mut windows = windows()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut windows = windows().lock_recover();
     let window = windows.entry(step).or_default();
     window.count = window.count.saturating_add(1);
     window.total_us = window.total_us.saturating_add(us);

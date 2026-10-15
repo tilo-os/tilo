@@ -6,7 +6,7 @@ use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use legacy_agent_protocol::{
@@ -18,6 +18,7 @@ use crate::launch::{self, GuestView, X_DISPLAY};
 use crate::mounts;
 use crate::system;
 use crate::user::GuestUser;
+use tilo_lock::MutexRecover as _;
 
 /// How long a finished app's output pumps get to drain before the exit is
 /// reported anyway (a daemon it spawned may hold the pipe open forever).
@@ -34,7 +35,7 @@ pub struct Agent {
 type Writer<S> = Arc<Mutex<S>>;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 impl Agent {

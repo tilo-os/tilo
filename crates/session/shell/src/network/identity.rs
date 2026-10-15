@@ -33,6 +33,7 @@ use tilo_user_identity::{
 };
 
 use crate::shell::state::PeerOrigin;
+use tilo_lock::RwLockRecover as _;
 
 /// Everything the shell knows about a peer's identity.
 ///
@@ -114,10 +115,7 @@ impl PeerIdentityStore {
         now_ns: u64,
     ) -> Result<PeerIdentity, DeviceCertError> {
         let identity = PeerIdentity::from_cert(cert, now_ns)?;
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         let changed = inner
             .by_peer
             .insert(peer, identity.clone())
@@ -133,10 +131,7 @@ impl PeerIdentityStore {
 
     /// Drop a peer's cached identity — used on disconnect. Idempotent.
     pub fn remove(&self, peer: &PeerOrigin) {
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         let removed = inner.by_peer.remove(peer).is_some();
         drop(inner);
         if removed {
@@ -148,10 +143,7 @@ impl PeerIdentityStore {
     /// answer differently with nothing written: a certificate expiring or a
     /// revocation dated ahead taking effect. `None` while none is ahead.
     pub fn next_change_after(&self, now_ns: u64) -> Option<u64> {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         let expiries = inner
             .by_peer
             .values()
@@ -168,20 +160,14 @@ impl PeerIdentityStore {
 
     /// Look up a peer by its [`PeerOrigin`].
     pub fn get(&self, peer: &PeerOrigin) -> Option<PeerIdentity> {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         inner.by_peer.get(peer).cloned()
     }
 
     /// The certificates of `user_pubkey`'s devices the transport authenticated
     /// and that are valid and not revoked at `now_ns`.
     pub fn devices_of(&self, user_pubkey: &[u8; 32], now_ns: u64) -> Vec<DeviceCert> {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         let revoked = |device: &[u8; 32]| {
             inner
                 .revocations
@@ -204,10 +190,7 @@ impl PeerIdentityStore {
         &self,
         now_ns: u64,
     ) -> std::collections::HashMap<PeerOrigin, [u8; 32]> {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         inner
             .by_peer
             .iter()
@@ -224,10 +207,7 @@ impl PeerIdentityStore {
 
     /// Merge a user's revocation list — additive, see [`RevocationList::insert`].
     pub fn set_revocations(&self, user_pubkey: [u8; 32], list: &RevocationList) {
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         let current = inner.revocations.entry(user_pubkey).or_default();
         let mut changed = false;
         for entry in list.iter().cloned() {
@@ -243,10 +223,7 @@ impl PeerIdentityStore {
 
     /// True if `device_pubkey` has been revoked under `user_pubkey` at or before `at_ns`.
     pub fn is_revoked(&self, user_pubkey: &[u8; 32], device_pubkey: &[u8; 32], at_ns: u64) -> bool {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         inner
             .revocations
             .get(user_pubkey)

@@ -78,6 +78,7 @@ pub use tilo_relay_session::rooms::{
 };
 
 use crate::peer::WorkspaceRegistry;
+use tilo_lock::RwLockRecover as _;
 
 const RECORD_VERSION: u32 = 1;
 /// Governance publications kept after the last full checkpoint before the
@@ -1527,12 +1528,7 @@ impl Rooms {
     }
 
     fn revocations(&self) -> RevocationList {
-        self.inner
-            .host
-            .revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.inner.host.revocations.read_recover().clone()
     }
 }
 

@@ -26,6 +26,7 @@ use tilo_user_identity::{
 
 use crate::carrier::LinkError;
 use crate::session::Host;
+use tilo_lock::MutexRecover as _;
 
 /// Longest a certification request waits for an approver.
 pub const CERTIFICATION_WAIT_NS: u64 = 5 * 60 * 1_000_000_000;
@@ -103,32 +104,20 @@ impl Default for MemoryPeerStore {
 
 impl PeerStore for MemoryPeerStore {
     fn load(&self) -> Option<PeerRecord> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.0.lock_recover().clone()
     }
 
     fn save(&self, record: &PeerRecord) -> Result<(), String> {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(record.clone());
+        *self.0.lock_recover() = Some(record.clone());
         Ok(())
     }
 
     fn load_channels(&self) -> Option<Vec<u8>> {
-        self.1
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.1.lock_recover().clone()
     }
 
     fn save_channels(&self, bytes: &[u8]) -> Result<(), String> {
-        *self
-            .1
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bytes.to_vec());
+        *self.1.lock_recover() = Some(bytes.to_vec());
         Ok(())
     }
 

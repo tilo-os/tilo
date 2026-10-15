@@ -46,6 +46,7 @@ use smithay::reexports::calloop::{
 use super::backend::drm::input_config::KeyboardSettings;
 use super::xwayland_composer::ComposerClients;
 use crate::shell::host_apps::X11Session;
+use tilo_lock::MutexRecover as _;
 
 const DISPLAY_ATTEMPTS: usize = 64;
 /// Restarting a compatibility bridge forever turns one crashing helper into a
@@ -95,9 +96,7 @@ struct Registry {
 }
 
 fn registry() -> std::sync::MutexGuard<'static, Registry> {
-    REGISTRY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    REGISTRY.lock_recover()
 }
 
 /// The X11 connection for a host launch into `workspace`, creating that

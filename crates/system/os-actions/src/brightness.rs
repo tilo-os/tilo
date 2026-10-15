@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::ddc;
+use tilo_lock::MutexRecover as _;
 
 const DRM: &str = "/sys/class/drm";
 const BACKLIGHT: &str = "/sys/class/backlight";
@@ -333,9 +334,7 @@ impl BrightnessService {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
-        self.shared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.shared.lock_recover()
     }
 }
 
@@ -377,10 +376,7 @@ fn run_worker(
         }
         if rescan {
             let monitors = probe(discover, read);
-            shared
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .monitors = monitors;
+            shared.lock_recover().monitors = monitors;
         }
     }
 }

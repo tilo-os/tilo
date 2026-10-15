@@ -40,9 +40,11 @@ use super::{
 use crate::session_authority::{AuthorityDriver, Verdict};
 use bytes::Bytes;
 use std::collections::VecDeque;
-use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
 use std::task::{Context, Poll};
+// Tests have it through `super::*`.
+#[cfg(not(test))]
+use tilo_lock::MutexRecover as _;
 use tokio::sync::{Notify, mpsc};
 
 pub const FALLBACK_OPEN_PATH: &str = "/peer/v3/live/fallback/open";
@@ -144,11 +146,7 @@ struct PresenceSeat {
 }
 impl Drop for PresenceSeat {
     fn drop(&mut self) {
-        self.feed
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.session);
+        self.feed.sessions.lock_recover().remove(&self.session);
     }
 }
 
@@ -162,7 +160,7 @@ impl Registry {
         publisher: [u8; 32],
         session: &Arc<Fallback>,
     ) -> PresenceSeat {
-        let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut feeds = self.feeds.lock_recover();
         let feed = match feeds.get(path).and_then(Weak::upgrade) {
             Some(feed) if feed.broadcast.is_clone(broadcast) => feed,
             _ => {
@@ -172,17 +170,18 @@ impl Registry {
                     sessions: Mutex::default(),
                     pump: Mutex::default(),
                 });
-                *feed.pump.lock().unwrap_or_else(PoisonError::into_inner) = Some(Task::spawn(
-                    pump_presence(Arc::downgrade(&feed), broadcast.clone(), publisher),
-                ));
+                *feed.pump.lock_recover() = Some(Task::spawn(pump_presence(
+                    Arc::downgrade(&feed),
+                    broadcast.clone(),
+                    publisher,
+                )));
                 feeds.insert(path.to_owned(), Arc::downgrade(&feed));
                 feed
             }
         };
         drop(feeds);
         feed.sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .insert(session.relay, Arc::downgrade(session));
         PresenceSeat {
             feed,
@@ -330,7 +329,7 @@ struct Fallback {
 
 impl Fallback {
     fn push_member(&self, publisher: [u8; 32], active: bool) {
-        let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut outbox = self.outbox.lock_recover();
         if !active {
             outbox.presence.remove(&publisher);
         }
@@ -340,15 +339,14 @@ impl Fallback {
     }
     fn push_presence(&self, publisher: [u8; 32], payload: Bytes) {
         self.outbox
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .presence
             .insert(publisher, payload);
         self.presence_notify.notify_one();
     }
     /// Queue an ops frame; `false` when over budget (the caller resets).
     fn push_ops(&self, publisher: &[u8; 32], record: &[u8; 32], payload: &[u8]) -> bool {
-        let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut outbox = self.outbox.lock_recover();
         if outbox.ops_bytes.saturating_add(payload.len()) > PENDING_OPS_BYTES {
             return false;
         }
@@ -361,7 +359,7 @@ impl Fallback {
     }
     fn push_ops_end(&self, publisher: &[u8; 32], record: &[u8; 32]) {
         let frame = encode_frame(FRAME_OPS_END, &[publisher, record]);
-        let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut outbox = self.outbox.lock_recover();
         outbox.ops_bytes = outbox.ops_bytes.saturating_add(frame.len());
         outbox.ops.push_back(frame);
         drop(outbox);
@@ -371,7 +369,7 @@ impl Fallback {
     /// `presence`, then ops). Also answers whether presence went, and
     /// whether presence still waits.
     fn take_chunk(&self, out: &mut Vec<u8>, presence: bool) -> (Option<u8>, bool, bool) {
-        let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut outbox = self.outbox.lock_recover();
         while let Some((publisher, active)) = outbox.members.pop_front() {
             put(out, FRAME_MEMBER, &[&publisher, &[u8::from(active)]]);
         }
@@ -398,11 +396,7 @@ impl Fallback {
         if self.ended.swap(true, Ordering::SeqCst) {
             return;
         }
-        self.outbox
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .end
-            .get_or_insert(reason);
+        self.outbox.lock_recover().end.get_or_insert(reason);
         self.notify.notify_one();
         self.end.notify_waiters();
         self.end.notify_one();
@@ -411,13 +405,7 @@ impl Fallback {
 
 impl LiveRelay {
     fn fallback_session(&self, id: &[u8; 16]) -> Option<Arc<Fallback>> {
-        self.0
-            .fallback
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
+        self.0.fallback.sessions.lock_recover().get(id).cloned()
     }
 
     /// Admit `token` (the exact grant bytes) and open a fallback session with
@@ -436,14 +424,7 @@ impl LiveRelay {
         id: [u8; 16],
     ) -> Result<FallbackStream, FallbackError> {
         let inner = &self.0;
-        if inner
-            .fallback
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .len()
-            >= MAX_SESSIONS
-        {
+        if inner.fallback.sessions.lock_recover().len() >= MAX_SESSIONS {
             return Err(FallbackError::Busy);
         }
         let Ok(permit) = inner.sessions.clone().try_acquire_owned() else {
@@ -455,14 +436,7 @@ impl LiveRelay {
             return Err(FallbackError::Denied);
         };
         let publisher = unhex32(scopes.session.publisher()).ok_or(FallbackError::Denied)?;
-        if id == [0; 16]
-            || inner
-                .fallback
-                .sessions
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains_key(&id)
-        {
+        if id == [0; 16] || inner.fallback.sessions.lock_recover().contains_key(&id) {
             return Err(FallbackError::Busy);
         }
         let relay_session = inner.next_session.fetch_add(1, Ordering::Relaxed);
@@ -486,8 +460,7 @@ impl LiveRelay {
         inner
             .fallback
             .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .insert(id, session.clone());
         inner.counters.accepted.fetch_add(1, Ordering::Relaxed);
         inner.counters.active.fetch_add(1, Ordering::Relaxed);
@@ -564,10 +537,7 @@ impl LiveRelay {
                 if payload.is_empty() || payload.len() > MAX_DATAGRAM_FRAME_BYTES {
                     return Err(FallbackError::Invalid);
                 }
-                let mut publish = session
-                    .publish
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let mut publish = session.publish.lock_recover();
                 if let Some(track) = publish.presence.as_mut() {
                     let _ = track
                         .append_datagram(moq_net::Timestamp::ZERO, Bytes::copy_from_slice(payload));
@@ -586,10 +556,7 @@ impl LiveRelay {
                 }
                 let name = ops_name(&record);
                 if !groups.contains_key(&name) {
-                    let mut publish = session
-                        .publish
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
+                    let mut publish = session.publish.lock_recover();
                     let Some(track) = ops_writer(&mut publish, &session.path, &name) else {
                         return Ok(());
                     };
@@ -610,10 +577,7 @@ impl LiveRelay {
                 if let Some(group) = groups.remove(&name) {
                     let _ = group.finish();
                 }
-                let mut publish = session
-                    .publish
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let mut publish = session.publish.lock_recover();
                 let closed = publish.writing.remove(&name);
                 drop(publish);
                 if let Some(entry) = closed {
@@ -632,8 +596,7 @@ impl LiveRelay {
                 if kind == FRAME_UNSUBSCRIBE_OPS {
                     session
                         .subscribe
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
+                        .lock_recover()
                         .ops
                         .remove(&(publisher, record));
                     return Ok(());
@@ -650,10 +613,7 @@ impl LiveRelay {
     }
 
     fn fallback_subscribe_ops(session: &Arc<Fallback>, publisher: [u8; 32], record: [u8; 32]) {
-        let mut subscribe = session
-            .subscribe
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut subscribe = session.subscribe.lock_recover();
         if subscribe.ops.contains_key(&(publisher, record)) {
             return;
         }
@@ -694,10 +654,7 @@ impl LiveRelay {
         }
         let consumer = ingress.origin.consume();
         {
-            let mut publish = session
-                .publish
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut publish = session.publish.lock_recover();
             publish.ingress = Some(ingress);
             publish.broadcast = broadcast;
             publish.presence = presence;
@@ -708,10 +665,7 @@ impl LiveRelay {
     fn fallback_stream(session: &Arc<Fallback>) -> FallbackStream {
         let (sender, receiver) = mpsc::channel(STREAM_QUEUE);
         let generation = {
-            let mut stream = session
-                .stream
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut stream = session.stream.lock_recover();
             stream.0 = stream.0.wrapping_add(1);
             stream.1 = None;
             stream.0
@@ -739,7 +693,7 @@ impl LiveRelay {
                     if verdict == Verdict::Revoked {
                         break true;
                     }
-                    let detached = session.stream.lock().unwrap_or_else(PoisonError::into_inner).1;
+                    let detached = session.stream.lock_recover().1;
                     if detached.is_some_and(|at| at.elapsed() >= RESUME_GRACE) {
                         break false;
                     }
@@ -747,25 +701,14 @@ impl LiveRelay {
             }
         };
         session.finish(if revoked { END_REVOKED } else { END_CLOSED });
-        inner
-            .fallback
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&session.id);
+        inner.fallback.sessions.lock_recover().remove(&session.id);
         {
-            let mut subscribe = session
-                .subscribe
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut subscribe = session.subscribe.lock_recover();
             subscribe.ops.clear();
             subscribe.members.clear();
         }
         let (broadcast, writing, ingress) = {
-            let mut publish = session
-                .publish
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut publish = session.publish.lock_recover();
             publish.presence = None;
             (
                 publish.broadcast.take(),
@@ -789,8 +732,7 @@ impl LiveRelay {
                         && let Some(slot) = inner.slot(&path, true)
                     {
                         slot.state
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
+                            .lock_recover()
                             .host_active
                             .get_or_insert_with(Instant::now);
                     }
@@ -864,14 +806,7 @@ fn ops_writer<'a>(
 async fn write_stream(session: Arc<Fallback>, generation: u64, sender: mpsc::Sender<Bytes>) {
     let started = Instant::now();
     let mut first = true;
-    let current = || {
-        session
-            .stream
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .0
-            == generation
-    };
+    let current = || session.stream.lock_recover().0 == generation;
     let mut presence_at: Option<Instant> = None;
     loop {
         let presence_wait = presence_at.map_or(Duration::ZERO, |at| {
@@ -924,10 +859,7 @@ async fn write_stream(session: Arc<Fallback>, generation: u64, sender: mpsc::Sen
             break;
         }
     }
-    let mut stream = session
-        .stream
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut stream = session.stream.lock_recover();
     if stream.0 == generation {
         stream.1 = Some(Instant::now());
     }
@@ -968,10 +900,7 @@ async fn watch_members(inner: Weak<Inner>, session: Weak<Fallback>) {
             return;
         };
         if let Some(broadcast) = broadcast {
-            let mut subscribe = session
-                .subscribe
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut subscribe = session.subscribe.lock_recover();
             let known = subscribe.members.remove(&publisher).is_some();
             if !known && subscribe.members.len() >= MAX_REMOTE_PUBLISHERS {
                 continue;
@@ -989,10 +918,7 @@ async fn watch_members(inner: Weak<Inner>, session: Weak<Fallback>) {
             session.push_member(publisher, true);
         } else {
             let removed = {
-                let mut subscribe = session
-                    .subscribe
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let mut subscribe = session.subscribe.lock_recover();
                 subscribe.ops.retain(|(member, _), _| *member != publisher);
                 subscribe.members.remove(&publisher).is_some()
             };
@@ -1023,8 +949,7 @@ async fn pump_presence(
                 // which takes this lock.
                 let seated: Vec<Arc<Fallback>> = feed
                     .sessions
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
+                    .lock_recover()
                     .values()
                     .filter_map(Weak::upgrade)
                     .collect();
@@ -1074,8 +999,7 @@ async fn pump_ops(
     if let Some(session) = session.upgrade() {
         let task = session
             .subscribe
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .ops
             .remove(&(publisher, record));
         if let Some(task) = task {

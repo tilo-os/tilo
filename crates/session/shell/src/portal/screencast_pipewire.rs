@@ -35,6 +35,7 @@ use std::time::Duration;
 use zbus::zvariant::{OwnedValue, Value};
 
 use super::PortalCaller;
+use tilo_lock::MutexRecover as _;
 
 /// What the provisioner needs to spin up a stream.
 #[derive(Clone, Debug)]
@@ -735,10 +736,7 @@ impl ScreenCastStreamProvisioner for MockScreenCastProvisioner {
             s.push(req.clone());
         }
         let node_id = {
-            let mut n = self
-                .next_node
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut n = self.next_node.lock_recover();
             let id = *n;
             *n = n.wrapping_add(1);
             id

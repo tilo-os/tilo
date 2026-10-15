@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use notify::event::{AccessKind, AccessMode};
 use notify::{EventKind, RecursiveMode, Watcher as _};
+use tilo_lock::MutexRecover as _;
 use tokio::sync::watch;
 
 /// How a reloader waits between two reads of its file.
@@ -121,10 +122,7 @@ impl FileWatch {
     ///
     /// The directory cannot be watched (it is gone right now).
     pub fn rearm(&self) -> std::io::Result<()> {
-        let mut watcher = self
-            .watcher
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut watcher = self.watcher.lock_recover();
         let _ = watcher.unwatch(&self.directory);
         watcher
             .watch(&self.directory, RecursiveMode::NonRecursive)

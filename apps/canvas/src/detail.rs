@@ -21,7 +21,7 @@
 )]
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use ui::num::f32_of_f64;
 
 use tilo_wet_media::{
@@ -35,6 +35,7 @@ pub const TILE: usize = 256; // a simulation unit, not on-screen spacing
 /// The finest a painted layer is simulated, in cells per artwork unit.
 use crate::content_geometry::FINEST;
 use crate::picture::image_of;
+use ui::lock::MutexRecover as _;
 /// Tiles kept between frames.
 const KEEP: usize = 240;
 /// How much coarser than a pixel the coarse picture may be before a finer
@@ -353,7 +354,7 @@ pub struct Request<'a> {
 
 impl Tiles {
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
-        self.shared.lock().unwrap_or_else(PoisonError::into_inner)
+        self.shared.lock_recover()
     }
 
     /// Start a frame: take in the tiles finished in the background.
@@ -372,7 +373,7 @@ impl Tiles {
     /// beyond what is kept.
     pub fn end(&mut self) {
         let wanted = std::mem::take(&mut self.wanted);
-        let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut shared = self.shared.lock_recover();
         let mut starting = Vec::new();
         for job in wanted {
             if starting.len() + shared.running.len() >= WORKERS {
@@ -391,7 +392,7 @@ impl Tiles {
             // for when it comes back.
             drop(ui::rt::app().spawn_blocking(move || {
                 let image = job.run();
-                let mut shared = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut shared = shared.lock_recover();
                 shared.running.remove(&job.key);
                 shared.done.push((job.key, image));
             }));

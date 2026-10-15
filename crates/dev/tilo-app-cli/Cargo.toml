@@ -19,6 +19,7 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+tilo-lock = { path = "../../platform/tilo-lock" }
 anyhow.workspace = true
 clap.workspace = true
 fluent.workspace = true

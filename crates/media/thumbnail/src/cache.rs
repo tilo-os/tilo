@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use tilo_content::{ContentStore, DirBackend};
 
 use crate::generate::ThumbSize;
+use tilo_lock::MutexRecover as _;
 
 /// A cache key: the source content's BLAKE3 hash plus the box the thumbnail
 /// was fitted to (so the same file cached at two sizes coexists).
@@ -130,9 +131,7 @@ impl Cache {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Entries> {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.entries.lock_recover()
     }
 
     fn get(&self, key: &ThumbKey) -> Option<Arc<Vec<u8>>> {

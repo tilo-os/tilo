@@ -48,6 +48,7 @@ use frame_link::{FrameLink, LinkConfig, LinkStats};
 use tilo_callstream::VideoEncoder;
 use tilo_callstream::mp4_recording::{Mp4Recording, recording_encoder};
 use tilo_callstream::surface_decoder::VideoDecoder;
+use tilo_lock::MutexRecover as _;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::{Layer, layer::Context, prelude::*, registry::LookupSpan};
 
@@ -230,7 +231,7 @@ struct SpanStats {
 /// This is a best-effort latency profiler; a stats read/write racing a
 /// panic elsewhere is not worth taking the whole process down for.
 fn lock_profile<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    m.lock_recover()
 }
 
 impl ProfileLayer {

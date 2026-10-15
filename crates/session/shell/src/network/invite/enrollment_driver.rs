@@ -11,6 +11,7 @@ use std::{
     },
     time::Duration,
 };
+use tilo_lock::MutexRecover as _;
 use tokio::sync::watch;
 
 const MAX_PENDING: usize = 8;
@@ -43,11 +44,7 @@ impl Attempt {
     }
     pub(crate) fn cancel(&self) -> Result<(), String> {
         // Serialize cancellation with the final synchronous installation barrier.
-        let _turn = self
-            .shared
-            .result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _turn = self.shared.result.lock_recover();
         self.shared.cancelled.store(true, Ordering::SeqCst);
         self.shared.cancel.send_replace(true);
         // Also retire a completed actor attempt: there may no longer be a task

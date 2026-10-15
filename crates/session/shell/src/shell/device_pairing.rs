@@ -27,11 +27,12 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
+use tilo_lock::MutexRecover as _;
 
 const ENROLL: &str = "/usr/bin/tilo-enroll";
 const PKEXEC: &str = "/usr/bin/pkexec";
@@ -528,7 +529,7 @@ pub(crate) fn approval(args: &ActionArgs) -> Result<Approval, String> {
 }
 
 fn lock(flights: &Mutex<Flights>) -> MutexGuard<'_, Flights> {
-    flights.lock().unwrap_or_else(PoisonError::into_inner)
+    flights.lock_recover()
 }
 
 fn refuse_busy(flights: &Flights) -> Result<(), String> {
@@ -826,7 +827,7 @@ mod tests {
     fn lock_receiver(
         receiver: &Mutex<mpsc::Receiver<bool>>,
     ) -> MutexGuard<'_, mpsc::Receiver<bool>> {
-        receiver.lock().unwrap_or_else(PoisonError::into_inner)
+        receiver.lock_recover()
     }
 
     /// The step's answer; a step that never answers reads as that refusal,

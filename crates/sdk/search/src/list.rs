@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use crate::index::{Document, Page, SearchIndex};
 use crate::query::Matching;
 use crate::weight::{FieldWeight, Ranks};
+use tilo_lock::MutexRecover as _;
 
 /// Ranks the rows of a list against a query, for surfaces that rebuild
 /// their rows on every query or change (commands, windows, actions).
@@ -69,10 +70,7 @@ impl ListIndex {
         let mut hasher = DefaultHasher::new();
         rows.hash(&mut hasher);
         let fingerprint = hasher.finish();
-        let mut cached = self
-            .cached
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cached = self.cached.lock_recover();
         if cached.as_ref().is_none_or(|(held, _)| *held != fingerprint) {
             let mut index = SearchIndex::new(self.matching);
             if let Some(ranks) = self.ranks {

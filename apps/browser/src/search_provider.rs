@@ -9,6 +9,7 @@
 
 use tilo_actions::Resource;
 use ui::icons::Icon;
+use ui::lock::RwLockRecover as _;
 use ui::tilo_resource::SearchEntry;
 
 #[derive(Clone)]
@@ -55,10 +56,7 @@ impl BrowserSearchIndex {
     /// whose source does not carry this process-local revision token (for
     /// example an incoming CRDT bookmark projection).
     pub fn invalidate(&self) {
-        let mut state = self
-            .state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.write_recover();
         state.history_revision = u64::MAX;
         state.download_revision = u64::MAX;
     }
@@ -74,10 +72,7 @@ impl BrowserSearchIndex {
     ) {
         let history_revision = history.revision();
         let download_revision = downloads.revision();
-        let current = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.state.read_recover();
         let unchanged = current.history_revision == history_revision
             && current.download_revision == download_revision;
         drop(current);
@@ -127,10 +122,7 @@ impl BrowserSearchIndex {
             Self::index_row(&mut entries, &mut rows, row);
         }
 
-        let mut state = self
-            .state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.write_recover();
         state.history_revision = history_revision;
         state.download_revision = download_revision;
         state.entries = entries;
@@ -158,23 +150,13 @@ impl BrowserSearchIndex {
 
     /// Every history page and download as a search entry.
     pub fn entries(&self) -> Vec<SearchEntry> {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entries
-            .clone()
+        self.state.read_recover().entries.clone()
     }
 
     /// What opening the hit anchored at `id` runs: the history page opens,
     /// the download shows. `None` once the entry is gone.
     pub fn opened(&self, id: &str) -> Option<crate::effects::BrowserEffect> {
-        let row = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .rows
-            .get(id)
-            .cloned()?;
+        let row = self.state.read_recover().rows.get(id).cloned()?;
         Some(match &row.download {
             Some(id) => crate::effects::BrowserEffect::ShowDownload { id: id.clone() },
             None => crate::effects::BrowserEffect::Open {
@@ -188,13 +170,7 @@ impl BrowserSearchIndex {
     pub fn resource(&self, id: &str) -> Option<Resource> {
         use ui::tilo_resource::Effect as _;
         let action = self.opened(id)?.bound();
-        let row = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .rows
-            .get(id)
-            .cloned()?;
+        let row = self.state.read_recover().rows.get(id).cloned()?;
         Some(Resource::new(&row.resource_id, row.resource_kind, &row.title).with_action(action))
     }
 

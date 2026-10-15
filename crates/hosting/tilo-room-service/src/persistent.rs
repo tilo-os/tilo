@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::public_avatars::is_avatar_name;
 use tilo_relay_protocol::room_operator::{LineError, OperatorCommand, RoomEvent, hex32};
 use tilo_relay_protocol::rooms::RoomRole;
@@ -514,10 +515,7 @@ impl Persistent {
                         (&self.shared.seats, people),
                         (&self.shared.watching, spectators),
                     ] {
-                        seats
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .counted(online);
+                        seats.lock_recover().counted(online);
                     }
                     if let Some(ops) = crate::ops::get() {
                         ops.set_online(u64::from(people), u64::from(spectators));
@@ -626,19 +624,13 @@ impl Persistent {
     }
 
     fn counted(seats: &std::sync::Mutex<Seats>) -> u32 {
-        seats
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .online()
+        seats.lock_recover().online()
     }
 
     /// Gives back a seat taken by [`Self::admit_address`] for a visitor who
     /// got no answer.
     fn release(seats: &std::sync::Mutex<Seats>) {
-        seats
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .release();
+        seats.lock_recover().release();
     }
 
     /// Gives back what [`Self::admit_address`] took for a visitor the room
@@ -651,8 +643,7 @@ impl Persistent {
     ) {
         Self::release(seats);
         limits
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .forget(&admitted.ip_hash, admitted.at_ms);
     }
 

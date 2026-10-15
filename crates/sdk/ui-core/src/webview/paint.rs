@@ -16,7 +16,7 @@
 pub use tilo_paint_stream as stream;
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use tilo_paint_stream::wire::Payload;
 use tilo_paint_stream::{BlobRef, Color as PaintColor, Frame, Item, LayerId, Patch, Point, ROOT};
@@ -27,6 +27,7 @@ use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 use super::{FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 /// Never capture more often than this: a capture walks the whole layout.
 const MIN_CAPTURE_INTERVAL: Duration = Duration::from_millis(50);
@@ -359,7 +360,7 @@ static SHARE: Mutex<ShareOutbox> = Mutex::new(ShareOutbox {
 });
 
 fn share() -> std::sync::MutexGuard<'static, ShareOutbox> {
-    SHARE.lock().unwrap_or_else(PoisonError::into_inner)
+    SHARE.lock_recover()
 }
 
 /// Whether the session shares this app's page with someone watching.
@@ -502,7 +503,7 @@ impl PaintEngine {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, PaintState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// The patches since the last call, oldest first, or `Err` with the
@@ -531,8 +532,7 @@ impl PaintEngine {
         let pixels = self
             .inner
             .frames()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .as_ref()
             .map_or(0, |f| Arc::as_ptr(&f.rgba) as usize);
         if pixels != state.last_pixels {
@@ -548,8 +548,7 @@ impl PaintEngine {
     fn current_pixels(&self) -> usize {
         self.inner
             .frames()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .as_ref()
             .map_or(0, |frame| Arc::as_ptr(&frame.rgba) as usize)
     }

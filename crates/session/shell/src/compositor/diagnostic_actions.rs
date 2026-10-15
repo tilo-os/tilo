@@ -7,6 +7,7 @@ use crate::shell::launcher::{
     diagnostics::{FIELDS, Options},
 };
 use crate::shell::test_control::{Command, Response};
+use tilo_lock::MutexRecover as _;
 
 const PROVIDER: &str = "session-diagnostics";
 
@@ -157,11 +158,7 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
         ("current_gpu_renderer".into(), json!("unchanged")),
     ]);
     if admitted.encoded.payload == b"inspect" {
-        let mut history = session
-            .launch_history
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .value();
+        let mut history = session.launch_history.lock_recover().value();
         if let Some(app) = args.get("app_id").and_then(serde_json::Value::as_str)
             && let Some(attempts) = history
                 .get_mut("attempts")

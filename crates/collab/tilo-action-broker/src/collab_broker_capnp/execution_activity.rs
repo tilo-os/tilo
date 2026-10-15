@@ -7,6 +7,7 @@ use super::{BrokerActor, CrdtRoute, PublishedAction, PublishedSurface};
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{Caller, CallerPrincipal, ExecutionLease};
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+use tilo_lock::MutexRecover as _;
 use tokio::sync::broadcast;
 
 /// Receipt semantics, independent of cursor geometry or visible mutation.
@@ -262,21 +263,14 @@ impl Default for ActivityBus {
 }
 impl ActivityBus {
     pub(super) fn subscribe(&self) -> broadcast::Receiver<Arc<ExecutionActivity>> {
-        let bus = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bus = self.0.lock_recover();
         match &bus.sender {
             Some(sender) => sender.subscribe(),
             None => broadcast::channel(1).1,
         }
     }
     pub(super) fn close(&self) {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .sender
-            .take();
+        self.0.lock_recover().sender.take();
     }
     pub(super) fn publish(&self, target: Option<&ActivityTarget>, update: &InvocationUpdate) {
         let status = match update {

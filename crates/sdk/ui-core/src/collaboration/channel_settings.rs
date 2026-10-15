@@ -19,10 +19,11 @@
 //! change it reported meanwhile — is the one that shows.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use serde_json::{Map, Value};
 use settings_store::{HostDocument, SettingsSource};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// The settings source a launched app reads through its channel.
 pub(crate) struct ChannelSettings {
@@ -60,7 +61,7 @@ pub(crate) fn install(app_id: &str) {
     if app_id.is_empty() {
         return;
     }
-    let mut installed = INSTALLED.write().unwrap_or_else(PoisonError::into_inner);
+    let mut installed = INSTALLED.write_recover();
     if installed.is_some() {
         return;
     }
@@ -75,15 +76,12 @@ pub(crate) fn install(app_id: &str) {
 #[cfg(test)]
 pub(crate) fn uninstall() {
     settings_store::install_source(None);
-    *INSTALLED.write().unwrap_or_else(PoisonError::into_inner) = None;
+    *INSTALLED.write_recover() = None;
 }
 
 /// The installed channel settings, for the broker worker to serve.
 pub(crate) fn installed() -> Option<Arc<ChannelSettings>> {
-    INSTALLED
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+    INSTALLED.read_recover().clone()
 }
 
 impl ChannelSettings {
@@ -97,7 +95,7 @@ impl ChannelSettings {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// Show `view` unless writes are still on their way. Returns whether
@@ -584,8 +582,5 @@ mod tests {
 pub(crate) fn replace_for_test(
     channel: Option<Arc<ChannelSettings>>,
 ) -> Option<Arc<ChannelSettings>> {
-    std::mem::replace(
-        &mut *INSTALLED.write().unwrap_or_else(PoisonError::into_inner),
-        channel,
-    )
+    std::mem::replace(&mut *INSTALLED.write_recover(), channel)
 }

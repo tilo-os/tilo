@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tilo_lock::MutexRecover as _;
 
 #[derive(Debug)]
 struct Hold {
@@ -70,9 +71,7 @@ fn change_holds<R>(
     change: impl FnOnce(&mut BTreeMap<u64, Hold>) -> R,
 ) -> R {
     let (result, listeners) = {
-        let mut inner = inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = inner.lock_recover();
         let result = change(&mut inner.held);
         (result, inner.listeners.clone())
     };
@@ -160,11 +159,7 @@ impl InhibitRegistry {
     /// thread that made it. Keep it short and non-blocking (wake a task); it
     /// lives as long as the registry.
     pub fn on_change(&self, listener: impl Fn() + Send + Sync + 'static) {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .listeners
-            .push(Arc::new(listener));
+        self.inner.lock_recover().listeners.push(Arc::new(listener));
     }
 
     /// The earliest moment after `now` at which a lease holding any of
@@ -173,8 +168,7 @@ impl InhibitRegistry {
     /// announces. `None` when no such lease is pending.
     pub fn next_lapse_for(&self, flags: u32, now: Instant) -> Option<Instant> {
         self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .held
             .values()
             .filter(|hold| hold.counts(flags, now))
@@ -196,8 +190,7 @@ impl InhibitRegistry {
     /// longer counts.
     pub fn is_inhibited_for_at(&self, flags: u32, now: Instant) -> bool {
         self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .held
             .values()
             .any(|hold| hold.counts(flags, now))
@@ -207,8 +200,7 @@ impl InhibitRegistry {
     pub fn count(&self) -> usize {
         let now = Instant::now();
         self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .held
             .values()
             .filter(|hold| hold.until.is_none_or(|until| now < until))
@@ -224,8 +216,7 @@ impl InhibitRegistry {
     pub fn active_reasons_for(&self, flags: u32) -> Vec<String> {
         let now = Instant::now();
         self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .held
             .values()
             .filter(|hold| hold.counts(flags, now))

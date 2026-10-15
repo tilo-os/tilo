@@ -51,6 +51,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
+use tilo_lock::MutexRecover as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
@@ -775,11 +776,7 @@ impl BarrierReplies {
 
     /// Wait on this barrier's answer, unless it was already given.
     fn join(&self, reply: BarrierReply) -> Result<(), BarrierReply> {
-        match &mut *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-        {
+        match &mut *self.0.lock_recover() {
             Some(replies) => {
                 replies.push(reply);
                 Ok(())
@@ -789,11 +786,7 @@ impl BarrierReplies {
     }
 
     fn answer(&self, result: &Result<(), DocumentPublicationError>) {
-        let replies = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let replies = self.0.lock_recover().take();
         for reply in replies.into_iter().flatten() {
             let _ = reply.send(result.clone());
         }
@@ -868,18 +861,12 @@ impl PrimaryDeadline {
         let deadline = crate::time::now()
             .checked_add(SDK_PRIMARY_ROUTE_TIMEOUT)
             .unwrap_or_else(crate::time::now);
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(deadline);
+        *self.0.lock_recover() = Some(deadline);
         deadline
     }
 
     fn get(&self) -> Option<Instant> {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.0.lock_recover()
     }
 }
 
@@ -1922,18 +1909,12 @@ impl BridgeState {
     }
 
     fn connect_phase(&self) -> ConnectPhase {
-        self.connect
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.connect.lock_recover().clone()
     }
 
     /// Record setup progress and wake the owner to observe it.
     fn set_connect_phase(&self, phase: ConnectPhase) {
-        *self
-            .connect
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = phase;
+        *self.connect.lock_recover() = phase;
         self.notify_events();
     }
 
@@ -11811,10 +11792,7 @@ mod tests {
         let tx = std::sync::Mutex::new(tx);
         scope
             .bind(move |_| {
-                let _ = tx
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .send(());
+                let _ = tx.lock_recover().send(());
             })
             .unwrap();
         (scope, rx)

@@ -15,7 +15,7 @@ use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Mutex, MutexGuard, mpsc};
 use std::time::Duration;
 
 use automerge::{AutoCommit, SaveOptions};
@@ -24,6 +24,7 @@ use crate::engine::{self, Key};
 use crate::wire::{self, Prepare, Reply, Request};
 use crate::worker;
 use crate::{Applied, Dependencies, Limits, Rejected};
+use tilo_lock::MutexRecover as _;
 
 /// Extra time for a full document sent to rebuild a worker's copy.
 const REBUILD_PER_MIB: Duration = Duration::from_millis(250);
@@ -298,7 +299,7 @@ fn catch_up(doc: &mut AutoCommit, cached: &[Key]) -> Option<(Key, Vec<u8>)> {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 struct Worker {

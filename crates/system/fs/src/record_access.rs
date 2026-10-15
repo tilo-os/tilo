@@ -19,6 +19,7 @@ use uuid::Uuid;
 use crate::peer_auth::AuthenticatedFsPeer;
 use crate::record_replication::{RecordAction, RecordAuthorizer};
 use crate::share_session::ShareSession;
+use tilo_lock::MutexRecover as _;
 
 pub const MAX_RECORD_ACCESS_ENTRIES: usize = 4_096;
 pub const MAX_RECORD_ACCESS_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -115,10 +116,7 @@ impl RecordAccessRegistry {
             expires_at_ms: now_ms.saturating_add(self.ttl_ms),
         };
 
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         state
             .entries
             .retain(|_, entry| entry.binding.expires_at_ms > now_ms);
@@ -188,10 +186,7 @@ impl RecordAccessRegistry {
     ) -> Vec<FileRecordId> {
         let now_ms = self.clock.now_ms();
         let candidates: Vec<_> = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.state.lock_recover();
             state
                 .entries
                 .retain(|_, entry| entry.binding.expires_at_ms > now_ms);
@@ -238,10 +233,7 @@ impl RecordAccessRegistry {
         // authority work. A concurrent remove/capacity eviction, or expiry
         // during authorization, must not leak a stale record ID.
         let final_now_ms = self.clock.now_ms();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         for id in rejected {
             state.entries.remove(&id);
         }
@@ -264,8 +256,7 @@ impl RecordAccessRegistry {
     /// Remove one registered session.
     pub fn remove(&self, session_id: RecordAccessSessionId) -> bool {
         self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .entries
             .remove(&session_id)
             .is_some()
@@ -274,10 +265,7 @@ impl RecordAccessRegistry {
     /// Return the number of currently live sessions.
     pub fn len(&self) -> usize {
         let now_ms = self.clock.now_ms();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         state
             .entries
             .retain(|_, entry| entry.binding.expires_at_ms > now_ms);
