@@ -66,7 +66,13 @@ canonical desktop (`src/desktop.rs`: `tilo-desktop-surface` over a
 and each tab's record are kept per room in the profile's storage and
 committed with the records themselves, so a reload restores the same
 windows on the same documents. With `peer`, a started certified peer, the
-mount's records and desktop replicate through that peer's room.
+mount's records and desktop replicate through that peer's room, and
+`invokeAction` also takes the room's own membership actions on its
+governance resource, which the host decides:
+
+```js
+await mount.invokeAction(`workspace.permissions:${room}`, 'remove-member', {person}, {confirm: true});
+```
 
 Mounts of one profile, device, room and app share a record: another mount
 passing the same `record` edits the same document and shows the other's

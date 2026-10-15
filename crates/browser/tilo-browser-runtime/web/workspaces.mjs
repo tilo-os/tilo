@@ -200,6 +200,9 @@ export function workspaceActions(choices) {
   });
 }
 
+/** What a person the host took out of a workspace is told. */
+export const removedFrom = name => `You were removed from ${name || 'this workspace'}. To come back, ask someone in it for a new invitation.`;
+
 export class HostAdmissionError extends Error {
   constructor(code, message, retryAfter = null) {
     super(message);
@@ -344,6 +347,8 @@ export async function joinViaHost({
       profile: identityProfile(known, known.origin), displayName});
   }
   if (!identity?.userPublicKey) throw new TypeError("joining through a host needs the person's identity");
+  /** Whether the host refused the membership this browser kept. */
+  let refused = false;
   if (known?.userPublicKey === identity.userPublicKey) {
     let peer;
     try {
@@ -370,13 +375,25 @@ export async function joinViaHost({
         // started its room anew): ask the host to admit the same person
         // again rather than stop at an error.
         console.warn('host admission: reconnecting failed, asking to join again', error);
+        refused = true;
       }
       keepMembership(memberships, workspace, null);
     }
   }
-  const {invitation, admissionToken, origin} = await ask({
-    workspace, path: 'join', fetch, body: {userPublicKey: identity.userPublicKey, displayName: fitDisplayName(displayName)},
-  });
+  let admitted;
+  try {
+    admitted = await ask({
+      workspace, path: 'join', fetch, body: {userPublicKey: identity.userPublicKey, displayName: fitDisplayName(displayName)},
+    });
+  } catch (error) {
+    // The host no longer has the person, and its door turns away the
+    // address they joined from because someone was removed: they were taken
+    // out of the room, not pruned after an absence. Only an invitation
+    // brings them back.
+    if (refused && error?.code === 'cooling-down') throw new AdmissionError('removed', removedFrom(workspace.name));
+    throw error;
+  }
+  const {invitation, admissionToken, origin} = admitted;
   let room = null;
   const peer = await join({
     ...connectOptions, origin, invitation, admissionToken, identity, displayName,
