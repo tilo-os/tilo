@@ -94,14 +94,14 @@ impl Sheets for ScriptedSheets {
     }
 }
 
-fn typed(values: &[&str], remember: bool) -> Option<SheetAnswer> {
-    Some(SheetAnswer {
+fn typed(values: &[&str], remember: bool) -> SheetAnswer {
+    SheetAnswer {
         values: values
             .iter()
             .map(|value| Zeroizing::new((*value).to_string()))
             .collect(),
         remember,
-    })
+    }
 }
 
 fn message(key: &'static str, args: &[(&'static str, Line)]) -> Line {
@@ -114,7 +114,7 @@ fn message(key: &'static str, args: &[(&'static str, Line)]) -> Line {
 #[tokio::test]
 async fn a_wifi_password_is_asked_in_the_sheet_and_returned_only_to_networkmanager() {
     let (logs, _guard) = capture_logs();
-    let sheets = ScriptedSheets::answering([typed(&["short horse"], true)]);
+    let sheets = ScriptedSheets::answering([Some(typed(&["short horse"], true))]);
     let store = Arc::new(MemoryStore::default());
     let link = link(
         Arc::clone(&sheets) as Arc<dyn Sheets>,
@@ -159,7 +159,7 @@ async fn a_wifi_password_is_asked_in_the_sheet_and_returned_only_to_networkmanag
     assert!(request.remember_default);
     assert_eq!(
         sheets.cancelled(),
-        [handle.clone()],
+        std::slice::from_ref(handle),
         "the answered sheet is let go"
     );
 
@@ -195,8 +195,10 @@ async fn a_wifi_password_is_asked_in_the_sheet_and_returned_only_to_networkmanag
 async fn an_8021x_sign_in_returns_identity_and_password_in_the_8021x_setting() {
     let (logs, _guard) = capture_logs();
     // Identity kept, anonymous identity left empty, "Remember" unticked.
-    let sheets =
-        ScriptedSheets::answering([typed(&["quinn@example.edu", "", "tr0ub4dor&3"], false)]);
+    let sheets = ScriptedSheets::answering([Some(typed(
+        &["quinn@example.edu", "", "tr0ub4dor&3"],
+        false,
+    ))]);
     let store = Arc::new(MemoryStore::default());
     let link = link(
         Arc::clone(&sheets) as Arc<dyn Sheets>,
@@ -366,7 +368,7 @@ async fn a_replaced_request_never_takes_down_its_successors_sheet() {
 
 #[tokio::test]
 async fn remembered_secrets_answer_without_asking_unless_new_ones_are_wanted() {
-    let sheets = ScriptedSheets::answering([typed(&["battery staple"], true)]);
+    let sheets = ScriptedSheets::answering([Some(typed(&["battery staple"], true))]);
     let store = Arc::new(MemoryStore::default());
     let mut remembered = SettingSecrets::default();
     remembered.insert("psk", "correct horse");
