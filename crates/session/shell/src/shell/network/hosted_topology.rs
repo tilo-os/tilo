@@ -134,7 +134,11 @@ impl ShellNetwork {
             }
             state.checked = Some(now);
         }
-        if !self.governed_elsewhere(room) {
+        // Only an owner already open: this runs on the frame loop.
+        let Some(owner) = self.opened_native_owner() else {
+            return;
+        };
+        if !self.governed_elsewhere_by(&owner, room) {
             return;
         }
         let (salt, windows) = {
@@ -153,9 +157,6 @@ impl ShellNetwork {
         if salt == 0 {
             return;
         }
-        let Some(owner) = self.opened_native_owner() else {
-            return;
-        };
         let mut settled = self
             .hosted_topology
             .rooms
