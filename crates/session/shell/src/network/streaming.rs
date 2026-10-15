@@ -431,9 +431,9 @@ mod tests {
         // PSNR-compared against the input (floor: 35 dB). `deposit_for_test` is
         // `#[cfg(test)]`-gated since production bytes arrive via a shm `wl_buffer`.
         {
-            use crate::network::decoder::VideoDecoder;
             use crate::network::surface_tracker::SurfaceTracker;
             use media::StreamCodec;
+            use tilo_callstream::surface_decoder::VideoDecoder;
 
             const W: u32 = 64;
             const H: u32 = 64;
@@ -495,8 +495,8 @@ mod tests {
             };
             let orig_rgb = strip_alpha(&input);
             let rgba = match &frame.pixels {
-                crate::network::decoder::DecodedPixels::Rgba8(b) => b,
-                other @ crate::network::decoder::DecodedPixels::P010 { .. } => {
+                tilo_callstream::surface_decoder::DecodedPixels::Rgba8(b) => b,
+                other @ tilo_callstream::surface_decoder::DecodedPixels::P010 { .. } => {
                     panic!("an SDR decoder returned non-RGBA pixels: {other:?}")
                 }
             };

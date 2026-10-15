@@ -217,8 +217,8 @@ pub mod recording {
         frames_per_step_for, scenario,
     };
 
-    use shell::compositor::mp4_recording::{Mp4Recording, recording_encoder};
     use shell::network::encoder::VideoEncoder;
+    use tilo_callstream::mp4_recording::{Mp4Recording, recording_encoder};
 
     /// What a recording produced: the codec and its first access unit (a
     /// keyframe), so a caller can check the content decodes.
@@ -473,7 +473,7 @@ mod tests {
 
     use std::fs;
 
-    use shell::network::decoder::VideoDecoder;
+    use tilo_callstream::surface_decoder::VideoDecoder;
 
     use super::super::scenario::lookup;
 
@@ -502,8 +502,8 @@ mod tests {
         assert_eq!(frame.width, 128);
         assert_eq!(frame.height, 96);
         let pixels = match &frame.pixels {
-            shell::network::DecodedPixels::Rgba8(bytes) => bytes,
-            other @ shell::network::DecodedPixels::P010 { .. } => {
+            tilo_callstream::surface_decoder::DecodedPixels::Rgba8(bytes) => bytes,
+            other @ tilo_callstream::surface_decoder::DecodedPixels::P010 { .. } => {
                 panic!("an SDR decoder should yield RGBA pixels, got {other:?}")
             }
         };
