@@ -287,13 +287,13 @@ export async function runAcceptance(ctx) {
   const focus = open('focus');
   let mark = lines1();
   await typeKey(main, KEYS.a);
-  if (!await waitInput(w1, mark, isKey(KEYS.a.evdev, false), 10_000)) focus.failures.push('a key typed into the focused window did not reach it');
+  if (!await waitInput(w1, mark, isKey(KEYS.a.evdev, false), 30_000)) focus.failures.push('a key typed into the focused window did not reach it');
   const beside = await main.evaluate(besideWindow(prefix1));
   if (!beside) throw new Invalid(`no point of the desktop beside the window to click: ${JSON.stringify(await main.evaluate(windowAt(prefix1)))}`);
   focus.desktopPoint = beside;
   mark = lines1();
   await click(main, beside);
-  if (!await waitInput(w1, mark, isFocus(false), 10_000)) focus.failures.push('a click on the desktop did not take the keyboard from the window');
+  if (!await waitInput(w1, mark, isFocus(false), 30_000)) focus.failures.push('a click on the desktop did not take the keyboard from the window');
   const away = lines1();
   await typeKey(main, KEYS.b);
   await sleep(1500);
@@ -301,10 +301,10 @@ export async function runAcceptance(ctx) {
   if (!back?.control) throw new Invalid(`the window was not on screen to click again after the desktop took the keyboard: ${JSON.stringify(back)}`);
   mark = lines1();
   await click(main, back);
-  const regained = await waitInput(w1, mark, isFocus(true), 10_000);
+  const regained = await waitInput(w1, mark, isFocus(true), 30_000);
   await typeKey(main, KEYS.c);
   if (!regained) focus.failures.push('a click on the window did not give it the keyboard back');
-  if (!await waitInput(w1, mark, isKey(KEYS.c.evdev, false), 10_000)) focus.failures.push('a key typed after clicking the window again did not reach it');
+  if (!await waitInput(w1, mark, isKey(KEYS.c.evdev, false), 30_000)) focus.failures.push('a key typed after clicking the window again did not reach it');
   if (inputsOf(w1.source.lines, away, mark).some(isKey(KEYS.b.evdev, true))) focus.failures.push('a key typed on the desktop reached the window it had left');
 
   // paste ----------------------------------------------------------------------
@@ -332,7 +332,7 @@ export async function runAcceptance(ctx) {
   }
   await main.send('Input.dispatchKeyEvent', {type: 'keyUp', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: CTRL});
   await main.send('Input.dispatchKeyEvent', {type: 'keyUp', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, modifiers: 0});
-  await waitInput(w1, mark, isKey(CONTROL, false), 10_000);
+  await waitInput(w1, mark, isKey(CONTROL, false), 30_000);
   paste.failures.push(...judgePaste(inputsOf(w1.source.lines, mark), PASTED));
 
   // resize: the page ---------------------------------------------------------------
@@ -349,7 +349,7 @@ export async function runAcceptance(ctx) {
     const at = pointFor(after, after.pictureWidth, after.pictureHeight, ...target);
     mark = lines1();
     await click(main, at);
-    const pressed = await waitInput(w1, mark, isButton(LEFT_BUTTON, true), 10_000);
+    const pressed = await waitInput(w1, mark, isButton(LEFT_BUTTON, true), 30_000);
     const inputs = inputsOf(w1.source.lines, mark);
     const motion = inputs.slice(0, inputs.indexOf(inputs.find(isButton(LEFT_BUTTON, true)))).findLast(input => input.value?.PointerMotion)?.value.PointerMotion;
     const slack = 1 / at.scale + 1;
@@ -376,7 +376,7 @@ export async function runAcceptance(ctx) {
   fallback.carrier = JSON.parse(await other.evaluate(ctx.live)).live?.carrier ?? null;
   if (fallback.carrier !== 'https-stream') fallback.failures.push(`with WebTransport never ready the page's live plane took ${fallback.carrier}, not the HTTPS stream`);
   for (const [name, page, found] of [['fallback', other, fallback], ['viewer', watcher, viewer]]) {
-    const final = await settleOn(page, prefix1, w1.stop.lastIndex, 60_000);
+    const final = await settleOn(page, prefix1, w1.stop.lastIndex, 120_000);
     found.stillPicture = final;
     if (final !== w1.stop.lastIndex) found.failures.push(`the ${name} page, arriving once the window was still, shows frame ${final}, not its last ${w1.stop.lastIndex}`);
   }
@@ -397,28 +397,37 @@ export async function runAcceptance(ctx) {
   if (!shown) throw new Invalid('the second window never came on screen on the first page');
   let taken = await waitInput(w2, 0, isFocus(true), 3000);
   stale.focusedOnOpen = Boolean(taken);
-  if (!taken && shown.control) { await click(main, shown); taken = await waitInput(w2, 0, isFocus(true), 10_000); }
+  if (!taken && shown.control) { await click(main, shown); taken = await waitInput(w2, 0, isFocus(true), 30_000); }
   if (!taken) stale.failures.push('the second window never took the keyboard');
-  if (!await waitInput(w1, beforeSecond, isFocus(false), 10_000)) stale.failures.push('the first window was not told it lost the keyboard when the second took it');
+  if (!await waitInput(w1, beforeSecond, isFocus(false), 30_000)) stale.failures.push('the first window was not told it lost the keyboard when the second took it');
   const typed2 = lines2();
   await typeKey(main, KEYS.d);
-  if (!await waitInput(w2, typed2, isKey(KEYS.d.evdev, false), 10_000)) stale.failures.push('a key typed into the newly focused window did not reach it');
+  if (!await waitInput(w2, typed2, isKey(KEYS.d.evdev, false), 30_000)) stale.failures.push('a key typed into the newly focused window did not reach it');
   if (inputsOf(w1.source.lines, beforeSecond).some(isKey(KEYS.d.evdev, true))) stale.failures.push('a key typed into the newly focused window reached the one it replaced');
 
   // recovery: drop the first page's live plane while the second window streams.
   step('drop the live plane');
   if ((started.startUs + SECOND.seconds * 1e6 - nowUs()) / 1e6 < 10) throw new Invalid('the second window streamed too briefly to drop its stream under it');
   const lastBefore = await main.evaluate(lastDrawn(prefix2));
+  const attemptsBefore = (await main.evaluate('globalThis.__tiloStream.transport')).attempts;
   const droppedAt = nowUs();
   recovery.droppedSessions = await main.evaluate('globalThis.__tiloDropLive()');
   if (!recovery.droppedSessions) throw new Invalid('the first page had no WebTransport session to drop');
+  // Resumed: the page connected again (a new WebTransport session) and drew
+  // a newer frame of the window on the canvas it opened for it again (the
+  // live plane going down closes every window it carried).
   const resumed = await eventually(async () => {
-    const latest = await main.evaluate(lastDrawn(prefix2));
-    return latest && latest.wallUs > droppedAt && latest.index > (lastBefore?.index ?? -1) ? latest : null;
-  }, 30_000, 200);
+    const [latest, transport] = await Promise.all([main.evaluate(lastDrawn(prefix2)), main.evaluate('globalThis.__tiloStream.transport')]);
+    return transport.attempts > attemptsBefore && latest && latest.wallUs > droppedAt && latest.index > (lastBefore?.index ?? -1)
+      && latest.epoch !== lastBefore?.epoch ? latest : null;
+  }, 90_000, 200);
   recovery.lastBefore = lastBefore?.index ?? null;
+  recovery.reconnects = (await main.evaluate('globalThis.__tiloStream.transport')).attempts - attemptsBefore;
   recovery.resumedMs = resumed ? Math.round((resumed.wallUs - droppedAt) / 1000) : null;
-  if (!resumed) recovery.failures.push(`the window did not resume within 30 s of its stream dropping (last frame before it: ${recovery.lastBefore})`);
+  if (!resumed) {
+    recovery.failures.push(`the window did not come back within 90 s of its stream dropping (last frame before it: ${recovery.lastBefore}, `
+      + `${recovery.reconnects} WebTransport sessions opened since)`);
+  }
 
   step('the second window goes still');
   const stopped = JSON.parse(await w2.source.line(line => { try { return JSON.parse(line).event === 'stopped'; } catch { return false; } },
@@ -430,7 +439,7 @@ export async function runAcceptance(ctx) {
   const live = JSON.parse(await main.evaluate(ctx.live)).live;
   if (live?.state !== 'live') recovery.failures.push(`the first page's live plane is ${live?.state} after the drop, not live`);
   for (const [name, page] of pages) {
-    await settleOn(page, prefix2, stopped.lastIndex, 60_000);
+    await settleOn(page, prefix2, stopped.lastIndex, 120_000);
     const judged = judgeStream({sent, draws: await page.evaluate(drawsOf(prefix2)), lastIndex: stopped.lastIndex});
     const found = {first: recovery, fallback, viewer}[name];
     found.secondWindow = {...judged, failures: undefined};
@@ -452,7 +461,7 @@ export async function runAcceptance(ctx) {
   else {
     mark = lines2();
     await click(other, ownerSees);
-    if (!await waitInput(w2, mark, isButton(LEFT_BUTTON, true), 10_000)) fallback.failures.push('a click from the page on the HTTPS stream did not reach the window');
+    if (!await waitInput(w2, mark, isButton(LEFT_BUTTON, true), 30_000)) fallback.failures.push('a click from the page on the HTTPS stream did not reach the window');
   }
   await sleep(1000);
   const quiet1 = lines1(), quiet2 = lines2();
@@ -475,7 +484,7 @@ export async function runAcceptance(ctx) {
   const closing2 = lines2();
   w2.source.process.stdin.write('end\n');
   await w2.source.line(line => { try { return JSON.parse(line).event === 'ended'; } catch { return false; } }, 10_000, 'the second window closing');
-  const gone = await eventually(async () => main.evaluate(`!${keyed(prefix2)}`), 15_000);
+  const gone = await eventually(async () => main.evaluate(`!${keyed(prefix2)}`), 60_000);
   if (!gone) stale.failures.push('the closed window stayed on the first page');
   await typeKey(main, KEYS.e);
   if (await main.evaluate(legacyInput([{Key: {keysym: KEYS.e.evdev, pressed: true, modifiers: 0}}, {Key: {keysym: KEYS.e.evdev, pressed: false, modifiers: 0}}]))) {
@@ -487,13 +496,13 @@ export async function runAcceptance(ctx) {
   const again = await eventually(async () => {
     const box = await main.evaluate(windowAt(prefix1));
     return box?.control ? box : null;
-  }, 15_000);
+  }, 60_000);
   if (!again) throw new Invalid('the first window did not come back on screen after the second closed');
   mark = lines1();
   await click(main, again);
   await waitInput(w1, mark, isFocus(true), 5000);
   await typeKey(main, KEYS.f);
-  if (!await waitInput(w1, mark, isKey(KEYS.f.evdev, false), 10_000)) stale.failures.push('once the second window closed, a click on the first and a key typed did not reach it');
+  if (!await waitInput(w1, mark, isKey(KEYS.f.evdev, false), 30_000)) stale.failures.push('once the second window closed, a click on the first and a key typed did not reach it');
   for (const [name, session] of [['first', w1], ['second', w2]]) {
     const stray = focusDiscipline(inputsOf(session.source.lines));
     if (stray.length) stale.failures.push(`${stray.length} keys or pastes reached the ${name} window while it did not hold the keyboard: ${stray.slice(0, 3).join(', ')}`);

@@ -501,7 +501,9 @@ async function attachPage(browser, viewport, {context, window = false, block = f
     }
   });
   const send = (method, params = {}) => browser.send(method, params, sessionId);
-  const evaluate = async (expression, ms = 60_000) => {
+  // Generous: on SwiftShader one GPU process rasterizes every page's desktop,
+  // and a page waiting on it does not answer for a minute or more.
+  const evaluate = async (expression, ms = 180_000) => {
     const reply = await within(send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true}), ms,
       `the ${page.name ?? 'first'} page (${expression.replace(/\s+/g, ' ').slice(0, 120)})`);
     if (reply.error) throw Error(reply.error.message);
