@@ -12824,19 +12824,35 @@ mod tests {
         let queued = rx.try_recv().expect("initial catalogue reaches the owner");
         assert_eq!(event_kind(&queued.event), "ActionCatalogue");
         let retained = event_bytes(&queued.event).unwrap();
-        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), retained);
+        assert_eq!(
+            state.catalogue_event_bytes.0.load(Ordering::Acquire),
+            retained
+        );
+        assert_eq!(
+            state.event_bytes.0.load(Ordering::Acquire),
+            0,
+            "a catalogue is charged to its own budget, not the control events'"
+        );
         assert!(retained >= 700 * 1024);
         drop(queued);
-        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), 0);
+        assert_eq!(state.catalogue_event_bytes.0.load(Ordering::Acquire), 0);
         assert!(state.is_healthy());
 
-        let oversized = snapshot(SDK_EVENT_QUEUE_BYTES);
-        assert!(admit_initial_action_catalogue(&oversized, &inbound, None).is_err());
+        let oversized = snapshot(SDK_CATALOGUE_EVENT_BYTES);
+        admit_initial_action_catalogue(&oversized, &inbound, None).unwrap();
         assert!(
-            !state.is_healthy(),
-            "oversized initial snapshots fail closed"
+            state.is_healthy(),
+            "an oversized snapshot is trimmed to fit rather than failing the bridge"
         );
-        assert!(rx.try_recv().is_err(), "rejected payload is never retained");
+        let queued = rx
+            .try_recv()
+            .expect("the trimmed catalogue reaches the owner");
+        let CollabEvent::ActionCatalogue { surfaces } = &queued.event else {
+            panic!("expected an action catalogue");
+        };
+        assert!(surfaces.is_empty(), "the one surface too large is dropped");
+        drop(queued);
+        assert_eq!(state.catalogue_event_bytes.0.load(Ordering::Acquire), 0);
         assert_eq!(state.event_bytes.0.load(Ordering::Acquire), 0);
     }
 
