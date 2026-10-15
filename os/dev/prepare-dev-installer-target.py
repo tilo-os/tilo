@@ -3,6 +3,8 @@
 
 This preserves the registry manifest and checks all OCI blobs. It does not
 authenticate a CI run or produce release signatures; the run ID is a locator.
+A split-kernel target also gets its UKI built here (os/dev/dev-target-uki.py),
+so the live installer needs no UKI constructor; that needs --rpms-ref.
 """
 import argparse
 import importlib.util
@@ -26,16 +28,23 @@ def prepare(args):
     output.mkdir(mode=0o700)
     subprocess.run(["skopeo", "copy", "--preserve-digests", "docker://" + args.image,
                     "oci:" + str(output / "oci") + ":target"], check=True)
+    builder = load(Path(__file__).with_name("dev-target-uki.py"), "dev_target_uki")
+    builder.build(args.image, args.rpms_ref, output / builder.OUTPUT_NAME,
+                  Path(__file__).resolve().parents[2])
     metadata = {"schema": "tilo.installer-dev-target.v1", "architecture": "aarch64",
                 "target_ref": args.image, "target_digest": match[1],
                 "hardware_profile": args.hardware_profile, "update_origin": args.update_origin,
                 "source_revision": args.source_revision, "ci_run_id": args.ci_run_id}
     (output / "target.json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
-    module = Path(__file__).with_name("installer-offline-target.py")
-    spec = importlib.util.spec_from_file_location("dev_target_transport", module)
-    transport = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(transport)
+    transport = load(Path(__file__).with_name("installer-offline-target.py"), "dev_target_transport")
     return transport.verify(output, development=True)
+
+
+def load(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def main():
@@ -43,6 +52,7 @@ def main():
     for name in ("image", "source-revision", "ci-run-id", "hardware-profile", "update-origin"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--rpms-ref", help="digest-pinned RPM snapshot for a split-kernel target's UKI tools")
     try:
         print(json.dumps(prepare(parser.parse_args()), sort_keys=True))
     except (ValueError, OSError, subprocess.CalledProcessError) as error:

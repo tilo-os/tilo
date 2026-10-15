@@ -40,9 +40,17 @@ class OfflineTargetTest(unittest.TestCase):
                                ci_run_id=metadata["ci_run_id"],
                                hardware_profile=metadata["hardware_profile"],
                                update_origin=metadata["update_origin"],
+                               rpms_ref=None,
                                output=Path(self.temp.name) / "exported")
-        def copy_layout(argv, *, check):
+        def copy_layout(argv, *, check, **kwargs):
             self.assertTrue(check)
+            if argv[:2] == ["podman", "pull"]:
+                self.assertEqual(argv, ["podman", "pull", args.image])
+                return SimpleNamespace(stdout="")
+            if argv[:2] == ["podman", "run"]:
+                # A board target that already carries its sealed UKI.
+                self.assertIn(args.image, argv)
+                return SimpleNamespace(stdout="sealed\n")
             self.assertEqual(argv, ["skopeo", "copy", "--preserve-digests",
                                     "docker://" + args.image, "oci:" + str(args.output / "oci") + ":target"])
             shutil.copytree(self.root / "oci", args.output / "oci")
@@ -57,6 +65,61 @@ class OfflineTargetTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "development target"):
                 prepare.prepare(args)
             external.assert_not_called()
+
+    def test_split_kernel_export_carries_a_runner_built_uki(self):
+        metadata = self.dev_transport()
+        script = MODULE.with_name("prepare-dev-installer-target.py")
+        module_spec = importlib.util.spec_from_file_location("prepare_dev_target", script)
+        prepare = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(prepare)
+        rpms = "registry.tilo.so/tilo/rpms@sha256:" + "d" * 64
+        args = SimpleNamespace(image=metadata["target_ref"],
+                               source_revision=metadata["source_revision"],
+                               ci_run_id=metadata["ci_run_id"],
+                               hardware_profile=metadata["hardware_profile"],
+                               update_origin=metadata["update_origin"],
+                               rpms_ref=rpms, output=Path(self.temp.name) / "exported")
+        calls = []
+        def external(argv, *, check, **kwargs):
+            argv = [str(item) for item in argv]
+            calls.append(argv)
+            if argv[0] == "skopeo":
+                shutil.copytree(self.root / "oci", args.output / "oci")
+            elif argv[:2] == ["podman", "run"] and "construct" not in argv:
+                return SimpleNamespace(stdout="unsealed\n")
+            elif argv[:2] == ["podman", "build"]:
+                # The boot adapter's own tool stage, from a context holding
+                # exactly the files that stage copies.
+                self.assertEqual(argv[argv.index("--target") + 1], "uki-tools")
+                self.assertIn("RPMS_REF=" + rpms, argv)
+                self.assertIn("BASE_IMAGE=" + args.image, argv)
+                context = Path(argv[-1])
+                self.assertTrue((context / "os/dev/uki-tools.packages").is_file())
+                self.assertTrue((context / "os/dev/uki-hardware-profile.py").is_file())
+            elif "construct" in argv:
+                self.assertIn("--network=none", argv)
+                self.assertIn(f"type=image,source={args.image},destination=/target", argv)
+                scratch = next(item.split(":")[0] for item in argv if item.endswith(":/out"))
+                (Path(scratch) / "target-uki.efi").write_bytes(b"MZ runner-built UKI")
+            return SimpleNamespace(stdout="")
+        with patch.object(prepare.subprocess, "run", side_effect=external):
+            self.assertEqual(prepare.prepare(args), metadata)
+        self.assertEqual((args.output / "target-uki.efi").read_bytes(), b"MZ runner-built UKI")
+        self.assertIn(["podman", "rmi", "-f", next(argv[argv.index("-t") + 1] for argv in calls
+                                                  if argv[:2] == ["podman", "build"])], calls)
+        destination = Path(self.temp.name) / "staged"
+        offline.install(args.output, destination, development=True)
+        self.assertEqual((destination / "target-uki.efi").read_bytes(), b"MZ runner-built UKI")
+        # Signed release transports keep their exact two-entry shape.
+        with self.assertRaisesRegex(ValueError, "unexpected root entries"):
+            offline.verify(args.output)
+        # A split kernel without the pinned snapshot cannot build its UKI.
+        args.rpms_ref, args.output = None, Path(self.temp.name) / "no-tools"
+        calls.clear()
+        with patch.object(prepare.subprocess, "run", side_effect=external), \
+                self.assertRaisesRegex(ValueError, "RPM snapshot"):
+            prepare.prepare(args)
+        self.assertFalse(any(argv[:2] == ["podman", "build"] for argv in calls))
 
     def dev_transport(self, *, flavour="dev", revision="a" * 40):
         config = {"architecture": "arm64", "os": "linux", "config": {"Labels": {
