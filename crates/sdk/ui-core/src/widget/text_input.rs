@@ -5100,6 +5100,10 @@ impl Widget for TextInput {
         dyn crate::undo::UndoPoints
     );
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
