@@ -17,6 +17,7 @@ name = "tilo-secret-service"
 path = "src/main.rs"
 
 [dependencies]
+tilo-paths.workspace = true
 # The vault's at-rest envelope, the store key derivation and the Secret
 # Service session encryption all live in tilo-seal.
 tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
@@ -44,3 +45,6 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

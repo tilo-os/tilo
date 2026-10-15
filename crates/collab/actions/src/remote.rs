@@ -465,6 +465,35 @@ pub fn room_governance_resource(room: &str) -> String {
     format!("{ROOM_GOVERNANCE_KIND}:{room}")
 }
 
+/// Pairing a nearby device with the person's identity. The host runs it —
+/// LAN discovery, and the approval an administrator authenticates — so no
+/// application starts a privileged process. It is answered under the
+/// host's provider, which a caller names without reading a catalogue, for
+/// the person at this device in the room their connection was admitted to.
+pub mod device_pairing {
+    use super::{ActionAddress, RemoteActionTarget};
+
+    /// The provider the host answers pairing under.
+    pub const PROVIDER: &str = "tilo.device-pairing";
+    /// The resource the steps are actions of.
+    pub const RESOURCE: &str = "identity.device.pair";
+    /// Look for a nearby device (`role`); answers the device found.
+    pub const DISCOVER: &str = "discover";
+    /// Admit a discovered device (`role`, `device`, `service`, `confirm`).
+    pub const APPROVE: &str = "approve";
+    /// Forget a discovered device and stop approving it (`device`).
+    pub const REJECT: &str = "reject";
+
+    /// The target of pairing step `step`.
+    #[must_use]
+    pub fn target(step: &str) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: ActionAddress::new(RESOURCE, step),
+        }
+    }
+}
+
 /// Why a host refuses a directory action that asks for confirmation when
 /// the request names no revision: the confirmation covers the action as the
 /// person was shown it, which only that revision identifies. A caller that

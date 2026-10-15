@@ -1,7 +1,6 @@
 pub mod actor;
 pub(crate) mod agent_questions;
 pub mod behaviour;
-pub mod decoder;
 pub mod encoder;
 pub mod hub;
 pub mod identity;
@@ -22,7 +21,6 @@ pub mod workspace_control;
 
 pub use actor::{Actor, HostIdentity, NetCmd, NetEvent, WorkspaceControlRoute};
 pub use behaviour::{load_or_create_keypair, peer_salt_from_keypair};
-pub use decoder::{DecodedFrame, DecodedPixels, DecoderError, VideoDecoder};
 pub use encoder::{EncodeError, VideoEncoder};
 pub use hub::{Hub, TopicSubscriber};
 pub use identity::{PeerIdentity, PeerIdentityError, PeerIdentityStore};

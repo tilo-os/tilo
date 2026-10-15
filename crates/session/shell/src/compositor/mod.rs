@@ -12,6 +12,7 @@
 pub mod accessibility;
 #[cfg(target_os = "linux")]
 pub mod activation;
+pub mod activity;
 #[cfg(target_os = "linux")]
 pub(crate) mod admin_control;
 #[cfg(target_os = "linux")]
@@ -72,7 +73,6 @@ pub mod lock_screen;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod metrics;
-pub mod mp4_recording;
 #[cfg(target_os = "linux")]
 pub mod native;
 #[cfg(target_os = "linux")]

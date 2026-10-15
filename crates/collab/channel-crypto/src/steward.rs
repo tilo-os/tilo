@@ -50,7 +50,7 @@ use openmls::prelude::BasicCredential;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::signer::{StewardSigner, complete_now};
+use crate::signer::{DeviceSigner, complete_now};
 use crate::store::{FileStewardStore, StewardRecord, StewardStore};
 use crate::{
     ChannelContentKeys, ChannelGroup, Error, GovernanceJournal, KeyPackage, MemberKey, Result,
@@ -118,7 +118,7 @@ pub struct Outgoing {
 /// A steward's group, journal and ledger for one channel, kept in `S`.
 pub struct ChannelSteward<S: StewardStore = FileStewardStore> {
     channel: ChannelId,
-    signer: Box<dyn StewardSigner>,
+    signer: Box<dyn DeviceSigner>,
     group: ChannelGroup,
     journal: GovernanceJournal,
     ledger: StewardLedger,
@@ -179,7 +179,7 @@ impl<S: StewardStore> ChannelSteward<S> {
     pub async fn open(
         store: S,
         channel: ChannelId,
-        signer: Box<dyn StewardSigner>,
+        signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Self> {
         Self::open_with_creation(store, channel, signer, vault, true).await
@@ -188,11 +188,11 @@ impl<S: StewardStore> ChannelSteward<S> {
     async fn open_with_creation(
         mut store: S,
         channel: ChannelId,
-        signer: Box<dyn StewardSigner>,
+        signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
         create: bool,
     ) -> Result<Self> {
-        let device = signer.device();
+        let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
         let journal = match store.read(StewardRecord::Journal)? {
             Some(bytes) => GovernanceJournal::from_bytes(&bytes)?,
             None => GovernanceJournal::in_memory(),
@@ -296,7 +296,7 @@ impl<S: StewardStore> ChannelSteward<S> {
 
     /// The steward's device key.
     pub fn device(&self) -> Ed25519PublicKey {
-        self.signer.device()
+        Ed25519PublicKey::from_bytes(self.signer.device_public_key())
     }
 
     /// The governance journal (the channel's plaintext gate and head epoch).
@@ -713,7 +713,12 @@ impl<S: StewardStore> ChannelSteward<S> {
         let message = frame
             .signing_bytes()
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        frame.signature = collab_types::Signature::from_bytes(self.signer.sign(message).await?);
+        frame.signature = collab_types::Signature::from_bytes(
+            self.signer
+                .sign(message)
+                .await
+                .map_err(|error| Error::Signer(error.0))?,
+        );
         frame
             .verify_signature()
             .map_err(|error| Error::Signer(error.to_string()))?;

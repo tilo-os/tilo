@@ -736,6 +736,47 @@ pub trait KeyboardShortcutServices: Send + Sync {
     ) -> Result<(tilo_actions::ActionOutput, bool), Box<tilo_actions::ActionFailure>>;
 }
 
+/// One pairing step the broker admitted: action `address` (on
+/// [`tilo_actions::remote::device_pairing::RESOURCE`]) for `actor` in
+/// `room`, with `argument` in its slot form.
+pub struct DevicePairingRequest<'a> {
+    pub room: &'a str,
+    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
+    pub address: &'a tilo_actions::ActionAddress,
+    pub argument: Option<&'a str>,
+}
+
+/// How a pairing step ended.
+pub type DevicePairingOutcome =
+    Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
+
+/// Pairing a nearby device with the person's identity, run by the host:
+/// LAN discovery, and the approval an administrator authenticates through
+/// the host's polkit helper. The broker answers it under
+/// [`tilo_actions::remote::device_pairing::PROVIDER`], only to a caller on
+/// this machine confined to a room, and checks each step against the
+/// caller's policy under [`Self::app_id`] before the host decides whether
+/// the actor may pair at all.
+pub trait DevicePairingServices: Send + Sync {
+    /// The application whose controls pair devices. It reaches the steps as
+    /// the person using it, as it does its own actions.
+    fn app_id(&self) -> &str;
+    /// Every step, described.
+    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Start one admitted step. Its outcome arrives on the returned answer:
+    /// at once, or once the LAN window or the administrator's
+    /// authentication ends, completed from another thread.
+    ///
+    /// # Errors
+    ///
+    /// Why the step may not start: the actor does not administer the
+    /// room's identity, the arguments are malformed, or another step runs.
+    fn start(
+        &self,
+        request: &DevicePairingRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<DevicePairingOutcome>, String>;
+}
+
 pub trait ContinuationServices: Send + Sync {
     /// Reports one application instance's continuation metadata.
     ///
@@ -1082,6 +1123,9 @@ pub struct HostServices {
     /// The device's keyboard shortcuts on the action door. Without it
     /// they are not offered.
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
+    /// Pairing a nearby device, run by the host. Without it no door offers
+    /// it.
+    pub device_pairing: Option<Arc<dyn DevicePairingServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,

@@ -1748,20 +1748,7 @@ fn write_capabilities_file(
 
 /// `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
 pub fn runtime_dir() -> PathBuf {
-    if let Some(dir) = tilo_paths::xdg::runtime_dir() {
-        return dir;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // Darwin supplies a per-user temporary directory through TMPDIR.
-        std::env::temp_dir()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // SAFETY: getuid always succeeds.
-        let uid = unsafe { libc::getuid() };
-        PathBuf::from(format!("/run/user/{uid}"))
-    }
+    tilo_paths::xdg::runtime_dir_or_default()
 }
 
 /// Every installed package, GUI or not, freshly read from the registry.

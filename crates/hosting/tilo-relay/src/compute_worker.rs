@@ -5,6 +5,11 @@
 //! lives on the dedicated authenticated session, so task failure, health
 //! regression, shutdown, or connection loss withdraws eligibility without a
 //! stale durable capability.
+//!
+//! A routed job's inputs are hydrated from its requester through the relay
+//! into a private per-job directory ([`hydrate_job_inputs`]), and its
+//! outputs are retained for that requester to fetch by digest
+//! ([`ComputeOutputSource`]) for [`OUTPUT_RETENTION`].
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
@@ -22,9 +27,12 @@ use tilo_clock::unix_now_ms;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::compute::{
-    ComputeContentStore, ComputeJobPhase, ComputeJobResult, ComputeWorker,
+    ComputeContentStore, ComputeExecutionError, ComputeJobPhase, ComputeJobResult, ComputeJobSpec,
+    ComputeOutputSource, ComputePackageCatalogue, ComputeSandbox, ComputeWorker,
     InstalledComputeCatalogue, LauncherComputeSandbox, MAX_COMPUTE_INPUT_BYTES,
+    OUTPUT_INDEX_SUFFIX,
 };
+use crate::compute_content::{ContentFetchError, answer_content, fetch_job_content};
 use crate::compute_session::{ComputeClient, ComputeDelivery, ComputeSessionError};
 use crate::compute_transport::{
     COMPUTE_TRANSPORT_SCHEMA_VERSION, ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate,
@@ -37,6 +45,11 @@ use crate::mesh::{
 const HEALTH_INTERVAL: Duration = Duration::from_secs(10);
 const ADVERTISEMENT_LIFETIME_MS: u64 = 30_000;
 const DEFAULT_ASSIGNMENT_CAPACITY: u32 = 1;
+/// How long a completed job's outputs stay retrievable by its requester.
+/// The result reaches an offline requester whenever it reattaches, so this
+/// spans a day rather than the job's lifetime.
+pub const OUTPUT_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+const OUTPUT_PRUNE_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// Failure while establishing or owning the production worker.
 #[derive(Debug, Error)]
@@ -214,20 +227,25 @@ impl WorkerEnvironments {
     }
 }
 
-/// Serve a stream the relay opened to this worker on a task of its own.
+/// Serve a stream the relay opened to this worker on a task of its own;
+/// `outputs` answers for the outputs of the jobs this worker ran.
 pub fn spawn_worker_stream(
     environments: WorkerEnvironments,
+    outputs: Option<Arc<dyn ComputeOutputSource>>,
     (mut send, mut receive): (iroh::endpoint::SendStream, iroh::endpoint::RecvStream),
 ) {
     tokio::spawn(async move {
-        if let Err(error) = serve_worker_stream(environments, &mut send, &mut receive).await {
+        if let Err(error) =
+            serve_worker_stream_with(environments, outputs, &mut send, &mut receive).await
+        {
             tracing::debug!(%error, "worker environment stream ended");
         }
         let _ = send.finish();
     });
 }
 
-/// Serve one stream the relay opened to this worker.
+/// Serve one stream the relay opened to this worker, which runs no batch
+/// jobs: it has no job outputs to serve.
 ///
 /// # Errors
 ///
@@ -241,14 +259,56 @@ where
     S: tokio::io::AsyncWrite + Unpin + Send,
     R: tokio::io::AsyncRead + Unpin + Send,
 {
+    serve_worker_stream_with(environments, None, send, receive).await
+}
+
+/// Serve one stream the relay opened to this worker: an environment
+/// session, a legacy app, or an output of a job it ran, from `outputs`
+/// ([`WorkerStreamOpen::ComputeContent`](tilo_relay_protocol::environment::WorkerStreamOpen::ComputeContent)).
+///
+/// # Errors
+///
+/// Returns an error when the stream fails or its first frame is malformed.
+pub async fn serve_worker_stream_with<S, R>(
+    environments: WorkerEnvironments,
+    outputs: Option<Arc<dyn ComputeOutputSource>>,
+    send: &mut S,
+    receive: &mut R,
+) -> Result<(), crate::environment_host::EnvironmentStreamError>
+where
+    S: tokio::io::AsyncWrite + Unpin + Send,
+    R: tokio::io::AsyncRead + Unpin + Send,
+{
     use crate::environment_host::{read_message, write_message};
     use tilo_relay_protocol::environment::{
-        ENVIRONMENT_PROTOCOL_VERSION, LegacyFrame, Refusal, ServerFrame, WorkerStreamOpen,
+        ContentReply, ENVIRONMENT_PROTOCOL_VERSION, LegacyFrame, Refusal, ServerFrame,
+        WorkerStreamOpen,
     };
     let Some(open) = read_message::<_, WorkerStreamOpen>(receive).await? else {
         return Ok(());
     };
     match open {
+        WorkerStreamOpen::ComputeContent {
+            version,
+            workspace_id,
+            asker,
+            job_id,
+            digest,
+        } => {
+            let code = match outputs {
+                Some(outputs) if version == ENVIRONMENT_PROTOCOL_VERSION => {
+                    let found = tokio::task::spawn_blocking(move || {
+                        outputs.retained_output(asker.device, workspace_id, job_id, digest)
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("retained output read panicked".into()));
+                    return answer_content(send, digest, found).await;
+                }
+                Some(_) => "unsupported_version",
+                None => "content_plane_unavailable",
+            };
+            write_message(send, &ContentReply::Refused { code: code.into() }).await
+        }
         WorkerStreamOpen::Environment {
             version,
             member,
@@ -338,18 +398,7 @@ pub async fn run_production_compute_worker(
         config.revocations.clone(),
     )
     .await?;
-    for workspace in &config.workspaces {
-        client.attach(*workspace).await?;
-        let delivery = client.receive().await?;
-        if !matches!(
-            delivery.envelope,
-            ComputeEnvelope::Ready { workspace_id, .. } if workspace_id == *workspace
-        ) {
-            return Err(ComputeWorkerError::Health(
-                "relay rejected compute worker workspace attachment".into(),
-            ));
-        }
-    }
+    attach_workspaces(&mut client, &config.workspaces).await?;
 
     advertise_all(&mut client, &config, &health, 0).await?;
     config.readiness.store(true, Ordering::Release);
@@ -362,6 +411,8 @@ pub async fn run_production_compute_worker(
     let mut health_tick = tokio::time::interval(HEALTH_INTERVAL);
     health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     health_tick.tick().await;
+    let mut prune_tick = tokio::time::interval(OUTPUT_PRUNE_INTERVAL);
+    prune_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let _reaper = config
         .environments
         .host
@@ -369,14 +420,16 @@ pub async fn run_production_compute_worker(
         .map(|host| AbortOnDrop(host.spawn_reaper()));
     let connection = client.connection();
     config.environments.attach_relay(&connection);
+    let outputs: Arc<dyn ComputeOutputSource> = executor.clone();
 
     loop {
         tokio::select! {
             stream = connection.accept_bi() => {
                 let stream = stream
                     .map_err(|error| ComputeSessionError::Connection(error.to_string()))?;
-                spawn_worker_stream(config.environments.clone(), stream);
+                spawn_worker_stream(config.environments.clone(), Some(Arc::clone(&outputs)), stream);
             }
+            _ = prune_tick.tick() => spawn_output_prune(&config.state_root),
             delivery = client.receive() => {
                 let delivery = delivery?;
                 handle_delivery(
@@ -408,6 +461,43 @@ pub async fn run_production_compute_worker(
             }
         }
     }
+}
+
+/// Attach the worker session to each configured workspace, failing when the
+/// relay refuses any of them.
+async fn attach_workspaces(
+    client: &mut ComputeClient,
+    workspaces: &BTreeSet<u64>,
+) -> Result<(), ComputeWorkerError> {
+    for workspace in workspaces {
+        client.attach(*workspace).await?;
+        let delivery = client.receive().await?;
+        if !matches!(
+            delivery.envelope,
+            ComputeEnvelope::Ready { workspace_id, .. } if workspace_id == *workspace
+        ) {
+            return Err(ComputeWorkerError::Health(
+                "relay rejected compute worker workspace attachment".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Prune retained outputs under `state_root` off the async runtime.
+fn spawn_output_prune(state_root: &Path) {
+    let execution = state_root.join("execution");
+    let content = state_root.join("content");
+    tokio::task::spawn_blocking(move || {
+        if let Err(error) = prune_retained_outputs(
+            &execution,
+            &content,
+            std::time::SystemTime::now(),
+            OUTPUT_RETENTION,
+        ) {
+            tracing::warn!(%error, "pruning retained compute outputs failed");
+        }
+    });
 }
 
 struct ActiveJob {
@@ -462,7 +552,268 @@ impl Drop for ActiveJobs {
 
 struct CompletedJob {
     binding: ComputeJobBinding,
-    result: Result<ComputeJobResult, String>,
+    phase: ComputeJobPhase,
+    log_tail: Vec<u8>,
+}
+
+/// The content a worker fetched to run one job.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputTransfer {
+    /// Distinct input digests fetched.
+    pub inputs: usize,
+    /// Their bytes.
+    pub bytes: u64,
+    /// Time spent fetching them.
+    pub elapsed: Duration,
+}
+
+/// A job's inputs could not be hydrated.
+#[derive(Debug)]
+struct InputFailure {
+    code: &'static str,
+    detail: String,
+}
+
+impl InputFailure {
+    fn fetch(digest: [u8; 32], error: &ContentFetchError) -> Self {
+        let code = match error {
+            ContentFetchError::TooLarge => "input_too_large",
+            ContentFetchError::Integrity => "input_integrity",
+            ContentFetchError::Refused(_)
+            | ContentFetchError::Stream(_)
+            | ContentFetchError::Store(_) => "input_unavailable",
+        };
+        Self {
+            code,
+            detail: format!("input {}: {error}", hex::encode(digest)),
+        }
+    }
+}
+
+/// Fetch every input `spec` names, once each, into the private per-job
+/// `store`, over the worker's authenticated compute `connection`.
+///
+/// Each digest is asked for through the relay, which serves it from the
+/// job's requester ([`crate::compute_content`]): the worker hydrates
+/// exactly what the job lists and nothing its invoker could not read
+/// itself. The total is bounded by [`MAX_COMPUTE_INPUT_BYTES`] and the
+/// job's memory limit, and the whole fetch by the job's lifetime.
+///
+/// # Errors
+///
+/// Returns the failure code the requester sees (`input_unavailable`,
+/// `input_integrity`, `input_too_large`, `input_timeout`, `staging`) and a
+/// diagnostic.
+pub async fn hydrate_job_inputs(
+    connection: &iroh::endpoint::Connection,
+    spec: &ComputeJobSpec,
+    store: &dyn ComputeContentStore,
+) -> Result<InputTransfer, (&'static str, String)> {
+    let started = std::time::Instant::now();
+    let budget = MAX_COMPUTE_INPUT_BYTES.min(spec.limits.memory_bytes);
+    let lifetime = Duration::from_millis(spec.expires_at_ms.saturating_sub(unix_now_ms()));
+    let unique = spec.inputs.iter().copied().collect::<BTreeSet<_>>();
+    let fetch_all = async {
+        let mut transfer = InputTransfer::default();
+        for digest in unique {
+            let remaining = budget.saturating_sub(transfer.bytes);
+            let bytes = fetch_job_content(
+                connection,
+                spec.workspace_id,
+                spec.job_id,
+                digest,
+                remaining,
+            )
+            .await
+            .map_err(|error| InputFailure::fetch(digest, &error))?;
+            store.put(digest, &bytes).map_err(|detail| InputFailure {
+                code: "staging",
+                detail,
+            })?;
+            transfer.inputs = transfer.inputs.saturating_add(1);
+            transfer.bytes = transfer
+                .bytes
+                .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        }
+        Ok::<_, InputFailure>(transfer)
+    };
+    match tokio::time::timeout(lifetime, fetch_all).await {
+        Ok(Ok(mut transfer)) => {
+            transfer.elapsed = started.elapsed();
+            Ok(transfer)
+        }
+        Ok(Err(failure)) => Err((failure.code, failure.detail)),
+        Err(_) => Err((
+            "input_timeout",
+            "inputs did not arrive within the job's lifetime".into(),
+        )),
+    }
+}
+
+/// What running one assignment produced: the terminal phase and log the
+/// worker reports, and what it fetched to get there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComputeAssignment {
+    /// The terminal phase to report.
+    pub phase: ComputeJobPhase,
+    /// The bounded diagnostic tail to report.
+    pub log_tail: Vec<u8>,
+    /// The inputs hydrated for the job.
+    pub transfer: InputTransfer,
+}
+
+/// Run one routed job end to end on `executor`: hydrate its inputs into a
+/// private directory under `inputs_root` ([`hydrate_job_inputs`]), execute
+/// it in the package sandbox, and return what to report. Outputs stay in
+/// the executor's store, retrievable by the job's requester through
+/// [`ComputeOutputSource`]; the hydrated inputs are removed when the job
+/// ends.
+pub async fn run_compute_assignment<C, P, S>(
+    executor: Arc<ComputeWorker<C, P, S>>,
+    connection: iroh::endpoint::Connection,
+    spec: ComputeJobSpec,
+    inputs_root: PathBuf,
+    cancellation: CaptureCancellation,
+) -> ComputeAssignment
+where
+    C: ComputeContentStore + 'static,
+    P: ComputePackageCatalogue + 'static,
+    S: ComputeSandbox + 'static,
+{
+    let failed = |code: &str, detail: String, transfer: InputTransfer| ComputeAssignment {
+        phase: ComputeJobPhase::Failed { code: code.into() },
+        log_tail: bounded_log(detail.into_bytes()),
+        transfer,
+    };
+    let job_inputs = inputs_root.join(hex::encode(spec.job_id));
+    let _remove_inputs = RemoveOnDrop(job_inputs.clone());
+    let (inputs, transfer): (Box<dyn ComputeContentStore>, InputTransfer) = if spec
+        .inputs
+        .is_empty()
+    {
+        (Box::new(NoInputs), InputTransfer::default())
+    } else {
+        let store = match FileComputeContentStore::open(job_inputs) {
+            Ok(store) => store,
+            Err(error) => return failed("staging", error.to_string(), InputTransfer::default()),
+        };
+        match hydrate_job_inputs(&connection, &spec, &store).await {
+            Ok(transfer) => (Box::new(store), transfer),
+            Err((code, detail)) => return failed(code, detail, InputTransfer::default()),
+        }
+    };
+    let executed = tokio::task::spawn_blocking(move || {
+        executor.execute_with_inputs(
+            inputs.as_ref(),
+            (spec.requester, spec.workspace_id),
+            &spec,
+            unix_now_ms(),
+            cancellation,
+        )
+    })
+    .await;
+    let (phase, log_tail) = match executed {
+        Ok(result) => sanitize_result(result),
+        Err(error) => (
+            ComputeJobPhase::Failed {
+                code: "execution".into(),
+            },
+            bounded_log(error.to_string().into_bytes()),
+        ),
+    };
+    ComputeAssignment {
+        phase,
+        log_tail,
+        transfer,
+    }
+}
+
+/// The inputs of a job that names none.
+struct NoInputs;
+
+impl ComputeContentStore for NoInputs {
+    fn get(&self, _digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        Ok(None)
+    }
+
+    fn put(&self, _digest: [u8; 32], _bytes: &[u8]) -> Result<(), String> {
+        Err("a job without inputs stages none".into())
+    }
+}
+
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        match fs::remove_dir_all(&self.0) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(path = %self.0.display(), %error, "failed to remove hydrated compute inputs");
+            }
+        }
+    }
+}
+
+/// Forget outputs whose retention has passed: the index of every job
+/// completed longer than `retention` before `now`, then every retained
+/// output no remaining index names. A just-written output is kept even
+/// before its index lands, because only content older than `retention` is
+/// removed.
+///
+/// # Errors
+///
+/// Returns an error when a directory cannot be read.
+pub fn prune_retained_outputs(
+    execution_root: &Path,
+    content_root: &Path,
+    now: std::time::SystemTime,
+    retention: Duration,
+) -> std::io::Result<()> {
+    let expired = |entry: &fs::DirEntry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| {
+                now.duration_since(modified)
+                    .is_ok_and(|age| age > retention)
+            })
+    };
+    let mut referenced = std::collections::HashSet::new();
+    match fs::read_dir(execution_root) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                let name = entry.file_name();
+                if !name.to_string_lossy().ends_with(OUTPUT_INDEX_SUFFIX) {
+                    continue;
+                }
+                if expired(&entry) {
+                    fs::remove_file(entry.path())?;
+                    continue;
+                }
+                let index = fs::read_to_string(entry.path())?;
+                referenced.extend(index.lines().map(str::to_owned));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    match fs::read_dir(content_root) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') || referenced.contains(&name) || !expired(&entry) {
+                    continue;
+                }
+                fs::remove_file(entry.path())?;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    Ok(())
 }
 
 async fn handle_delivery(
@@ -491,23 +842,6 @@ async fn handle_delivery(
                     ));
                 }
                 client.acknowledge(&delivery).await?;
-                return Ok(());
-            }
-            if !spec.inputs.is_empty() {
-                client.acknowledge(&delivery).await?;
-                client
-                    .send(&ComputeEnvelope::Result {
-                        result: ComputeResultUpdate {
-                            binding,
-                            sequence: 1,
-                            phase: ComputeJobPhase::Failed {
-                                code: "content_plane_unavailable".into(),
-                            },
-                            log_tail: b"remote content hydration is not enabled on this worker"
-                                .to_vec(),
-                        },
-                    })
-                    .await?;
                 return Ok(());
             }
             let assignment_capacity =
@@ -542,17 +876,27 @@ async fn handle_delivery(
             let executor = Arc::clone(executor);
             let spec = spec.clone();
             let completed = completed.clone();
-            tokio::task::spawn_blocking(move || {
-                let result = executor
-                    .execute(
-                        spec.requester,
-                        spec.workspace_id,
-                        &spec,
-                        unix_now_ms(),
-                        cancellation,
-                    )
-                    .map_err(|error| error.to_string());
-                let _ = completed.blocking_send(CompletedJob { binding, result });
+            let connection = client.connection();
+            let inputs_root = config.state_root.join("inputs");
+            tokio::spawn(async move {
+                let job = hex::encode(spec.job_id);
+                let assignment =
+                    run_compute_assignment(executor, connection, spec, inputs_root, cancellation)
+                        .await;
+                tracing::debug!(
+                    %job,
+                    inputs = assignment.transfer.inputs,
+                    input_bytes = assignment.transfer.bytes,
+                    hydration_ms = assignment.transfer.elapsed.as_millis(),
+                    "compute job finished"
+                );
+                let _ = completed
+                    .send(CompletedJob {
+                        binding,
+                        phase: assignment.phase,
+                        log_tail: assignment.log_tail,
+                    })
+                    .await;
             });
         }
         ComputeEnvelope::Cancel { binding } => {
@@ -576,43 +920,36 @@ async fn send_completion(
     client: &mut ComputeClient,
     completed: CompletedJob,
 ) -> Result<(), ComputeWorkerError> {
-    let (phase, log) = sanitize_result(completed.result);
     client
         .send(&ComputeEnvelope::Result {
             result: ComputeResultUpdate {
                 binding: completed.binding,
                 sequence: 2,
-                phase,
-                log_tail: log,
+                phase: completed.phase,
+                log_tail: completed.log_tail,
             },
         })
         .await?;
     Ok(())
 }
 
-fn sanitize_result(result: Result<ComputeJobResult, String>) -> (ComputeJobPhase, Vec<u8>) {
+/// The phase and bounded log a finished execution reports. A completed
+/// job's outputs are reported as they are: [`ComputeWorker`] retained each
+/// for the job's requester before completing.
+fn sanitize_result(
+    result: Result<ComputeJobResult, ComputeExecutionError>,
+) -> (ComputeJobPhase, Vec<u8>) {
     match result {
         Ok(result) => {
             let mut log = result.stdout;
             log.extend_from_slice(&result.stderr);
-            let phase = match result.lifecycle.phase {
-                ComputeJobPhase::Completed { ref outputs } if !outputs.is_empty() => {
-                    log.extend_from_slice(
-                        b"\nremote output retrieval is not enabled on this worker",
-                    );
-                    ComputeJobPhase::Failed {
-                        code: "content_plane_unavailable".into(),
-                    }
-                }
-                phase => phase,
-            };
-            (phase, bounded_log(log))
+            (result.lifecycle.phase, bounded_log(log))
         }
         Err(error) => (
             ComputeJobPhase::Failed {
-                code: "execution".into(),
+                code: error.code().into(),
             },
-            bounded_log(error.into_bytes()),
+            bounded_log(error.to_string().into_bytes()),
         ),
     }
 }
@@ -926,7 +1263,7 @@ mod tests {
             }
             assert!(cancellation.is_cancelled());
         }
-        // Phase `inaccessible_outputs_are_never_advertised_as_retrievable`.
+        // Phase `retained_outputs_are_reported_and_failures_keep_their_code`.
         {
             let result = ComputeJobResult {
                 lifecycle: crate::compute::ComputeJobLifecycle {
@@ -936,17 +1273,82 @@ mod tests {
                         outputs: vec![[3; 32]],
                     },
                 },
-                stdout: Vec::new(),
-                stderr: Vec::new(),
+                stdout: b"out".to_vec(),
+                stderr: b"err".to_vec(),
             };
             let (phase, log) = sanitize_result(Ok(result));
             assert_eq!(
                 phase,
-                ComputeJobPhase::Failed {
-                    code: "content_plane_unavailable".into()
+                ComputeJobPhase::Completed {
+                    outputs: vec![[3; 32]]
                 }
             );
-            assert!(String::from_utf8(log).unwrap().contains("output retrieval"));
+            assert_eq!(log, b"outerr");
+            let (phase, log) = sanitize_result(Err(ComputeExecutionError::MissingInput));
+            assert_eq!(
+                phase,
+                ComputeJobPhase::Failed {
+                    code: "input_unavailable".into()
+                }
+            );
+            assert!(String::from_utf8(log).unwrap().contains("unavailable"));
         }
+    }
+
+    #[test]
+    fn retention_forgets_expired_outputs_and_keeps_live_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let execution = root.path().join("execution");
+        let content = root.path().join("content");
+        fs::create_dir_all(&execution).unwrap();
+        fs::create_dir_all(&content).unwrap();
+        let now = std::time::SystemTime::now();
+        let long_ago = now
+            .checked_sub(Duration::from_secs(2 * 24 * 60 * 60))
+            .unwrap();
+        let write = |path: PathBuf, bytes: &[u8], modified| {
+            fs::write(&path, bytes).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        };
+        let live = hex::encode([1; 32]);
+        let expired = hex::encode([2; 32]);
+        let fresh = hex::encode([3; 32]);
+        write(
+            execution.join(format!("aa{OUTPUT_INDEX_SUFFIX}")),
+            format!("{live}\n").as_bytes(),
+            now,
+        );
+        write(
+            execution.join(format!("bb{OUTPUT_INDEX_SUFFIX}")),
+            format!("{expired}\n").as_bytes(),
+            long_ago,
+        );
+        write(execution.join("bb.claim"), b"claim", long_ago);
+        write(content.join(&live), b"live", long_ago);
+        write(content.join(&expired), b"expired", long_ago);
+        write(content.join(&fresh), b"fresh", now);
+
+        prune_retained_outputs(&execution, &content, now, OUTPUT_RETENTION).unwrap();
+
+        assert!(execution.join(format!("aa{OUTPUT_INDEX_SUFFIX}")).exists());
+        assert!(!execution.join(format!("bb{OUTPUT_INDEX_SUFFIX}")).exists());
+        assert!(
+            execution.join("bb.claim").exists(),
+            "claims outlive retention: they refuse a replayed job id"
+        );
+        assert!(
+            content.join(&live).exists(),
+            "a live index keeps its output"
+        );
+        assert!(!content.join(&expired).exists());
+        assert!(
+            content.join(&fresh).exists(),
+            "an output written before its index lands is kept"
+        );
     }
 }

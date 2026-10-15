@@ -117,6 +117,7 @@ members = [
     "apps/slides",
     "apps/shortcuts",
     "apps/snippets",
+    "apps/staging-handoff-model",
     "apps/store",
     "apps/terminal",
     "apps/themes",
@@ -317,6 +318,7 @@ members = [
     "crates/session/polkit-agent",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
+    "crates/session/tray-host",
 
     # System
     "crates/system/account-custody",
@@ -337,6 +339,7 @@ members = [
     "crates/system/durable-store",
     "crates/system/endpoint-reachability",
     "crates/system/esp-write",
+    "crates/system/extension-helper",
     "crates/system/fs",
     "crates/system/fs-content",
     "crates/system/fs-protocol",

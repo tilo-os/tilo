@@ -1857,6 +1857,12 @@ pub fn native_services(
         resource_views,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
         local_person,
+        device_pairing: membership.as_ref().map(|tree| {
+            Arc::new(super::device_pairing::BrokerDoor {
+                tree: tree.downgrade(),
+                pairing: super::device_pairing::Pairing::session(),
+            }) as Arc<dyn tilo_action_broker::services::DevicePairingServices>
+        }),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),

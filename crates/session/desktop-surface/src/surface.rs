@@ -1319,6 +1319,24 @@ impl DesktopSurface {
         stepped
     }
 
+    /// Whether [`Self::route_swipe`] would take `delta` at `now` as a pan of
+    /// the shown strip, without taking it. A pan moves where the windows
+    /// are and nothing else; a line swipe steps focus instead.
+    fn pans_strip(&self, delta: MouseScrollDelta, now: Instant) -> bool {
+        let MouseScrollDelta::PixelDelta(p) = delta else {
+            return false;
+        };
+        if sideways(delta).is_none() {
+            return false;
+        }
+        match self.swipe {
+            Some(swipe) if swipe.pan && now.saturating_duration_since(swipe.last) <= SWIPE_GAP => {
+                swipe.stepped
+            }
+            _ => self.shown_row_ref().is_some_and(|row| can_pan(row, -p.x)),
+        }
+    }
+
     /// Move the shown strip `travel` logical pixels (positive toward later
     /// windows) as part of a pan gesture. A reversal mid-gesture keeps
     /// panning; the ends stop the strip without handing the rest of the
@@ -1877,6 +1895,21 @@ impl Widget for DesktopSurface {
             let path = ctx.path.clone();
             row.handle_event(event, &mut ctx.reborrow(&path, child));
         }
+    }
+
+    /// A sideways trackpad pan of the shown strip moves windows and changes
+    /// nothing else: no document, focus, selection or declaration. Every
+    /// other wheel reaches a layer above the strip (a banner or the
+    /// notification centre shown, the activity pane, search) or the window
+    /// under the pointer, which answer for themselves.
+    fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        let WindowEvent::MouseWheel { delta, .. } = event else {
+            return false;
+        };
+        self.notices.as_ref().is_none_or(|layer| !layer.visible())
+            && self.activity.is_none()
+            && !self.search.is_open()
+            && self.pans_strip(*delta, ui::time::now())
     }
 
     fn wants_pointer_capture(&self) -> bool {

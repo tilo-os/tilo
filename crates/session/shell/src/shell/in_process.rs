@@ -308,8 +308,13 @@ impl InProcessApps {
     /// from now on.
     #[must_use]
     pub fn reaching_broker(mut self, broker: SessionBroker) -> Self {
-        self.broker = Some(broker);
+        self.reach_broker(broker);
         self
+    }
+
+    /// [`Self::reaching_broker`] on apps already shared with a host.
+    pub fn reach_broker(&mut self, broker: SessionBroker) {
+        self.broker = Some(broker);
     }
 
     /// A collaboration manager for `component`, mounted in `room`, on the

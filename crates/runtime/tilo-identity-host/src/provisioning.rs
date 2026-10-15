@@ -94,7 +94,7 @@ fn identity_load_error(error: runtime_identity::NotAvailable) -> io::Error {
 pub fn login_account_display_name() -> String {
     use std::ffi::CStr;
 
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
     let mut result = std::ptr::null_mut();
     let mut buffer = vec![0_u8; 16 * 1024];
@@ -579,15 +579,7 @@ fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
 /// should join. Absent when the process has no home or state directory.
 #[must_use]
 pub fn personal_rooms_export_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".local/state"))
-        })?;
-    Some(base.join("tilo").join("personal-rooms.json"))
+    Some(tilo_paths::xdg::state_home()?.join("tilo/personal-rooms.json"))
 }
 
 fn relay_is_dialable(
@@ -844,7 +836,7 @@ pub fn prepare_identity_directory(identity_dir: &Path) -> io::Result<()> {
     }
     #[cfg(unix)]
     {
-        if metadata.uid() != unsafe { libc::geteuid() } {
+        if metadata.uid() != rustix::process::geteuid().as_raw() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity directory must be owned by this user",

@@ -392,8 +392,10 @@ mod tests {
     use legacy_agent_protocol::client;
 
     fn me() -> GuestUser {
-        // SAFETY: getuid/getgid have no failure mode.
-        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        let (uid, gid) = (
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw(),
+        );
         GuestUser {
             name: "me".into(),
             uid,
