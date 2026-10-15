@@ -397,7 +397,7 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
 )]
 async fn invocations_preserve_actor_arguments_and_start_once() {
     // Phase `accepted_invocation_preserves_actor_and_cancellation_ownership`.
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (mut fixture,room,actor)=fixture();
         let server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor.clone());
         let invoke=server.handle(call("tilo_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{},"wait_ms":0})));
@@ -415,7 +415,7 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
         let status=server.handle(call("tilo_status",&json!({"invocation_id":id}))).await.unwrap();
         assert_eq!(status["result"]["structuredContent"]["invocation_id"],id);
         assert_ne!(status["result"]["structuredContent"]["update"]["state"],"succeeded");
-    }).await;
+    })).await;
     // Phase `a_retried_invocation_id_starts_the_action_once`.
     tokio::task::LocalSet::new().run_until(async {
         let (mut fixture,room,actor)=fixture();
