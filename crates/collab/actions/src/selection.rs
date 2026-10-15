@@ -175,6 +175,33 @@ impl SelectionAnchor {
         self
     }
 
+    /// The same anchor noting the whole of a selection that spans several
+    /// blocks of a text, `ranges` in document order, of which [`Self::place`]
+    /// is one block's part (an action's place names one block). One range
+    /// says nothing more than the place, so it is left out; a long
+    /// selection keeps its first [`crate::interaction::MAX_ANCHOR_ITEMS`].
+    #[must_use]
+    pub fn spanning(mut self, region: &str, mut ranges: Vec<crate::InteractionTextRange>) -> Self {
+        if ranges.len() > 1 {
+            ranges.truncate(crate::interaction::MAX_ANCHOR_ITEMS);
+            self.interaction = Some(InteractionAnchor::Text {
+                region: region.to_owned(),
+                ranges,
+            });
+        }
+        self
+    }
+
+    /// The block ranges of a selection spanning several blocks
+    /// ([`Self::spanning`]).
+    #[must_use]
+    pub fn spanned_ranges(&self) -> Option<&[crate::InteractionTextRange]> {
+        match &self.interaction {
+            Some(InteractionAnchor::Text { ranges, .. }) if ranges.len() > 1 => Some(ranges),
+            _ => None,
+        }
+    }
+
     /// Whether the anchor says nothing at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {

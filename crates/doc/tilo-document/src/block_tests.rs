@@ -356,6 +356,74 @@ fn block_text_changes_only_the_characters_that_differ_and_is_attributed() {
 }
 
 #[test]
+fn a_range_of_a_block_is_replaced_and_the_rest_of_the_page_stays() {
+    let mut replica = seeded("# Notes\n- see the search docs for xy\nlast line");
+    let item = id_of(&replica, "- see");
+    let before = blocks(&replica).len();
+
+    // "the search docs" (characters 4..19) becomes a link, nothing else moves.
+    let mut bob = replica.fork();
+    let answer = call_as(
+        &mut bob,
+        "bob",
+        "replace-range",
+        json!({
+            "at": { "item": item, "start": 4, "end": 19 },
+            "text": "[the search docs](https://example.org/search?q=xy)",
+            "markdown": true,
+        }),
+    )
+    .unwrap();
+    assert_eq!(answer["changed"].as_array().unwrap().len(), 1, "{answer}");
+    assert_eq!(
+        page(&bob),
+        [
+            "# Notes",
+            "- see [the search docs](https://example.org/search?q=xy) for xy",
+            "last line"
+        ]
+    );
+    assert_eq!(blocks(&bob).len(), before, "the page keeps its blocks");
+    let runs = tilo_doc::author_runs(&blocks(&bob)[1].marks);
+    assert!(
+        runs.iter().any(|(_, _, who)| who == "bob"),
+        "the words bob wrote are his: {runs:?}"
+    );
+
+    // A caret inserts plain text.
+    call(
+        &mut replica,
+        "replace-range",
+        json!({ "at": { "item": item, "at": 3 }, "text": " also" }),
+    )
+    .unwrap();
+    assert_eq!(page(&replica)[1], "- see also the search docs for xy");
+
+    for (at, text, refusal) in [
+        (
+            json!({ "item": item, "start": 4, "end": 99 }),
+            "x",
+            "not in block",
+        ),
+        (
+            json!({ "item": item, "start": 0, "end": 1 }),
+            "a\nb",
+            "line break",
+        ),
+        (json!({ "item": item }), "x", "set-block-text"),
+        (json!({ "item": "zzzz", "at": 0 }), "x", "no block"),
+    ] {
+        let error = call(
+            &mut replica,
+            "replace-range",
+            json!({ "at": at, "text": text }),
+        )
+        .unwrap_err();
+        assert!(error.contains(refusal), "{at}: {error}");
+    }
+}
+
+#[test]
 fn a_block_changes_kind_keeping_its_text() {
     let mut replica = seeded("milk\neggs");
     let milk = id_of(&replica, "milk");
