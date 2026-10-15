@@ -21,7 +21,7 @@
 
 use std::collections::HashSet;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{
     Arc, RwLock,
@@ -267,6 +267,12 @@ fn remove_import_spills(dir: &Path) {
     }
 }
 
+/// Where a persistent store at `cache_dir` keeps its file-backed content,
+/// unless opened with [`ContentStore::open_with_files`].
+fn files_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("files")
+}
+
 /// Budget for cached file-backed content when the caller sets none: a
 /// quarter of the filesystem that holds it.
 fn default_budget(dir: &Path) -> u64 {
@@ -332,7 +338,29 @@ impl ContentStore {
         gc_interval: Duration,
     ) -> Result<Self> {
         let dir = cache_dir.as_ref();
-        Self::open_inner(dir, gc_interval, &dir.join("files")).await
+        Self::open_inner(dir, gc_interval, &files_dir(dir)).await
+    }
+
+    /// The whole of file version `content` (its manifest hash) from the
+    /// persistent store at `cache_dir` ([`Self::open`]), read without
+    /// opening the store: for another process beside the one that has it
+    /// open, which must not take its database locks. Only file-backed
+    /// versions ([`crate::content::FILE_BACKED_MIN`]) live where such a
+    /// reader can find them; any other is `Ok(None)`, as is one longer than
+    /// `max_bytes`.
+    ///
+    /// Nothing is verified and the version may be only partly resident: the
+    /// caller checks the bytes against a hash it trusts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the version's file exists but cannot be read.
+    pub fn read_file_version_unlocked(
+        cache_dir: &Path,
+        content: [u8; 32],
+        max_bytes: u64,
+    ) -> std::io::Result<Option<Vec<u8>>> {
+        area::read_entry_unlocked(&files_dir(cache_dir), &content, max_bytes)
     }
 
     async fn open_inner(dir: &Path, gc_interval: Duration, files_dir: &Path) -> Result<Self> {
@@ -2182,5 +2210,47 @@ mod tests {
                 ))
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn another_process_reads_file_backed_versions_while_the_store_is_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ContentStore::open(directory.path()).await.unwrap();
+        let large: Vec<u8> = (0..3 * 1024 * 1024_u32)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect();
+        let manifest = *store
+            .write_content(&large)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+        let small = *store
+            .write_content(b"a small file kept as loose blobs")
+            .await
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+
+        // The store stays open, holding its databases, while it is read.
+        let read = |content, max_bytes| {
+            ContentStore::read_file_version_unlocked(directory.path(), content, max_bytes).unwrap()
+        };
+        let len = u64::try_from(large.len()).unwrap();
+        assert_eq!(read(manifest, u64::MAX), Some(large.clone()));
+        assert_eq!(read(manifest, len), Some(large.clone()));
+        assert_eq!(read(manifest, len - 1), None, "over the bound");
+        assert_eq!(read(small, u64::MAX), None, "not file-backed");
+        assert_eq!(read([7; 32], u64::MAX), None, "unknown");
+
+        // A link where an entry's file belongs is not followed.
+        let elsewhere = directory.path().join("elsewhere");
+        std::fs::write(&elsewhere, &large).unwrap();
+        let linked = files_dir(directory.path())
+            .join("data")
+            .join(hex::encode([8; 32]));
+        std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+        assert_eq!(read([8; 32], u64::MAX), None);
+        drop(store);
     }
 }

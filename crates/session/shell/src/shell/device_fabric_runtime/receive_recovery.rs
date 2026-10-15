@@ -8,9 +8,12 @@ use crate::shell::personal_continuity::DeviceId;
 /// Discard only the selected recovered receive. Files has already authenticated
 /// the workspace/connection-bound handle and checked continuity policy. Cleanup
 /// is local: an offline sender must not force the receiver to keep unwanted bytes.
+///
+/// The runtime state is updated afterwards ([`RecoveredReceiveDecline::record`]):
+/// the cancellation syncs to disk, and the compositor's loop takes that state's
+/// lock, so it must not be held across it.
 pub(super) fn decline_recovered_receive(
     store: &mut NearbyTransferStore,
-    state: &mut NearbyDropState,
     transfer_id: [u8; 16],
 ) -> Result<RecoveredReceiveDecline, String> {
     // A media handoff's receive belongs to its handoff, not to Files.
@@ -25,17 +28,11 @@ pub(super) fn decline_recovered_receive(
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-consent-expired"))?;
     let peer = DeviceId::new(entry.source).map_err(|error| error.to_string())?;
     store.cancel_incoming(transfer_id)?;
-    state.destinations.remove(&transfer_id);
-    state.progress.remove(&transfer_id);
-    state.record_history(NearbyTransferHistory {
-        transfer_id,
-        peer: peer.clone(),
-        name: entry.name,
-        phase: runtime_collab::NearbyTransferPhase::Cancelled,
-        total_bytes: entry.total_bytes,
-    });
     Ok(RecoveredReceiveDecline {
         peer,
+        transfer_id,
+        name: entry.name,
+        total_bytes: entry.total_bytes,
         action: PersonalFabricAction::NearbyTransferCancel {
             request_id: entry.request_id,
             transfer_id,
@@ -47,10 +44,27 @@ pub(super) fn decline_recovered_receive(
 /// only after local cleanup releases both locks.
 pub(super) struct RecoveredReceiveDecline {
     peer: DeviceId,
+    transfer_id: [u8; 16],
+    name: String,
+    total_bytes: u64,
     action: PersonalFabricAction,
 }
 
 impl RecoveredReceiveDecline {
+    /// Forget the declined receive's destination and progress, and show its
+    /// cancellation in the history.
+    pub(super) fn record(&self, state: &mut NearbyDropState) {
+        state.destinations.remove(&self.transfer_id);
+        state.progress.remove(&self.transfer_id);
+        state.record_history(NearbyTransferHistory {
+            transfer_id: self.transfer_id,
+            peer: self.peer.clone(),
+            name: self.name.clone(),
+            phase: runtime_collab::NearbyTransferPhase::Cancelled,
+            total_bytes: self.total_bytes,
+        });
+    }
+
     pub(super) fn notify(
         self,
         send: impl FnOnce(&DeviceId, PersonalFabricAction) -> Result<[u8; 16], String>,
@@ -100,12 +114,13 @@ mod tests {
         assert!(state.incoming.is_empty());
         assert_eq!(store.inbox()[0].committed_offset, CHECKPOINT_BYTES);
         let mut notification = None;
-        decline_recovered_receive(&mut store, &mut state, transfer_id)
-            .expect("decline completes locally")
-            .notify(|peer, action| {
-                notification = Some((peer.clone(), action));
-                Err("sender is offline".into())
-            });
+        let declined =
+            decline_recovered_receive(&mut store, transfer_id).expect("decline completes locally");
+        declined.record(&mut state);
+        declined.notify(|peer, action| {
+            notification = Some((peer.clone(), action));
+            Err("sender is offline".into())
+        });
         assert!(!partial.exists());
         assert!(store.inbox().is_empty());
         let history = state.history.front().expect("cancellation is visible");
@@ -155,7 +170,8 @@ mod tests {
         let partial = store.partial_path(id);
         let mut state = NearbyDropState::default();
         let mut notified = false;
-        let result = decline_recovered_receive(&mut store, &mut state, [99; 16]).map(|declined| {
+        let result = decline_recovered_receive(&mut store, [99; 16]).map(|declined| {
+            declined.record(&mut state);
             declined.notify(|_, _| {
                 notified = true;
                 Ok([1; 16])

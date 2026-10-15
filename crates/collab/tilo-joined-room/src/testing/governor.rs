@@ -6,17 +6,17 @@
 //! admits the member and returns the room's full checkpoint. Its outgoing
 //! publications are that checkpoint, re-signed on every mutation and refresh.
 use ed25519_dalek::SigningKey;
+use neighbour_wire::{NeighbourMsg, Retention};
 use std::{collections::BTreeMap, time::SystemTime};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_peer_state::{
-    GovernedAccess, NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin,
+    GovernedAccess, SeedDocument, SeedState, StatePeer, TransportOrigin,
     join::{
         self, JoinBootstrap, JoinChallenge, JoinChallengeResponse, JoinInspection,
         JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
         WorkspaceDelegation, WorkspaceDelegationPermissions,
     },
     seed_room,
-    transport::Retention,
 };
 use tilo_user_identity::DeviceCert;
 

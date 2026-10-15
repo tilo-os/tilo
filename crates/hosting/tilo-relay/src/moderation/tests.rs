@@ -46,10 +46,6 @@ impl Judge for FakeJudge {
     }
 }
 
-fn now_ms() -> i64 {
-    i64::try_from(tilo_clock::unix_now_ns() / 1_000_000).unwrap()
-}
-
 fn chat_state(replica: &Replica) -> chat::Chat {
     replica.read(|doc| chat::Chat::read(doc).unwrap()).unwrap()
 }
@@ -151,7 +147,7 @@ fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
     for (person, role) in [(ADA, Role::Editor), (MALLORY, Role::Editor)] {
         policy.members.insert(person.to_owned(), role);
     }
-    let now = now_ms();
+    let now = tilo_clock::unix_now_ms_i64();
     let cx = Context::at(u64::try_from(now).unwrap());
     // The host enforces governance as the room's root, held to its policy.
     let mut govern = |change: Change| {

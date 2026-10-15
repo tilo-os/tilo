@@ -2136,75 +2136,6 @@ mod tests {
         }
     }
 
-    /// The errno a denied sync returns, distinctive enough to name in an
-    /// assertion: waiting for the disk is what would deadlock the desktop.
-    const SYNC_DENIED: i32 = libc::EDEADLK;
-
-    /// Make every fsync-family syscall fail with [`SYNC_DENIED`] on the
-    /// calling thread only. Without `SECCOMP_FILTER_FLAG_TSYNC` the filter
-    /// binds this thread (and anything it spawns), never the test harness.
-    fn deny_disk_syncs_on_this_thread() {
-        const DENIED: [libc::c_long; 4] = [
-            libc::SYS_fsync,
-            libc::SYS_fdatasync,
-            libc::SYS_syncfs,
-            libc::SYS_sync,
-        ];
-        let statement = |code: u32, k: u32| libc::sock_filter {
-            code: u16::try_from(code).unwrap(),
-            jt: 0,
-            jf: 0,
-            k,
-        };
-        // Load the syscall number (offset 0 of `seccomp_data`); the
-        // architecture word is not checked because the test only issues
-        // native syscalls.
-        let mut filters = vec![statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0)];
-        for (index, number) in DENIED.into_iter().enumerate() {
-            filters.push(libc::sock_filter {
-                // On a match, skip the remaining comparisons and the allow.
-                jt: u8::try_from(DENIED.len().saturating_sub(index)).unwrap(),
-                ..statement(
-                    libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
-                    u32::try_from(number).unwrap(),
-                )
-            });
-        }
-        filters.push(statement(
-            libc::BPF_RET | libc::BPF_K,
-            libc::SECCOMP_RET_ALLOW,
-        ));
-        filters.push(statement(
-            libc::BPF_RET | libc::BPF_K,
-            libc::SECCOMP_RET_ERRNO | u32::try_from(SYNC_DENIED).unwrap(),
-        ));
-        let program = libc::sock_fprog {
-            len: u16::try_from(filters.len()).unwrap(),
-            filter: filters.as_mut_ptr(),
-        };
-        // SAFETY: scalar prctl calls on the current thread. The kernel copies
-        // the program while `filters` is live; the filter only makes syncs
-        // fail on this test thread and grants nothing.
-        unsafe {
-            assert_eq!(
-                libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0),
-                0,
-                "no_new_privs: {}",
-                std::io::Error::last_os_error()
-            );
-            assert_eq!(
-                libc::prctl(
-                    libc::PR_SET_SECCOMP,
-                    libc::SECCOMP_MODE_FILTER,
-                    &raw const program
-                ),
-                0,
-                "installing the sync filter: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-    }
-
     /// The compositor loop binds a workspace's X display through
     /// `session_for`, which writes the display's authority file, and its
     /// supervisor gives the composing input method every cookie. Nothing on
@@ -2212,18 +2143,8 @@ mod tests {
     /// fsync there froze input and presentation for seconds.
     #[test]
     fn binding_a_display_never_waits_for_the_disk() {
-        std::thread::spawn(|| {
-            deny_disk_syncs_on_this_thread();
-            // The guard must observe its subject, or this test proves nothing.
-            let probe = tempfile::tempfile().unwrap();
-            for denied in [probe.sync_all(), probe.sync_data()] {
-                assert_eq!(
-                    denied.unwrap_err().raw_os_error(),
-                    Some(SYNC_DENIED),
-                    "the sync filter is not in force"
-                );
-            }
-
+        // The shared guard proves its filter is in force before the body runs.
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
             let mut fixture = fixture();
             let (session, fresh) = fixture
                 .displays
@@ -2251,9 +2172,7 @@ mod tests {
             let metadata = fs::metadata(&composer).unwrap();
             assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
             assert_eq!(fs::read(&composer).unwrap(), bytes);
-        })
-        .join()
-        .unwrap();
+        });
     }
 
     #[test]

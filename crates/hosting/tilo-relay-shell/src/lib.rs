@@ -17,11 +17,14 @@
 //! messages on the browser live plane.
 //!
 //! [`selection`] is native shell replay selection: with a desktop
-//! [`RetentionAuthority`](tilo_peer_state::retained_proof::RetentionAuthority)
+//! [`RetentionAuthority`](retained_proof::RetentionAuthority)
 //! bound to a workspace store, retention and replay select an immutable basis
 //! and retire only what exact historical proof pairs cover. The store reaches
 //! it only through the `tilo_relay_store::shell` seam, binding through the
 //! adapter [`ShellPayloads::replay`] returns ([`NeighbourReplay`]).
+//! [`retained_proof`] is the historical proof selection judges by: it pairs
+//! a retained room with its snapshots and tails against the pinned governor,
+//! decoding every peer-supplied Automerge body in `tilo_automerge_isolate`.
 //!
 //! An adapter that classifies nothing makes the host keep every entry and
 //! fold none: unknown data never grants removal.
@@ -40,6 +43,7 @@ use std::collections::BTreeSet;
 #[cfg(feature = "web")]
 pub mod legacy;
 mod neighbour;
+pub mod retained_proof;
 pub mod selection;
 
 pub use neighbour::NeighbourPayloads;

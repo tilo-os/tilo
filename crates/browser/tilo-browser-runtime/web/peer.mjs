@@ -33,6 +33,7 @@ import {memberText, objectText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {decodableCodecs} from './legacy-windows.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
 
 export {
@@ -44,6 +45,9 @@ export {
 export {joinViaHost, listedWorkspaces, spectate, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
+/** What this page's WebCodecs decodes, probed once. */
+let probed;
+const probedCodecs = () => (probed ??= decodableCodecs());
 
 /**
  * The stored `{cert, hostCert}` JSON with the peer's start fields (the
@@ -225,10 +229,15 @@ export function liveEndpoints(origin, host = {}) {
  * under its own namespace (`tilo_relay_protocol::web::agent_publisher`),
  * with an agent participant. The grant is asked for once `ready` resolves:
  * the room refuses it until it admitted the device.
+ *
+ * With each grant the person's layer tells the host which video codecs the
+ * page decodes (`decodable`, `peer.legacyCodecs`), so the room's sessions
+ * stream legacy windows in one this page plays.
  */
 export function createLiveLayer(peer, runtime, room, {
   origin, endpoint = new URL(LIVE_PATH, origin).href, carriers, participant, agent, ready = Promise.resolve(),
   watching = false,
+  decodable = probedCodecs,
   now = () => performance.now(), wallNow = () => Date.now(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
@@ -413,6 +422,7 @@ export function createLiveLayer(peer, runtime, room, {
       publisherId = grant.publisher;
       retry = 0;
       setState('live');
+      advertiseCodecs();
       session.watchMembers({onMember: (from, active) => {
         if (!stopped && session === opened) onMember(from, active);
       }});
@@ -430,6 +440,14 @@ export function createLiveLayer(peer, runtime, room, {
       retry += 1;
       renewTimer = setTimer(() => connect(), delay);
     }
+  }
+  /** Tell the host what this page decodes; a host that predates codec
+   * adverts, or one that is unreachable now, counts the page as H.264 only. */
+  function advertiseCodecs() {
+    if (agent !== undefined || typeof peer.legacyCodecs !== 'function') return;
+    Promise.resolve().then(decodable)
+      .then(codecs => stopped ? false : peer.legacyCodecs(room, JSON.stringify(codecs)))
+      .catch(() => {});
   }
   function dropSession() {
     publisher.pause();

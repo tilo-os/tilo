@@ -13,9 +13,11 @@
 //!   lives, so a chunk is served, deduplicated and read from the entry's
 //!   file without a second copy;
 //! - a **retention** class decides eviction: [`Retention::Cached`] entries
-//!   are dropped least recently used first when the resident bytes exceed
-//!   the byte budget; [`Retention::LocalOnly`] (content only this device
-//!   holds) and [`Retention::Pinned`] entries never are.
+//!   are dropped when the resident bytes exceed the byte budget, those an
+//!   always-on device is known to hold first ([`FileArea::set_held_elsewhere`]),
+//!   least recently used first within each; [`Retention::LocalOnly`]
+//!   (content only this device holds) and [`Retention::Pinned`] entries
+//!   never are.
 //!
 //! Entries enter by being filled range by range, or whole: a complete file
 //! is cloned in (`FICLONE`, sharing extents with the source on a
@@ -25,7 +27,7 @@
 //! Nothing here verifies content: callers write only verified bytes, and
 //! the store re-verifies chunks against their hash before serving them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::ops::Range;
@@ -55,6 +57,16 @@ const COPY_BUFFER: usize = 1024 * 1024;
 const SYNC_BATCH: u64 = 256 * 1024 * 1024;
 
 pub type AreaKey = [u8; 32];
+
+/// The most recently used cached entries, which the budget drops strictly
+/// least recently used first even when an always-on device holds them: the
+/// file being read and the ones predicted to be opened next (a prefetch
+/// marks what it filled as used).
+pub const WORKING_SET_ENTRIES: usize = 8;
+
+/// Names the entries an always-on device is known to hold, asked once per
+/// eviction pass.
+pub type HeldElsewhere = Arc<dyn Fn() -> HashSet<AreaKey> + Send + Sync>;
 
 /// How an entry may be evicted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -213,6 +225,9 @@ pub struct FileArea {
     /// Distinguishes the staging files of concurrent adoptions.
     staging: AtomicU64,
     budget: AtomicU64,
+    /// Which cached entries the budget gives up first; `None` is plain
+    /// least-recently-used.
+    held_elsewhere: std::sync::RwLock<Option<HeldElsewhere>>,
     /// Whether data is synced and the index is on disk. An ephemeral area
     /// (an in-memory content store's) is gone with its process, so syncing
     /// it would only cost a disk flush per write.
@@ -287,7 +302,7 @@ impl FileArea {
     }
 
     fn open_with(dir: &Path, db: Database, budget: u64, durable: bool) -> io::Result<Self> {
-        let data = dir.join("data");
+        let data = data_dir(dir);
         std::fs::create_dir_all(&data)?;
         {
             let txn = db.begin_write().map_err(db_error)?;
@@ -304,6 +319,7 @@ impl FileArea {
             create: Mutex::new(()),
             staging: AtomicU64::new(0),
             budget: AtomicU64::new(budget),
+            held_elsewhere: std::sync::RwLock::new(None),
             durable,
         };
         area.load()?;
@@ -391,6 +407,27 @@ impl FileArea {
 
     pub fn set_budget(&self, bytes: u64) {
         self.budget.store(bytes, Ordering::Relaxed);
+    }
+
+    /// Tell the budget which entries an always-on device holds, so it
+    /// gives those up before content that may be harder to fetch again.
+    /// It only orders cached entries: it never makes a local-only or
+    /// pinned entry evictable, nor keeps the budget from being met.
+    pub fn set_held_elsewhere(&self, held: HeldElsewhere) {
+        *self
+            .held_elsewhere
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(held);
+    }
+
+    /// Resident bytes of cached entries, which the budget limits.
+    fn cached_bytes(state: &State) -> u64 {
+        state
+            .entries
+            .values()
+            .filter(|e| e.retention == Retention::Cached)
+            .map(|e| e.resident.total())
+            .sum()
     }
 
     pub fn entry(&self, key: &AreaKey) -> Option<EntryInfo> {
@@ -1062,28 +1099,52 @@ impl FileArea {
         self.unpersist(key)
     }
 
-    /// Drops cached entries, least recently used first, until their
-    /// resident bytes fit the budget. `keep` are never dropped (entries
-    /// being read or filled right now). Returns the bytes freed.
+    /// Drops cached entries until their resident bytes fit the budget:
+    /// first those an always-on device holds, outside the
+    /// [working set](WORKING_SET_ENTRIES), then the rest, least recently
+    /// used first within each. `keep` are never dropped (entries being read
+    /// or filled right now). Returns the bytes freed.
     pub fn evict_to_budget(&self, keep: &[AreaKey]) -> u64 {
+        let mut uses: Vec<u64> = {
+            let state = self.lock();
+            if Self::cached_bytes(&state) <= self.budget() {
+                return 0;
+            }
+            state
+                .entries
+                .values()
+                .filter(|e| e.retention == Retention::Cached)
+                .map(|e| e.last_use)
+                .collect()
+        };
+        uses.sort_unstable_by(|a, b| b.cmp(a));
+        let working_set_since = uses
+            .get(WORKING_SET_ENTRIES.saturating_sub(1))
+            .copied()
+            .unwrap_or(0);
+        // Asked outside the area's lock: the answer may take other locks.
+        let held = self
+            .held_elsewhere
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let held_elsewhere = held.map(|held| held()).unwrap_or_default();
         let mut freed = 0_u64;
         loop {
             let victim = {
                 let state = self.lock();
-                let cached: u64 = state
-                    .entries
-                    .values()
-                    .filter(|e| e.retention == Retention::Cached)
-                    .map(|e| e.resident.total())
-                    .sum();
-                if cached <= self.budget() {
+                if Self::cached_bytes(&state) <= self.budget() {
                     return freed;
                 }
                 state
                     .entries
                     .iter()
                     .filter(|(key, e)| e.retention == Retention::Cached && !keep.contains(key))
-                    .min_by_key(|(_, e)| e.last_use)
+                    .min_by_key(|(key, e)| {
+                        let give_up_first =
+                            e.last_use < working_set_since && held_elsewhere.contains(*key);
+                        (!give_up_first, e.last_use)
+                    })
                     .map(|(key, e)| (*key, e.resident.total()))
             };
             let Some((key, bytes)) = victim else {
@@ -1223,6 +1284,54 @@ fn parse_hex(name: &str) -> Option<AreaKey> {
     let mut key = [0_u8; 32];
     hex::decode_to_slice(name, &mut key).ok()?;
     Some(key)
+}
+
+/// Where the area under `dir` keeps its entries' files.
+fn data_dir(dir: &Path) -> PathBuf {
+    dir.join("data")
+}
+
+/// `key`'s whole file from the area under `dir`, read without opening the
+/// area: for another process that must not take the area's database lock,
+/// such as a compute worker beside a home peer's replica. `Ok(None)` when
+/// there is no regular file for `key` or it is longer than `max_bytes`.
+///
+/// The bytes are neither verified nor known to be wholly resident (missing
+/// ranges of a sparse entry read as zeros): the caller checks them against
+/// a hash it trusts.
+///
+/// # Errors
+///
+/// Returns an error when the file exists but cannot be read.
+pub fn read_entry_unlocked(
+    dir: &Path,
+    key: &AreaKey,
+    max_bytes: u64,
+) -> io::Result<Option<Vec<u8>>> {
+    use std::os::unix::fs::MetadataExt as _;
+    let path = data_dir(dir).join(hex::encode(key));
+    let listed = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !listed.is_file() || listed.len() > max_bytes {
+        return Ok(None);
+    }
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    // The file read must be the one inspected: an entry replaced in
+    // between is simply not read this time.
+    let opened = file.metadata()?;
+    if (opened.dev(), opened.ino()) != (listed.dev(), listed.ino()) || opened.len() > max_bytes {
+        return Ok(None);
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(opened.len()).unwrap_or(0));
+    file.take(max_bytes).read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
 }
 
 /// BLAKE3 of a file, streamed.
@@ -1422,6 +1531,55 @@ mod tests {
         assert!(area.entry(&key(1)).is_none());
         assert!(area.entry(&key(5)).is_some(), "kept while in use");
         assert!(area.entry(&key(2)).is_some() && area.entry(&key(3)).is_some());
+    }
+
+    #[test]
+    fn the_budget_gives_up_what_an_always_on_device_holds_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+        let data = [7_u8; 100];
+        // Four older entries, key 1 the least recently used, then the
+        // working set: the files just read and predicted.
+        let working_set: Vec<u8> = (10..10 + u8::try_from(WORKING_SET_ENTRIES).unwrap()).collect();
+        for n in (1..=4).chain(working_set.iter().copied()) {
+            area.adopt_bytes(&key(n), &data, Retention::Cached, &[])
+                .unwrap();
+            area.touch(&key(n));
+        }
+        area.adopt_bytes(&key(5), &data, Retention::Pinned, &[])
+            .unwrap();
+        area.adopt_bytes(&key(6), &data, Retention::LocalOnly, &[])
+            .unwrap();
+        // The always-on device holds two of the older entries, one in the
+        // working set, and the pinned and local-only ones.
+        let last = *working_set.last().unwrap();
+        area.set_held_elsewhere(Arc::new(move || {
+            [key(3), key(4), key(last), key(5), key(6)].into()
+        }));
+
+        let cached = 100 * (4 + WORKING_SET_ENTRIES as u64);
+        area.set_budget(cached - 200);
+        assert_eq!(area.evict_to_budget(&[]), 200);
+        assert!(area.entry(&key(3)).is_none() && area.entry(&key(4)).is_none());
+        assert!(
+            area.entry(&key(1)).is_some() && area.entry(&key(2)).is_some(),
+            "content only this device's cache may still hold outlives what the host keeps"
+        );
+        assert!(
+            area.entry(&key(last)).is_some(),
+            "the working set is not given up for being held elsewhere"
+        );
+
+        area.set_budget(0);
+        area.evict_to_budget(&[]);
+        assert!(
+            area.entry(&key(1)).is_none() && area.entry(&key(last)).is_none(),
+            "the budget is still met once nothing held elsewhere is left"
+        );
+        assert!(
+            area.entry(&key(5)).is_some() && area.entry(&key(6)).is_some(),
+            "being held elsewhere never makes pinned or local-only content evictable"
+        );
     }
 
     #[test]

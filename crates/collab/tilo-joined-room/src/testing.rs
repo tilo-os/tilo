@@ -11,12 +11,11 @@ use crate::{
 };
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::{collections::BTreeMap, sync::Arc, time::SystemTime};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
-use tilo_peer_state::{
-    NeighbourMsg, SeedDocument, SeedState, StatePeer, join, owner_commit::OwnerCommitRequest,
-    room::media, seed_room,
-};
+use tilo_owner_commit::OwnerCommitRequest;
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, join, room::media, seed_room};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 pub mod governor;

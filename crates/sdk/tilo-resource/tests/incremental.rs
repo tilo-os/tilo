@@ -9,6 +9,7 @@
 )]
 
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -17,13 +18,14 @@ use tilo_automerge::ApplyIncoming;
 use tilo_resource::__private::{ObjId, Value};
 use tilo_resource::history;
 use tilo_resource::{
-    ActionCx, Collection, Doc, Grid, Id, Identified, Keyed, Model, ModelError, Ordered, Reader,
-    Replica, Resource, Set, Slot, resource,
+    ActionCx, Collection, Doc, Grid, Id, Identified, Keyed, Map, Model, ModelError, Ordered,
+    Reader, Replica, Resource, Set, Slot, resource,
 };
 
 thread_local! {
     static LOADS: Cell<usize> = const { Cell::new(0) };
     static CLONES: Cell<usize> = const { Cell::new(0) };
+    static IDS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Text that counts how often it is read from the document and copied.
@@ -855,5 +857,552 @@ fn held_items_and_sets_stay_as_they_were_shown_while_the_reader_follows() {
     }
     for (at, (shown, read)) in held.iter().enumerate() {
         assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 40);
+    }
+}
+
+/// A cue at a place on a track: keyed by id, held in memory by place.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Cue {
+    pub id: String,
+    pub at: u32,
+    pub body: String,
+}
+
+impl Identified for Cue {
+    /// Counts how often an item is asked: an id may be costly to make.
+    fn id(&self) -> Id {
+        IDS.with(|ids| ids.set(ids.get() + 1));
+        Id::from_raw(self.id.clone())
+    }
+    fn order(&self, other: &Self) -> Ordering {
+        self.at.cmp(&other.at)
+    }
+}
+
+fn ids_asked() -> usize {
+    IDS.with(Cell::get)
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Track {
+    pub cues: Keyed<Cue>,
+}
+
+#[resource(kind = "test.track", label = "Track")]
+impl Track {
+    /// Add a cue at a place.
+    #[action]
+    pub fn add_cue(&mut self, cx: &mut ActionCx, at: u32) {
+        self.cues.push(Cue {
+            id: cx.id().as_str().to_owned(),
+            at,
+            body: String::new(),
+        });
+    }
+}
+
+fn cue_ids(track: &Track) -> Vec<Id> {
+    track
+        .cues
+        .iter()
+        .map(|cue| Id::from_raw(cue.id.clone()))
+        .collect()
+}
+
+/// Add, move, rewrite or remove a cue; places collide often, so cues at one
+/// place sort by id.
+fn random_cue_action(replica: &mut Replica<Track>, rng: &mut Lcg) {
+    let ids = cue_ids(&replica.state().unwrap());
+    let cues = Track::paths().cues;
+    let place = u32::try_from(rng.next(12)).unwrap();
+    let Some(id) = ids.get(rng.next(ids.len())).cloned() else {
+        replica.apply(Track::ADD_CUE.with(place)).unwrap();
+        return;
+    };
+    let edit = match rng.next(7) {
+        0 | 1 => {
+            replica.apply(Track::ADD_CUE.with(place)).unwrap();
+            return;
+        }
+        2 | 3 => cues.item(&id).at.set(place),
+        4 | 5 => cues.item(&id).body.replace(format!("cue {place}")),
+        _ => cues.remove(&id),
+    };
+    replica
+        .apply_confirmed(tilo_resource::Invoke::edit(&edit).unwrap())
+        .unwrap();
+}
+
+#[test]
+fn keyed_items_a_reader_follows_sort_as_a_full_read_does() {
+    let mut rng = Lcg(37);
+    let mut replica = Replica::<Track>::new();
+    for _ in 0..40 {
+        random_cue_action(&mut replica, &mut rng);
+    }
+    let mut reader = Reader::<Track>::open(replica.doc_mut()).unwrap();
+    let mut held: Vec<(Rc<Track>, Track)> = Vec::new();
+    for step in 40..400 {
+        held.push((Rc::clone(reader.state()), replica.state().unwrap()));
+        random_cue_action(&mut replica, &mut rng);
+        reader.sync(replica.doc()).unwrap();
+        assert_eq!(
+            reader.state().as_ref(),
+            &replica.state().unwrap(),
+            "after step {step}"
+        );
+    }
+    for (at, (shown, read)) in held.iter().enumerate() {
+        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 40);
+    }
+}
+
+#[test]
+fn a_one_item_change_asks_only_the_items_it_touched_for_their_ids() {
+    let mut replica = Replica::<Track>::new();
+    for n in 0..600 {
+        replica.apply(Track::ADD_CUE.with(n * 10)).unwrap();
+    }
+    let mut reader = Reader::<Track>::open(replica.doc_mut()).unwrap();
+    let ids = cue_ids(reader.state());
+    let cues = Track::paths().cues;
+    // The first change after opening learns every id.
+    replica
+        .apply(tilo_resource::Invoke::edit(&cues.item(&ids[0]).body.replace("first")).unwrap())
+        .unwrap();
+    reader.sync(replica.doc()).unwrap();
+
+    let changes = [
+        (
+            "rewrite one in place",
+            cues.item(&ids[300]).body.replace("changed"),
+        ),
+        (
+            "move one past 200 others",
+            cues.item(&ids[100]).at.set(3_005),
+        ),
+        ("move one to the front", cues.item(&ids[599]).at.set(0)),
+    ];
+    for (change, edit) in changes {
+        replica
+            .apply(tilo_resource::Invoke::edit(&edit).unwrap())
+            .unwrap();
+        // A view keeps the state it was shown, as a surface's `present` may.
+        let shown = Rc::clone(reader.state());
+        let before = ids_asked();
+        assert!(reader.sync(replica.doc()).unwrap());
+        let asked = ids_asked() - before;
+        assert!(
+            asked <= 1,
+            "{change}: {asked} items of 600 asked for their ids, not the one it touched"
+        );
+        assert_ne!(shown.as_ref(), reader.state().as_ref());
+        assert_eq!(
+            reader.state().as_ref(),
+            &replica.state().unwrap(),
+            "{change}"
+        );
+    }
+
+    replica.apply(Track::ADD_CUE.with(1_234)).unwrap();
+    let before = ids_asked();
+    reader.sync(replica.doc()).unwrap();
+    let asked = ids_asked() - before;
+    assert!(asked <= 1, "adding one: {asked} items asked for their ids");
+    assert_eq!(reader.state().as_ref(), &replica.state().unwrap());
+
+    replica
+        .apply_confirmed(tilo_resource::Invoke::edit(&cues.remove(&ids[42])).unwrap())
+        .unwrap();
+    let before = ids_asked();
+    reader.sync(replica.doc()).unwrap();
+    let asked = ids_asked() - before;
+    assert_eq!(asked, 0, "removing one: {asked} items asked for their ids");
+    assert_eq!(reader.state().as_ref(), &replica.state().unwrap());
+}
+
+#[test]
+fn the_edits_between_two_keyed_values_ask_each_item_once() {
+    let mut replica = Replica::<Track>::new();
+    for n in 0..300 {
+        replica.apply(Track::ADD_CUE.with(n)).unwrap();
+    }
+    let before = replica.state().unwrap();
+    let mut after = before.clone();
+    let id = Id::from_raw(after.cues[150].id.clone());
+    after.cues.find_mut(&id).unwrap().body = "changed".into();
+    let asked = ids_asked();
+    let edits = Track::paths().path().edits(&before, &after);
+    let asked = ids_asked() - asked;
+    assert_eq!(edits.len(), 1, "one field of one cue changed: {edits:?}");
+    assert!(
+        asked <= 2 * 300,
+        "{asked} ids asked to compare 300 cues with 300: each at most once per side"
+    );
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Shelf {
+    pub title: String,
+    pub progress: Map<Counted>,
+}
+
+#[resource(kind = "test.shelf", label = "Shelf")]
+impl Shelf {
+    /// Rename.
+    #[action]
+    pub fn retitle(&mut self, title: String) {
+        self.title = title;
+    }
+
+    /// Record where a book is read to.
+    #[action]
+    pub fn mark(&mut self, book: String, at: String) {
+        match self.progress.get_mut(&book) {
+            Some(held) => held.0 = at,
+            None => {
+                self.progress.insert(book, Counted(at));
+            }
+        }
+    }
+
+    /// Forget a book.
+    #[action]
+    pub fn forget(&mut self, book: String) {
+        self.progress.remove(&book);
+    }
+}
+
+fn book(n: usize) -> String {
+    format!("book {n:04}")
+}
+
+fn random_shelf_action(replica: &mut Replica<Shelf>, rng: &mut Lcg, step: usize) {
+    let result = match rng.next(8) {
+        0 => replica.apply(Shelf::RETITLE.with(format!("shelf {step}"))),
+        1 | 2 => replica.apply(Shelf::FORGET.with(book(rng.next(150)))),
+        _ => replica.apply(Shelf::MARK.with((book(rng.next(150)), format!("at {step}")))),
+    };
+    result.unwrap();
+}
+
+#[test]
+fn a_reader_whose_state_a_view_holds_copies_one_chunk_of_a_map() {
+    let mut replica = Replica::<Shelf>::new();
+    for n in 0..1000 {
+        replica
+            .apply(Shelf::MARK.with((book(n), format!("page {n}"))))
+            .unwrap();
+    }
+    let mut reader = Reader::<Shelf>::open(replica.doc_mut()).unwrap();
+    // A view keeps the state it was shown, as a surface's `present` may.
+    let shown = Rc::clone(reader.state());
+
+    // A change to another field copies no entry of the map.
+    replica
+        .apply(Shelf::RETITLE.with("renamed".to_owned()))
+        .unwrap();
+    let before = clones();
+    assert!(reader.sync(replica.doc()).unwrap());
+    assert_eq!(clones() - before, 0, "no entry copied for a rename");
+    let renamed = Rc::clone(reader.state());
+    assert_eq!(shown.title, "");
+    assert_eq!(renamed.title, "renamed");
+    for n in 0..1000 {
+        assert!(
+            std::ptr::eq(
+                renamed.progress.get(&book(n)).unwrap(),
+                shown.progress.get(&book(n)).unwrap()
+            ),
+            "entry {n} shared"
+        );
+    }
+
+    // A change to one entry copies its chunk, not the map.
+    replica
+        .apply(Shelf::MARK.with((book(500), "changed".into())))
+        .unwrap();
+    let before = clones();
+    assert!(reader.sync(replica.doc()).unwrap());
+    let copied = clones() - before;
+    assert!(
+        copied <= 64,
+        "{copied} entries copied: one chunk at most, not the map"
+    );
+    let now = reader.state();
+    assert!(!Rc::ptr_eq(now, &renamed), "the held state was not changed");
+    assert_eq!(renamed.progress.get(&book(500)).unwrap().0, "page 500");
+    assert_eq!(now.progress.get(&book(500)).unwrap().0, "changed");
+    assert_eq!(now.as_ref(), &replica.state().unwrap());
+    let shared = (0..1000)
+        .filter(|n| {
+            std::ptr::eq(
+                now.progress.get(&book(*n)).unwrap(),
+                renamed.progress.get(&book(*n)).unwrap(),
+            )
+        })
+        .count();
+    assert!(shared >= 1000 - 64, "{shared} of 1000 entries still shared");
+}
+
+#[test]
+fn a_held_map_stays_as_it_was_shown_while_the_reader_follows() {
+    let mut rng = Lcg(37);
+    let mut replica = Replica::<Shelf>::new();
+    for step in 0..120 {
+        random_shelf_action(&mut replica, &mut rng, step);
+    }
+    let mut reader = Reader::<Shelf>::open(replica.doc_mut()).unwrap();
+    let mut held: Vec<(Rc<Shelf>, Shelf)> = Vec::new();
+    for step in 120..520 {
+        held.push((Rc::clone(reader.state()), replica.state().unwrap()));
+        random_shelf_action(&mut replica, &mut rng, step);
+        reader.sync(replica.doc()).unwrap();
+        assert_eq!(
+            reader.state().as_ref(),
+            &replica.state().unwrap(),
+            "after step {step}"
+        );
+    }
+    for (at, (shown, read)) in held.iter().enumerate() {
+        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 120);
+    }
+}
+
+#[test]
+fn a_map_is_stored_as_a_btree_map_is() {
+    use tilo_resource::__private::ROOT;
+    let entries: BTreeMap<String, String> =
+        (0..100).map(|n| (book(n), format!("page {n}"))).collect();
+    let map = Map::from(entries.clone());
+
+    let mut doc = Doc::new();
+    tilo_resource::write_key(&mut doc, &ROOT, "progress", &map).unwrap();
+    let read: BTreeMap<String, String> = tilo_resource::read_key(&doc, &ROOT, "progress").unwrap();
+    assert_eq!(read, entries);
+
+    let mut doc = Doc::new();
+    tilo_resource::write_key(&mut doc, &ROOT, "progress", &entries).unwrap();
+    let read: Map<String> = tilo_resource::read_key(&doc, &ROOT, "progress").unwrap();
+    assert_eq!(read, map);
+    assert_eq!(map.to_json(), entries.to_json());
+    assert_eq!(
+        <Map<String> as Model>::SHAPE,
+        <BTreeMap<String, String> as Model>::SHAPE
+    );
+}
+
+thread_local! {
+    static COMPARED: Cell<usize> = const { Cell::new(0) };
+    static SERIALISED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Text that counts how often it is compared and turned into JSON.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Compared(pub String);
+
+impl tilo_resource::Settable for Compared {}
+
+impl Model for Compared {
+    tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        SERIALISED.with(|serialised| serialised.set(serialised.get() + 1));
+        self.0.to_json()
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(Self)
+    }
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        String::load(doc, value, id).map(Self)
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::default())
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        self.0.store(doc, slot)
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        COMPARED.with(|compared| compared.set(compared.get() + 1));
+        self == before
+    }
+}
+
+/// What `run` returned, and how often a [`Compared`] was compared and
+/// turned into JSON while it ran.
+fn counted<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
+    let compared = || COMPARED.with(Cell::get);
+    let serialised = || SERIALISED.with(Cell::get);
+    let (was_compared, was_serialised) = (compared(), serialised());
+    let out = run();
+    (
+        out,
+        compared() - was_compared,
+        serialised() - was_serialised,
+    )
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Shot {
+    pub id: String,
+    pub opacity: f64,
+    pub label: Compared,
+}
+
+impl Identified for Shot {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Cut {
+    pub title: String,
+    pub shots: Keyed<Shot>,
+    pub stack: Ordered<Shot>,
+}
+
+fn cut(shots: usize) -> Cut {
+    let shots: Vec<Shot> = (0..shots)
+        .map(|at| Shot {
+            id: format!("s{at:04}"),
+            opacity: 1.0,
+            label: Compared(format!("shot {at}")),
+        })
+        .collect();
+    Cut {
+        title: "cut".into(),
+        shots: shots.clone().into(),
+        stack: shots.into(),
+    }
+}
+
+fn edits_of(before: &Cut, after: &Cut) -> Vec<tilo_resource::Edit<Cut>> {
+    tilo_resource::Path::<Cut, Cut>::root().edits(before, after)
+}
+
+/// The same items, held apart from every other copy: compared item by item.
+fn apart(cut: &Cut) -> Cut {
+    Cut {
+        title: cut.title.clone(),
+        shots: cut.shots.to_vec().into(),
+        stack: cut.stack.to_vec().into(),
+    }
+}
+
+#[test]
+fn a_one_item_edit_of_a_local_copy_compares_only_that_item() {
+    let before = cut(300);
+    let mut after = before.clone();
+    let id = Id::from_raw("s0150");
+    after.shots.find_mut(&id).unwrap().opacity = 0.5;
+    after.stack.find_mut(&id).unwrap().label = Compared("changed".into());
+    let (edits, compared, serialised) = counted(|| edits_of(&before, &after));
+    assert!(
+        compared <= 4,
+        "{compared} labels of 600 compared for a change to one item of each list"
+    );
+    assert!(
+        serialised <= 2,
+        "{serialised} labels turned into JSON: only the changed one may be"
+    );
+    let paths = Cut::paths();
+    assert_eq!(
+        edits,
+        [
+            paths.shots.item(&id).opacity.set(0.5),
+            paths.stack.item(&id).label.set(Compared("changed".into())),
+        ],
+    );
+    assert_eq!(edits, edits_of(&apart(&before), &apart(&after)));
+
+    // A copy nothing changed shares its items: nothing is compared.
+    let (edits, compared, serialised) = counted(|| edits_of(&before, &before.clone()));
+    assert!(edits.is_empty());
+    assert_eq!((compared, serialised), (0, 0));
+}
+
+#[test]
+fn items_changed_in_place_are_compared_without_serialising_the_others() {
+    let before = cut(300);
+    let mut after = before.clone();
+    for shot in &mut after.shots {
+        if shot.id == "s0150" {
+            shot.opacity = 0.5;
+        }
+    }
+    let (edits, compared, serialised) = counted(|| edits_of(&before, &after));
+    assert_eq!(
+        edits,
+        [Cut::paths()
+            .shots
+            .item(&Id::from_raw("s0150"))
+            .opacity
+            .set(0.5)]
+    );
+    assert!(compared <= 300, "{compared} labels compared for 300 shots");
+    assert_eq!(serialised, 0, "unchanged labels are compared in memory");
+}
+
+#[test]
+fn the_edits_of_a_local_copy_match_comparing_every_item() {
+    for seed in 0..60 {
+        let mut rng = Lcg(seed);
+        // Made here, not cloned: once a copy of it changes, `before` is the
+        // only holder of its items, and changing it changes them in place.
+        let mut before = cut(40);
+        if seed % 2 == 0 {
+            // Sorted, so its ids are known and kept beside the items.
+            before.shots.settle();
+        }
+        let mut after = before.clone();
+        for step in 0..rng.next(8) {
+            let id = Id::from_raw(format!("s{:04}", rng.next(40)));
+            match rng.next(7) {
+                0 | 1 => {
+                    if let Some(shot) = after.shots.find_mut(&id) {
+                        shot.opacity = f64::from(u32::try_from(step).unwrap());
+                    }
+                }
+                2 => {
+                    if let Some(shot) = after.shots.find_mut(&id) {
+                        shot.label = Compared(format!("step {step}"));
+                    }
+                }
+                3 => {
+                    // An id changed in place: the item left, another came.
+                    if let Some(shot) = after.shots.find_mut(&id) {
+                        shot.id = format!("s{:04}", rng.next(60));
+                    }
+                }
+                4 => {
+                    if let Some(shot) = before.shots.find_mut(&id) {
+                        shot.label = Compared(format!("before {step}"));
+                    }
+                }
+                5 => {
+                    if let Some(shot) = after.stack.find_mut(&id) {
+                        shot.opacity = 0.25;
+                    }
+                }
+                _ => {
+                    // A copy held across a change: the change copies again.
+                    let held = after.clone();
+                    if let Some(shot) = after.shots.find_mut(&id) {
+                        shot.opacity = 0.75;
+                    }
+                    drop(held);
+                }
+            }
+        }
+        assert_eq!(
+            edits_of(&before, &after),
+            edits_of(&apart(&before), &apart(&after)),
+            "seed {seed}"
+        );
+        // Items whose ids changed in place are found by their new ids.
+        for shot in &after.shots {
+            let first = after.shots.iter().position(|other| other.id == shot.id);
+            assert_eq!(after.shots.position_of(&shot.id()), first, "seed {seed}");
+        }
     }
 }

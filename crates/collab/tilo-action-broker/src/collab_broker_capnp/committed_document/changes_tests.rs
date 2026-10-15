@@ -183,6 +183,7 @@ impl Channel {
             service: self.service.clone(),
             budget: &self.budget,
             ids: &self.ids,
+            prepared: None,
         };
         open_read(&mut self.slot, reading, known, held).map(|(reply, _)| reply)
     }

@@ -181,3 +181,19 @@ fn an_invitation_names_its_inviter_under_the_issuer_signature() {
         assert!(issue_invitation_from(grant.clone(), inviter, &device).is_err());
     }
 }
+
+#[test]
+fn room_workspace_ids_are_stable() {
+    // Every peer must derive the same relay shard for a room, so the
+    // derivation is pinned to a literal.
+    assert_eq!(
+        crate::room_workspace_id("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap(),
+        3_029_697_355_180_468_570
+    );
+    // Parsing normalises the textual form before hashing.
+    assert_eq!(
+        crate::room_workspace_id("0B7E7DFA-3AD5-4B43-9D6C-5F0D7C1F6A11").unwrap(),
+        3_029_697_355_180_468_570
+    );
+    assert!(crate::room_workspace_id("not a room").is_err());
+}

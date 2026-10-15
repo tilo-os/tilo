@@ -22,6 +22,14 @@
 //!
 //! Every read is re-checked: a bound file whose bytes no longer hash to the
 //! bound digest is refused, never substituted.
+//!
+//! - **Inputs a worker already holds.** The same content on a *worker*
+//!   device is [`HeldContent`]: when the invoker proves it holds an input,
+//!   it names the file version as the proof's locator
+//!   ([`ComputeContentStore::locator`]), and a worker whose own replica has
+//!   that version whole runs the job on it instead of fetching the bytes.
+//!   On an always-on device that replica is the filesystem's home-peer
+//!   replica, read from beside it ([`ReplicaContent`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -29,7 +37,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use fs::store::ContentStore;
 use thiserror::Error;
 
-use crate::compute::ComputeContentStore;
+use crate::compute::{ComputeContentStore, HeldContent};
 
 /// Why a workspace file could not be bound as a job input.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -81,10 +89,19 @@ impl WorkspaceContent {
     /// [`BindError`] when the content is unknown, not wholly local, or does
     /// not match its manifest.
     pub async fn bind_file(&self, manifest: [u8; 32]) -> Result<[u8; 32], BindError> {
+        Ok(self.bind_input(manifest).await?.0)
+    }
+
+    /// [`Self::bind_file`], also returning how many bytes the input is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::bind_file`].
+    pub async fn bind_input(&self, manifest: [u8; 32]) -> Result<([u8; 32], u64), BindError> {
         let bytes = read_version(&self.store, manifest).await?;
         let digest = *blake3::hash(&bytes).as_bytes();
         self.bindings().insert(digest, manifest);
-        Ok(digest)
+        Ok((digest, u64::try_from(bytes.len()).unwrap_or(u64::MAX)))
     }
 
     /// The manifest hash of content this handle bound or stored under
@@ -152,16 +169,31 @@ impl WorkspaceContent {
 
 /// The whole of file version `manifest`, from `store`, checked against it.
 async fn read_version(store: &ContentStore, manifest: [u8; 32]) -> Result<Vec<u8>, BindError> {
+    read_version_within(store, manifest, u64::MAX)
+        .await?
+        .ok_or(BindError::NotLocal)
+}
+
+/// [`read_version`], or `Ok(None)` without reading when the version is
+/// longer than `max_bytes`.
+async fn read_version_within(
+    store: &ContentStore,
+    manifest: [u8; 32],
+    max_bytes: u64,
+) -> Result<Option<Vec<u8>>, BindError> {
     let decoded = store
         .manifest(manifest.into())
         .await
         .ok_or(BindError::UnknownManifest)?;
+    if decoded.total_len() > max_bytes {
+        return Ok(None);
+    }
     let bytes = store
         .read_local(manifest.into(), &decoded, 0..decoded.total_len())
         .await
         .ok_or(BindError::NotLocal)?;
     if decoded.verify(&bytes) {
-        Ok(bytes)
+        Ok(Some(bytes))
     } else {
         Err(BindError::Integrity)
     }
@@ -177,6 +209,98 @@ impl ComputeContentStore for WorkspaceContent {
         let this = self.clone();
         let bytes = bytes.to_vec();
         self.block(async move { this.store(digest, &bytes).await.map(|_| ()) })?
+    }
+
+    fn locator(&self, digest: [u8; 32]) -> Option<[u8; 32]> {
+        self.manifest_of(digest)
+    }
+}
+
+impl HeldContent for WorkspaceContent {
+    fn held(
+        &self,
+        digest: [u8; 32],
+        locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let Some(manifest) = locator.or_else(|| self.manifest_of(digest)) else {
+            return Ok(None);
+        };
+        let store = Arc::clone(&self.store);
+        let read =
+            self.block(async move { read_version_within(&store, manifest, max_bytes).await })?;
+        match read {
+            // A version this replica lacks, or holds only in part, is simply
+            // not held: the input is fetched instead.
+            Err(BindError::UnknownManifest | BindError::NotLocal) => Ok(None),
+            Err(BindError::Integrity) => Err(BindError::Integrity.to_string()),
+            Ok(bytes) => Ok(bytes.filter(|bytes| blake3::hash(bytes).as_bytes() == &digest)),
+        }
+    }
+
+    fn locates(&self) -> bool {
+        true
+    }
+}
+
+/// The workspace content an always-on device's filesystem replica keeps
+/// (`fs replica`, one store per home-peer workspace), as [`HeldContent`]
+/// for the compute worker running beside it.
+///
+/// The replica process holds its stores open, so this reads their
+/// file-backed versions without opening them
+/// ([`ContentStore::read_file_version_unlocked`]), and asks the replica for
+/// smaller ones, which are loose blobs inside its database, over the
+/// owner-only socket each workspace's replica serves in its own cache
+/// directory ([`fs::replica_content`]). A version is found only by the
+/// requester's locator — the manifest hash it proved its copy under — and
+/// returned only when its bytes hash to the input digest: a partly hydrated,
+/// replaced, foreign or misreported version is simply not held, and the
+/// input is fetched instead.
+#[derive(Clone, Debug)]
+pub struct ReplicaContent {
+    cache_dirs: Vec<std::path::PathBuf>,
+}
+
+impl ReplicaContent {
+    /// The replica stores at `cache_dirs`.
+    #[must_use]
+    pub fn new(cache_dirs: Vec<std::path::PathBuf>) -> Self {
+        Self { cache_dirs }
+    }
+}
+
+impl HeldContent for ReplicaContent {
+    fn held(
+        &self,
+        digest: [u8; 32],
+        locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        // Without the requester's file version there is nothing to look up:
+        // a digest alone names no file here.
+        let Some(manifest) = locator else {
+            return Ok(None);
+        };
+        let mut failure = None;
+        for dir in &self.cache_dirs {
+            let read = match ContentStore::read_file_version_unlocked(dir, manifest, max_bytes) {
+                Ok(None) => fs::replica_content::read(dir, manifest, max_bytes),
+                file => file,
+            };
+            match read {
+                Ok(Some(bytes)) if blake3::hash(&bytes).as_bytes() == &digest => {
+                    return Ok(Some(bytes));
+                }
+                Ok(_) => {}
+                Err(error) => failure = Some(error.to_string()),
+            }
+        }
+        failure.map_or(Ok(None), Err)
+    }
+
+    fn locates(&self) -> bool {
+        true
     }
 }
 
@@ -244,5 +368,138 @@ mod tests {
             .unwrap();
         let manifest = content.manifest_of(digest).unwrap();
         assert_eq!(read_version(&store, manifest).await.unwrap(), output);
+    }
+
+    #[tokio::test]
+    async fn a_replica_holds_only_the_located_version_that_hashes_to_the_digest() {
+        let root = tempfile::tempdir().unwrap();
+        let replica = root.path().join("replica");
+        // The replica process keeps its store open throughout.
+        let store = ContentStore::open(&replica).await.unwrap();
+        let bytes: Vec<u8> = (0..2 * 1024 * 1024_u32)
+            .map(|index| u8::try_from(index % 241).unwrap())
+            .collect();
+        let digest = *blake3::hash(&bytes).as_bytes();
+        let manifest = *store
+            .write_content(&bytes)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+        let len = u64::try_from(bytes.len()).unwrap();
+        let held = ReplicaContent::new(vec![root.path().join("absent"), replica]);
+        assert!(held.locates());
+
+        assert_eq!(held.held(digest, Some(manifest), len), Ok(Some(bytes)));
+        // A digest names no file here: without the requester's locator,
+        // nothing is held.
+        assert_eq!(held.held(digest, None, u64::MAX), Ok(None));
+        // The located file is these bytes only if they hash to the digest.
+        assert_eq!(held.held([3; 32], Some(manifest), u64::MAX), Ok(None));
+        assert_eq!(held.held(digest, Some([4; 32]), u64::MAX), Ok(None));
+        assert_eq!(held.held(digest, Some(manifest), len - 1), Ok(None));
+        drop(store);
+    }
+
+    /// Serve `store` as `fs replica` does, from `cache_dir`.
+    fn serve_replica(
+        cache_dir: &std::path::Path,
+        store: Arc<ContentStore>,
+    ) -> tokio::task::JoinHandle<()> {
+        let socket = fs::replica_content::socket_path(cache_dir);
+        let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+        tokio::spawn(fs::replica_content::serve(listener, store))
+    }
+
+    /// `held.held(..)` off the runtime, as staging calls it.
+    async fn held_off_runtime(
+        held: &ReplicaContent,
+        digest: [u8; 32],
+        locator: [u8; 32],
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let held = held.clone();
+        tokio::task::spawn_blocking(move || held.held(digest, Some(locator), max_bytes))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replica_holds_its_small_versions_through_the_replica_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let replica = root.path().join("replica");
+        let store = Arc::new(ContentStore::open(&replica).await.unwrap());
+        // Small enough to be loose blobs inside the store's database.
+        let bytes: Vec<u8> = (0..200 * 1024_u32)
+            .map(|index| u8::try_from(index % 241).unwrap())
+            .collect();
+        let digest = *blake3::hash(&bytes).as_bytes();
+        let manifest = *store
+            .write_content(&bytes)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+        let len = u64::try_from(bytes.len()).unwrap();
+        let held = ReplicaContent::new(vec![replica.clone()]);
+        // Not a file: unreachable until the replica answers for it.
+        assert_eq!(
+            held_off_runtime(&held, digest, manifest, len).await,
+            Ok(None)
+        );
+
+        let server = serve_replica(&replica, Arc::clone(&store));
+        assert_eq!(
+            held_off_runtime(&held, digest, manifest, len).await,
+            Ok(Some(bytes))
+        );
+        // Still only the located version that hashes to the digest.
+        assert_eq!(
+            held_off_runtime(&held, [3; 32], manifest, len).await,
+            Ok(None)
+        );
+        assert_eq!(
+            held_off_runtime(&held, digest, [4; 32], len).await,
+            Ok(None)
+        );
+        assert_eq!(
+            held_off_runtime(&held, digest, manifest, len - 1).await,
+            Ok(None)
+        );
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bytes_a_replica_misreports_are_not_held() {
+        let root = tempfile::tempdir().unwrap();
+        let replica = root.path().join("replica");
+        std::fs::create_dir_all(&replica).unwrap();
+        let listener =
+            std::os::unix::net::UnixListener::bind(fs::replica_content::socket_path(&replica))
+                .unwrap();
+        // A replica answering every request with bytes that are not the
+        // version asked for.
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let framing = fs::replica_content::FRAMING;
+                if let Ok(Some(_)) =
+                    framing.read_value::<_, fs::replica_content::Request>(&mut stream)
+                {
+                    let wrong = fs::replica_content::Response::Found(b"other bytes".to_vec());
+                    let _ = framing.write_value(&mut stream, &wrong);
+                }
+            }
+        });
+        let bytes = b"the requester's bytes".to_vec();
+        let digest = *blake3::hash(&bytes).as_bytes();
+        let held = ReplicaContent::new(vec![replica]);
+        assert_eq!(
+            held_off_runtime(&held, digest, [5; 32], u64::MAX).await,
+            Ok(None),
+            "fetched instead"
+        );
     }
 }

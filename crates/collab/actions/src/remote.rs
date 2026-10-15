@@ -494,6 +494,79 @@ pub mod device_pairing {
     }
 }
 
+/// Administering the person's identities and the devices trusted under
+/// them. The host keeps the identity store — records, root secrets, the
+/// active selector, device fleets — and runs every step, so no application
+/// reads a secret or signs with the root key. It is answered under the
+/// host's provider, which a caller names without reading a catalogue, for
+/// the person at this device in the room their connection was admitted to.
+pub mod identity_admin {
+    use serde::{Deserialize, Serialize};
+
+    use super::{ActionAddress, RemoteActionTarget};
+
+    /// The provider the host answers identity administration under.
+    pub const PROVIDER: &str = "tilo.identity";
+    /// The resource the steps are actions of.
+    pub const RESOURCE: &str = "identity";
+    /// The person's identities on this device, without secrets.
+    pub const LIST: &str = "list";
+    /// Sign new apps in as identity `id`.
+    pub const ACTIVATE: &str = "activate";
+    /// Remove identity `id` from this device (`confirm`).
+    pub const REMOVE: &str = "remove";
+    /// Move identity `id`'s key from a plain file into protected storage.
+    pub const PROTECT: &str = "protect";
+    /// The devices trusted under the room's identity, as [`FleetDevice`]s.
+    pub const DEVICES: &str = "devices";
+    /// Root-sign a device's permanent revocation (`device`, `reason`,
+    /// `confirm`).
+    pub const REVOKE: &str = "revoke";
+    /// Root-revoke and stop a paired home server (`device`, `service`,
+    /// `confirm`).
+    pub const HOME_PEER_REMOVE: &str = "home-peer-remove";
+    /// Deliver the home-server removals that could not reach their server.
+    pub const HOME_PEER_RETRY: &str = "home-peer-retry-removals";
+
+    /// Every step, in the order a catalogue lists them.
+    pub const STEPS: [&str; 8] = [
+        LIST,
+        ACTIVATE,
+        REMOVE,
+        PROTECT,
+        DEVICES,
+        REVOKE,
+        HOME_PEER_REMOVE,
+        HOME_PEER_RETRY,
+    ];
+
+    /// The target of identity step `step`.
+    #[must_use]
+    pub fn target(step: &str) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: ActionAddress::new(RESOURCE, step),
+        }
+    }
+
+    /// One device trusted under an identity, as [`DEVICES`] answers it.
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct FleetDevice {
+        /// The name the device was enrolled with.
+        pub label: String,
+        /// The device's public key, 64 lowercase hex characters.
+        pub key_hex: String,
+        /// The key's short form people compare between screens.
+        pub fingerprint: String,
+        /// Whether it is the device answering.
+        pub current: bool,
+        /// Whether its trust was revoked.
+        pub revoked: bool,
+        /// Whether it may host workspaces for the person.
+        pub can_host: bool,
+    }
+}
+
 /// Why a host refuses a directory action that asks for confirmation when
 /// the request names no revision: the confirmation covers the action as the
 /// person was shown it, which only that revision identifies. A caller that

@@ -13,6 +13,9 @@ from test_finalization_driver import request
 SPEC = importlib.util.spec_from_file_location('staging', Path(__file__).resolve().parents[1] / 'dev/stage-finalization-worker.py')
 s = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(s)
+# The worker accepts only root-owned paths no one else may write: root's home,
+# or /var/lib where that is read-only (a sandbox with a writable /var only).
+STAGING_PARENT = '/root' if os.access('/root', os.W_OK) else '/var/lib'
 
 
 def restart_fixture(test):
@@ -29,7 +32,7 @@ def restart_fixture(test):
 
 class StagingTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir='/root', prefix='tilo-staging-test-')
+        self.tmp = tempfile.TemporaryDirectory(dir=STAGING_PARENT, prefix='tilo-staging-test-')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.request = request()

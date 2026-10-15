@@ -58,6 +58,9 @@ tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
+# A session's codec negotiation, run against the host's advert for its
+# browser members (no GStreamer: the pure negotiation only).
+tilo-media = { path = "../../platform/tilo-media" }
 iroh.workspace = true
 url.workspace = true
 hyper = { version = "1", features = ["client", "http1"] }

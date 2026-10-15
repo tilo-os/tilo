@@ -1,9 +1,9 @@
 //! Native UI handoff, run after the pane releases the state writer.
 use super::{WorkspaceTreeHandle, person_id_of};
 use tilo_desktop::activity::{NativeManagedTaskRequest, NativeManualTaskRequest};
-use tilo_peer_state::{
-    owner_commit::{CommitOperation, OwnerCommitRequest},
-    workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId},
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::workspace_task::{
+    WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId,
 };
 
 pub(crate) fn create(

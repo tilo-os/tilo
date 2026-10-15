@@ -8,6 +8,7 @@ mod display_auto_leases;
 mod display_refresh;
 #[cfg(test)]
 mod display_refresh_tests;
+mod nearby_store_worker;
 pub(crate) mod person_layout;
 mod receive_recovery;
 mod remote_capture;
@@ -25,7 +26,7 @@ use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use getrandom::{SysRng, rand_core::TryRng as _};
 use serde_json::{Map, Value};
@@ -341,9 +342,8 @@ fn with_nearby_transfer_store<T>(
 }
 
 /// Run `operation` only against a store this session already opened, and
-/// only when no staging worker holds it: the frame loop never waits for a
-/// large copy. Callers either retry on a later frame or leave cleanup to the
-/// pass that drops unreferenced media-handoff state.
+/// only when nothing else holds it.
+#[cfg(test)]
 fn with_open_nearby_transfer_store<T>(
     operation: impl FnOnce(&mut crate::shell::nearby_transfer::NearbyTransferStore) -> T,
 ) -> Option<T> {
@@ -369,28 +369,36 @@ fn try_inbox_entries() -> Vec<crate::shell::nearby_transfer::InboxEntry> {
     try_nearby_entries(crate::shell::nearby_transfer::NearbyTransferStore::inbox)
 }
 
-/// A copy of the store's `entries`, opening the store on first use. A store
-/// that is busy or cannot open reads as empty rather than blocking.
+/// A copy of the store's `entries`. A store that is busy or not open yet
+/// reads as empty rather than blocking: opening repairs the spool and
+/// replaces its index with fsyncs, so it happens on the store's thread.
 fn try_nearby_entries<T: Clone>(
     entries: impl FnOnce(&crate::shell::nearby_transfer::NearbyTransferStore) -> &[T],
 ) -> Vec<T> {
-    let Ok(mut guard) = nearby_store_cell().try_lock() else {
+    let Ok(guard) = nearby_store_cell().try_lock() else {
         return Vec::new();
     };
-    if guard.is_none() {
-        let Some(root) = nearby_transfer_root() else {
-            return Vec::new();
-        };
-        let Ok(store) =
-            crate::shell::nearby_transfer::NearbyTransferStore::open(root, unix_now_ms())
-        else {
-            return Vec::new();
-        };
-        *guard = Some(store);
-    }
-    guard
-        .as_ref()
-        .map_or_else(Vec::new, |store| entries(store).to_vec())
+    let Some(store) = guard.as_ref() else {
+        drop(guard);
+        nearby_store_worker::open_store();
+        return Vec::new();
+    };
+    entries(store).to_vec()
+}
+
+/// Stage one outgoing object, holding the store only to admit it and to
+/// record it: the copy, archive, hash and sync in between run unlocked, so
+/// the store's thread (and every receive behind it) never waits for them.
+fn stage_outside_store_lock(
+    staging: crate::shell::nearby_transfer::Staging,
+    shape: crate::shell::nearby_transfer::StageShape,
+    write: impl FnOnce(
+        crate::shell::nearby_transfer::ReservedStage,
+    ) -> Result<crate::shell::nearby_transfer::WrittenStage, String>,
+) -> Result<(), String> {
+    let reserved = with_nearby_transfer_store(|store| store.reserve_stage(staging, shape))?;
+    let written = write(reserved)?;
+    with_nearby_transfer_store(|store| store.record_stage(written)).map(|_| ())
 }
 
 struct NearbyStagingResult {
@@ -513,7 +521,7 @@ pub(crate) fn record_nearby_transfer_progress(
     status: PersonalTransferStatus,
 ) {
     // The one transfer lane serves Nearby sends and media handoffs alike.
-    let policy = ContinuityPolicySnapshot::load();
+    let policy = ContinuityPolicySnapshot::current();
     if !policy.permits(ContinuityCapability::FileTransfer)
         && !policy.permits(ContinuityCapability::Media)
     {
@@ -532,127 +540,136 @@ pub(crate) fn record_nearby_transfer_progress(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "chunk and finish frames share one validated receive path"
-)]
+/// Take one frame of an incoming transfer. Frames arrive on the compositor's
+/// loop, and appending (with its periodic checkpoint fsync) or finishing
+/// (hash, install, fsyncs) can take seconds under I/O pressure, so the frame
+/// only queues its store work on the store's thread, in arrival order. The
+/// result a finish owes the sender is sent from the loop once the install
+/// finished.
 pub(crate) fn handle_nearby_transfer_frame(
     network: &ShellNetwork,
     source: &crate::shell::personal_continuity::DeviceId,
     frame: PersonalNearbyTransferFrame,
 ) {
-    let (transfer_id, request_id) = match &frame {
+    let source = source.clone();
+    match frame {
         PersonalNearbyTransferFrame::Chunk {
             transfer_id,
             request_id,
-            ..
+            offset,
+            bytes,
+        } => {
+            if bytes.len() > crate::network::actor::PERSONAL_TRANSFER_CHUNK_BYTES {
+                return;
+            }
+            // A chunk the store cannot take now (64 MiB already wait for the
+            // disk) is lost like a failed write.
+            let _ = nearby_store_worker::append_on_store_thread(network, bytes.len(), move || {
+                if admitted_incoming_kind(&source, transfer_id, request_id).is_some() {
+                    let _ = with_nearby_transfer_store(|store| {
+                        store.append(transfer_id, offset, &bytes)
+                    });
+                }
+            });
         }
-        | PersonalNearbyTransferFrame::Finish {
+        PersonalNearbyTransferFrame::Finish {
             transfer_id,
             request_id,
-            ..
-        }
-        | PersonalNearbyTransferFrame::Abort {
-            transfer_id,
-            request_id,
-        } => (*transfer_id, *request_id),
-    };
-    // Bytes land only in an inbox entry admitted for this exact sender and
-    // request, and only while the continuity switch for its kind is on.
-    let kind = with_nearby_transfer_store(|store| {
-        Ok(store
-            .inbox()
-            .iter()
-            .find(|entry| {
-                entry.id == transfer_id
-                    && entry.source == source.as_str()
-                    && entry.request_id == request_id
-            })
-            .map(|entry| entry.kind))
-    })
-    .ok()
-    .flatten()
-    .filter(|kind| ContinuityPolicySnapshot::load().permits(kind.capability()));
-    let Some(kind) = kind else {
-        return;
-    };
-    match frame {
-        PersonalNearbyTransferFrame::Chunk { offset, bytes, .. } => {
-            if bytes.len() <= crate::network::actor::PERSONAL_TRANSFER_CHUNK_BYTES {
-                let _ =
-                    with_nearby_transfer_store(|store| store.append(transfer_id, offset, &bytes));
-            }
-        }
-        PersonalNearbyTransferFrame::Finish { content_hash, .. }
-            if kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff =>
-        {
-            finish_media_handoff(network, source, (transfer_id, request_id), content_hash);
-        }
-        PersonalNearbyTransferFrame::Finish { content_hash, .. } => {
-            let history = try_inbox_entries()
-                .into_iter()
-                .find(|entry| entry.id == transfer_id)
-                .map(|entry| (entry.name, entry.total_bytes));
-            let expected = with_nearby_transfer_store(|store| {
-                Ok(store
-                    .inbox()
-                    .iter()
-                    .find(|entry| entry.id == transfer_id)
-                    .map(|entry| entry.content_hash))
-            })
-            .ok()
-            .flatten();
-            let destination = nearby_drop_state()
-                .lock()
-                .ok()
-                .and_then(|mut state| state.destinations.remove(&transfer_id));
-            let installed = expected
-                .filter(|expected| expected == &content_hash)
-                .zip(destination)
-                .and_then(|(_, destination)| {
-                    with_nearby_transfer_store(|store| {
-                        store.finish_secure(transfer_id, &destination)
-                    })
-                    .ok()
-                });
-            if installed.is_none() {
-                let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
-            }
-            if let Some(path) = installed.as_ref()
-                && let Ok(mut state) = nearby_drop_state().lock()
-            {
-                state.events.push_back(NearbyDropEvent::Received {
-                    path: path.clone(),
-                    peer: source.clone(),
-                });
-            }
-            if let Some((name, total_bytes)) = history
-                && let Ok(mut state) = nearby_drop_state().lock()
-            {
-                state.record_history(NearbyTransferHistory {
-                    transfer_id,
-                    peer: source.clone(),
-                    name,
-                    phase: if installed.is_some() {
-                        runtime_collab::NearbyTransferPhase::Completed
-                    } else {
-                        runtime_collab::NearbyTransferPhase::Failed
-                    },
-                    total_bytes,
-                });
-            }
-            let _ = network.send_personal_fabric_action(
-                source,
-                PersonalFabricAction::NearbyTransferResult {
-                    request_id,
-                    transfer_id,
-                    accepted: installed.is_some(),
-                },
-            );
+            content_hash,
+        } => {
+            let _ = nearby_store_worker::on_store_thread(network, move || {
+                finish_nearby_transfer(&source, (transfer_id, request_id), content_hash)
+            });
         }
         // A transport abort is resumable: keep only the last durable prefix.
         PersonalNearbyTransferFrame::Abort { .. } => {}
     }
+}
+
+/// The kind of the receive admitted for this exact sender and request, while
+/// the continuity switch for that kind is on: bytes land in nothing else.
+fn admitted_incoming_kind(
+    source: &crate::shell::personal_continuity::DeviceId,
+    transfer_id: [u8; 16],
+    request_id: [u8; 16],
+) -> Option<crate::shell::nearby_transfer::TransferKind> {
+    incoming_transfer_kind(source, request_id, transfer_id)
+        .filter(|kind| ContinuityPolicySnapshot::current().permits(kind.capability()))
+}
+
+/// Verify and install a finished receive, on the store's thread. What it
+/// returns tells the sender, from the loop, whether it was accepted.
+fn finish_nearby_transfer(
+    source: &crate::shell::personal_continuity::DeviceId,
+    (transfer_id, request_id): ([u8; 16], [u8; 16]),
+    content_hash: [u8; 32],
+) -> Option<nearby_store_worker::FollowUp> {
+    let kind = admitted_incoming_kind(source, transfer_id, request_id)?;
+    if kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff {
+        return Some(finish_media_handoff(
+            source,
+            (transfer_id, request_id),
+            content_hash,
+        ));
+    }
+    let incoming = with_nearby_transfer_store(|store| {
+        Ok(store
+            .inbox()
+            .iter()
+            .find(|entry| entry.id == transfer_id)
+            .map(|entry| (entry.name.clone(), entry.total_bytes, entry.content_hash)))
+    })
+    .ok()
+    .flatten();
+    let destination = nearby_drop_state()
+        .lock()
+        .ok()
+        .and_then(|mut state| state.destinations.remove(&transfer_id));
+    let installed = incoming
+        .as_ref()
+        .filter(|(_, _, expected)| expected == &content_hash)
+        .zip(destination)
+        .and_then(|(_, destination)| {
+            with_nearby_transfer_store(|store| store.finish_secure(transfer_id, &destination)).ok()
+        });
+    if installed.is_none() {
+        let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
+    }
+    if let Some(path) = installed.as_ref()
+        && let Ok(mut state) = nearby_drop_state().lock()
+    {
+        state.events.push_back(NearbyDropEvent::Received {
+            path: path.clone(),
+            peer: source.clone(),
+        });
+    }
+    if let Some((name, total_bytes, _)) = incoming
+        && let Ok(mut state) = nearby_drop_state().lock()
+    {
+        state.record_history(NearbyTransferHistory {
+            transfer_id,
+            peer: source.clone(),
+            name,
+            phase: if installed.is_some() {
+                runtime_collab::NearbyTransferPhase::Completed
+            } else {
+                runtime_collab::NearbyTransferPhase::Failed
+            },
+            total_bytes,
+        });
+    }
+    let source = source.clone();
+    let accepted = installed.is_some();
+    Some(Box::new(move |network: &ShellNetwork| {
+        let _ = network.send_personal_fabric_action(
+            &source,
+            PersonalFabricAction::NearbyTransferResult {
+                request_id,
+                transfer_id,
+                accepted,
+            },
+        );
+    }))
 }
 
 /// Resolve a handoff's verified object, or say what the handoff should do
@@ -686,15 +703,15 @@ fn cached_media_handoff(
     })
 }
 
-/// Verify a completed media-handoff object into the private media cache.
-/// The handoff's authorisation is spent here, so a repeated offer of the
-/// same object is refused rather than received twice.
+/// Verify a completed media-handoff object into the private media cache, on
+/// the store's thread. The handoff's authorisation is spent here, so a
+/// repeated offer of the same object is refused rather than received twice.
+/// What it returns tells the sender, from the loop.
 fn finish_media_handoff(
-    network: &ShellNetwork,
     source: &crate::shell::personal_continuity::DeviceId,
     (transfer_id, request_id): ([u8; 16], [u8; 16]),
     content_hash: [u8; 32],
-) {
+) -> nearby_store_worker::FollowUp {
     let authorized = nearby_drop_state().lock().is_ok_and(|mut state| {
         state
             .media_authorized
@@ -719,14 +736,18 @@ fn finish_media_handoff(
     if cached.is_none() {
         let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
     }
-    let _ = network.send_personal_fabric_action(
-        source,
-        PersonalFabricAction::NearbyTransferResult {
-            request_id,
-            transfer_id,
-            accepted: cached.is_some(),
-        },
-    );
+    let source = source.clone();
+    let accepted = cached.is_some();
+    Box::new(move |network: &ShellNetwork| {
+        let _ = network.send_personal_fabric_action(
+            &source,
+            PersonalFabricAction::NearbyTransferResult {
+                request_id,
+                transfer_id,
+                accepted,
+            },
+        );
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -807,7 +828,7 @@ fn cancel_status_personal_transfer(network: &ShellNetwork, status: &MediaHandoff
             },
         );
     }
-    let _ = with_open_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
+    nearby_store_worker::on_store(move |store| store.cancel_outgoing(transfer_id));
 }
 
 /// Whether a still-pending media handoff carries this staged object to `target`.
@@ -1621,21 +1642,23 @@ pub struct DeviceFabricRuntime {
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
-    policy_cache: Option<ContinuityPolicySnapshot>,
-    policy_store_stamp: Option<SystemTime>,
-    last_policy_store_check: Option<Instant>,
+    /// The policy in the settings `display_refresh` follows, parsed once per
+    /// settings generation: the pump runs on the compositor's loop and must
+    /// not read the settings document.
+    policy_cache: crate::shell::continuity_policy::ContinuityPolicyCache,
 }
 
 impl DeviceFabricRuntime {
-    const POLICY_STORE_POLL_INTERVAL: Duration = Duration::from_millis(750);
-
     pub fn new(network: &ShellNetwork, notification_bridge: NotificationBridge) -> Self {
         crate::shell::device_unlock_runtime::spawn_enrol_socket();
         let counter = network.device_fabric().max_counter();
+        let display_refresh = display_refresh::DisplayRefresh::new(network.loop_waker());
+        let policy_cache =
+            crate::shell::continuity_policy::ContinuityPolicyCache::new(display_refresh.settings());
         Self {
             counter,
             last_sample: None,
-            display_refresh: display_refresh::DisplayRefresh::new(network.loop_waker()),
+            display_refresh,
             last_publish: None,
             published_displays: None,
             local_fingerprint: None,
@@ -1659,9 +1682,7 @@ impl DeviceFabricRuntime {
             inbound_gamepads: BTreeMap::new(),
             local_app_focus: None,
             policy: None,
-            policy_cache: None,
-            policy_store_stamp: None,
-            last_policy_store_check: None,
+            policy_cache,
         }
     }
 
@@ -1709,26 +1730,6 @@ impl DeviceFabricRuntime {
         }
     }
 
-    fn current_policy(&mut self, now: Instant) -> ContinuityPolicySnapshot {
-        if self.policy_cache.is_some() && self.policy_cache_fresh(now) {
-            return self.policy_cache.unwrap_or_default();
-        }
-        self.last_policy_store_check = Some(now);
-        let stamp = settings_store::settings_path()
-            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-        if self.policy_cache.is_none() || stamp != self.policy_store_stamp {
-            self.policy_cache = Some(ContinuityPolicySnapshot::load());
-            self.policy_store_stamp = stamp;
-        }
-        self.policy_cache.unwrap_or_default()
-    }
-
-    fn policy_cache_fresh(&self, now: Instant) -> bool {
-        self.last_policy_store_check.is_some_and(|checked| {
-            now.saturating_duration_since(checked) < Self::POLICY_STORE_POLL_INTERVAL
-        })
-    }
-
     pub fn set_realtime_adapter(
         &mut self,
         adapter: crate::shell::realtime_session::SharedRealtimeFabricAdapter,
@@ -1769,12 +1770,10 @@ impl DeviceFabricRuntime {
         if changes.resample {
             self.last_sample = None;
         }
-        if changes.policy {
-            // Keep the last enforced policy: teardown compares against it.
-            self.policy_cache = None;
-            self.last_policy_store_check = None;
-        }
-        let policy = self.current_policy(Instant::now());
+        // A continuity change is a new generation of the settings the cache
+        // follows, parsed here; `self.policy` keeps the last enforced policy
+        // for teardown to compare against.
+        let policy = self.policy_cache.current();
         self.enforce_policy(network, selection, policy);
         // Always drain Bluetooth worker completions. Policy teardown removes
         // transaction authority immediately, but an already-running BlueZ
@@ -2015,7 +2014,7 @@ impl DeviceFabricRuntime {
             }
         }
         if newly_disabled(ContinuityCapability::FileTransfer) {
-            tear_down_nearby_transfers(network);
+            tear_down_nearby_transfers();
         }
         if newly_disabled(ContinuityCapability::Media) {
             with_fabric_clock(|core| core.set_enabled(false, Instant::now()));
@@ -3004,8 +3003,12 @@ impl DeviceFabricRuntime {
                     .media_authorized
                     .remove(&(request.source.clone(), *transfer_id));
             }
-            let _ = with_open_nearby_transfer_store(|store| {
-                store.release_media(request.source.as_str(), *transfer_id)
+            let source = request.source.clone();
+            let transfer_id = *transfer_id;
+            nearby_store_worker::on_store(move |store| {
+                store
+                    .release_media(source.as_str(), transfer_id)
+                    .map(|_| ())
             });
         }
     }
@@ -3141,30 +3144,6 @@ impl DeviceFabricRuntime {
     }
 }
 
-#[cfg(test)]
-mod policy_cache_tests {
-    use super::*;
-
-    fn policy_cache_fresh(last_check: Option<Instant>, now: Instant) -> bool {
-        last_check.is_some_and(|checked| {
-            now.saturating_duration_since(checked) < DeviceFabricRuntime::POLICY_STORE_POLL_INTERVAL
-        })
-    }
-
-    #[test]
-    fn cached_policy_avoids_reloading_within_the_frame_loop_window() {
-        let now = Instant::now();
-        assert!(policy_cache_fresh(
-            Some(now),
-            now + Duration::from_millis(749)
-        ));
-        assert!(!policy_cache_fresh(
-            Some(now),
-            now + Duration::from_millis(750)
-        ));
-    }
-}
-
 fn expire_nearby_consents(network: &ShellNetwork) {
     let expired = nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
@@ -3198,6 +3177,8 @@ fn expire_nearby_consents(network: &ShellNetwork) {
 /// then offer every staged object the continuity policy still allows. A
 /// media-handoff object lives exactly as long as its pending handoff.
 fn resume_nearby_transfers(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    // Acknowledgements and results of store work that finished since.
+    nearby_store_worker::run_follow_ups(network);
     if policy.permits(ContinuityCapability::FileTransfer) {
         expire_nearby_consents(network);
     }
@@ -3219,7 +3200,7 @@ fn resume_nearby_transfers(network: &ShellNetwork, policy: ContinuityPolicySnaps
         if entry.kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff
             && !media_transfer_pending(entry.id, &target)
         {
-            let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(entry.id));
+            nearby_store_worker::cancel_outgoing(entry.id);
             continue;
         }
         let should_offer = nearby_drop_state().lock().is_ok_and(|state| {
@@ -3267,9 +3248,7 @@ fn settle_nearby_staging(network: &ShellNetwork, policy: ContinuityPolicySnapsho
                 let pending = policy.permits(ContinuityCapability::Media)
                     && media_transfer_pending(staged.transfer_id, &staged.target);
                 if staged.result.is_ok() && !pending {
-                    let _ = with_nearby_transfer_store(|store| {
-                        store.cancel_outgoing(staged.transfer_id)
-                    });
+                    nearby_store_worker::cancel_outgoing(staged.transfer_id);
                 }
                 if staged.result.is_err() && pending {
                     fail_media_handoff(network, request_id, MediaHandoffFailure::OpenFailed);
@@ -3277,9 +3256,7 @@ fn settle_nearby_staging(network: &ShellNetwork, policy: ContinuityPolicySnapsho
             }
             None if !policy.permits(ContinuityCapability::FileTransfer) => {
                 if staged.result.is_ok() {
-                    let _ = with_nearby_transfer_store(|store| {
-                        store.cancel_outgoing(staged.transfer_id)
-                    });
+                    nearby_store_worker::cancel_outgoing(staged.transfer_id);
                 }
             }
             None => {
@@ -3570,67 +3547,74 @@ fn handle_nearby_drop_action(
             let Some((target, _, _)) = pending else {
                 return;
             };
-            let manifest = with_nearby_transfer_store(|store| {
-                let entry = store
-                    .outbox()
-                    .iter()
-                    .find(|entry| entry.id == transfer_id && entry.target == target.as_str())
-                    .cloned()
-                    .ok_or_else(|| "unknown nearby transfer offer".to_string())?;
-                let path = store.object_path(transfer_id);
+            // Hashing the receiver's checkpoint prefix reads up to the whole
+            // object: the store's thread does it, and the loop starts the
+            // stream once it reports.
+            let _ = nearby_store_worker::on_store_thread(network, move || {
+                let manifest = with_nearby_transfer_store(|store| {
+                    let entry = store
+                        .outbox()
+                        .iter()
+                        .find(|entry| entry.id == transfer_id && entry.target == target.as_str())
+                        .cloned()
+                        .ok_or_else(|| "unknown nearby transfer offer".to_string())?;
+                    Ok((entry, store.object_path(transfer_id)))
+                });
+                let (entry, path) = manifest.ok()?;
                 let local_prefix =
-                    crate::shell::nearby_transfer::hash_prefix(&path, committed_offset)?;
-                Ok((entry, path, local_prefix))
+                    crate::shell::nearby_transfer::hash_prefix(&path, committed_offset).ok()?;
+                Some(Box::new(move |network: &ShellNetwork| {
+                    if !transfer_kind_permitted(entry.kind) {
+                        return;
+                    }
+                    if local_prefix != prefix_hash {
+                        let _ = network.send_personal_fabric_action(
+                            &source,
+                            PersonalFabricAction::NearbyTransferRestart {
+                                request_id,
+                                transfer_id,
+                            },
+                        );
+                        return;
+                    }
+                    let _ = network.start_nearby_transfer(
+                        &target,
+                        crate::network::actor::NearbyTransferCheckpoint {
+                            transfer_id,
+                            request_id,
+                            total_bytes: entry.total_bytes,
+                            resume_offset: committed_offset,
+                            prefix_hash,
+                            content_hash: entry.content_hash,
+                        },
+                        &path,
+                    );
+                }))
             });
-            let Ok((entry, path, local_prefix)) = manifest else {
-                return;
-            };
-            if !transfer_kind_permitted(entry.kind) {
-                return;
-            }
-            if local_prefix != prefix_hash {
-                let _ = network.send_personal_fabric_action(
-                    &source,
-                    PersonalFabricAction::NearbyTransferRestart {
-                        request_id,
-                        transfer_id,
-                    },
-                );
-                return;
-            }
-            let _ = network.start_nearby_transfer(
-                &target,
-                crate::network::actor::NearbyTransferCheckpoint {
-                    transfer_id,
-                    request_id,
-                    total_bytes: entry.total_bytes,
-                    resume_offset: committed_offset,
-                    prefix_hash,
-                    content_hash: entry.content_hash,
-                },
-                &path,
-            );
         }
         PersonalFabricAction::NearbyTransferRestart {
             request_id,
             transfer_id,
         } => {
-            let valid = incoming_transfer_kind(&source, request_id, transfer_id)
-                .is_some_and(transfer_kind_permitted);
-            if valid
-                && let Ok(prefix_hash) =
-                    with_nearby_transfer_store(|store| store.restart_incoming(transfer_id))
-            {
-                let _ = network.send_personal_fabric_action(
-                    &source,
-                    PersonalFabricAction::NearbyTransferReady {
-                        request_id,
-                        transfer_id,
-                        committed_offset: 0,
-                        prefix_hash,
-                    },
-                );
-            }
+            // The truncation is synced before the receiver says it holds
+            // nothing: the acknowledgement follows from the loop.
+            let _ = nearby_store_worker::on_store_thread(network, move || {
+                incoming_transfer_kind(&source, request_id, transfer_id)
+                    .filter(|kind| transfer_kind_permitted(*kind))?;
+                let prefix_hash =
+                    with_nearby_transfer_store(|store| store.restart_incoming(transfer_id)).ok()?;
+                Some(Box::new(move |network: &ShellNetwork| {
+                    let _ = network.send_personal_fabric_action(
+                        &source,
+                        PersonalFabricAction::NearbyTransferReady {
+                            request_id,
+                            transfer_id,
+                            committed_offset: 0,
+                            prefix_hash,
+                        },
+                    );
+                }))
+            });
         }
         PersonalFabricAction::NearbyTransferCancel {
             request_id,
@@ -3643,79 +3627,86 @@ fn handle_nearby_drop_action(
             {
                 state.incoming.remove(&transfer_id);
             }
-            if incoming_transfer_kind(&source, request_id, transfer_id)
-                .is_some_and(transfer_kind_permitted)
-            {
-                let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
-                if let Ok(mut state) = nearby_drop_state().lock() {
-                    state.destinations.remove(&transfer_id);
-                    state
-                        .media_authorized
-                        .remove(&(source.clone(), transfer_id));
-                }
-            }
-            let outgoing = transfer_kind_permitted(
-                outgoing_transfer_kind(transfer_id)
-                    .unwrap_or(crate::shell::nearby_transfer::TransferKind::File),
-            )
-            .then(|| {
-                nearby_drop_state().lock().ok().and_then(|mut state| {
-                    let pending = state
-                        .large_offers
-                        .get(&transfer_id)
-                        .cloned()
-                        .filter(|(target, offer, _)| target == &source && offer == &request_id);
-                    if pending.is_some() {
-                        state.large_offers.remove(&transfer_id);
+            let _ = nearby_store_worker::on_store_thread(network, move || {
+                if incoming_transfer_kind(&source, request_id, transfer_id)
+                    .is_some_and(transfer_kind_permitted)
+                {
+                    let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
+                    if let Ok(mut state) = nearby_drop_state().lock() {
+                        state.destinations.remove(&transfer_id);
+                        state
+                            .media_authorized
+                            .remove(&(source.clone(), transfer_id));
                     }
-                    pending
-                })
-            })
-            .flatten();
-            if outgoing.is_some() {
-                let _ = network.cancel_nearby_transfer_stream(&source, transfer_id);
-                let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
-            }
+                }
+                let outgoing_kind = outgoing_transfer_kind(transfer_id)
+                    .unwrap_or(crate::shell::nearby_transfer::TransferKind::File);
+                Some(Box::new(move |network: &ShellNetwork| {
+                    let outgoing = transfer_kind_permitted(outgoing_kind)
+                        .then(|| {
+                            nearby_drop_state().lock().ok().and_then(|mut state| {
+                                let pending = state.large_offers.get(&transfer_id).cloned().filter(
+                                    |(target, offer, _)| target == &source && offer == &request_id,
+                                );
+                                if pending.is_some() {
+                                    state.large_offers.remove(&transfer_id);
+                                }
+                                pending
+                            })
+                        })
+                        .flatten();
+                    if outgoing.is_some() {
+                        let _ = network.cancel_nearby_transfer_stream(&source, transfer_id);
+                        nearby_store_worker::cancel_outgoing(transfer_id);
+                    }
+                }))
+            });
         }
         PersonalFabricAction::NearbyTransferResult {
             request_id,
             transfer_id,
             accepted,
         } => {
-            let kind = outgoing_transfer_kind(transfer_id)
-                .unwrap_or(crate::shell::nearby_transfer::TransferKind::File);
-            if !transfer_kind_permitted(kind) {
-                return;
-            }
-            let media = kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff;
-            let pending = nearby_drop_state().lock().ok().and_then(|mut state| {
-                let pending = state
-                    .large_offers
-                    .get(&transfer_id)
-                    .cloned()
-                    .filter(|(target, offer, _)| target == &source && offer == &request_id);
-                // A refused media offer is offered again while its handoff
-                // is pending: the destination may not have seen the
-                // `ResumeMedia` that authorises it yet.
-                if (accepted || media) && pending.is_some() {
-                    state.large_offers.remove(&transfer_id);
+            // The object's kind is the store's to read; the rest needs no
+            // disk, so the store's thread finishes it.
+            let _ = nearby_store_worker::on_store_thread(network, move || {
+                let kind = outgoing_transfer_kind(transfer_id)
+                    .unwrap_or(crate::shell::nearby_transfer::TransferKind::File);
+                if !transfer_kind_permitted(kind) {
+                    return None;
                 }
-                pending
+                let media = kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff;
+                let pending = nearby_drop_state().lock().ok().and_then(|mut state| {
+                    let pending = state
+                        .large_offers
+                        .get(&transfer_id)
+                        .cloned()
+                        .filter(|(target, offer, _)| target == &source && offer == &request_id);
+                    // A refused media offer is offered again while its
+                    // handoff is pending: the destination may not have seen
+                    // the `ResumeMedia` that authorises it yet.
+                    if (accepted || media) && pending.is_some() {
+                        state.large_offers.remove(&transfer_id);
+                    }
+                    pending
+                });
+                if let Some((peer, _, file_name)) = pending {
+                    if accepted {
+                        let _ =
+                            with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
+                    }
+                    // A media handoff reports through its own status, never
+                    // as a Nearby send.
+                    if !media && let Ok(mut state) = nearby_drop_state().lock() {
+                        state.events.push_back(if accepted {
+                            NearbyDropEvent::Sent { file_name, peer }
+                        } else {
+                            NearbyDropEvent::Failed { file_name, peer }
+                        });
+                    }
+                }
+                None
             });
-            if let Some((peer, _, file_name)) = pending {
-                if accepted {
-                    let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
-                }
-                // A media handoff reports through its own status, never as
-                // a Nearby send.
-                if !media && let Ok(mut state) = nearby_drop_state().lock() {
-                    state.events.push_back(if accepted {
-                        NearbyDropEvent::Sent { file_name, peer }
-                    } else {
-                        NearbyDropEvent::Failed { file_name, peer }
-                    });
-                }
-            }
         }
         _ => {}
     }
@@ -3723,7 +3714,7 @@ fn handle_nearby_drop_action(
 
 /// Whether the continuity switch that governs `kind` is on right now.
 fn transfer_kind_permitted(kind: crate::shell::nearby_transfer::TransferKind) -> bool {
-    ContinuityPolicySnapshot::load().permits(kind.capability())
+    ContinuityPolicySnapshot::current().permits(kind.capability())
 }
 
 /// The kind of the receive this exact sender and request own, if any.
@@ -3777,37 +3768,50 @@ fn accept_media_handoff_offer(
             .media_authorized
             .contains(&(source.clone(), transfer_id))
     });
-    let checkpoint = authorized
-        .then(|| {
-            let accepted = with_nearby_transfer_store(|store| {
-                store.accept_incoming_offer(manifest, unix_now_ms())
-            });
-            if accepted.is_err()
-                && let Ok(mut state) = nearby_drop_state().lock()
-            {
-                // The receive cannot proceed, so the waiting handoff fails
-                // now instead of waiting out its timeout.
-                state
-                    .media_authorized
-                    .remove(&(source.clone(), transfer_id));
-            }
-            accepted.ok()
-        })
-        .flatten();
-    let action = match checkpoint {
-        Some((committed_offset, prefix_hash)) => PersonalFabricAction::NearbyTransferReady {
-            request_id,
-            transfer_id,
-            committed_offset,
-            prefix_hash,
-        },
-        None => PersonalFabricAction::NearbyTransferResult {
-            request_id,
-            transfer_id,
-            accepted: false,
-        },
+    let refused = PersonalFabricAction::NearbyTransferResult {
+        request_id,
+        transfer_id,
+        accepted: false,
     };
-    let _ = network.send_personal_fabric_action(source, action);
+    if !authorized {
+        let _ = network.send_personal_fabric_action(source, refused);
+        return;
+    }
+    // Accepting truncates and syncs any retained prefix and records the
+    // receive with an fsync: the store's thread does it, and the checkpoint
+    // goes to the sender only once it is durable.
+    let peer = source.clone();
+    let queued = nearby_store_worker::on_store_thread(network, move || {
+        let accepted = with_nearby_transfer_store(|store| {
+            store.accept_incoming_offer(manifest, unix_now_ms())
+        });
+        if accepted.is_err()
+            && let Ok(mut state) = nearby_drop_state().lock()
+        {
+            // The receive cannot proceed, so the waiting handoff fails now
+            // instead of waiting out its timeout.
+            state.media_authorized.remove(&(peer.clone(), transfer_id));
+        }
+        let action = match accepted {
+            Ok((committed_offset, prefix_hash)) => PersonalFabricAction::NearbyTransferReady {
+                request_id,
+                transfer_id,
+                committed_offset,
+                prefix_hash,
+            },
+            Err(_) => PersonalFabricAction::NearbyTransferResult {
+                request_id,
+                transfer_id,
+                accepted: false,
+            },
+        };
+        Some(Box::new(move |network: &ShellNetwork| {
+            let _ = network.send_personal_fabric_action(&peer, action);
+        }))
+    });
+    if !queued {
+        let _ = network.send_personal_fabric_action(source, refused);
+    }
 }
 
 fn handle_device_health_action(
@@ -5111,16 +5115,17 @@ impl PreparedMediaTransfer {
             .name("tilo-media-stage".into())
             .spawn(move || {
                 let _permit = permit;
-                let result = with_nearby_transfer_store(|store| {
-                    store
-                        .stage_media_with_id(
-                            &self.source,
-                            self.name.clone(),
-                            target.as_str().to_string(),
-                            unix_now_ms(),
-                            self.transfer_id,
-                        )
-                        .map(|_| ())
+                let result = crate::shell::nearby_transfer::Staging::for_media(
+                    self.name.clone(),
+                    target.as_str().to_string(),
+                    unix_now_ms(),
+                    self.transfer_id,
+                )
+                .and_then(|staging| {
+                    let shape = crate::shell::nearby_transfer::StageShape::of_path(&self.source)?;
+                    stage_outside_store_lock(staging, shape, |reserved| {
+                        reserved.write_path(&self.source)
+                    })
                 });
                 let _ = sender.send(NearbyStagingResult {
                     transfer_id: self.transfer_id,
@@ -5468,15 +5473,17 @@ pub fn request_nearby_drop(
             .name("tilo-nearby-stage".into())
             .spawn(move || {
                 let permit = permit;
-                let result = with_nearby_transfer_store(|store| {
-                    store
-                        .stage_with_id(
-                            &source,
-                            worker_target.as_str().to_string(),
-                            unix_now_ms(),
-                            transfer_id,
-                        )
-                        .map(|_| ())
+                let result = crate::shell::nearby_transfer::Staging::for_path(
+                    &source,
+                    worker_target.as_str().to_string(),
+                    unix_now_ms(),
+                    transfer_id,
+                )
+                .and_then(|staging| {
+                    let shape = crate::shell::nearby_transfer::StageShape::of_path(&source)?;
+                    stage_outside_store_lock(staging, shape, |reserved| {
+                        reserved.write_path(&source)
+                    })
                 });
                 if !permit.valid() {
                     if result.is_ok() {
@@ -5589,16 +5596,18 @@ pub fn request_nearby_drop_secure(
             .name("tilo-nearby-stage".into())
             .spawn(move || {
                 let permit = permit;
-                let result = with_nearby_transfer_store(|store| {
-                    store
-                        .stage_secure_with_id(
-                            source,
+                let result = crate::shell::nearby_transfer::StageShape::of_secure(&source)
+                    .and_then(|shape| {
+                        let staging = crate::shell::nearby_transfer::Staging::for_secure(
+                            &source,
                             worker_target.as_str().to_string(),
                             unix_now_ms(),
                             transfer_id,
-                        )
-                        .map(|_| ())
-                });
+                        );
+                        stage_outside_store_lock(staging, shape, |reserved| {
+                            reserved.write_secure(source)
+                        })
+                    });
                 if !permit.valid() {
                     if result.is_ok() {
                         let _ =
@@ -5728,14 +5737,14 @@ pub fn decide_nearby_transfer_at(
         .remove(&transfer_id);
     let Some(pending) = pending else {
         if !accept {
-            let declined = {
-                let mut state = nearby_drop_state()
+            let declined = with_nearby_transfer_store(|store| {
+                receive_recovery::decline_recovered_receive(store, transfer_id)
+            })?;
+            declined.record(
+                &mut *nearby_drop_state()
                     .lock()
-                    .map_err(|_| "nearby transfer state is unavailable".to_string())?;
-                with_nearby_transfer_store(|store| {
-                    receive_recovery::decline_recovered_receive(store, &mut state, transfer_id)
-                })
-            }?;
+                    .map_err(|_| "nearby transfer state is unavailable".to_string())?,
+            );
             declined.notify(|peer, action| network.send_personal_fabric_action(peer, action));
             return Ok(());
         }
@@ -5933,7 +5942,7 @@ pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> R
         state.progress.remove(&transfer_id);
         state.last_offer.remove(&transfer_id);
     }
-    resume_nearby_transfers(network, ContinuityPolicySnapshot::load());
+    resume_nearby_transfers(network, ContinuityPolicySnapshot::current());
     Ok(())
 }
 
@@ -5953,7 +5962,7 @@ pub struct NearbyTransferRuntimeStatus {
     reason = "one projection maps every transfer phase to its status row"
 )]
 pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRuntimeStatus> {
-    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
+    if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::FileTransfer) {
         return Vec::new();
     }
     expire_nearby_consents(network);
@@ -6310,7 +6319,7 @@ pub fn device_fabric_view(
         LocalMediaOutputView,
     };
 
-    let policy = ContinuityPolicySnapshot::load();
+    let policy = ContinuityPolicySnapshot::current();
     let fabric = network.device_fabric();
     let local_id = network
         .local_device_fabric_identity()
@@ -6924,7 +6933,7 @@ fn grant_input_control_automatic(
         .lock()
         .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
     prune_spatial_leases(network);
-    let policy = ContinuityPolicySnapshot::load();
+    let policy = ContinuityPolicySnapshot::current();
     let view = person_layout::current(network);
     if !display_auto_leases::wanted_controllers(network, view.as_deref(), policy)
         .contains(controller)
@@ -7981,7 +7990,7 @@ fn local_device_kind() -> DeviceKind {
 }
 
 fn require_continuity(capability: ContinuityCapability) -> Result<(), String> {
-    ContinuityPolicySnapshot::load()
+    ContinuityPolicySnapshot::current()
         .permits(capability)
         .then_some(())
         .ok_or_else(|| crate::shell::i18n::t(continuity_disabled_key(capability)))
@@ -8267,20 +8276,34 @@ fn tear_down_spatial_input(network: &ShellNetwork) {
     spatial_withdrawal::flush(network);
 }
 
-fn tear_down_nearby_transfers(network: &ShellNetwork) {
+fn tear_down_nearby_transfers() {
     if let Ok(mut admission) = nearby_staging_admission().lock() {
         admission.invalidate();
     }
-    // Media handoffs share the lane but answer to the Media switch.
-    let media_outgoing = with_nearby_transfer_store(|store| {
-        Ok(store
-            .outbox()
-            .iter()
-            .filter(|entry| entry.kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff)
-            .map(|entry| entry.id)
-            .collect::<BTreeSet<_>>())
-    })
-    .unwrap_or_default();
+    // Media handoffs share the lane but answer to the Media switch. Which
+    // staged objects are media is the store's to say, so the rest of the
+    // teardown runs at the loop's next pump once its thread has looked.
+    let _ = nearby_store_worker::on_store_thread_unhurried(|| {
+        let media_outgoing = with_nearby_transfer_store(|store| {
+            Ok(store
+                .outbox()
+                .iter()
+                .filter(|entry| {
+                    entry.kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff
+                })
+                .map(|entry| entry.id)
+                .collect::<BTreeSet<_>>())
+        })
+        .unwrap_or_default();
+        Some(Box::new(move |network: &ShellNetwork| {
+            withdraw_nearby_transfers(network, &media_outgoing);
+        }))
+    });
+}
+
+/// The part of [`tear_down_nearby_transfers`] that follows once the store
+/// named its staged media handoffs, `media_outgoing`, which stay.
+fn withdraw_nearby_transfers(network: &ShellNetwork, media_outgoing: &BTreeSet<[u8; 16]>) {
     let active = nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
         |state| {
@@ -8327,7 +8350,11 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
         };
         let _ = network.send_personal_fabric_action(&pending.source, action);
     }
-    let _ = with_nearby_transfer_store(|store| {
+    let withdrawn = active
+        .iter()
+        .map(|(transfer_id, _, _)| *transfer_id)
+        .collect::<Vec<_>>();
+    nearby_store_worker::on_store(move |store| {
         let incoming = store
             .inbox()
             .iter()
@@ -8337,8 +8364,8 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
         for transfer_id in incoming {
             let _ = store.cancel_incoming(transfer_id);
         }
-        for (transfer_id, _, _) in &active {
-            let _ = store.cancel_outgoing(*transfer_id);
+        for transfer_id in withdrawn {
+            let _ = store.cancel_outgoing(transfer_id);
         }
         Ok(())
     });

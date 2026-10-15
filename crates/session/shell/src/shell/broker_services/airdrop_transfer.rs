@@ -109,7 +109,7 @@ impl NativeAirDropTransfer {
     pub(super) fn available(&self) -> bool {
         self.enabled
             && (self.attended)()
-            && ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer)
+            && ContinuityPolicySnapshot::current().permits(ContinuityCapability::FileTransfer)
     }
 
     pub(super) fn available_to(&self, workspace: &str, person: Option<&str>) -> bool {

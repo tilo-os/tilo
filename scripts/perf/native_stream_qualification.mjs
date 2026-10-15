@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // A native window streamed to the browser desktop, qualified end to end: a
-// session's legacy window, encoded by the production H.264 encoder, through
+// session's legacy window, encoded by the production encoder (H.264, or --codec), through
 // a real host's legacy-window bridge and live plane, onto a desktop bundle in
 // headless Chrome that decodes it with WebCodecs (legacy-windows.mjs) and
 // draws it over the window's tile. It measures what a person sees and checks
@@ -11,6 +11,7 @@
 // usage: node scripts/perf/native_stream_qualification.mjs BUNDLE_DIR --out REPORT_JSON
 //          --relay TILO_RELAY --source LEGACY_STREAM_SOURCE --renderer gpu|swiftshader
 //          [--seconds S] [--window WxH] [--fps N] [--inputs N] [--carrier webtransport|https] [--warm-up S]
+//          [--codec h264|vp9|av1]
 //          [--viewport WxH] [--expect-revision SHA] [--allow-dev] [--max-load L] [--enforce-goals]
 //
 // The pieces, all built from one commit:
@@ -63,7 +64,7 @@
 //
 // The run is invalid, and exits 2 without a report, when it cannot observe
 // its subject: the bundle's bytes differ from its build.json or it is not
-// the expected build, the browser decodes no H.264, the WebGPU adapter is not
+// the expected build, the browser decodes no --codec, the WebGPU adapter is not
 // --renderer, the host was busier than --max-load before or after, a piece
 // did not start, or the page never drew a picture of the window.
 import {spawn} from 'node:child_process';
@@ -74,21 +75,25 @@ import os from 'node:os';
 import {extname, join, normalize, resolve} from 'node:path';
 import {createInterface} from 'node:readline';
 import {launch, sleep} from '../../tools/web/chrome.mjs';
+import {VIDEO_DECODER_CONFIGS} from '../../crates/browser/tilo-browser-runtime/web/legacy-windows.mjs';
 import {Invalid, RENDERERS, chromeFlags, classifyAdapter, hostState, parseViewport, stats, verifyBundle, within}
   from './browser_qualification.mjs';
 
 export const GOALS = {startupMs: 1000, latencyP95Ms: 100, deliveredPercent: 99, inputP95Ms: 50};
 export const CARRIERS = ['webtransport', 'https'];
+/** The stream's codec (`--codec`): VP9 and AV1 are what a session without an
+ * H.264 encoder streams once every member's page decodes them. */
+export const CODECS = Object.keys(VIDEO_DECODER_CONFIGS);
 // The session's number blocks (legacy_stream_source.rs `CODE_BITS`, `code_geometry`).
 export const CODE_BITS = 20;
 const VIEWPORT = {width: 1280, height: 800, deviceScaleFactor: 1};
 const HARNESS_PATH = '/native-stream-qualification.html';
 const USAGE = 'usage: native_stream_qualification.mjs BUNDLE_DIR --out REPORT_JSON --relay BIN --source BIN '
   + '--renderer gpu|swiftshader [--seconds S] [--window WxH] [--fps N] [--inputs N] [--carrier webtransport|https] [--warm-up S] '
-  + '[--viewport WxH] [--expect-revision SHA] [--allow-dev] [--max-load L] [--enforce-goals]';
+  + '[--codec h264|vp9|av1] [--viewport WxH] [--expect-revision SHA] [--allow-dev] [--max-load L] [--enforce-goals]';
 
 export function parseArgs(argv) {
-  const options = {seconds: 10, inputs: 20, carrier: 'webtransport', allowDev: false, enforceGoals: false,
+  const options = {seconds: 10, inputs: 20, carrier: 'webtransport', codec: 'h264', allowDev: false, enforceGoals: false,
     window: {width: 1280, height: 720}};
   const positionals = [];
   for (let i = 0; i < argv.length; i++) {
@@ -103,6 +108,7 @@ export function parseArgs(argv) {
     else if (arg === '--source') options.source = argv[++i];
     else if (arg === '--renderer') options.renderer = argv[++i];
     else if (arg === '--carrier') options.carrier = argv[++i];
+    else if (arg === '--codec') options.codec = argv[++i];
     else if (arg === '--seconds') options.seconds = number();
     else if (arg === '--fps') options.fps = number();
     else if (arg === '--inputs') options.inputs = number();
@@ -123,6 +129,7 @@ export function parseArgs(argv) {
   if (positionals.length !== 1 || !options.out || !options.relay || !options.source || !options.renderer) throw Error(USAGE);
   if (!RENDERERS.includes(options.renderer)) throw Error(`--renderer must be one of ${RENDERERS.join(', ')}`);
   if (!CARRIERS.includes(options.carrier)) throw Error(`--carrier must be one of ${CARRIERS.join(', ')}`);
+  if (!CODECS.includes(options.codec)) throw Error(`--codec must be one of ${CODECS.join(', ')}`);
   for (const name of ['inputs']) if (!Number.isInteger(options[name])) throw Error(`--${name} must be a whole number`);
   if (options.fps !== undefined && !Number.isInteger(options.fps)) throw Error('--fps must be a whole number');
   // A software rasterizer compiles the desktop's pipelines on the CPU before
@@ -521,8 +528,8 @@ async function main() {
       'the page\'s live plane did not come up').catch(async error => {
       throw new Invalid(`${error.message}: ${await page.evaluate(LIVE).catch(() => 'unavailable')}; page console: ${page.console.slice(-15).join(' | ')}; host log: ${relay.lines.slice(-30).join('\n').slice(-4000)}`);
     });
-    const h264 = await page.evaluate(`(async () => (await VideoDecoder.isConfigSupported({codec: 'avc1.42E01F', optimizeForLatency: true})).supported)()`);
-    if (!h264) throw new Invalid(`${version.product} decodes no H.264 with WebCodecs`);
+    const decodable = await page.evaluate(`(async () => (await VideoDecoder.isConfigSupported({codec: ${JSON.stringify(VIDEO_DECODER_CONFIGS[options.codec])}, optimizeForLatency: true})).supported)()`);
+    if (!decodable) throw new Invalid(`${version.product} decodes no ${options.codec} with WebCodecs`);
     const adapter = await page.evaluate(`(async () => { const a = await navigator.gpu?.requestAdapter();
       if (!a) return null; const i = a.info ?? {}; return {vendor: i.vendor, architecture: i.architecture, device: i.device, description: i.description}; })()`);
     if (classifyAdapter(adapter) !== options.renderer) {
@@ -537,7 +544,8 @@ async function main() {
       const log = join(scratch, `${name}.jsonl`);
       const process_ = child(name, options.source, ['--dev-state', join(scratch, 'host'), '--host', host.irohAddr,
         '--room', room, '--out', log, '--width', String(options.window.width), '--height', String(options.window.height),
-        '--seconds', String(seconds), '--surface', String(surface), ...(options.fps ? ['--fps', String(options.fps)] : [])],
+        '--seconds', String(seconds), '--surface', String(surface), '--codec', options.codec,
+        ...(options.fps ? ['--fps', String(options.fps)] : [])],
       {RUST_LOG: process.env.STREAM_SOURCE_LOG ?? 'warn'});
       children.push(process_);
       const ready = JSON.parse(await process_.line(event('ready'), 120_000, 'its subscription'));
@@ -608,9 +616,11 @@ async function main() {
       schema: 1, measuredAt: new Date().toISOString(), bundle, renderer: options.renderer, adapter,
       browser: {product: version.product, userAgent: version.userAgent}, viewport: options.viewport,
       host: {...before, before, after, maxLoad: options.maxLoad ?? null, platform: `${os.platform()} ${os.release()} ${os.arch()}`},
-      session: {encoder: session.encoder, hardware: session.hardware, fps: session.fps, width: session.width, height: session.height},
+      session: {encoder: session.encoder, hardware: session.hardware, fps: session.fps, width: session.width, height: session.height,
+        codec: session.codec ?? options.codec},
       live: {carrier: live.live?.carrier ?? null, state: live.live?.state ?? null},
-      workload: {seconds: options.seconds, inputs: options.inputs, carrier: options.carrier, warmUpSeconds: options.warmUp, chromeFlags: flags},
+      workload: {seconds: options.seconds, inputs: options.inputs, carrier: options.carrier, codec: options.codec, warmUpSeconds: options.warmUp,
+        chromeFlags: flags},
       summary, counts: analysis.counts, correctness: analysis.correctness, goals: judgeGoals(summary, analysis.counts),
       samples: analysis.samples,
     };

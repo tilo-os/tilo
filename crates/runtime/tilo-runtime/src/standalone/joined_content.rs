@@ -6,6 +6,7 @@
 //! store keeps under the record's room and app.
 
 use super::Joined;
+use neighbour_wire::NeighbourMsg;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -18,7 +19,7 @@ use tilo_action_broker::{
     route::CrdtRoute,
 };
 use tilo_desktop_model::RoomId;
-use tilo_peer_state::{NeighbourMsg, peer_handle};
+use tilo_peer_state::peer_handle;
 
 /// Devices whose key this device remembers for an answer.
 const MAX_REMEMBERED_REQUESTERS: usize = 256;

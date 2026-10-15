@@ -277,18 +277,7 @@ pub fn value_row(label: &str, value: &str) -> Item {
     // A reading takes the room the label leaves, flush with the trailing
     // edge, instead of the narrow column a chooser gets, so a long value
     // wraps only when the row is really full.
-    Item(ItemKind::Field(
-        Field::custom(
-            label,
-            Box::new(
-                Text::new(value)
-                    .numeric()
-                    .dimmed()
-                    .with_align(ui::ParagraphAlign::End),
-            ),
-        )
-        .with_filling_control(),
-    ))
+    Item(ItemKind::Field(Field::value(label, value)))
 }
 
 /// A label with a short helper line beneath it, paired with a trailing

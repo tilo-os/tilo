@@ -52,6 +52,9 @@ pub(crate) mod device_pairing;
 pub mod device_unlock;
 pub mod device_unlock_runtime;
 pub mod device_wake;
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+pub(crate) mod disk_sync_guard;
 pub mod display_bars;
 pub mod display_confirm;
 pub(crate) mod display_control;
@@ -80,6 +83,7 @@ pub mod host_apps;
 pub mod host_shell_allow;
 pub mod hosted_inputs;
 pub mod i18n;
+pub(crate) mod identity_admin;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;

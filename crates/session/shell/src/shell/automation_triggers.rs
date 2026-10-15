@@ -33,7 +33,10 @@
 //!   Each schedule's next fire time is persisted before the firing is handed
 //!   over, so a restart neither repeats a fire nor forgets one; a fire time
 //!   missed while the device was off or asleep is skipped or run once,
-//!   according to the trigger's [`CatchUp`] policy.
+//!   according to the trigger's [`CatchUp`] policy. The ledger is written on
+//!   the state writer, never on the compositor's loop: a firing waits until
+//!   the write that records it has finished and is handed over by a later
+//!   tick ([`TriggerHost::take_settled_firings`]).
 //!
 //! A shortcut reaches every device of the person who saved it, and each of
 //! them arms it. A schedule still runs once per fire time: the saver's
@@ -51,6 +54,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{
@@ -382,6 +386,17 @@ pub trait TriggerSource: Send {
     /// Runs another of the person's devices started; a source holding one
     /// for its turn drops it.
     fn forget_started(&mut self, _started: &BTreeSet<RunId>) {}
+
+    /// Firings an earlier event produced that were waiting for something to
+    /// reach the disk and may run now.
+    fn take_settled(&mut self) -> Vec<Firing> {
+        Vec::new()
+    }
+
+    /// Whether firings are waiting for the disk.
+    fn holds_firings(&self) -> bool {
+        false
+    }
 }
 
 /// Fires a shortcut whose keyboard trigger names the pressed chord.
@@ -641,36 +656,101 @@ struct ScheduleLedger {
     schedules: BTreeMap<String, LedgerEntry>,
 }
 
-/// Fires scheduled triggers when their time comes, exactly once per fire
+/// Fires scheduled triggers when their time comes, at most once per fire
 /// time, across restarts.
-#[derive(Debug)]
+///
+/// The ledger of next fire times is written on the state writer, because
+/// [`TriggerEvent::Tick`] arrives on the compositor's loop and the write's
+/// fsyncs can take seconds under I/O pressure. Each ledger value handed to
+/// the writer gets the next sequence number, and the firings of the tick that
+/// produced it wait under that number. The write marks its number settled
+/// (on disk, or failed and logged, which runs the firings as before) and
+/// wakes the loop; a later tick hands the firings over. A newer value that
+/// replaces a queued older one holds at least as much and settles a higher
+/// number, so it releases both. A crash before the write lands leaves the
+/// previous ledger and loses no run: none has started.
 pub struct ScheduleTriggers {
     ledger: ScheduleLedger,
     path: Option<PathBuf>,
+    writer: &'static crate::shell::durable_writer::DurableWriter,
+    /// The newest ledger value handed to the writer.
+    submitted: u64,
+    /// Every ledger value up to this one is settled.
+    settled: Arc<AtomicU64>,
+    /// Firings waiting for the ledger value numbered with them.
+    held: Vec<(u64, Firing)>,
+}
+
+impl std::fmt::Debug for ScheduleTriggers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScheduleTriggers")
+            .field("ledger", &self.ledger)
+            .field("path", &self.path)
+            .field("submitted", &self.submitted)
+            .field("held", &self.held.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ScheduleTriggers {
     /// Schedules persisted at `path`, or kept in memory only for `None`.
     #[must_use]
     pub fn open(path: Option<PathBuf>) -> Self {
+        Self::open_with_writer(path, crate::shell::durable_writer::global())
+    }
+
+    /// [`Self::open`], writing the ledger on `writer`.
+    #[must_use]
+    pub fn open_with_writer(
+        path: Option<PathBuf>,
+        writer: &'static crate::shell::durable_writer::DurableWriter,
+    ) -> Self {
         let ledger = path
             .as_ref()
             .and_then(|path| std::fs::read(path).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        Self { ledger, path }
+        Self {
+            ledger,
+            path,
+            writer,
+            submitted: 0,
+            settled: Arc::new(AtomicU64::new(0)),
+            held: Vec::new(),
+        }
     }
 
-    fn persist(&self) {
-        let Some(path) = &self.path else {
+    /// Hand the ledger to the writer and hold `due` until it is written.
+    /// Kept in memory only, or when the ledger cannot be encoded, `due` runs
+    /// at once, as it did when the write happened here.
+    fn persist(&mut self, due: Vec<Firing>) {
+        let Some(path) = self.path.clone() else {
+            self.held.extend(due.into_iter().map(|firing| (0, firing)));
             return;
         };
-        let written = serde_json::to_vec_pretty(&self.ledger)
-            .map_err(std::io::Error::other)
-            .and_then(|bytes| tilo_files::native::atomic::write_creating_parent(path, &bytes));
-        if let Err(error) = written {
-            tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
-        }
+        let bytes = match serde_json::to_vec_pretty(&self.ledger) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
+                self.held.extend(due.into_iter().map(|firing| (0, firing)));
+                return;
+            }
+        };
+        self.submitted = self.submitted.saturating_add(1);
+        let sequence = self.submitted;
+        self.held
+            .extend(due.into_iter().map(|firing| (sequence, firing)));
+        let settled = Arc::clone(&self.settled);
+        // Made on the loop's thread, so it wakes the loop that holds the
+        // firings; a no-op where no loop installed a wake.
+        let wake = crate::shell::search::invocation_wake::waker();
+        self.writer.submit(path.clone(), move || {
+            if let Err(error) = tilo_files::native::atomic::write_creating_parent(&path, &bytes) {
+                tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
+            }
+            settled.fetch_max(sequence, Ordering::AcqRel);
+            wake.wake();
+        });
     }
 }
 
@@ -686,7 +766,7 @@ impl TriggerSource for ScheduleTriggers {
         };
         let clock = context.clock;
         let now = clock.now();
-        let mut firings = Vec::new();
+        let mut due_now = Vec::new();
         let mut live = BTreeSet::new();
         let mut changed = false;
         for armed in armed {
@@ -717,7 +797,7 @@ impl TriggerSource for ScheduleTriggers {
                         }
                         let on_time = now.signed_duration_since(start) <= MISSED_AFTER;
                         if on_time || *catch_up == CatchUp::RunOnce {
-                            firings.push(Firing {
+                            due_now.push(Firing {
                                 room: armed.room.clone(),
                                 shortcut: armed.shortcut.id.clone(),
                                 trigger: trigger.clone(),
@@ -751,12 +831,29 @@ impl TriggerSource for ScheduleTriggers {
         let before = self.ledger.schedules.len();
         self.ledger.schedules.retain(|key, _| live.contains(key));
         changed |= self.ledger.schedules.len() != before;
-        // Persisted before anything runs: a crash after this point loses at
-        // most the run, never repeats it.
+        // Persisted before anything runs: a firing is handed over only once
+        // the ledger that moved past its fire time is written, so a crash
+        // loses at most the run, never repeats it.
         if changed {
-            self.persist();
+            self.persist(due_now);
         }
-        firings
+        self.take_settled()
+    }
+
+    fn take_settled(&mut self) -> Vec<Firing> {
+        if self.held.is_empty() {
+            return Vec::new();
+        }
+        let settled = self.settled.load(Ordering::Acquire);
+        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|(sequence, _)| *sequence <= settled);
+        self.held = waiting;
+        ready.into_iter().map(|(_, firing)| firing).collect()
+    }
+
+    fn holds_firings(&self) -> bool {
+        !self.held.is_empty()
     }
 }
 
@@ -1138,6 +1235,22 @@ impl TriggerHost {
         for source in &mut self.sources {
             source.forget_started(started);
         }
+    }
+
+    /// Firings an earlier tick held until their schedule ledger was written,
+    /// now that it is. Reads no clock, device list or disk, so the loop can
+    /// ask on every iteration.
+    pub fn take_settled_firings(&mut self) -> Vec<Firing> {
+        self.sources
+            .iter_mut()
+            .flat_map(|source| source.take_settled())
+            .collect()
+    }
+
+    /// Whether a firing waits for its schedule ledger to be written.
+    #[must_use]
+    pub fn holds_firings(&self) -> bool {
+        self.sources.iter().any(|source| source.holds_firings())
     }
 }
 
@@ -2020,5 +2133,156 @@ mod tests {
             1
         );
         assert!(observe_as(&mut changes, &event, &saved, first, &clock).is_empty());
+    }
+
+    fn hourly_tidy() -> Shortcut {
+        shortcut(&TriggerSpec::Schedule {
+            schedule: Schedule::Interval { seconds: 3600 },
+            catch_up: CatchUp::Skip,
+        })
+    }
+
+    /// One tick of `schedules` for `tidy` saved in the personal room.
+    fn schedule_tick(
+        schedules: &mut ScheduleTriggers,
+        tidy: &Shortcut,
+        clock: &ManualClock,
+    ) -> Vec<Firing> {
+        let armed = [Armed {
+            room: PERSONAL.into(),
+            shortcut: tidy,
+            claims: &[],
+        }];
+        schedules.observe(
+            TriggerEvent::Tick,
+            &armed,
+            TriggerContext {
+                clock,
+                devices: &PersonalDevices::default(),
+            },
+        )
+    }
+
+    /// A writer of its own whose thread is parked in a job from now on, for
+    /// the life of the process: the test's stand-in for a crash before the
+    /// writes queued behind it reach the disk.
+    fn writer_that_never_finishes() -> &'static crate::shell::durable_writer::DurableWriter {
+        let writer = Box::leak(Box::new(
+            crate::shell::durable_writer::DurableWriter::spawn("schedule-ledger-test"),
+        ));
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        writer.submit(PathBuf::from("parked"), move || {
+            started.send(()).expect("test alive");
+            loop {
+                std::thread::park();
+            }
+        });
+        running.recv().expect("the writer parked");
+        writer
+    }
+
+    #[test]
+    fn a_schedule_fire_waits_for_its_ledger_and_never_runs_twice_across_a_crash() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("automation/schedules.json");
+        let tidy = hourly_tidy();
+        let clock = ManualClock::new(
+            at("2026-09-25T10:00:00Z"),
+            FixedOffset::east_opt(0).unwrap(),
+        );
+        let mut schedules = ScheduleTriggers::open(Some(path.clone()));
+        assert!(schedule_tick(&mut schedules, &tidy, &clock).is_empty());
+        crate::shell::durable_writer::global().flush();
+        assert!(
+            path.exists(),
+            "arming the schedule recorded its first fire time"
+        );
+
+        // The fire time comes, but its ledger write never finishes.
+        let mut crashed =
+            ScheduleTriggers::open_with_writer(Some(path.clone()), writer_that_never_finishes());
+        clock.advance(ChronoDuration::hours(1));
+        assert!(
+            schedule_tick(&mut crashed, &tidy, &clock).is_empty(),
+            "nothing runs before the ledger that moves past the fire time is written"
+        );
+        assert!(crashed.holds_firings());
+        assert!(crashed.take_settled().is_empty());
+        drop(crashed);
+
+        // After the crash the fire time is still due, and nothing ran it.
+        let mut restarted = ScheduleTriggers::open(Some(path.clone()));
+        let mut fired = schedule_tick(&mut restarted, &tidy, &clock);
+        crate::shell::durable_writer::global().flush();
+        fired.extend(restarted.take_settled());
+        assert_eq!(fired.len(), 1, "the fire time runs once: {fired:?}");
+        assert_eq!(
+            fired[0].run,
+            scheduled_run(&hourly_key(), at("2026-09-25T11:00:00Z"))
+        );
+        assert!(!restarted.holds_firings());
+
+        // Restarted after that write landed, it is not run again.
+        drop(restarted);
+        let mut again = ScheduleTriggers::open(Some(path));
+        assert!(schedule_tick(&mut again, &tidy, &clock).is_empty());
+        crate::shell::durable_writer::global().flush();
+        assert!(again.take_settled().is_empty());
+        assert!(!again.holds_firings());
+    }
+
+    #[test]
+    fn a_schedule_whose_ledger_cannot_be_written_still_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let not_a_directory = dir.path().join("file");
+        std::fs::write(&not_a_directory, b"").expect("a regular file");
+        let tidy = hourly_tidy();
+        let clock = ManualClock::new(
+            at("2026-09-25T10:00:00Z"),
+            FixedOffset::east_opt(0).unwrap(),
+        );
+        let mut schedules = ScheduleTriggers::open(Some(not_a_directory.join("schedules.json")));
+        assert!(schedule_tick(&mut schedules, &tidy, &clock).is_empty());
+        clock.advance(ChronoDuration::hours(1));
+        let mut fired = schedule_tick(&mut schedules, &tidy, &clock);
+        crate::shell::durable_writer::global().flush();
+        fired.extend(schedules.take_settled());
+        assert_eq!(
+            fired.len(),
+            1,
+            "a failed write is logged and the run goes ahead"
+        );
+    }
+
+    /// Ticks reach the schedule source on the compositor's loop; a fire must
+    /// not wait for the ledger's fsyncs there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn firing_a_schedule_never_waits_for_the_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("automation/schedules.json");
+        let tidy = hourly_tidy();
+        let clock = ManualClock::new(
+            at("2026-09-25T10:00:00Z"),
+            FixedOffset::east_opt(0).unwrap(),
+        );
+        let mut schedules = ScheduleTriggers::open(Some(path.clone()));
+        let mut fired = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            let mut fired = schedule_tick(&mut schedules, &tidy, &clock);
+            clock.advance(ChronoDuration::hours(1));
+            fired.extend(schedule_tick(&mut schedules, &tidy, &clock));
+            fired
+        });
+        crate::shell::durable_writer::global().flush();
+        fired.extend(schedules.take_settled());
+        assert_eq!(fired.len(), 1, "the fire time ran once: {fired:?}");
+        let written: ScheduleLedger =
+            serde_json::from_slice(&std::fs::read(&path).expect("the ledger is on disk"))
+                .expect("a ledger");
+        assert_eq!(
+            written.schedules[&hourly_key()].next_fire_ms,
+            at("2026-09-25T12:00:00Z").timestamp_millis(),
+            "the state writer recorded the next fire time"
+        );
     }
 }

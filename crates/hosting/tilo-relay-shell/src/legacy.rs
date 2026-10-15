@@ -12,14 +12,21 @@
 //! [`INPUT_ROUTE`](tilo_relay_protocol::legacy_window::INPUT_ROUTE). The host
 //! forwards it to the session alone (never fanned out: it carries keys) as
 //! `RemoteInput` of its own device, the viewer the session granted.
+//!
+//! The host is also the viewer whose decoders the session picks a codec
+//! for. Members say what their page decodes
+//! ([`CODECS_ROUTE`](tilo_relay_protocol::legacy_window::CODECS_ROUTE));
+//! [`LegacyWindows::advertise`] tells each session of a room, as this host's
+//! own `MediaCapabilities`, what every member watching decodes, so a session
+//! that cannot encode H.264 streams VP9 (or AV1) when they all take it.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use neighbour_wire::NeighbourMsg;
 use tilo_moq::live::LiveRelay;
-use tilo_peer_state::NeighbourMsg;
 use tilo_relay_protocol::legacy_window as wire;
 use tilo_relay_protocol::web::live_room;
 use tilo_relay_session::AttributedPresence;
@@ -42,6 +49,56 @@ const MAX_ROOM_STREAMS: usize = 64;
 const MAX_ROOMS: usize = 32;
 const MAX_PUBLISHERS: usize = 32;
 const MAX_CACHED_BYTES: usize = 64 * 1024 * 1024;
+/// While what members decode stays the same, sessions are told it again this
+/// often: a session forgets a host's advert when its route to it drops.
+const ADVERT_EVERY: Duration = Duration::from_secs(10);
+/// Members whose decoders are remembered at once.
+const MAX_MEMBERS: usize = 1024;
+/// What a member said is forgotten once it has been out of every room's
+/// live plane this long; a page says it again when it comes back.
+const MEMBER_GRACE: Duration = Duration::from_secs(30);
+
+/// One room as [`LegacyWindows::advertise`] reads it.
+#[derive(Clone, Debug, Default)]
+pub struct RoomViewers {
+    /// The room's workspace.
+    pub workspace_id: u64,
+    /// The members in its live plane now, each by its browser session.
+    pub members: Vec<[u8; 32]>,
+    /// The devices subscribed to it: the sessions that share windows here.
+    pub sessions: Vec<[u8; 32]>,
+}
+
+/// Presence payloads for one session device, to deliver in one room.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Advert {
+    /// The room to deliver them in.
+    pub workspace_id: u64,
+    /// The session device.
+    pub device: [u8; 32],
+    /// Each an `AttributedPresence` of this host's device, in order.
+    pub payloads: Vec<Vec<u8>>,
+}
+
+/// What members decode and what sessions were told of it.
+#[derive(Default)]
+struct Codecs {
+    /// Per member session: the video codecs its page said it decodes, and
+    /// when it was last in a room's live plane (or said it).
+    members: HashMap<[u8; 32], (Vec<&'static str>, Instant)>,
+    /// Per session device: the advert it was last sent.
+    told: HashMap<[u8; 32], Told>,
+}
+
+struct Told {
+    decode: Vec<&'static str>,
+    at: Instant,
+    /// The labels went out last-first: the next advert flips the order, so
+    /// a session that dropped its record of an unchanged advert (and keeps
+    /// recently seen messages to skip repeats) hears it again.
+    reversed: bool,
+    hello: Instant,
+}
 
 /// One stream a session publishes.
 struct Stream {
@@ -88,6 +145,7 @@ pub struct LegacyWindows {
     device: [u8; 32],
     handle: u64,
     rooms: Mutex<HashMap<u64, Room>>,
+    codecs: Mutex<Codecs>,
     closed: AtomicBool,
 }
 
@@ -105,6 +163,7 @@ impl LegacyWindows {
             device,
             handle: tilo_peer_state::peer_handle(&device),
             rooms: Mutex::default(),
+            codecs: Mutex::default(),
             closed: AtomicBool::new(false),
         })
     }
@@ -113,11 +172,159 @@ impl LegacyWindows {
         self.rooms.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn codecs(&self) -> std::sync::MutexGuard<'_, Codecs> {
+        self.codecs.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The member whose browser session is `member` said its page decodes
+    /// `decode` ([`wire::CodecsRequest::video_codecs`]). It counts while the
+    /// member is in a room's live plane ([`RoomViewers::members`]); until it
+    /// says, a member counts as decoding H.264 only. `false` when too many
+    /// members are remembered already.
+    pub fn member_codecs(&self, member: [u8; 32], decode: Vec<&'static str>, now: Instant) -> bool {
+        if self.closed.load(Ordering::Acquire) {
+            return false;
+        }
+        let mut codecs = self.codecs();
+        if !codecs.members.contains_key(&member) && codecs.members.len() >= MAX_MEMBERS {
+            return false;
+        }
+        codecs.members.insert(member, (decode, now));
+        true
+    }
+
+    /// What to tell each session of `rooms` about what this host's members
+    /// decode: this host's identity when it is due, then its
+    /// `MediaCapabilities`, the codecs every member watching each room the
+    /// session is in decodes. A member that never said counts as H.264 only;
+    /// one that decodes no video watches none and does not count. Sent when
+    /// it changes and every [`ADVERT_EVERY`]. Sessions no longer listed are
+    /// forgotten, and members out of every room for [`MEMBER_GRACE`].
+    pub fn advertise(
+        &self,
+        rooms: &[RoomViewers],
+        identity: &tilo_user_identity::DeviceCert,
+        now: Instant,
+    ) -> Vec<Advert> {
+        if self.closed.load(Ordering::Acquire) {
+            return Vec::new();
+        }
+        let mut codecs = self.codecs();
+        let present = rooms
+            .iter()
+            .flat_map(|room| room.members.iter().copied())
+            .collect::<HashSet<_>>();
+        codecs.members.retain(|member, (_, seen)| {
+            if present.contains(member) {
+                *seen = now;
+            }
+            now.saturating_duration_since(*seen) < MEMBER_GRACE
+        });
+        let mut wanted = BTreeMap::<[u8; 32], (u64, Vec<&'static str>)>::new();
+        for room in rooms {
+            let mut watching = room
+                .members
+                .iter()
+                .map(|member| {
+                    codecs
+                        .members
+                        .get(member)
+                        .map_or(&[wire::H264][..], |(said, _)| said.as_slice())
+                })
+                .filter(|said| !said.is_empty())
+                .peekable();
+            if watching.peek().is_none() {
+                continue;
+            }
+            let decode = watching.fold(wire::VIDEO_CODECS.to_vec(), |mut decode, said| {
+                decode.retain(|codec| said.contains(codec));
+                decode
+            });
+            for device in room
+                .sessions
+                .iter()
+                .filter(|device| **device != self.device)
+            {
+                wanted
+                    .entry(*device)
+                    .and_modify(|(_, all)| all.retain(|codec| decode.contains(codec)))
+                    .or_insert_with(|| (room.workspace_id, decode.clone()));
+            }
+        }
+        codecs.told.retain(|device, _| wanted.contains_key(device));
+        let mut adverts = Vec::new();
+        for (device, (workspace_id, decode)) in wanted {
+            let told = codecs.told.get(&device);
+            let since = |at: Instant| now.saturating_duration_since(at);
+            if told.is_some_and(|told| told.decode == decode && since(told.at) < ADVERT_EVERY) {
+                continue;
+            }
+            let hello = told
+                .map(|told| told.hello)
+                .filter(|hello| since(*hello) < HELLO_EVERY);
+            let reversed = told.is_some_and(|told| !told.reversed);
+            let mut labels = decode
+                .iter()
+                .map(|codec| (*codec).to_owned())
+                .collect::<Vec<_>>();
+            if reversed {
+                labels.reverse();
+            }
+            let mut messages = Vec::with_capacity(2);
+            if hello.is_none() {
+                messages.push(NeighbourMsg::IdentityHello {
+                    cert: Box::new(identity.clone()),
+                    revocations: Vec::new(),
+                });
+            }
+            messages.push(NeighbourMsg::MediaCapabilities {
+                peer: self.handle,
+                hardware_decode: Vec::new(),
+                software_decode: labels,
+                hardware_encode: Vec::new(),
+                software_encode: Vec::new(),
+            });
+            codecs.told.insert(
+                device,
+                Told {
+                    decode,
+                    at: now,
+                    reversed,
+                    hello: hello.unwrap_or(now),
+                },
+            );
+            adverts.push(Advert {
+                workspace_id,
+                device,
+                payloads: self.presence(&messages),
+            });
+        }
+        drop(codecs);
+        adverts
+    }
+
+    /// `messages` as presence of this host's device.
+    fn presence(&self, messages: &[NeighbourMsg]) -> Vec<Vec<u8>> {
+        messages
+            .iter()
+            .filter_map(|message| {
+                let body = postcard::to_allocvec(message).ok()?;
+                AttributedPresence {
+                    author: self.device,
+                    body,
+                }
+                .encode()
+                .ok()
+            })
+            .collect()
+    }
+
     /// Release media when the browser listener stops. The relay retains its
     /// bridge, so it must no longer accept late native presence or input.
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
         let rooms = std::mem::take(&mut *self.rooms());
+        *self.codecs() = Codecs::default();
         let index = wire::Frame::Index(Vec::new()).encode().ok();
         let record = hex::encode(wire::index_record().digest());
         for (workspace, state) in rooms {
@@ -190,8 +397,9 @@ impl LegacyWindows {
                 app_id,
                 ..
             } if *source_peer == own => {
-                // Browsers decode H.264, which the session picks for a viewer
-                // that never advertised codecs, and draw paint streams.
+                // Browsers decode the video codecs this host advertised for
+                // them (H.264 for a host that never did) and draw paint
+                // streams.
                 if !wire::bridged_codec(codec) || app_id.is_empty() {
                     tracing::debug!(codec, app_id, "legacy window stream not bridged");
                     return;
@@ -597,18 +805,7 @@ impl LegacyWindows {
             });
         }
         drop(rooms);
-        Ok(messages
-            .iter()
-            .filter_map(|message| {
-                let body = postcard::to_allocvec(message).ok()?;
-                AttributedPresence {
-                    author: self.device,
-                    body,
-                }
-                .encode()
-                .ok()
-            })
-            .collect())
+        Ok(self.presence(&messages))
     }
 }
 
@@ -1016,18 +1213,19 @@ mod tests {
             &presence(SESSION, &grant(2, host, "granted")),
         );
         bridge.observe_presence(WORKSPACE, [9; 32], USER, &presence(SESSION, &start(2)));
-        // A codec browsers are not sent.
-        let mut vp9 = start(3);
-        if let NeighbourMsg::SurfaceStreamStart { codec, .. } = &mut vp9 {
-            *codec = "vp9".into();
-        }
+        // A codec browsers are not sent: HDR video stays between sessions.
         bridge.observe_presence(
             WORKSPACE,
             SESSION,
             USER,
             &presence(SESSION, &grant(3, host, "granted")),
         );
-        bridge.observe_presence(WORKSPACE, SESSION, USER, &presence(SESSION, &vp9));
+        bridge.observe_presence(
+            WORKSPACE,
+            SESSION,
+            USER,
+            &presence(SESSION, &start_with(3, "hevc-main10")),
+        );
         for surface in [1, 2, 3] {
             assert_eq!(bridge.publisher_user(WORKSPACE, SESSION, surface), None);
         }
@@ -1121,5 +1319,251 @@ mod tests {
         bridge.present(WORKSPACE, SESSION, false, now + DEPARTURE * 3);
         assert_eq!(bridge.publisher_user(WORKSPACE, SESSION, 7), None);
         assert!(bridge.publishers().is_empty());
+    }
+
+    /// The first bytes of a libvpx VP9 key frame and the inter frame after
+    /// it (`tilo_relay_protocol::legacy_window` pins whole-codec detection).
+    const VP9_KEY: [u8; 8] = [0x82, 0x49, 0x83, 0x42, 0x00, 0x00, 0xf0, 0x00];
+    const VP9_INTER: [u8; 8] = [0x86, 0x00, 0x40, 0x92, 0x9c, 0x28, 0x49, 0x40];
+
+    /// A session without an H.264 encoder streams VP9 once every member
+    /// decodes it: the host bridges it, grouped from VP9 key frames.
+    #[tokio::test]
+    async fn vp9_streams_reach_a_live_member_grouped_from_key_frames() {
+        let live = LoopbackLive::start(Arc::new(Authority)).unwrap();
+        let viewer = connect_viewer(&live).await;
+        let bridge = LegacyWindows::new(live.relay.clone(), HOST);
+        let now = Instant::now();
+        let host = tilo_peer_state::peer_handle(&HOST);
+        observe(&bridge, &grant(7, host, "granted"));
+        observe(&bridge, &start_with(7, wire::VP9));
+        bridge.maintain(now);
+        let path = format!(
+            "tilo-live/{}/{}",
+            live_room(WORKSPACE),
+            hex::encode(SESSION)
+        );
+        let namespace = tilo_test_env::within("the session namespace", viewer.member(&path))
+            .await
+            .expect("announced by the index");
+        // An inter frame before any key frame has nothing to decode from.
+        observe(&bridge, &frame(7, &VP9_INTER));
+        observe(&bridge, &frame(7, &VP9_KEY));
+        let mut track = namespace
+            .track(&track(&wire::stream_record(7)))
+            .unwrap()
+            .subscribe(moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2)))
+            .await
+            .unwrap();
+        let mut group = tilo_test_env::within("the replayed group", async {
+            loop {
+                bridge.maintain(now);
+                if let Ok(Ok(Some(group))) =
+                    tokio::time::timeout(Duration::from_millis(50), track.recv_group()).await
+                {
+                    return group;
+                }
+            }
+        })
+        .await;
+        let mut next = async || {
+            let frame = tilo_test_env::within("a frame", group.read_frame())
+                .await
+                .unwrap()
+                .unwrap();
+            wire::Frame::decode(&frame.payload).unwrap()
+        };
+        assert_eq!(
+            next().await,
+            wire::Frame::Start(wire::Stream::new(
+                7,
+                "org.chromium.Chromium",
+                wire::VP9,
+                640,
+                480
+            ))
+        );
+        let wire::Frame::Chunk { flags, data, .. } = next().await else {
+            panic!("the key frame follows the start");
+        };
+        assert_eq!(
+            (flags & wire::CHUNK_KEY, data.as_slice()),
+            (wire::CHUNK_KEY, VP9_KEY.as_slice())
+        );
+        observe(&bridge, &frame(7, &VP9_INTER));
+        let wire::Frame::Chunk { flags, data, .. } = next().await else {
+            panic!("an inter frame joins the group");
+        };
+        assert_eq!(
+            (flags & wire::CHUNK_KEY, data.as_slice()),
+            (0, VP9_INTER.as_slice())
+        );
+    }
+
+    fn host_identity() -> tilo_user_identity::DeviceCert {
+        tilo_user_identity::DeviceCert {
+            user_public_key: USER,
+            device_public_key: HOST,
+            device_label: "host".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::host(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        }
+    }
+
+    /// Each advert as `(device, workspace, hello sent, software decode labels)`.
+    fn adverts(adverts: &[Advert]) -> Vec<([u8; 32], u64, bool, Vec<String>)> {
+        adverts
+            .iter()
+            .map(|advert| {
+                let mut hello = false;
+                let mut labels = None;
+                for payload in &advert.payloads {
+                    let presence = AttributedPresence::decode(payload).unwrap();
+                    assert_eq!(presence.author, HOST, "the host speaks as its own device");
+                    match postcard::from_bytes(&presence.body).unwrap() {
+                        NeighbourMsg::IdentityHello { cert, .. } => {
+                            assert_eq!(cert.device_public_key, HOST);
+                            hello = true;
+                        }
+                        NeighbourMsg::MediaCapabilities {
+                            peer,
+                            hardware_decode,
+                            software_decode,
+                            hardware_encode,
+                            software_encode,
+                        } => {
+                            assert_eq!(peer, tilo_peer_state::peer_handle(&HOST));
+                            assert!(hardware_decode.is_empty() && hardware_encode.is_empty());
+                            assert!(software_encode.is_empty());
+                            labels = Some(software_decode);
+                        }
+                        other => panic!("unexpected {other:?}"),
+                    }
+                }
+                (advert.device, advert.workspace_id, hello, labels.unwrap())
+            })
+            .collect()
+    }
+
+    fn sorted(mut labels: Vec<String>) -> Vec<String> {
+        labels.sort();
+        labels
+    }
+
+    #[tokio::test]
+    async fn sessions_hear_what_every_watching_member_decodes_and_follow_its_changes() {
+        const OTHER_ROOM: u64 = 0xbeef;
+        const LAPTOP: [u8; 32] = [3; 32];
+        let live_relay = tilo_moq::live::LiveRelay::new(Arc::new(Authority));
+        let bridge = LegacyWindows::new(live_relay, HOST);
+        let identity = host_identity();
+        let (chrome, old_page, no_webcodecs) = ([1; 32], [2; 32], [4; 32]);
+        let room = |members: &[[u8; 32]]| RoomViewers {
+            workspace_id: WORKSPACE,
+            members: members.to_vec(),
+            sessions: vec![SESSION, HOST],
+        };
+        let mut now = Instant::now();
+        let labels = |list: &[&str]| list.iter().map(|l| (*l).to_owned()).collect::<Vec<_>>();
+
+        // No member watches: nothing is claimed, so a session keeps assuming
+        // H.264 only for this host.
+        assert!(bridge.advertise(&[room(&[])], &identity, now).is_empty());
+
+        // A member that has not said counts as H.264 only.
+        let sent = adverts(&bridge.advertise(&[room(&[chrome])], &identity, now));
+        assert_eq!(sent, [(SESSION, WORKSPACE, true, labels(&["h264"]))]);
+        assert!(
+            bridge
+                .advertise(&[room(&[chrome])], &identity, now)
+                .is_empty(),
+            "an unchanged advert is not repeated at once"
+        );
+
+        // It says it decodes VP9 too: the session hears it at once, with no
+        // second hello.
+        assert!(bridge.member_codecs(chrome, vec![wire::H264, wire::VP9], now));
+        now += MAINTAIN_EVERY;
+        let sent = adverts(&bridge.advertise(&[room(&[chrome])], &identity, now));
+        assert_eq!(sent.len(), 1);
+        assert!(!sent[0].2);
+        assert_eq!(sorted(sent[0].3.clone()), labels(&["h264", "vp9"]));
+
+        // A page from before codecs were said joins: VP9 is withdrawn.
+        now += MAINTAIN_EVERY;
+        let sent = adverts(&bridge.advertise(&[room(&[chrome, old_page])], &identity, now));
+        assert_eq!(sent[0].3, labels(&["h264"]));
+
+        // A page that decodes no video watches none and does not narrow it.
+        assert!(bridge.member_codecs(no_webcodecs, Vec::new(), now));
+        now += MAINTAIN_EVERY;
+        let sent = adverts(&bridge.advertise(&[room(&[chrome, no_webcodecs])], &identity, now));
+        assert_eq!(sorted(sent[0].3.clone()), labels(&["h264", "vp9"]));
+
+        // A session in two rooms hears what members of both decode; the
+        // host itself is never told.
+        let other = RoomViewers {
+            workspace_id: OTHER_ROOM,
+            members: vec![old_page],
+            sessions: vec![SESSION, LAPTOP],
+        };
+        now += MAINTAIN_EVERY;
+        let sent = adverts(&bridge.advertise(&[room(&[chrome]), other], &identity, now));
+        assert_eq!(
+            sent.iter()
+                .map(|(device, workspace, _, labels)| (*device, *workspace, sorted(labels.clone())))
+                .collect::<Vec<_>>(),
+            [
+                (LAPTOP, OTHER_ROOM, labels(&["h264"])),
+                (SESSION, WORKSPACE, labels(&["h264"])),
+            ]
+        );
+
+        // Unchanged, it is restated after a while in the other label order,
+        // so a session that forgot it and skips repeats takes it again.
+        let before = adverts(&bridge.advertise(&[room(&[chrome])], &identity, now));
+        assert_eq!(sorted(before[0].3.clone()), labels(&["h264", "vp9"]));
+        assert!(
+            bridge
+                .advertise(&[room(&[chrome])], &identity, now + MAINTAIN_EVERY)
+                .is_empty()
+        );
+        now += ADVERT_EVERY;
+        let again = adverts(&bridge.advertise(&[room(&[chrome])], &identity, now));
+        assert_eq!(again.len(), 1);
+        assert_ne!(again[0].3, before[0].3, "the order flips");
+        assert_eq!(sorted(again[0].3.clone()), sorted(before[0].3.clone()));
+        now += HELLO_EVERY;
+        assert!(adverts(&bridge.advertise(&[room(&[chrome])], &identity, now))[0].2);
+
+        // A member briefly out of the live plane (its grant renewed) keeps
+        // what it said; one gone for a while is forgotten, and back without
+        // saying counts as H.264 only again.
+        assert!(bridge.advertise(&[room(&[])], &identity, now).is_empty());
+        now += MAINTAIN_EVERY;
+        let sent = adverts(&bridge.advertise(&[room(&[chrome])], &identity, now));
+        assert_eq!(sorted(sent[0].3.clone()), labels(&["h264", "vp9"]));
+        assert!(bridge.advertise(&[room(&[])], &identity, now).is_empty());
+        now += MEMBER_GRACE;
+        assert!(bridge.advertise(&[room(&[])], &identity, now).is_empty());
+        let sent = adverts(&bridge.advertise(&[room(&[chrome])], &identity, now));
+        assert_eq!(sent[0].3, labels(&["h264"]));
+
+        // Bounded, and nothing once the bridge closed.
+        for member in 0..MAX_MEMBERS {
+            let mut key = [0; 32];
+            key[..8].copy_from_slice(&(member as u64).to_be_bytes());
+            assert!(bridge.member_codecs(key, vec![wire::H264], now));
+        }
+        assert!(!bridge.member_codecs([0xff; 32], vec![wire::H264], now));
+        bridge.close();
+        assert!(!bridge.member_codecs(chrome, vec![wire::H264], now));
+        assert!(
+            bridge
+                .advertise(&[room(&[chrome])], &identity, now)
+                .is_empty()
+        );
     }
 }

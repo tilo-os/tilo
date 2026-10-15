@@ -53,6 +53,7 @@ pub use record::{
     StoredPendingEnrollment,
 };
 
+use neighbour_wire::NeighbourMsg;
 use parking_lot::{Mutex, RwLock};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -61,7 +62,7 @@ use std::{
 };
 use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_desktop_model::{RoomId, WorkspaceId};
-use tilo_peer_state::{AdmissionReport, NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_peer_state::{AdmissionReport, StatePeer, TransportOrigin};
 use tilo_user_identity::DeviceCert;
 
 /// Where an owner's record is durable.

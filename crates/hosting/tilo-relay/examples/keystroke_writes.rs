@@ -31,10 +31,11 @@ use std::time::{Duration, SystemTime};
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::{CommitNamed as _, PeerPresence, PeerPresencePayload};
+use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::transport_v2::{
     ALPN_CODED_DELTA_V1, EnvelopeV2, SessionReader, StateFraming, encode_state,
 };
-use tilo_peer_state::{NeighbourMsg, SeedDocument, SeedState, StatePeer, seed_room};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
 use tilo_relay::{AttributedPresence, Envelope, Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -289,7 +290,7 @@ async fn run() {
                 SystemTime::now(),
             )
             .unwrap();
-        let (channel, _) = tilo_peer_state::transport::retention(&message, false).unwrap();
+        let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
         let pos = end as u64 + 1;
         let before = session_writes(&relay, reader.device_pubkey());
         publisher

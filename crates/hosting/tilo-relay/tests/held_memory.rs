@@ -91,7 +91,7 @@ fn app_document_checkpoint(size: usize) -> Vec<u8> {
         std::time::UNIX_EPOCH,
         1,
     );
-    let body = postcard::to_stdvec(&tilo_peer_state::NeighbourMsg::AppDocument {
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::AppDocument {
         peer: 3,
         app_id: "so.tilo.notes".into(),
         cluster_id: "cluster".into(),

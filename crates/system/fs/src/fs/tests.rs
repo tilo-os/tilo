@@ -461,6 +461,68 @@ mod availability_control_tests {
         close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
+    /// A mount with an availability registry hands its replica receipts to
+    /// the cache budget: what a host acknowledged holding goes first, even
+    /// when it was used more recently than content nothing else holds.
+    #[tokio::test]
+    async fn the_cache_budget_gives_up_what_a_host_acknowledged_first() {
+        use crate::store::area::Retention;
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let (held, only_here) = ([0x41; 32], [0x42; 32]);
+        let version = fs_protocol::FileVersionId::new();
+        let mut record =
+            RecordAvailability::new(fs_protocol::FileRecordId::new(), RecordKind::File);
+        record.current_version = Some(version);
+        crate::availability::test_receipts::acknowledge(
+            &mut record,
+            version,
+            fs_protocol::ContentHash(held),
+            now_ms(),
+        );
+        registry.lock().unwrap().put(record).unwrap();
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(namespace, Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry));
+
+        let files = fs.hydrator.store.files();
+        files
+            .adopt_bytes(&only_here, &[1; 100], Retention::Cached, &[])
+            .unwrap();
+        files
+            .adopt_bytes(&held, &[2; 100], Retention::Cached, &[])
+            .unwrap();
+        files.touch(&held);
+        // Then the working set, read since: never given up for being held.
+        let working_set: Vec<[u8; 32]> = (0..crate::store::area::WORKING_SET_ENTRIES)
+            .map(|n| [u8::try_from(n).unwrap(); 32])
+            .collect();
+        for key in &working_set {
+            files
+                .adopt_bytes(key, &[3; 100], Retention::Cached, &[])
+                .unwrap();
+            files.touch(key);
+        }
+        files.set_budget(100 * (1 + working_set.len() as u64));
+        files.evict_to_budget(&[]);
+        assert!(
+            files.entry(&held).is_none(),
+            "the host keeps it to fetch again"
+        );
+        assert!(files.entry(&only_here).is_some());
+
+        drop(fs);
+        endpoint.close().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pin_worker_idle_tick_does_not_walk_namespace() {
         let dir = tempfile::tempdir().unwrap();

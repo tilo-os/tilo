@@ -62,7 +62,7 @@ fn check_retained_publication(
 ) -> Result<(), String> {
     let mut retained = automerge::AutoCommit::new();
     for entry in outgoing.entries() {
-        if let Ok(tilo_peer_state::NeighbourMsg::AppDocument {
+        if let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             record_id,
             envelope,

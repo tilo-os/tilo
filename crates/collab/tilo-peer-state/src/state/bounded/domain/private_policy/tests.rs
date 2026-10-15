@@ -65,7 +65,7 @@ fn genuine_bounded_peer_private_basis_matches_exact_legacy_revision() {
     let basis = native.read().private_policy_basis().unwrap();
     assert_eq!(
         basis.revision(),
-        crate::owner_commit::governance_revision(&peer).unwrap()
+        crate::legacy_policy::governance_revision(&peer).unwrap()
     );
     assert_eq!(basis.next_expiry_after(0), Some(3));
     assert_eq!(basis.next_expiry_after(3), Some(7));
@@ -88,7 +88,7 @@ fn private_basis_uses_actual_signed_roster_and_verified_sorted_revocation_union(
     use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
     let (mut peer, now) = fixture(false);
     let root = SigningKey::from_bytes(&[1; 32]);
-    let original = crate::owner_commit::governance_revision(&peer).unwrap();
+    let original = crate::legacy_policy::governance_revision(&peer).unwrap();
     let mut enrollment = Vec::new();
     for byte in [92, 17] {
         let key = SigningKey::from_bytes(&[byte; 32]);
@@ -128,7 +128,7 @@ fn private_basis_uses_actual_signed_roster_and_verified_sorted_revocation_union(
         now,
     )
     .unwrap();
-    let expected = crate::owner_commit::governance_revision(&peer).unwrap();
+    let expected = crate::legacy_policy::governance_revision(&peer).unwrap();
     assert_ne!(expected, original);
     assert_eq!(peer.certificates().len(), 4);
     assert_eq!(peer.revocations().len(), 2);

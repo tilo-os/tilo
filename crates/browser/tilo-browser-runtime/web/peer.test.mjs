@@ -1137,6 +1137,36 @@ test('an old membership retry cannot replace a rejoined publishers presence subs
 });
 
 
+test('each live grant tells the host what the page decodes; an agent\'s layer does not speak for the page', async () => {
+  const advertised = [];
+  const peerOf = () => ({
+    liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    legacyCodecs: async (room, codecs) => { advertised.push([room, JSON.parse(codecs)]); return true; },
+  });
+  const timers = [];
+  const settings = (carriers, pending = []) => ({
+    endpoint: 'test', carriers, decodable: async () => ['h264', 'vp9'],
+    setTimer: callback => { pending.push(callback); return pending.length; }, clearTimer() {},
+  });
+  const carriers = fakeCarriers();
+  const layer = createLiveLayer(peerOf(), fakeRuntime(), ROOM, settings(carriers, timers));
+  const agentCarriers = fakeCarriers();
+  const agent = createLiveLayer(peerOf(), fakeRuntime(), ROOM, {...settings(agentCarriers), agent: 'summarizer'});
+  try {
+    await until(() => advertised.length === 1, 'the codec advert');
+    assert.deepEqual(advertised, [[ROOM, ['h264', 'vp9']]]);
+    await until(() => agentCarriers.connects[0], 'the agent layer connected');
+    // The grant is renewed: the advert goes with the new one.
+    timers[0]();
+    await until(() => advertised.length === 2, 'the advert with the renewed grant');
+    await settle();
+    assert.equal(advertised.length, 2, 'the agent layer never advertised');
+  } finally {
+    layer.stop();
+    agent.stop();
+  }
+});
+
 test('resource hydration can be cancelled and leaving the peer refuses pending opens', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore()));

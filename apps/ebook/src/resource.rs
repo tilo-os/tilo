@@ -11,7 +11,6 @@
 //! is the reader's own view state and its [`BooksEffect`]s, never the
 //! document's.
 
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
@@ -22,8 +21,8 @@ use ui::framework::{
 use ui::i18n::EmbeddedCatalog;
 use ui::prelude::Effect;
 use ui::tilo_resource::{
-    self, ActionCx, ActionDecl, Atom, Collection, Derived, Id, Invoke, JsonSchema, Model, Refusal,
-    resource,
+    self, ActionCx, ActionDecl, Atom, Collection, Derived, Id, Invoke, JsonSchema, Map, Model,
+    Refusal, resource,
 };
 use ui::widget::Element;
 use uuid::Uuid;
@@ -49,8 +48,9 @@ pub struct Ebook {
     /// were added.
     pub entries: Collection<LibraryEntry>,
     /// Where the reader left off in each book, by its content id. Kept when
-    /// a book leaves the shelf, so adding it again resumes there.
-    pub progress: BTreeMap<String, Progress>,
+    /// a book leaves the shelf, so adding it again resumes there. One entry
+    /// per book ever read: a page turn copies its chunk, not the library's.
+    pub progress: Map<Progress>,
     /// Reading settings
     pub settings: Settings,
     /// The font used where none is chosen: empty for the first one.
@@ -71,7 +71,7 @@ impl Default for Ebook {
     fn default() -> Self {
         let mut library = Self {
             entries: Collection::new(),
-            progress: BTreeMap::new(),
+            progress: Map::new(),
             settings: Settings::default(),
             default_font: Atom::default(),
             prefs: LibraryPrefs::default(),
@@ -202,13 +202,14 @@ impl Ebook {
         if !fraction.is_finite() {
             return Err(Refusal::new("progress is a fraction from 0 to 1"));
         }
-        let progress = self.progress.entry(book).or_default();
+        let mut progress = self.progress_of(&book);
         progress.chapter = chapter;
         progress.block = block;
         progress.fraction = fraction.clamp(0.0, 1.0);
         if opened {
             progress.opened = u64::try_from(cx.now_ms()).unwrap_or_default();
         }
+        self.progress.insert(book, progress);
         Ok(())
     }
 

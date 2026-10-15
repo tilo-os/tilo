@@ -189,11 +189,11 @@ pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayC
 pub use compute::{
     ComputeContentStore, ComputeError, ComputeExecutionError, ComputeJobLifecycle, ComputeJobPhase,
     ComputeJobResult, ComputeJobSpec, ComputeOutputSource, ComputePackageCatalogue,
-    ComputeResourceLimits, ComputeSandbox, ComputeSandboxInvocation, ComputeWorker,
+    ComputeResourceLimits, ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, HeldContent,
     InstalledComputeCatalogue, LauncherComputeSandbox, admit_compute_job,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use compute_content::{ContentFetchError, fetch_job_content};
+pub use compute_content::{ContentFetchError, content_proof, fetch_job_content, prove_job_input};
 #[cfg(not(target_arch = "wasm32"))]
 pub use compute_session::{ComputeClient, ComputeDelivery, ComputeSessionError};
 #[cfg(not(target_arch = "wasm32"))]
@@ -203,10 +203,10 @@ pub use compute_transport::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use compute_worker::{
-    ComputeAssignment, ComputeWorkerError, FileComputeContentStore, InputTransfer,
-    ProductionComputeWorkerConfig, WorkerEnvironments, hydrate_job_inputs, run_compute_assignment,
-    run_production_compute_worker, serve_worker_stream, serve_worker_stream_with,
-    spawn_worker_stream,
+    ComputeAssignment, ComputeWorkerError, FileComputeContentStore, InputStaging, InputTransfer,
+    ProductionComputeWorkerConfig, WorkerEnvironments, WorkerHeldContent, hydrate_job_inputs,
+    run_compute_assignment, run_production_compute_worker, serve_worker_stream,
+    serve_worker_stream_with, spawn_worker_stream,
 };
 pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 #[cfg(not(target_arch = "wasm32"))]

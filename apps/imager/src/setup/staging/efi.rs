@@ -116,14 +116,13 @@ pub fn guid_text(bytes: &[u8; 16]) -> String {
     raw[0..4].reverse();
     raw[4..6].reverse();
     raw[6..8].reverse();
-    let h: Vec<String> = raw.iter().map(|b| format!("{b:02x}")).collect();
     format!(
         "{}-{}-{}-{}-{}",
-        h[0..4].concat(),
-        h[4..6].concat(),
-        h[6..8].concat(),
-        h[8..10].concat(),
-        h[10..16].concat()
+        hex::encode(&raw[0..4]),
+        hex::encode(&raw[4..6]),
+        hex::encode(&raw[6..8]),
+        hex::encode(&raw[8..10]),
+        hex::encode(&raw[10..16])
     )
 }
 

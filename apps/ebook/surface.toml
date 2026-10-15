@@ -13,7 +13,7 @@ fields = [
   { path = "entries.*.subject", type = "String" },
   { path = "entries.*.added", type = "u64", readonly = true },
   { path = "entries.*.content", type = "Bytes", readonly = true },
-  { path = "progress", type = "BTreeMap<String, Progress>" },
+  { path = "progress", type = "Map<Progress>" },
   { path = "settings", type = "Settings", stored = "record" },
   { path = "settings.font_scale", type = "f32" },
   { path = "settings.line_spacing", type = "f32" },
