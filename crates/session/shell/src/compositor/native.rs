@@ -9464,7 +9464,11 @@ pub fn run() {
     let mut peer_sync: Option<Arc<crate::shell::network::ShellNetwork>> = None;
     // Started once, with the first network the loop installs: a thread that
     // could not start is reported, not retried every turn.
-    let mut device_fabric_worker = None;
+    let mut device_fabric_worker: Option<
+        crate::shell::device_fabric_runtime::worker::FabricWorker<
+            crate::shell::device_fabric_runtime::FabricTurn,
+        >,
+    > = None;
     let mut device_fabric_tried = false;
     let mut spatial_control: Option<SpatialControlSession> = None;
     let mut spatial_pointer_parked = false;
@@ -12798,31 +12802,6 @@ pub fn run() {
                 }
             }
         }
-        if !onboarding_active && let Some(path) = agent_door_due.take() {
-            match crate::compositor::agent_door::bind(&path) {
-                Ok(listener) => {
-                    tracing::info!(path = %path.display(), "agent door: listening");
-                    let wake = control_listener_wake(&listener, &event_loop.handle());
-                    let (requests, consent) = crate::shell::agent_admission::channel(
-                        crate::shell::agent_admission::default_always_path(),
-                        Some(Arc::clone(&session_wake)),
-                    );
-                    agent_door = Some((
-                        crate::compositor::agent_door::Door::new(
-                            listener,
-                            requests,
-                            Arc::clone(&session_wake),
-                        ),
-                        UnlinkOnDrop(path),
-                        wake,
-                    ));
-                    agent_door_consent = Some(consent);
-                }
-                Err(reason) => {
-                    tracing::info!(%reason, "agent door: not served in this session");
-                }
-            }
-        }
         let started = if std::mem::take(&mut local_broker_due) {
             Some(None)
         } else {
@@ -12942,6 +12921,38 @@ pub fn run() {
                 }
             }
             apps_changed = true;
+        }
+        // The agent door serves agents through the broker, so it opens once
+        // the broker's start has ended: an agent that connected earlier
+        // would be refused as unavailable while the broker was binding.
+        let broker_starting = network_start.is_some() || broker_start.is_some() || local_broker_due;
+        if !onboarding_active
+            && !broker_starting
+            && let Some(path) = agent_door_due.take()
+        {
+            match crate::compositor::agent_door::bind(&path) {
+                Ok(listener) => {
+                    tracing::info!(path = %path.display(), "agent door: listening");
+                    let wake = control_listener_wake(&listener, &event_loop.handle());
+                    let (requests, consent) = crate::shell::agent_admission::channel(
+                        crate::shell::agent_admission::default_always_path(),
+                        Some(Arc::clone(&session_wake)),
+                    );
+                    agent_door = Some((
+                        crate::compositor::agent_door::Door::new(
+                            listener,
+                            requests,
+                            Arc::clone(&session_wake),
+                        ),
+                        UnlinkOnDrop(path),
+                        wake,
+                    ));
+                    agent_door_consent = Some(consent);
+                }
+                Err(reason) => {
+                    tracing::info!(%reason, "agent door: not served in this session");
+                }
+            }
         }
         if desktop_continuation
             .as_mut()
