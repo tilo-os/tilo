@@ -420,7 +420,6 @@ fn write_object(out: &mut Vec<u8>, object: &Object<'_>) -> Option<()> {
             let v = n.as_f64();
             #[allow(
                 clippy::cast_possible_truncation,
-                clippy::float_cmp,
                 reason = "an integral value within i64's range is written as an integer"
             )]
             if v.fract() == 0.0 && v.abs() < 1e15 {

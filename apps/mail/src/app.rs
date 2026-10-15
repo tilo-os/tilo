@@ -3226,10 +3226,6 @@ impl MailApp {
         true
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the list node mirrors the complete visible list and contextual selection toolbar in one accessibility subtree"
-    )]
     fn overview_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 

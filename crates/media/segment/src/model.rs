@@ -2,9 +2,6 @@
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     reason = "pixel indices are bounded by the picture's size, checked once at the start; the rest is float maths on colours and coverages"
 )]
 

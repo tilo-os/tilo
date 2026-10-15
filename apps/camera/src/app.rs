@@ -466,10 +466,6 @@ impl CameraApp {
         Self::with(Storage::Sample, Screen::Camera)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one constructor names every field of the app's state"
-    )]
     fn with(storage: Storage, initial_screen: Screen) -> Self {
         let scanner_devices = match &storage {
             Storage::Sample => vec![tilo_capture::scanner::Scanner {
@@ -824,10 +820,6 @@ impl CameraApp {
         }
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "the live-capture implementation reads storage while the no-feature build must return no fabricated devices"
-    )]
     fn available_camera_devices(&self) -> Vec<String> {
         #[cfg(feature = "live-capture")]
         {
@@ -4879,10 +4871,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn scanned_codes_record_history_and_scanner_actions_are_searchable() {
         // Phase `scan_action_records_history`.
         {

@@ -1040,10 +1040,6 @@ impl Widget for RichTextLine {
             } else {
                 0.0
             };
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "bounded image pixel dimensions are converted to the f32 layout coordinate space"
-            )]
             // The image stands on the editor's content edge, inside the
             // line's text inset on both sides, at its native aspect, and
             // never taller than its share of the visible height: a capped

@@ -5532,10 +5532,6 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
 /// its lock once per member, and a crowd's writers queued on it. A run whose
 /// every delivery is still authorised as its fan-out authorised it
 /// ([`StateDelivery::still_fanned`]) is written without the room's lock.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-)]
 async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
     run: Vec<StateDelivery>,
     peer: &AuthenticatedPeer,
@@ -5619,10 +5615,6 @@ async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
 
 /// The deliveries of `run` the recipient may still be written, decided under
 /// one membership read of its room, with the room.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-)]
 async fn authorize_state_deliveries(
     run: Vec<StateDelivery>,
     workspace_id: u64,
@@ -6099,10 +6091,6 @@ async fn handle_live_join(
 
 /// Handle a call envelope for a subscribed workspace whose room this relay
 /// governs; see [`crate::rooms`].
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the guard only lives for the lookup; the value kept is a clone"
-)]
 async fn handle_voice(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,

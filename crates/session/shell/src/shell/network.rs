@@ -5150,11 +5150,6 @@ impl ShellNetwork {
     /// is still current. Holding the route registry through command enqueue
     /// gives departure a defined ordering: either enqueue wins, or departure
     /// removes authority first and this call fails without sending.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the route registry guard is held through enqueue on purpose: it orders this \
-                  send against departure, which must remove authority before or after it"
-    )]
     pub(crate) fn send_personal_fabric_action_on_route(
         &self,
         route: &AuthenticatedPersonalRoute,
@@ -7571,10 +7566,6 @@ impl ShellNetwork {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "invite redemption keeps room/expiry/recipient checks, membership persistence and post-admission certification in order"
-    )]
     fn redeem_invited_identity(
         &self,
         workspace_topic: u64,
@@ -12075,10 +12066,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn redeemed_invites_grant_exactly_their_signed_role_and_name() {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one invite is redeemed, exercised and revoked end to end"
-        )]
         /// Whether the author `net` authenticated for `envelope` may make
         /// the change it carries, decided the way the broker decides it.
         fn document_allowed(

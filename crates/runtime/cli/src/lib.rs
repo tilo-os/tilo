@@ -1,8 +1,3 @@
-#![allow(
-    clippy::collapsible_if,
-    reason = "migration stack lint debt is scoped to this target"
-)]
-
 //! `cli` — SDK for Tilo CLI apps.
 //!
 //! Tilo apps come in two flavours: GUI (talks Wayland, uses the `ui`

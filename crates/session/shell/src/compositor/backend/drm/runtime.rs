@@ -2271,10 +2271,6 @@ impl DrmDispatchState {
     }
 
     /// Route one gesture: to the shell when the finger count says so, otherwise on to the focused client.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "gesture events are consumed as protocol state-machine inputs"
-    )]
     fn handle_gesture(&mut self, ev: GestureEvent) {
         // Decide ownership *before* touching the tracker. Only `begin`
         // carries a finger count, so every later event asks what the
@@ -5874,10 +5870,6 @@ mod tests {
     // Keyboard: xkb keycode → winit key translation
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn keysyms_map_to_named_keys_and_modifier_aware_text() {
         // Phase `keysym_mapping_named_and_character`.
         // Pure mapping: named special keys and printable characters resolve to the winit `Key` the chrome matches on — no real keymap needed, mirroring the `preferred_mode`/pointer-helper tests.

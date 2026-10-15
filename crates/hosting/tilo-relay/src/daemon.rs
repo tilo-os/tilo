@@ -566,10 +566,6 @@ impl Relay {
     /// # Errors
     ///
     /// The same as [`Relay::start`].
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the ordered startup transaction keeps identity validation, endpoint binding, protocol wiring, and background-task ownership auditable in one place"
-    )]
     pub async fn start_with_app_serving(
         cfg: RelayConfig,
         identity: RelayIdentity,
