@@ -23,6 +23,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     link_fonts()?;
     let out = PathBuf::from(std::env::args().nth(1).ok_or("expected output directory")?);
     std::fs::create_dir_all(&out)?;
+    let out = std::fs::canonicalize(out)?;
     for (palette, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         for mode in ["calculator", "graph2d", "graph3d"] {
             let mut app = capture(mode, theme.clone(), (1440, 810))?;
@@ -64,6 +65,10 @@ fn link_fonts() -> Result<(), Box<dyn Error>> {
 
 fn capture(mode: &str, theme: Theme, viewport: (u32, u32)) -> Result<Capture, Box<dyn Error>> {
     let mut app = Capture::capture_at(Some(mode), viewport)?;
+    // Demonstrate the normal themed primary accent, not an app-owned fill.
+    let mut document = theme.document;
+    document.emphasis = ui::tokens::Emphasis::Tinted { hue: 250.0 };
+    let theme = Theme::from_document(&document).ok_or("invalid capture theme")?;
     app.harness().set_theme(theme.with_ui_scale(1.5));
     if mode == "calculator" {
         app.harness().perform_named(

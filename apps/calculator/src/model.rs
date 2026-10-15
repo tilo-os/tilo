@@ -167,7 +167,9 @@ pub const DEFAULT_SURFACE: &str = "sin(sqrt(x^2+y^2))";
 
 /// The calculations a lived-in calculator shows, newest first: the expression
 /// and the result it evaluated to.
-pub const DEMO_HISTORY: [(&str, &str); 5] = [
+pub const DEMO_HISTORY: [(&str, &str); 7] = [
+    ("int(sin(x),x,0,π)", "2"),
+    ("(sqrt(5)+1)/2", "1.6180339887"),
     ("12*(4+3)", "84"),
     ("sqrt(2)", "1.4142135624"),
     ("5!", "120"),
@@ -364,6 +366,13 @@ impl Key {
                 "ln(" => "ln",
                 "log10(" => "log",
                 "sqrt(" => "√",
+                "int(" => "∫",
+                "root(" => "ⁿ√",
+                "abs(" => "|x|",
+                "sinh(" => "sinh",
+                "cosh(" => "cosh",
+                "tanh(" => "tanh",
+                "gamma(" => "Γ",
                 "exp(" => "eˣ",
                 "1/(" => "1/x",
                 "pi" => "π",
@@ -423,7 +432,7 @@ pub enum KeypadLayout {
     /// Default desktop: 5 columns — essentials plus the common scientific keys
     /// (trig, powers, roots, π/e).
     Standard,
-    /// Wide window: the full 6-column scientific pad with every function key.
+    /// Wide window: the full 7-column scientific pad with every function key.
     Scientific,
 }
 
@@ -450,7 +459,7 @@ impl KeypadLayout {
         match self {
             KeypadLayout::Compact => 4,
             KeypadLayout::Standard => 5,
-            KeypadLayout::Scientific => 6,
+            KeypadLayout::Scientific => 7,
         }
     }
 
@@ -539,48 +548,56 @@ impl KeypadLayout {
         ]
     }
 
-    /// 6 cols × 7 rows — the full scientific pad.
+    /// 7 cols × 7 rows — the full scientific pad, with a leading column
+    /// for integration, roots and additional scientific functions.
     fn scientific_keys() -> Vec<Key> {
         use Key::{
             Ans, Backspace, Clear, Digit, Dot, DoubleZero, Equals, Ins, Percent, ToggleSign, Wrap,
         };
         vec![
+            Ins("int("),
             Clear,
             Backspace,
             Ins("("),
             Ins(")"),
             Ins("mod("),
             Ins("!"),
+            Ins("root("),
             Ins("sin("),
             Ins("cos("),
             Ins("tan("),
             Ins("pi"),
             Ins("e"),
             Percent,
+            Ins("abs("),
             Ins("asin("),
             Ins("acos("),
             Ins("atan("),
             Ins("^"),
             Ins("sqrt("),
             Ins("/"),
+            Ins("sinh("),
             Ins("ln("),
             Ins("log10("),
             Digit('7'),
             Digit('8'),
             Digit('9'),
             Ins("*"),
+            Ins("cosh("),
             Ins("exp("),
             Ins("1/("),
             Digit('4'),
             Digit('5'),
             Digit('6'),
             Ins("-"),
+            Ins("tanh("),
             Wrap("(", ")^2"),
             ToggleSign,
             Digit('1'),
             Digit('2'),
             Digit('3'),
             Ins("+"),
+            Ins("gamma("),
             DoubleZero,
             Ans,
             Digit('0'),

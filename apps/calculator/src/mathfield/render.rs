@@ -7,7 +7,7 @@ use vello::kurbo::{Point, Rect};
 
 use super::edit::Sel;
 use super::layout::{Gap, Layout};
-use super::model::Slot;
+use super::model::{MathExpr, Node, Slot};
 
 /// Paint the selection band behind the glyphs. `origin` is the top-left of
 /// the content area in scene coords; gaps are in content-local coords.
@@ -16,31 +16,77 @@ pub fn draw_selection(
     origin: Point,
     selection: &Sel,
     row_gaps: &[(usize, &Gap)],
+    expr: &MathExpr,
 ) {
-    if row_gaps.is_empty() || selection.is_empty() {
-        return;
+    for band in selection_bands(selection, row_gaps, expr) {
+        ctx.fill_rect(
+            band + origin.to_vec2(),
+            ctx.theme.tokens.colors.intent.selection_tint,
+        );
     }
-    let lo = selection.lo();
-    let hi = selection.hi();
-    let mut x0 = None;
-    let mut x1 = None;
-    let mut top = f64::INFINITY;
-    let mut bot = f64::NEG_INFINITY;
-    for (idx, g) in row_gaps {
-        if *idx == lo {
-            x0 = Some(g.x);
+}
+
+/// Content-local selection rectangles. A logical row can occupy several
+/// visual spans (the four arguments of an integral, for example). Only join
+/// adjacent selected atoms whose gaps share a band and advance left to right.
+/// Hidden integral commas have no painted span, even when their neighbouring
+/// arguments share a baseline: highlighting them would cover the differential.
+#[must_use]
+pub fn selection_bands(selection: &Sel, row_gaps: &[(usize, &Gap)], expr: &MathExpr) -> Vec<Rect> {
+    let hidden = hidden_integral_separators(expr, &selection.steps);
+    let mut bands: Vec<Rect> = Vec::new();
+    let mut last_end = None;
+    for pair in row_gaps.windows(2) {
+        let [(start, a), (end, b)] = pair else {
+            continue;
+        };
+        if *start < selection.lo()
+            || *end > selection.hi()
+            || start.checked_add(1) != Some(*end)
+            || hidden.contains(start)
+            || (a.top - b.top).abs() > f64::EPSILON
+            || (a.bottom - b.bottom).abs() > f64::EPSILON
+            || a.x >= b.x
+        {
+            last_end = None;
+            continue;
         }
-        if *idx == hi {
-            x1 = Some(g.x);
+        let band = Rect::new(a.x, a.top, b.x, a.bottom);
+        if let Some(previous) = bands.last_mut()
+            && last_end == Some(*start)
+            && (previous.x1 - band.x0).abs() <= f64::EPSILON
+            && (previous.y0 - band.y0).abs() <= f64::EPSILON
+            && (previous.y1 - band.y1).abs() <= f64::EPSILON
+        {
+            previous.x1 = band.x1;
+        } else {
+            bands.push(band);
         }
-        if *idx >= lo && *idx <= hi {
-            top = top.min(g.top);
-            bot = bot.max(g.bottom);
-        }
+        last_end = Some(*end);
     }
-    if let (Some(a), Some(b)) = (x0, x1) {
-        let band = Rect::new(origin.x + a, origin.y + top, origin.x + b, origin.y + bot);
-        ctx.fill_rect(band, ctx.theme.tokens.colors.intent.selection_tint);
+    bands
+}
+
+fn hidden_integral_separators(expr: &MathExpr, steps: &[(usize, Slot)]) -> Vec<usize> {
+    let Some((&(index, Slot::Arg), parent)) = steps.split_last() else {
+        return Vec::new();
+    };
+    let Some(Node::Func { name, arg }) = expr.row_at(parent).and_then(|row| row.get(index)) else {
+        return Vec::new();
+    };
+    if !matches!(name.as_str(), "int" | "∫") {
+        return Vec::new();
+    }
+    let commas: Vec<_> = arg
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| matches!(node, Node::Char(',')).then_some(index))
+        .collect();
+    // Other arities use ordinary function layout, where commas remain visible.
+    if commas.len() == 3 {
+        commas
+    } else {
+        Vec::new()
     }
 }
 

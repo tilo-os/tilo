@@ -313,7 +313,7 @@ impl CalcScreen {
             .map(|key| {
                 ButtonFace::new(Rect::ZERO, key.label())
                     .control_size(ControlSize::Small)
-                    .role(ButtonRole::Plain)
+                    .role(ButtonRole::Secondary)
                     .intrinsic_width(tr, theme)
             })
             .fold(0.0, f64::max);
@@ -710,7 +710,7 @@ impl CalcScreen {
             };
             let face = ButtonFace::new(r, key.label())
                 .control_size(ControlSize::Small)
-                .role(ButtonRole::Plain)
+                .role(ButtonRole::Secondary)
                 .hovered(self.hovered_mem == Some(i));
             Button::paint(scene, t, tr, theme, &face);
         }
@@ -744,8 +744,9 @@ impl CalcScreen {
                 Some(icon) => face.icon(icon),
                 None => face,
             };
-            let ink = face.colors(theme).2;
-            Button::paint(scene, t, tr, theme, &face);
+            let local = key_theme(role, theme);
+            let ink = face.colors(&local).2;
+            Button::paint(scene, t, tr, &local, &face);
             if key.icon().is_some() {
                 continue;
             }
@@ -936,15 +937,24 @@ impl CalcScreen {
 /// The text of the history panel's destructive action.
 const CLEAR_HISTORY: &str = "Clear history";
 
-/// The control role of a keycap: the entry pad (digits and operators) is a
-/// key, the scientific functions are quiet, `=` is the one primary action
-/// and `AC` discards the expression.
+/// Every keypad control has a face. Functions use bordered secondary
+/// controls, digits lift one surface higher, and `=` is the primary action.
 fn key_button_role(role: KeyRole) -> ButtonRole {
     match role {
         KeyRole::Digit | KeyRole::Operator => ButtonRole::Key,
-        KeyRole::Function => ButtonRole::Plain,
+        KeyRole::Function => ButtonRole::Secondary,
         KeyRole::Equals => ButtonRole::Primary,
         KeyRole::Clear => ButtonRole::Destructive,
+    }
+}
+
+/// Numeric entry stands above the secondary scientific controls without
+/// overriding the shared button palette or its hover/pressed feedback.
+fn key_theme(role: KeyRole, theme: &Theme) -> Theme {
+    if role == KeyRole::Digit {
+        theme.on_ground(theme.tokens.colors.surfaces.raised)
+    } else {
+        theme.clone()
     }
 }
 
@@ -1240,15 +1250,45 @@ mod tests {
         }
     }
 
-    /// Each keycap takes its control role from what the key is: the entry pad
-    /// is a key, functions are quiet, `=` is the one primary and `AC` is
-    /// destructive.
+    /// All keys have visible faces; their roles preserve hierarchy and
+    /// shared hover/pressed styling.
+    #[test]
+    fn every_key_has_a_surface_and_scientific_keys_have_edges() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            for key in KeypadLayout::Scientific
+                .keys()
+                .iter()
+                .chain(MEM_KEYS.iter())
+            {
+                let role = key.role();
+                let local = key_theme(role, &theme);
+                let (fill, edge, _) = ButtonFace::new(Rect::ZERO, "")
+                    .role(key_button_role(role))
+                    .colors(&local);
+                assert!(fill.components[3] > 0.99, "bare key: {}", key.label());
+                if role == KeyRole::Function {
+                    assert!(edge.is_some(), "missing edge: {}", key.label());
+                }
+            }
+            let fill = |role| {
+                ButtonFace::new(Rect::ZERO, "")
+                    .role(key_button_role(role))
+                    .colors(&key_theme(role, &theme))
+                    .0
+            };
+            assert_ne!(fill(KeyRole::Digit), fill(KeyRole::Function));
+        }
+    }
+
     #[test]
     fn keycap_roles_follow_what_the_key_is() {
         assert_eq!(key_button_role(Key::Digit('7').role()), ButtonRole::Key);
         assert_eq!(key_button_role(Key::Ins("+").role()), ButtonRole::Key);
         assert_eq!(key_button_role(Key::Backspace.role()), ButtonRole::Key);
-        assert_eq!(key_button_role(Key::Ins("sin(").role()), ButtonRole::Plain);
+        assert_eq!(
+            key_button_role(Key::Ins("sin(").role()),
+            ButtonRole::Secondary
+        );
         assert_eq!(key_button_role(Key::Equals.role()), ButtonRole::Primary);
         assert_eq!(key_button_role(Key::Clear.role()), ButtonRole::Destructive);
         assert!(

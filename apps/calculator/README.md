@@ -1,10 +1,16 @@
 # Calculator
 
 Calculator mode and both graph editors use the same structured mathfield:
-fractions, powers and radicals are two-dimensional, with structural caret
+fractions, powers, radicals and definite integrals are two-dimensional, with structural caret
 navigation, selection, clipboard input and bounded scrolling. The calculation
 tape uses that layout too. Expressions retain the arithmetic/scientific syntax
-of the evaluator; this is not a symbolic algebra or integral solver.
+of the evaluator; this is not a symbolic algebra solver.
+
+`int(expr, x, a, b)` (also `∫(expr, x, a, b)`) numerically integrates from
+`a` to `b`, binding `x` or `y` locally. Nested integrals and the active angle
+mode are supported. Adaptive Simpson quadrature uses 1e-9 absolute/relative
+tolerance with subdivision and shared sampling limits; nonfinite bounds,
+sampled singularities and nonconvergence produce errors rather than a result.
 
 The keypad first drops the previous-answer status line when height is tight,
 before moving the display beside the keys. Display and memory limits follow the
@@ -22,7 +28,9 @@ cargo run --locked -p calculator --example calculator_capture -- target/calculat
 
 The example links the production font catalog beside its binary before creating
 any app or renderer. It captures all three modes in dark and light themes at
-1440×810 with `Theme::with_ui_scale(1.5)`, plus narrow layouts. The optional video
+1440×810 with `Theme::with_ui_scale(1.5)` and tinted primary emphasis,
+plus narrow layouts. The calculator shows a golden-ratio fraction in its
+mathfield, with a definite integral and that fraction recorded in the tape. The optional video
 requires `gst-launch-1.0` with `rawvideoparse`, `openh264enc`, `h264parse` and
 `mp4mux`. It records 240 actual app frames, including pointer-driven mode changes,
 a curve trace and a surface orbit, using curved minimum-jerk cursor trajectories.

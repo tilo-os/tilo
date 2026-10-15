@@ -13,6 +13,9 @@ pub mod render;
 pub mod tex;
 pub mod typst;
 
+#[cfg(test)]
+mod integral_tests;
+
 pub use layout::{
     BASE_SIZE, Box2d, BoxKind, Gap, Layout, layout, layout_wrapped, measure_atom, nearest_gap,
 };

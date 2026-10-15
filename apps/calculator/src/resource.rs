@@ -663,7 +663,7 @@ mod tests {
         assert_eq!(state.history.len(), crate::model::DEMO_HISTORY.len());
         assert_eq!(
             state.history.values().next().unwrap().expr,
-            "12*(4+3)",
+            "int(sin(x),x,0,π)",
             "newest first"
         );
         assert_eq!(state.funcs.len(), crate::model::DEMO_CURVES.len());

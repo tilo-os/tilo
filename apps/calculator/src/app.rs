@@ -1226,6 +1226,13 @@ fn key_accessible_name(key: &model::Key) -> String {
         Key::Ins("acos(") => "Inverse cosine".into(),
         Key::Ins("atan(") => "Inverse tangent".into(),
         Key::Ins("sqrt(") => "Square root".into(),
+        Key::Ins("int(") => "Definite integral".into(),
+        Key::Ins("root(") => "Nth root".into(),
+        Key::Ins("abs(") => "Absolute value".into(),
+        Key::Ins("sinh(") => "Hyperbolic sine".into(),
+        Key::Ins("cosh(") => "Hyperbolic cosine".into(),
+        Key::Ins("tanh(") => "Hyperbolic tangent".into(),
+        Key::Ins("gamma(") => "Gamma function".into(),
         Key::Ins("ln(") => "Natural logarithm".into(),
         Key::Ins("log10(") => "Base 10 logarithm".into(),
         Key::Ins("exp(") => "Exponential".into(),
@@ -2295,6 +2302,34 @@ mod tests {
             "an unfocused Calculator must not consume graph keyboard edits"
         );
         assert_eq!(app.model.surfaces[0].expr, graph_expression);
+    }
+
+    #[test]
+    fn integral_keypad_and_keyboard_commit_a_typeset_history_expression() {
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.set_focus(true);
+        app.apply_calc_key(&model::Key::Ins("int("));
+        assert_eq!(app.model.expr, "int(,,,)");
+        for character in "sin(x),x,0,pi)".chars() {
+            send(
+                &mut app,
+                &mut state,
+                &keyboard(WKey::Character(character.to_string().into())),
+            );
+        }
+        assert_eq!(app.model.expr, "int(sin(x),x,0,π)");
+        send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Named(NamedKey::Enter)),
+        );
+        assert!((app.model.ans - 2.0).abs() < 1e-9);
+        assert_eq!(app.model.history.len(), 1);
+        assert_eq!(app.model.history[0].expr, "int(sin(x),x,0,π)");
+        let mut field = MathField::new(&app.model.history[0].expr);
+        let mut text = ui::text_render::TextRenderer::new();
+        assert!(field.content_height(&mut text) > 0.0);
     }
 
     #[test]

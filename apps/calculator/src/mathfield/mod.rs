@@ -285,7 +285,7 @@ impl MathField {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.rect);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if let Some(sel) = sel.as_ref() {
-            render::draw_selection(&mut ctx, origin, sel, &sel_gaps_ref);
+            render::draw_selection(&mut ctx, origin, sel, &sel_gaps_ref, &self.editor.expr);
         }
         ui::math::draw_layout(ctx.scene, t, ctx.text, layout, origin, text_color);
         if focused && let Some(g) = caret {
@@ -643,7 +643,7 @@ fn gap_cost(g: &layout::Gap, px: f64, py: f64) -> f64 {
 /// Characters the field accepts as input.
 fn accept(ch: char) -> bool {
     ch.is_ascii_alphanumeric()
-        || "+-*/^(),. %!·π√".contains(ch)
+        || "+-*/^(),. %!·π√∫".contains(ch)
         || ch == '×'
         || ch == '÷'
         || ch == '−'
