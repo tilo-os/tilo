@@ -435,8 +435,9 @@ pub struct ReplayBuild {
     /// (`capture.manifest`): the retained frames, with the lease that keeps
     /// them in place until then ([`CaptureLeases`]), or a final cut's held
     /// commits, which nothing changes once the cut is taken. The device's
-    /// own queue is pinned at once.
-    listed: Option<(File, Option<CaptureLease>)>,
+    /// own queue is pinned at once. Buffered: a capture lists a frame per
+    /// entry in the owner's turn, and two writes each were most of it.
+    listed: Option<(io::BufWriter<File>, Option<CaptureLease>)>,
 }
 /// Retained frames a resuming device already holds, by
 /// [`super::resume::frame_digest`]; a replay for it leaves them out.
@@ -773,7 +774,7 @@ impl WorkspaceStore {
             continuity: Some(File::create(root.join("continuity.manifest"))?),
             skip: None,
             listed: Some((
-                File::create(root.join("capture.manifest"))?,
+                io::BufWriter::new(File::create(root.join("capture.manifest"))?),
                 (!pending_only).then(|| self.lease_capture()),
             )),
         })
@@ -845,7 +846,12 @@ impl WorkspaceStore {
                 // open for theirs; it is read once they are pinned.
                 let link = match build.listed.take() {
                     Some((listed, lease)) => {
-                        drop(listed);
+                        // Written out before it is read back.
+                        drop(
+                            listed
+                                .into_inner()
+                                .map_err(io::IntoInnerError::into_error)?,
+                        );
                         Some(Link {
                             listed: File::open(build.root.join("capture.manifest"))?,
                             continuity: build.continuity.take().invariant("continuity missing")?,

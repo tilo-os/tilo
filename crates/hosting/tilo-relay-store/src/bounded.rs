@@ -189,7 +189,7 @@ impl Meta {
 /// # Errors
 ///
 /// Returns an error when `meta` is invalid or the write fails.
-pub fn write_meta(file: &mut File, meta: &Meta) -> Result<(), StoreError> {
+pub fn write_meta(file: &mut (impl Write + ?Sized), meta: &Meta) -> Result<(), StoreError> {
     meta.validate()?;
     let bytes = serde_json::to_vec(meta).map_err(|e| invalid(&e.to_string()))?;
     if bytes.len() > MAX_METADATA {

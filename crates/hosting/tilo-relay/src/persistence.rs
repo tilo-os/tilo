@@ -19,8 +19,10 @@
 //! (the record, then its directory), plus [`State::next_sequence`]'s
 //! reservation renewal at most once per [`SEQUENCE_RESERVATION_NS`] of host
 //! clock per workspace. A checkpoint that starts its lineage (each
-//! newcomer's first record) is staged and made durable before its turn,
-//! which then selects the stage with one barrier
+//! newcomer's first record), or stands alone and replaces the whole of it
+//! (a device's next access request or acknowledgement), is staged and made
+//! durable before its turn, which then selects the stage with one barrier,
+//! provided the lineage has not moved since
 //! (`WorkspaceStore::stage_fresh_checkpoint`).
 //!
 //! A replay capture lists the retained frames in its turn and pins them when
