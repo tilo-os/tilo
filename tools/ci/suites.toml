@@ -1583,8 +1583,7 @@ reason = "exercises a Windows-only helper (msvcrt, os.O_BINARY); needs a Windows
 
 [[unrequired]]
 suite = "os/tests/tilo-session-lifecycle.sh"
-reason = "drives a VM over SSH"
-workflow = "ci-filesystem.yml"
+reason = "drives a VM over SSH; the real-fuse check in t.toml runs it"
 
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"
