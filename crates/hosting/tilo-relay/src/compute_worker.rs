@@ -1381,6 +1381,61 @@ impl Drop for ReadinessGuard {
 mod tests {
     use super::*;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replica_s_small_files_are_held_only_for_that_workspace_s_jobs() {
+        // Two workspaces' replicas, each serving its own store as
+        // `fs replica` does, each holding one small file.
+        let root = tempfile::tempdir().unwrap();
+        let mut files = Vec::new();
+        let mut servers = Vec::new();
+        for (workspace, text) in [(7_u64, "a photo in seven"), (8, "a photo in eight")] {
+            let dir = root.path().join(format!("replica-{workspace}"));
+            let store = Arc::new(::fs::store::ContentStore::open(&dir).await.unwrap());
+            let bytes = text.as_bytes().to_vec();
+            let manifest = *store
+                .write_content(&bytes)
+                .await
+                .unwrap()
+                .unwrap()
+                .as_bytes();
+            let listener =
+                tilo_files::native::private::bind_socket(&::fs::replica_content::socket_path(&dir))
+                    .unwrap();
+            listener.set_nonblocking(true).unwrap();
+            servers.push(tokio::spawn(::fs::replica_content::serve(
+                tokio::net::UnixListener::from_std(listener).unwrap(),
+                store,
+            )));
+            files.push((workspace, dir, bytes, manifest));
+        }
+        let outputs = FileComputeContentStore::open(root.path().join("content")).unwrap();
+        let replicas = files
+            .iter()
+            .map(|(workspace, dir, _, _)| (*workspace, vec![dir.clone()]))
+            .collect::<BTreeMap<_, _>>();
+        let held = WorkerHeldContent::new(Arc::new(outputs), &replicas);
+
+        for (workspace, _, bytes, manifest) in &files {
+            for (other, ..) in &files {
+                let digest = *blake3::hash(bytes).as_bytes();
+                let source = held.for_workspace(*other);
+                let manifest = *manifest;
+                let read =
+                    tokio::task::spawn_blocking(move || source.held(digest, Some(manifest), 1024))
+                        .await
+                        .unwrap();
+                if other == workspace {
+                    assert_eq!(read, Ok(Some(bytes.clone())), "its own workspace's job");
+                } else {
+                    assert_eq!(read, Ok(None), "another workspace's file is never served");
+                }
+            }
+        }
+        for server in servers {
+            server.abort();
+        }
+    }
+
     #[test]
     fn a_workspace_replica_is_held_only_for_that_workspace_s_jobs() {
         let root = tempfile::tempdir().unwrap();

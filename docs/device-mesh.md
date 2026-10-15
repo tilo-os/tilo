@@ -139,7 +139,14 @@ replica process keeps its stores open, so the worker reads a version's file
 beside it without opening the store, found by the requester's locator and
 used only when the bytes hash to the digest and match the proof; a partly
 hydrated or replaced file is fetched instead. Versions of 1 MiB or less are
-loose blobs inside the store's database and are fetched too.
+loose blobs inside the store's database, so the worker asks the replica for
+them: each workspace's replica serves its own store, read-only and
+owner-only, on `replica-content.sock` in that workspace's cache directory
+(`fs::replica_content`). It answers only versions wholly on the device,
+checked against their manifest and at most 1 MiB, a few reads at a time; the
+worker trusts the answer no further than for a file it read itself (digest
+and proof), and a replica that is not serving means those inputs are
+fetched, as before.
 `InputTransfer` reports fetched and held inputs separately; the
 `offloadable_action` and `compute_content` relay tests print both timings.
 On a shared CI runner (requester, relay and worker on one host), offloading

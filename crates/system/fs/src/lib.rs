@@ -100,6 +100,8 @@ pub mod record_transaction;
 #[cfg(feature = "filesystem")]
 pub mod replica_ack;
 #[cfg(feature = "filesystem")]
+pub mod replica_content;
+#[cfg(feature = "filesystem")]
 mod rich_metadata;
 #[cfg(feature = "filesystem")]
 pub mod share_authority;
