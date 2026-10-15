@@ -826,6 +826,11 @@ pub fn action_user_turn(
     )
 }
 
+/// The fewest characters of a resource id a request must hold for it to
+/// name that resource: a uuid or a path, never a short index that any
+/// number in the text could match.
+const MIN_NAMED_ID_CHARS: usize = 8;
+
 /// [`action_user_turn`] listing at most `most` operations: a caller whose
 /// open documents publish many (a section's alignments each) lists more,
 /// so their exports and reads are not cut off.
@@ -837,12 +842,25 @@ pub fn action_user_turn_listing(
     most: usize,
     described: &dyn Fn(&crate::surface::Offer) -> bool,
 ) -> FirstTurn {
-    // A resource the request names is listed on its own; many alike that
-    // it does not name share a line.
+    // A resource the request names, by its label or by its id (what an
+    // earlier step returned, in what the steps answered), is listed
+    // whatever the cap; many alike share a line.
     let lower = rest.to_lowercase();
-    let named = |label: &str| {
+    let label = |label: &str| {
         let label = label.trim().to_lowercase();
         label.chars().count() >= 3 && lower.contains(&label)
+    };
+    let resource = |resource: &str| {
+        let id = resource
+            .split_once(':')
+            .map_or(resource, |(_, id)| id)
+            .trim()
+            .to_lowercase();
+        id.chars().count() >= MIN_NAMED_ID_CHARS && lower.contains(&id)
+    };
+    let named = tools::Naming {
+        resource: &resource,
+        label: &label,
     };
     let summary = tools::catalogue_summary_with(catalogue, revealed, most, described, Some(&named));
     let operations = format!("Operations published right now:\n\n{summary}\n");

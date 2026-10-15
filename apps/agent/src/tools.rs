@@ -58,7 +58,7 @@
 //! tool result, absent from the enum, and unnameable. Nothing in this module
 //! asks a permission question and nothing in it can widen one.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
@@ -827,35 +827,49 @@ pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: u
     catalogue_summary_with(catalogue, revealed, most, &|_| false, None)
 }
 
+/// What a request names, as a [`catalogue_summary_with`] reads it.
+pub struct Naming<'a> {
+    /// Whether the request, or what the task's steps answered, names the
+    /// resource with this id (`video.clip:<id>`): a clip an earlier step
+    /// added, whose id it returned. Its operations are always listed,
+    /// whatever the cap, so the id the model was handed is one it may name.
+    pub resource: &'a dyn Fn(&str) -> bool,
+    /// Whether the request names a resource by this label, with the same
+    /// effect.
+    pub label: &'a dyn Fn(&str) -> bool,
+}
+
 /// [`catalogue_summary`], naming only the operation of an offer
 /// `described` says the request already describes in full (its
 /// parameters shown once, for every resource of its kind): a document's
 /// many resources each list their ids and operation names, not the same
 /// signatures again.
+///
+/// With `named`, many resources of one kind with the same operations (a
+/// timeline's clips, a document's paragraphs) are one line for all of them,
+/// counted once against `most` so one kind cannot crowd the rest out, and
+/// every resource `named` names is listed whatever the cap.
 pub fn catalogue_summary_with(
     catalogue: &Catalogue,
     revealed: &mut Revealed,
     most: usize,
     described: &dyn Fn(&Offer) -> bool,
-    named: Option<&dyn Fn(&str) -> bool>,
+    named: Option<&Naming<'_>>,
 ) -> String {
-    let (apps, shown) = summary_offers(catalogue, most);
+    let groups = named.map(|_| alike_groups(catalogue)).unwrap_or_default();
+    let (apps, shown) = summary_offers(catalogue, most, &groups, named);
     if shown.is_empty() {
         return "No application publishes an operation you may perform right now.\n".into();
     }
     let entries = summary_entries(catalogue, revealed, &apps, &shown, described);
-    // Many resources of one kind with the same operations (a document's
-    // paragraphs, each with its alignments), none of which the request
-    // names: one line for all of them.
+    // A group of look-alike resources: one line for all of them.
     let collapsed = |entry: &SummaryEntry<'_>| {
-        let Some(named) = named else {
-            return false;
-        };
-        let peers: Vec<&SummaryEntry<'_>> = entries
-            .iter()
-            .filter(|other| summary_alike(other) == summary_alike(entry))
-            .collect();
-        peers.len() >= MOST_LISTED_ALIKE && !peers.iter().any(|peer| named(peer.label))
+        named.is_some()
+            && entries
+                .iter()
+                .filter(|other| summary_alike(other) == summary_alike(entry))
+                .count()
+                >= MOST_LISTED_ALIKE
     };
     let mut s = String::new();
     let mut written: Vec<(&str, &str, Vec<&str>)> = Vec::new();
@@ -980,39 +994,132 @@ fn summary_entries<'a>(
     entries
 }
 
-/// The offers a [`catalogue_summary_with`] lists, at most `most`: every
-/// open first, then each application's best in turn, so a large one
-/// cannot crowd the others out; with the applications in order.
-fn summary_offers(catalogue: &Catalogue, most: usize) -> (Vec<&str>, Vec<&Offer>) {
+/// A resource of the catalogue: its application and id.
+type ResourceKey<'c> = (&'c str, &'c str);
+
+/// Resources of one application and kind with the same operations, at
+/// least [`MOST_LISTED_ALIKE`] of them (a timeline's clips, a document's
+/// paragraphs), by the first of each group: the others. Each new clip a
+/// task adds publishes the same twenty operations again; listed one by one
+/// they would fill the summary's cap with one kind.
+fn alike_groups(catalogue: &Catalogue) -> BTreeMap<ResourceKey<'_>, Vec<ResourceKey<'_>>> {
+    let mut resources: Vec<(ResourceKey<'_>, &str, Vec<&str>)> = Vec::new();
+    let mut at: BTreeMap<ResourceKey<'_>, usize> = BTreeMap::new();
+    // An open is always listed on its own, saying what it opens.
+    let opening: BTreeSet<ResourceKey<'_>> = catalogue
+        .offers
+        .iter()
+        .filter(|offer| opened_app(offer).is_some())
+        .map(|offer| (offer.app.as_str(), offer.address().resource.as_str()))
+        .collect();
+    for offer in &catalogue.offers {
+        let key = (offer.app.as_str(), offer.address().resource.as_str());
+        if opening.contains(&key) {
+            continue;
+        }
+        let action = offer.address().action.as_str();
+        if let Some((_, _, actions)) = at.get(&key).and_then(|index| resources.get_mut(*index)) {
+            actions.push(action);
+        } else {
+            at.insert(key, resources.len());
+            resources.push((key, offer.descriptor.resource_kind.as_str(), vec![action]));
+        }
+    }
+    // Alike: the same application, kind and operations in the same order.
+    let mut alike: BTreeMap<(&str, &str, &[&str]), Vec<ResourceKey<'_>>> = BTreeMap::new();
+    for (key, kind, actions) in &resources {
+        alike
+            .entry((key.0, *kind, actions.as_slice()))
+            .or_default()
+            .push(*key);
+    }
+    alike
+        .into_values()
+        .filter(|members| members.len() >= MOST_LISTED_ALIKE)
+        .filter_map(|mut members| {
+            let rest = members.split_off(1);
+            members.pop().map(|head| (head, rest))
+        })
+        .collect()
+}
+
+/// The offers a [`catalogue_summary_with`] lists, at most `most` (counting
+/// a group of look-alike resources, `groups`, once): every open first, then
+/// every resource `named` names, then each application's best in turn, so a
+/// large one cannot crowd the others out; with the applications in order.
+/// A group's head stands for all of it: each of its operations listed is
+/// listed for every resource of the group.
+fn summary_offers<'c>(
+    catalogue: &'c Catalogue,
+    most: usize,
+    groups: &BTreeMap<ResourceKey<'c>, Vec<ResourceKey<'c>>>,
+    named: Option<&Naming<'_>>,
+) -> (Vec<&'c str>, Vec<&'c Offer>) {
     let rank = |offer: &&Offer| match offer.descriptor.kind {
         _ if opened_app(offer).is_some() => 0,
         tilo_actions::OperationKind::Document => 1,
         tilo_actions::OperationKind::View => 2,
         tilo_actions::OperationKind::Effect => 3,
     };
-    // Per application, best first; then round-robin so a large application
-    // cannot crowd the others (or the opens) out of the summary.
-    let mut per_app: std::collections::BTreeMap<&str, Vec<&Offer>> =
-        std::collections::BTreeMap::default();
+    let key = |offer: &'c Offer| (offer.app.as_str(), offer.address().resource.as_str());
+    // The group each resource is in, by its head.
+    let mut head_of: BTreeMap<ResourceKey<'c>, ResourceKey<'c>> = BTreeMap::new();
+    for (head, rest) in groups {
+        for member in rest {
+            head_of.insert(*member, *head);
+        }
+    }
+    // Per application, best first, a group by its head alone; then
+    // round-robin so a large application cannot crowd the others (or the
+    // opens) out of the summary.
+    let mut per_app: BTreeMap<&str, Vec<&Offer>> = BTreeMap::default();
     for offer in &catalogue.offers {
-        per_app.entry(offer.app.as_str()).or_default().push(offer);
+        let offers = per_app.entry(offer.app.as_str()).or_default();
+        if !head_of.contains_key(&key(offer)) {
+            offers.push(offer);
+        }
     }
     for offers in per_app.values_mut() {
         offers.sort_by_key(rank);
     }
-    let mut shown: Vec<&Offer> = catalogue
+    let mut chosen: Vec<&Offer> = catalogue
         .offers
         .iter()
         .filter(|offer| opened_app(offer).is_some())
         .collect();
+    if let Some(named) = named {
+        // Each resource is asked once, by its first offer; a member of a
+        // group pins its head, which stands for all of it.
+        let mut asked: BTreeSet<ResourceKey<'c>> = BTreeSet::new();
+        let mut pinned: BTreeSet<ResourceKey<'c>> = BTreeSet::new();
+        for offer in &catalogue.offers {
+            let resource = key(offer);
+            if asked.insert(resource)
+                && ((named.resource)(resource.1) || (named.label)(&offer.descriptor.resource_label))
+            {
+                pinned.insert(head_of.get(&resource).copied().unwrap_or(resource));
+            }
+        }
+        for offer in &catalogue.offers {
+            if pinned.contains(&key(offer))
+                && opened_app(offer).is_none()
+                && !chosen.iter().any(|seen| std::ptr::eq(*seen, offer))
+            {
+                chosen.push(offer);
+            }
+        }
+    }
     let mut depth = 0;
-    while shown.len() < most {
+    while chosen.len() < most {
         let mut any = false;
         for offers in per_app.values() {
             if let Some(offer) = offers.get(depth) {
                 any = true;
-                if opened_app(offer).is_none() && shown.len() < most {
-                    shown.push(offer);
+                if opened_app(offer).is_none()
+                    && chosen.len() < most
+                    && !chosen.iter().any(|seen| std::ptr::eq(*seen, *offer))
+                {
+                    chosen.push(offer);
                 }
             }
         }
@@ -1020,6 +1127,23 @@ fn summary_offers(catalogue: &Catalogue, most: usize) -> (Vec<&str>, Vec<&Offer>
             break;
         }
         depth += 1;
+    }
+    // Every member of a group takes what its head was listed with.
+    let mut members: BTreeMap<(ResourceKey<'c>, &str), Vec<&Offer>> = BTreeMap::new();
+    for offer in &catalogue.offers {
+        if let Some(head) = head_of.get(&key(offer)) {
+            members
+                .entry((*head, offer.address().action.as_str()))
+                .or_default()
+                .push(offer);
+        }
+    }
+    let mut shown = Vec::with_capacity(chosen.len());
+    for offer in chosen {
+        shown.push(offer);
+        if let Some(rest) = members.get(&(key(offer), offer.address().action.as_str())) {
+            shown.extend(rest.iter().copied());
+        }
     }
     (per_app.keys().copied().collect(), shown)
 }
@@ -2059,6 +2183,129 @@ mod tests {
         assert!(
             none.contains("one of desktop, files, word-processor"),
             "{none}"
+        );
+    }
+
+    /// A timeline whose project publishes a few operations, its exports
+    /// last, and whose `clips` clips each publish the same twenty.
+    fn timeline(clips: usize) -> Catalogue {
+        let mut offers = Vec::new();
+        for action in [
+            "add-clip",
+            "add-title",
+            "read-timeline",
+            "export-video-content",
+        ] {
+            offers.push(offer(
+                "video-editor",
+                "video_editor.project",
+                "video_editor.project",
+                action,
+                action,
+                InputSpec::None,
+            ));
+        }
+        for n in 0..clips {
+            let clip = format!("video.clip:0000c11{n:x}-0000-4000-8000-000000000000");
+            for op in 0..20 {
+                let mut offer = offer(
+                    "video-editor",
+                    &clip,
+                    "video.clip",
+                    &format!("set-op-{op}"),
+                    "Set",
+                    InputSpec::None,
+                );
+                offer.descriptor.resource_label = format!("shot-{n}.mp4");
+                offers.push(offer);
+            }
+        }
+        Catalogue {
+            held: vec!["video-editor"],
+            offers,
+            ..Catalogue::default()
+        }
+    }
+
+    /// Clips that publish the same operations share one line, counted once
+    /// against the cap, so the project's own operations (its export) are
+    /// still listed; every clip's operations may be named.
+    #[test]
+    fn look_alike_resources_share_a_line_and_leave_room_for_the_rest() {
+        let catalogue = timeline(12);
+        let nothing = |_: &str| false;
+        let named = Naming {
+            resource: &nothing,
+            label: &nothing,
+        };
+        let mut revealed = Revealed::new();
+        let summary =
+            catalogue_summary_with(&catalogue, &mut revealed, 30, &|_| false, Some(&named));
+        assert!(
+            summary.contains("In video-editor: 12 video.clip resources — video.clip:0000c110-"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("  <resource>#set-op-19 — Set"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("video_editor.project#export-video-content"),
+            "the project's export is not crowded out: {summary}"
+        );
+        assert!(revealed.contains("video.clip:0000c11b-0000-4000-8000-000000000000#set-op-19"));
+        assert_eq!(
+            summary.matches("#set-op-3 ").count(),
+            1,
+            "one line per operation for all the clips: {summary}"
+        );
+        // Without naming (the task loop), the cap applies as before.
+        let mut plain = Revealed::new();
+        let summary = catalogue_summary(&catalogue, &mut plain, 30);
+        assert!(!summary.contains("12 video.clip resources"), "{summary}");
+    }
+
+    /// A clip an earlier step returned the id of is listed whatever the
+    /// cap, and so is one the request names by its label; others past the
+    /// cap are not.
+    #[test]
+    fn a_resource_named_by_its_id_is_listed_past_the_cap() {
+        let mut catalogue = timeline(3);
+        for offer in &mut catalogue.offers {
+            // Three clips that are not alike: each its own operations.
+            if let Some(n) = offer.descriptor.resource_label.strip_prefix("shot-") {
+                let n = n.trim_end_matches(".mp4").to_owned();
+                offer.descriptor.address.action =
+                    format!("{}-{n}", offer.descriptor.address.action);
+            }
+        }
+        let task =
+            "Fade out the clip the step added: {\"clip\":\"0000c112-0000-4000-8000-000000000000\"}";
+        let lower = task.to_lowercase();
+        let resource = |resource: &str| {
+            resource
+                .split_once(':')
+                .is_some_and(|(_, id)| lower.contains(&id.to_lowercase()))
+        };
+        let label = |label: &str| label == "shot-1.mp4";
+        let named = Naming {
+            resource: &resource,
+            label: &label,
+        };
+        let mut revealed = Revealed::new();
+        let summary =
+            catalogue_summary_with(&catalogue, &mut revealed, 10, &|_| false, Some(&named));
+        assert!(
+            revealed.contains("video.clip:0000c112-0000-4000-8000-000000000000#set-op-19-2"),
+            "{summary}"
+        );
+        assert!(
+            revealed.contains("video.clip:0000c111-0000-4000-8000-000000000000#set-op-19-1"),
+            "{summary}"
+        );
+        assert!(
+            !revealed.contains("video.clip:0000c110-0000-4000-8000-000000000000#set-op-19-0"),
+            "{summary}"
         );
     }
 

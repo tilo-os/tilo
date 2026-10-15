@@ -4547,6 +4547,99 @@ pub(crate) mod tests {
         assert!(empty.text().is_empty() && empty.shown.is_empty());
     }
 
+    /// A video project open with `clips` clips on its timeline, each
+    /// publishing the same 25 operations, beside the project's own; the
+    /// reference is what an empty project publishes.
+    fn timeline_context(clips: usize) -> PlanContext {
+        use tilo_actions::OperationKind;
+        let app = "so.tilo.video-editor";
+        let mut project: Vec<ActionDescriptor> = ["add-clip", "add-title", "move-clip"]
+            .into_iter()
+            .map(|action| {
+                operation(
+                    "video_editor.project",
+                    action,
+                    OperationKind::Document,
+                    vec![],
+                )
+            })
+            .collect();
+        project.push(operation(
+            "video_editor.project",
+            "export-video-content",
+            OperationKind::Effect,
+            vec![],
+        ));
+        let mut published = project.clone();
+        for n in 0..clips {
+            for op in 0..25 {
+                let action = if op == 0 {
+                    "set-fade-out".to_owned()
+                } else {
+                    format!("set-op-{op}")
+                };
+                let mut clip = operation(
+                    &format!("video.clip:{n:08x}-1111-4000-8000-000000000000"),
+                    &action,
+                    OperationKind::Document,
+                    vec![],
+                );
+                clip.resource_kind = "video.clip".into();
+                clip.resource_label = format!("Clip {n}");
+                published.push(clip);
+            }
+        }
+        PlanContext {
+            open: vec![(route(app, "v1"), published)],
+            apps: vec![app.into()],
+            reference: vec![(app.into(), project)],
+            room: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
+            ..PlanContext::default()
+        }
+    }
+
+    /// Clips a plan's steps added publish many operations each: a re-plan
+    /// lists the clip whose id an earlier step returned, and every clip's
+    /// operations in one line each, so the project's export is not crowded
+    /// out; the cached reference stays the same bytes as before the clips.
+    #[test]
+    fn a_replan_lists_the_clips_earlier_steps_added_beside_the_projects_export() {
+        let mut context = timeline_context(40);
+        context.request = Some("cut the promo and fade the last clip out".into());
+        context.observed = vec![
+            "so.tilo.video-editor video_editor.project#add-clip answered              {\"clip\":\"00000027-1111-4000-8000-000000000000\",\"track\":\"V1\"}"
+                .into(),
+        ];
+        let (offered, _) = catalogue(&context);
+        assert!(offered.offers.len() > 10 * MOST_PUBLISHED);
+        let briefed = briefing(&context, &offered);
+        let mut revealed = tilo_agent::tools::Revealed::new();
+        let task = with_results("fade the last clip out, then export", &context);
+        let turn = first_turn(&task, &briefed, &offered, &mut revealed);
+        assert!(
+            revealed.contains("video.clip:00000027-1111-4000-8000-000000000000#set-fade-out"),
+            "the clip the step returned may be named"
+        );
+        assert!(
+            revealed.contains("video.clip:00000003-1111-4000-8000-000000000000#set-op-24"),
+            "every clip's operations are listed in their line"
+        );
+        assert!(
+            revealed.contains("video_editor.project#export-video-content"),
+            "the project's export is not crowded out: {turn}"
+        );
+        assert!(
+            turn.contains("40 video.clip resources"),
+            "the clips share a line: {turn}"
+        );
+        let before = briefing(&timeline_context(0), &catalogue(&timeline_context(0)).0);
+        assert_eq!(
+            briefed.reference, before.reference,
+            "the cached prefix is stable"
+        );
+        assert!(turn.starts_with(&briefed.reference));
+    }
+
     /// The reference is the same bytes whatever the task, the records open
     /// and what they hold — only the apps granted shape it — and stays
     /// within its budget per app, document operations first.
