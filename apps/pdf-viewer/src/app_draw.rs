@@ -220,7 +220,12 @@ impl PdfApp {
         let cy = tb.center().y;
         let row =
             |x0: f64, width: f64| Rect::new(x0, cy - control / 2.0, x0 + width, cy + control / 2.0);
-        let toggle_sidebar = row(tb.x1 - inset - control, control);
+        let trailing = if self.history.is_shown() {
+            self.history_rect().x0 - related
+        } else {
+            tb.x1 - inset
+        };
+        let toggle_sidebar = row(trailing - control, control);
         let search = row(toggle_sidebar.x0 - related - control, control);
         let zoom = row(search.x0 - cluster - self.zoom_w, self.zoom_w);
         let zoom_out = Rect::new(zoom.x0, zoom.y0, zoom.x0 + zoom.height(), zoom.y1);
@@ -239,6 +244,20 @@ impl PdfApp {
             search,
             toggle_sidebar,
         }
+    }
+
+    fn history_rect(&self) -> Rect {
+        if !self.history.is_shown() {
+            return Rect::ZERO;
+        }
+        let theme = &self.layout_theme;
+        let side = ButtonFace::height(ControlSize::Regular, theme)
+            .max(f64::from(theme.tokens.metrics.min_pointer_target));
+        let x1 = self.toolbar_rect.x1 - f64::from(theme.tokens.spacing.s3);
+        Rect::from_center_size(
+            Point::new(x1 - side / 2.0, self.toolbar_rect.center().y),
+            (side, side),
+        )
     }
 
     /// Carry the reader's state onto the toolbar's commands (which tool is
@@ -953,7 +972,12 @@ impl PdfApp {
         // on a page whose layer isn't here yet asks for it inside
         // `begin_selection`; a search asks for every page in
         // `recompute_matches`, so the visible ones are usually here already.
-        let need = self.selection.is_some() || !self.raster_matches.is_empty();
+        let need = self.selection.is_some()
+            || !self.raster_matches.is_empty()
+            || self
+                .drag
+                .as_ref()
+                .is_some_and(|drag| drag.tool == Tool::Highlight);
         if !need {
             self.raster_text.clear();
             return;
@@ -1154,14 +1178,15 @@ impl PdfApp {
             let col = render::swatch_color(self.swatch);
             match d.tool {
                 Tool::Highlight => {
-                    let r = PtRect::from_corners(d.start.0, d.start.1, d.cur.0, d.cur.1);
-                    let scr = Rect::new(
-                        origin.x + r.x * self.zoom(),
-                        origin.y + r.y * self.zoom(),
-                        origin.x + (r.x + r.w) * self.zoom(),
-                        origin.y + (r.y + r.h) * self.zoom(),
-                    );
-                    render::draw_highlight_preview(scene, base, col, scr);
+                    for r in self.highlight_geometry(d).0 {
+                        let scr = Rect::new(
+                            origin.x + r.x * self.zoom(),
+                            origin.y + r.y * self.zoom(),
+                            origin.x + (r.x + r.w) * self.zoom(),
+                            origin.y + (r.y + r.h) * self.zoom(),
+                        );
+                        render::draw_highlight_preview(scene, base, col, scr);
+                    }
                 }
                 Tool::Ink if d.points.len() >= 2 => {
                     let points: Vec<Point> = d
@@ -1606,6 +1631,8 @@ impl PdfApp {
         let presence = PresenceCtx::empty();
         presence.viewport.set(Some(self.rect));
         self.toolbar.draw(scene, base, tr, theme, &presence);
+        self.history
+            .paint(scene, base, tr, theme, self.history_rect());
     }
 
     // ---- find bar ---------------------------------------------------
@@ -1884,6 +1911,12 @@ impl PdfApp {
         }
     }
 
+    /// Comments are reader chrome, not fixed-size PDF content. The editor
+    /// applies accessibility text scale itself; its body size needs UI scale.
+    fn comment_body_size(theme: &Theme) -> f32 {
+        theme.text(TextRole::Body).size / theme.text_scale
+    }
+
     /// The height `blocks` take shown at `width`, measured with the view
     /// that draws them.
     fn comment_view_height(
@@ -1893,11 +1926,12 @@ impl PdfApp {
         blocks: &[ui::widget::BlockContent],
         width: f64,
     ) -> f64 {
-        // Only the type scale reaches layout; colours are the painting theme's.
         let theme = self.layout_theme.clone();
         let rect = self.rich_text_rect(tr, 0.0, 0.0, width);
         let mut views = self.comment_views.borrow_mut();
         let view = views.entry(key).or_default();
+        view.editor_mut()
+            .set_body_size(Self::comment_body_size(&theme));
         view.show(blocks);
         view.layout(rect, &theme, tr)
     }
@@ -1916,12 +1950,15 @@ impl PdfApp {
     /// exactly. Measured once per text scale.
     fn rich_text_inset(&self, tr: &mut TextRenderer) -> f64 {
         let theme = &self.layout_theme;
-        if let Some((scale, inset)) = self.rich_inset.get()
-            && (scale - theme.text_scale).abs() < f32::EPSILON
+        if let Some(((text_scale, ui_scale), inset)) = self.rich_inset.get()
+            && (text_scale - theme.text_scale).abs() < f32::EPSILON
+            && (ui_scale - theme.ui_scale).abs() < f32::EPSILON
         {
             return inset;
         }
         let mut view = RichTextView::new();
+        view.editor_mut()
+            .set_body_size(Self::comment_body_size(theme));
         view.show(&[ui::widget::BlockContent::paragraph("inset", "Inset")]);
         view.layout(Rect::new(0.0, 0.0, 240.0, 0.0), theme, tr);
         let origin = view.rect().x0;
@@ -1931,7 +1968,8 @@ impl PdfApp {
             .first()
             .map_or(0.0, |block| block.line.caret_rect(theme, 0).x0 - origin)
             .max(0.0);
-        self.rich_inset.set(Some((theme.text_scale, inset)));
+        self.rich_inset
+            .set(Some(((theme.text_scale, theme.ui_scale), inset)));
         inset
     }
 
@@ -2228,6 +2266,8 @@ impl PdfApp {
         } else {
             let mut views = self.comment_views.borrow_mut();
             let view = views.entry(comment_view_key(&cm.id, None)).or_default();
+            view.editor_mut()
+                .set_body_size(Self::comment_body_size(theme));
             view.show(&cm.blocks);
             view.set_text_color(cm.resolved.then_some(theme.text_dim));
             view.layout(text_rect, theme, tr);
@@ -2274,6 +2314,8 @@ impl PdfApp {
             let view = views
                 .entry(comment_view_key(&cm.id, Some(&r.id)))
                 .or_default();
+            view.editor_mut()
+                .set_body_size(Self::comment_body_size(theme));
             view.show(&r.blocks);
             view.set_text_color(cm.resolved.then_some(theme.text_dim));
             view.layout(rect, theme, tr);
@@ -2457,10 +2499,16 @@ impl PdfApp {
         y = mode.y1 + f64::from(rhythm.sibling);
         let compose = Rect::new(x0, y, x1, y + self.sig_compose_h());
         y = compose.y1 + f64::from(rhythm.sibling);
-        let caption = f64::from(theme.text(TextRole::Caption).line_height_px());
         let hint_y = y;
         if self.tool == Tool::Sign {
-            y += caption + f64::from(rhythm.related);
+            let (_, height) = ui::text_render::with_layout_renderer(theme.text_scale, |tr| {
+                tr.measure_style(
+                    SIGNATURE_PLACE_HINT,
+                    Some((x1 - x0).max(1.0) as f32),
+                    &theme.text(TextRole::Caption),
+                )
+            });
+            y += f64::from(height) + f64::from(rhythm.related);
         }
         let place = Rect::new(x0, y, x1, y + control);
         y = place.y1 + f64::from(rhythm.group);
@@ -2646,7 +2694,6 @@ impl PdfApp {
     ) {
         Self::paint_compose_well(scene, base, theme, card, self.sig_stroke.is_some());
         self.sig_pad_rect = card;
-        let pad = f64::from(theme.tokens.spacing.s3);
         if self.sig_strokes.is_empty() && self.sig_stroke.is_none() {
             let hint = "Draw your signature here";
             let style = theme.text(TextRole::Body);
@@ -2673,7 +2720,7 @@ impl PdfApp {
                 tr,
                 base,
                 theme.text_primary,
-                card.inset(-pad),
+                self.signature_ink_rect(),
                 &SignatureInk::Drawn { strokes },
                 "",
             );
@@ -2714,7 +2761,7 @@ impl PdfApp {
         if arming {
             tr.draw_style(
                 scene,
-                "Click on a page to place your signature.",
+                SIGNATURE_PLACE_HINT,
                 theme.text_dim,
                 base * Affine::translate((geo.place.x0, geo.hint_y)),
                 Some(geo.place.width() as f32),
@@ -2910,6 +2957,8 @@ impl PdfApp {
         scene.pop_layer();
     }
 }
+
+const SIGNATURE_PLACE_HINT: &str = "Click on a page to place your signature.";
 
 /// Where the fixed parts of the Signatures panel sit.
 struct SignatureGeometry {

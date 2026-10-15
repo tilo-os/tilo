@@ -353,18 +353,6 @@ impl PdfApp {
         if !self.show_sidebar || !self.sidebar_rect.contains(p) {
             return false;
         }
-        // In draw mode, a press inside the signature pad begins a freehand
-        // stroke (tracked through CursorMoved / release) rather than hitting a
-        // control beneath it.
-        if self.sidebar_tab == SidebarTab::Signatures
-            && self.sig_mode == SigMode::Draw
-            && self.sig_pad_rect != Rect::ZERO
-            && self.sig_pad_rect.contains(p)
-        {
-            self.sig_stroke = Some(vec![self.sig_pad_norm(p)]);
-            self.dirty = true;
-            return true;
-        }
         let mut chosen: Option<SidebarHit> = None;
         let mut best_area = f64::MAX;
         for (hit, r) in &self.sidebar_hits {
@@ -377,6 +365,15 @@ impl PdfApp {
             }
         }
         let Some(hit) = chosen else {
+            // Controls painted on the pad (Clear) win before drawing starts.
+            if self.sidebar_tab == SidebarTab::Signatures
+                && self.sig_mode == SigMode::Draw
+                && self.sig_pad_rect != Rect::ZERO
+                && self.sig_pad_rect.contains(p)
+            {
+                self.sig_stroke = Some(vec![self.sig_pad_norm(p)]);
+                self.dirty = true;
+            }
             // Empty sidebar space still swallows the click.
             return true;
         };
@@ -428,7 +425,13 @@ impl PdfApp {
             SidebarHit::DeleteComment(id) => {
                 self.delete_target(&DeleteTarget::Comment(id), state);
             }
-            SidebarHit::AddSignature => self.set_tool(Tool::Sign),
+            SidebarHit::AddSignature => {
+                if self.tool == Tool::Sign {
+                    self.set_tool(Tool::Select);
+                } else if self.composed_ink().is_some() {
+                    self.set_tool(Tool::Sign);
+                }
+            }
             SidebarHit::SigMode(mode) => {
                 // Switching between typing and drawing keeps whatever the other
                 // mode composed; only the in-progress stroke is dropped.
@@ -524,6 +527,9 @@ impl PdfApp {
                     self.dirty = true;
                 }
                 Tool::Highlight | Tool::Ink => {
+                    if self.tool == Tool::Highlight {
+                        self.ensure_raster_text(page);
+                    }
                     self.drag = Some(DragState {
                         tool: self.tool,
                         page,
@@ -1762,13 +1768,9 @@ mod event_tests {
         ) -> Vec<(SidebarHit, Rect)> {
             let mut scene = vello::Scene::new();
             let mut er = Rect::ZERO;
-            self.app.draw_sidebar(
-                &mut scene,
-                Affine::IDENTITY,
-                tr,
-                &ui::theme::Theme::dark(),
-                &mut er,
-            )
+            let theme = self.app.layout_theme.clone();
+            self.app
+                .draw_sidebar(&mut scene, Affine::IDENTITY, tr, &theme, &mut er)
         }
     }
 
@@ -1791,6 +1793,74 @@ mod event_tests {
         }
         out.retain(|(_, r)| r.width() > 0.0 && r.height() > 0.0);
         out
+    }
+
+    #[test]
+    fn signature_pad_controls_and_ink_follow_the_scaled_pointer() {
+        for scale in [1.0_f32, 1.5, 2.0] {
+            let mut rig = Rig::new();
+            rig.app.layout_theme = Theme::dark().with_ui_scale(scale);
+            rig.app.rect = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+            rig.app.reconcile_overlay();
+            rig.app.reflow();
+            rig.app.sidebar_tab = SidebarTab::Signatures;
+            rig.app.sig_mode = SigMode::Draw;
+            let mut text = TextRenderer::new();
+            rig.app.sidebar_hits = rig.draw_sidebar(&mut text);
+            let ink = rig.app.signature_ink_rect();
+            let point = Point::new(ink.x0 + ink.width() * 0.3, ink.y0 + ink.height() * 0.7);
+            rig.move_to((point.x, point.y));
+            rig.press();
+            let start = rig.app.sig_stroke.as_ref().unwrap()[0];
+            assert!((start.0 - 0.3).abs() < 1e-6, "ink follows x at {scale}×");
+            assert!((start.1 - 0.7).abs() < 1e-6, "ink follows y at {scale}×");
+            rig.move_to((point.x + ink.width() * 0.2, point.y));
+            rig.release();
+            assert!(!rig.app.sig_strokes.is_empty());
+            rig.app.sidebar_hits = rig.draw_sidebar(&mut text);
+            let clear = rig
+                .app
+                .sidebar_hits
+                .iter()
+                .find(|(hit, _)| matches!(hit, SidebarHit::SigClear))
+                .unwrap()
+                .1
+                .center();
+            rig.move_to((clear.x, clear.y));
+            rig.press();
+            rig.release();
+            assert!(
+                rig.app.sig_strokes.is_empty(),
+                "Clear removes ink at {scale}×"
+            );
+            assert!(
+                rig.app.sig_stroke.is_none(),
+                "Clear does not begin a stroke"
+            );
+
+            rig.app.sig_mode = SigMode::Type;
+            rig.app.set_tool(Tool::Sign);
+            rig.app.sidebar_hits = rig.draw_sidebar(&mut text);
+            let geo = rig.app.signature_geometry(rig.app.sidebar_body());
+            let (_, hint_h) = text.measure_style(
+                SIGNATURE_PLACE_HINT,
+                Some(geo.place.width() as f32),
+                &rig.app.layout_theme.text(TextRole::Caption),
+            );
+            assert!(
+                geo.hint_y + f64::from(hint_h) <= geo.place.y0,
+                "wrapped placement hint clears Cancel at {scale}×"
+            );
+            let cancel = geo.place.center();
+            rig.move_to((cancel.x, cancel.y));
+            rig.press();
+            rig.release();
+            assert_eq!(
+                rig.app.tool,
+                Tool::Select,
+                "Cancel disarms signing at {scale}×"
+            );
+        }
     }
 
     #[test]
