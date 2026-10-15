@@ -1762,6 +1762,18 @@ pub trait Widget {
         None
     }
 
+    /// [`Self::accessibility`] with its synthetic children shared, for a
+    /// widget that keeps them between frames: each child it did not change
+    /// is handed over as the very `Arc` of the last frame, which the
+    /// semantic tree takes as unchanged without copying or comparing it.
+    ///
+    /// `None` (the default) means "read [`Self::accessibility`]". A widget
+    /// that answers `Some` must answer `accessibility()` with the same node,
+    /// its children owned ([`SharedAccessNode::into_owned`](crate::a11y::SharedAccessNode::into_owned)).
+    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+        None
+    }
+
     /// Whether [`Self::accessibility`] reports this subtree hidden, for a
     /// host that asks it of every node to prune focus traversal. Widgets
     /// whose node is costly to build (text values, per-block children) and is
