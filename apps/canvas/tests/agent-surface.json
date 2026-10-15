@@ -846,7 +846,7 @@
                           "string",
                           "null"
                         ],
-                        "description": "`start`, `center` or `end` at `x`."
+                        "description": "`start`, `center` or `end` at `x`, or in `width`."
                       },
                       "line_height": {
                         "type": [

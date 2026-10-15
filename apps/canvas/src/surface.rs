@@ -2892,6 +2892,7 @@ impl CanvasSurface {
             size,
             line_height,
             align,
+            width,
             ..
         } = &session.shape
         else {
@@ -2925,9 +2926,12 @@ impl CanvasSurface {
         };
         let prefix = measure(text, words.get(line_start..caret).unwrap_or_default());
         let whole = measure(text, words.get(line_start..line_end).unwrap_or_default());
-        let left = match align.as_deref() {
-            Some("center") => x - whole / 2.0,
-            Some("end") => x - whole,
+        // With a width the line aligns within its box, as it is drawn.
+        let left = match (width, align.as_deref()) {
+            (None, Some("center")) => x - whole / 2.0,
+            (None, Some("end")) => x - whole,
+            (Some(width), Some("center")) => x + (width - whole) / 2.0,
+            (Some(width), Some("end")) => x + width - whole,
             _ => *x,
         };
         let leading = size * line_height.unwrap_or(1.2);
