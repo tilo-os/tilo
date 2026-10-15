@@ -4,7 +4,9 @@
 //! signed packages and content digests, while results contain only output
 //! digests and a tightly bounded diagnostic tail. The relay derives the
 //! sender from the certified connection and persists the exact route binding
-//! before forwarding anything.
+//! before forwarding anything. The bytes behind those digests move on
+//! job-scoped streams of their own ([`crate::compute_content`]), authorised
+//! by the binding persisted here.
 
 #![allow(
     missing_docs,
