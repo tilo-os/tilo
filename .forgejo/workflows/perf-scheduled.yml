@@ -907,7 +907,11 @@ jobs:
   # warm-up, judged but not timed (startup still counts it); the hardware numbers
   # (60 fps encode, hardware decode, a GPU desktop) are a hardware
   # qualification's (kpi-budgets.toml, "A native window on the browser
-  # desktop"). An incorrect stream fails the job and records nothing.
+  # desktop"). After the timed run it drives the acceptance cases
+  # (scripts/perf/native_stream_acceptance.mjs: focus, paste, IME, resize, the
+  # HTTPS fallback, a viewer without control, a dropped live plane, no typing
+  # into a stale window) with a second window, device and person. An
+  # incorrect stream or a broken case fails the job and records nothing.
   stream:
     needs: [plan, builder]
     if: needs.plan.outputs.stream == 'true'
