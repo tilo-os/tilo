@@ -244,14 +244,80 @@ build is that signer.
 
 ## Windows
 
-t has no Windows workers. Only `release-imager.yml`'s `windows` job needs Windows: it builds the
-imager for `*-pc-windows-msvc`, runs its tests, packages it with Inno Setup, signs it with
-Authenticode and smoke-tests the installed app and `winget validate`. Building already works from
-Linux (`dev-windows-arm64.yml` cross-compiles with cargo-xwin); Inno Setup runs under Wine;
-Authenticode signing works from Linux with jsign against a KMS or Azure Trusted Signing key. Only
-the native tests, the installed-app smoke test and `winget validate` need a real Windows machine.
-Until t has one, that part stays on a Windows Forgejo runner, or runs in a Windows VM on a KVM
-node.
+t has no Windows workers, and builds, packages and signs the imager for Windows without one,
+from Linux:
+
+| check | what | runs on |
+|---|---|---|
+| `build/windows-sdk-<arch>` | the MSVC CRT and Windows SDK cargo-xwin uses, at the versions pinned in `tools/ci/windows/xwin-env.sh` | any node |
+| `build/windows-<arch>` | `imager.exe` for `<arch>-pc-windows-msvc` with `host-media-writer`, as the release ships it | any node |
+| `build/windows-<arch>-tests` | the imager's unit-test executable | any node |
+| `package/windows-<arch>` | unsigned `tilo-imager-windows-<arch>.exe`, `.zip` and `tilo-imager-setup-windows-<arch>.exe` (Inno Setup under Wine), with digests | x86_64 |
+| `package/windows-winget` | both installers in one WinGet manifest set, validated against WinGet's JSON schemas | any node |
+| `wine/windows-x86_64-tests` | the unit tests under Wine, less those `tools/ci/windows/wine-skip.txt` lists with the reason (135 of 185 run) | x86_64 |
+| `wine/windows-x86_64-install` | the installer installing silently (files, Start menu entry, the packaged EXE byte for byte), then uninstalling | x86_64 |
+| `sign/windows-<arch>` | Authenticode on `tag:imager-v*`: checks the build's digest against the package's, then signs the EXE and the installer with jsign | x86_64, release nodes |
+
+`<arch>` is `x86_64` or `aarch64`. They are `default = false`: run them with
+`t test 'build/windows-*'` and so on, or as the needs of the signing checks on a release tag.
+
+**Toolchain.** cargo-xwin drives clang-cl and lld-link against the MSVC CRT and Windows SDK
+(the builder image has both MSVC Rust targets, cargo-xwin, and on x86_64 Wine, Inno Setup's
+compiler and jsign). Both arches build with clang-cl against the same pinned SDK; for ARM64,
+ring compiles with plain `clang` whatever it is told, so `tools/ci/windows/build.sh` puts a
+`clang` on PATH that turns clang-cl's include flags into the GNU driver's. Microsoft's license lets anyone download the CRT and SDK for
+building but not redistribute them, so they are not in the builder image, which anyone can
+pull: `build/windows-sdk-<arch>` downloads them into t's store, which only t's nodes read.
+Inno Setup's license allows using and redistributing it, commercially too (its authors ask
+commercial users to buy a license, which is a request, not a condition). Fedora builds Wine for
+x86 only, so everything that runs Windows programs (packaging both arches, the Wine checks) runs
+on x86_64 nodes.
+
+**Signing** needs these secrets, on `tag:imager-v*` and for `release` nodes only:
+
+| name | what |
+|---|---|
+| `TILO_AUTHENTICODE_KMS_KEY` | the ARN of the signing key, an asymmetric `RSA_3072` (or larger) `SIGN_VERIFY` key in AWS KMS, e.g. `arn:aws:kms:<region>:<account>:alias/tilo-authenticode-signing` |
+| `TILO_AUTHENTICODE_CERT_CHAIN` | the code-signing certificate a CA issued for that key, then its intermediates, PEM |
+| `TILO_WINDOWS_PUBLISHER` | the certificate's subject as `keytool -printcert` shows it (`CN=…, O=…, L=…, C=…`); signing refuses a chain whose leaf has another |
+| `TILO_SIGNING_AWS_ACCESS_KEY_ID`, `TILO_SIGNING_AWS_SECRET_ACCESS_KEY` | the release signing IAM user, also allowed `kms:Sign` on that key |
+
+`TILO_AUTHENTICODE_TIMESTAMP_URL` overrides the timestamp service (DigiCert's by default).
+The builder image carries no OpenSSL (`os/tests/no_openssl_runtime.sh`), so the signing check
+does not verify the signatures it makes. Windows has to (`signtool verify /pa` and
+`Get-AuthenticodeSignature`, as `package-host.ps1` does after signing today), as part of the
+smoke test below.
+CAs issue code-signing certificates only for keys in a hardware module (FIPS 140-2 level 2 or
+better), which a KMS key is; the CSR is made by signing it with the KMS key (for example with
+`aws-kms-pkcs11` and OpenSSL), and the CA may ask for proof the key is in KMS. Without a CA,
+Azure Trusted Signing issues and holds the certificate, and jsign signs with it the same way
+(`--storetype TRUSTEDSIGNING`). This replaces the signer program the Windows runners lease
+today, so the key and certificate are new.
+
+**What still needs Windows.** Wine is not Windows, and these stay with a real machine:
+
+- the native unit tests on both arches, above all aarch64 (Wine runs x86 programs only here),
+  and the 46 tests `wine-skip.txt` lists: Wine gives no local-disk evidence for its volumes,
+  does not protect or inherit NTFS ACLs, and has no privileged writer or identity services;
+- running the installed imager (its screenshot), on both arches: its storage publishes only to
+  volumes that prove they are local disks, which Wine's do not; and the aarch64 installer's
+  smoke test altogether (`test-package-host.ps1`, `test-package-architecture.ps1`);
+- verifying the signed EXE and installer (`signtool verify /pa`, the publisher's subject);
+- `winget validate`, which also checks what the schemas can't.
+
+The options: keep `release-imager.yml`'s `windows` job for these alone, fed by t's signed
+artifacts instead of building its own; or run them in a Windows VM on a KVM node (Windows 11
+x64 and ARM64 evaluation images, under QEMU with `/dev/kvm` for x64, and slowly under TCG or on
+an arm64 KVM node for ARM64), as a check with `requires = ["/dev/kvm"]` that boots the VM,
+copies the artifacts in over SSH and runs the scripts.
+
+**What is not ported.** The release job also takes the desktop and release catalogs from the
+`catalog` job and publishes the WinGet pull request (`publish-winget.sh`); those belong to the
+imager's release chain on t. Until then these checks run beside the Forgejo workflows as a shadow, which stay as they are.
+Once a release tag has produced signed artifacts on t that match the Windows runners', a
+prepared cutover (with sign-off) can drop the build, test, package and sign steps of
+`release-imager.yml`'s `windows` job (keeping only what still needs Windows, above), and
+`dev-windows-arm64.yml` with `.forgejo/actions/setup-windows-arm64-cross`.
 
 ## What t doesn't do yet
 
