@@ -159,6 +159,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn saving_a_choice_never_waits_for_the_disk() {
+        use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state/tilo/search-usage.tsv");
         let mut frecency = Frecency::default();
@@ -171,7 +172,6 @@ mod tests {
         });
         crate::shell::durable_writer::global().flush();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
-        use std::os::unix::fs::PermissionsExt as _;
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "the usage record is private");
     }

@@ -52,7 +52,8 @@ pub(crate) mod device_pairing;
 pub mod device_unlock;
 pub mod device_unlock_runtime;
 pub mod device_wake;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) mod disk_sync_guard;
 pub mod display_bars;
 pub mod display_confirm;
