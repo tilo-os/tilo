@@ -511,6 +511,45 @@ type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
 type Importer = Box<dyn Fn(&PathBuf, &[u8]) -> Result<MintedIdentity, String> + Send>;
 type Exporter = Box<dyn Fn(&PathBuf, &PathBuf, &[u8]) -> Result<(), String> + Send>;
 
+/// An identity handler, called on the identity worker's thread.
+type Shared<T> = Arc<Mutex<T>>;
+
+/// The outcome of identity work, which says what the work was.
+enum IdentityDone {
+    Mint(Result<MintedIdentity, String>),
+    RetryMint(Result<MintedIdentity, String>),
+    Import(Result<MintedIdentity, String>),
+    /// The destination the backup was written to.
+    Export(Result<PathBuf, String>),
+}
+
+/// Identity work running off the compositor's loop.
+///
+/// Minting, importing and exporting the identity generate or unwrap keys,
+/// talk to the secret store, stretch a passphrase on purpose and fsync the
+/// records they write: seconds under I/O pressure, at first boot when the
+/// disk is busiest. The work runs on its own thread and `sync` takes its
+/// outcome on a later frame ([`OnboardingView::settle_identity_work`]); the
+/// crash journal is still written ahead of it and after it, in order.
+struct IdentityWork {
+    /// Set once by the worker, taken by `sync`.
+    outcome: Arc<Mutex<Option<IdentityDone>>>,
+}
+
+impl IdentityWork {
+    fn reported(&self) -> bool {
+        self.outcome.lock().is_ok_and(|outcome| outcome.is_some())
+    }
+}
+
+/// Mint (or re-open) the identity with `minter`, on the identity worker.
+fn mint_with(minter: &Shared<Minter>) -> Result<MintedIdentity, String> {
+    minter
+        .lock()
+        .map_err(|_| "identity creation is unavailable".to_string())
+        .and_then(|minter| (*minter)())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PickerPurpose {
     ImportIdentity,
@@ -637,9 +676,14 @@ pub struct OnboardingView {
     /// mode starts on restore and never exposes the create-new branch, while
     /// still allowing a keyring unlock retry.
     recovery_only: bool,
-    minter: Minter,
-    importer: Importer,
-    exporter: Exporter,
+    minter: Shared<Minter>,
+    importer: Shared<Importer>,
+    exporter: Shared<Exporter>,
+    /// Identity work the worker thread is doing, if any. While it runs,
+    /// actions that write the journal wait, still pressed, and Back and the
+    /// acknowledgement hold still, so its outcome lands on the step that
+    /// asked for it.
+    identity_work: Option<IdentityWork>,
     /// Set when minting failed, shown in place of the success screen — loud,
     /// since booting on into a desktop that silently has no identity is what this flow replaces.
     error: Option<String>,
@@ -921,9 +965,10 @@ impl OnboardingView {
             semantic: Rc::default(),
             context,
             recovery_only: false,
-            minter,
-            importer,
-            exporter,
+            minter: Arc::new(Mutex::new(minter)),
+            importer: Arc::new(Mutex::new(importer)),
+            exporter: Arc::new(Mutex::new(exporter)),
+            identity_work: None,
             error: None,
             backup_error: None,
             backup_saved: None,
@@ -1286,8 +1331,10 @@ impl OnboardingView {
         self.joined_member = false;
         self.portable_backup_only = true;
         self.progress_error = None;
-        // Steps another flow wrote the journal ahead of no longer apply.
+        // Steps another flow wrote the journal ahead of no longer apply, nor
+        // does the outcome of identity work it started.
         self.journal.clear();
+        self.identity_work = None;
         self.tour_page = None;
         self.tour_only = false;
         self.finished = false;
@@ -1508,7 +1555,83 @@ impl OnboardingView {
     /// the journal waits, still pressed, while an earlier change is
     /// outstanding, so journal changes and their steps stay in order.
     fn take_journaled(&self, action: &str) -> bool {
-        self.journal_idle() && self.pressed.take(action)
+        self.journal_idle() && self.identity_idle() && self.pressed.take(action)
+    }
+
+    /// Whether no identity work is running.
+    fn identity_idle(&self) -> bool {
+        self.identity_work.is_none()
+    }
+
+    /// Run `work` on the identity worker; a later `sync` takes its outcome.
+    /// `unstarted` is the outcome when the worker cannot start or the work
+    /// panics: an error the person sees, never a step taken without it.
+    ///
+    /// Without an identity directory nothing behind this view is on disk
+    /// (an injected handler with no journal, as in review renderers), and
+    /// the work runs now, as journal changes do there.
+    fn start_identity_work(
+        &mut self,
+        work: impl FnOnce() -> IdentityDone + Send + 'static,
+        unstarted: fn(String) -> IdentityDone,
+    ) {
+        if self.identity_dir.is_none() {
+            let done = work();
+            self.finish_identity_work(done);
+            return;
+        }
+        if !self.identity_idle() {
+            tracing::error!(target: "tilo::onboarding", "identity work asked for while other identity work runs");
+            return;
+        }
+        let outcome = Arc::new(Mutex::new(None));
+        let reported = Arc::clone(&outcome);
+        // Made on the loop's thread, so it wakes the loop the outcome waits
+        // for; a no-op where no loop installed a wake.
+        let wake = crate::shell::search::invocation_wake::waker();
+        let spawned = std::thread::Builder::new()
+            .name("tilo-identity".into())
+            .spawn(move || {
+                let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+                    .unwrap_or_else(|_| unstarted("identity work failed".into()));
+                if let Ok(mut outcome) = reported.lock() {
+                    *outcome = Some(done);
+                }
+                wake.wake();
+            });
+        match spawned {
+            Ok(_detached) => {
+                self.identity_work = Some(IdentityWork { outcome });
+                self.invalidation.structure();
+            }
+            Err(error) => {
+                tracing::error!(target: "tilo::onboarding", %error, "could not start identity work");
+                self.finish_identity_work(unstarted(error.to_string()));
+            }
+        }
+    }
+
+    /// Take the outcome of identity work that has reported since the last
+    /// frame.
+    fn settle_identity_work(&mut self) {
+        let done = self
+            .identity_work
+            .as_ref()
+            .and_then(|work| work.outcome.lock().ok()?.take());
+        if let Some(done) = done {
+            self.identity_work = None;
+            self.finish_identity_work(done);
+        }
+    }
+
+    fn finish_identity_work(&mut self, done: IdentityDone) {
+        match done {
+            IdentityDone::Mint(minted) => self.finish_mint(minted),
+            IdentityDone::RetryMint(identity) => self.finish_retry(identity),
+            IdentityDone::Import(identity) => self.finish_import(identity),
+            IdentityDone::Export(exported) => self.finish_export(exported),
+        }
+        self.invalidation.structure();
     }
 
     fn finish_ceremony(&mut self) {
@@ -1550,41 +1673,66 @@ impl OnboardingView {
         self.invalidation.structure();
     }
 
-    fn import_identity(&mut self, source: &PathBuf) {
+    fn import_identity(&mut self, source: &std::path::Path) {
         let passphrase = Zeroizing::new(
             self.connect_passphrase
                 .lock()
                 .map(|value| value.as_bytes().to_vec())
                 .unwrap_or_default(),
         );
-        match (self.importer)(source, &passphrase) {
+        let importer = Arc::clone(&self.importer);
+        let source = source.to_path_buf();
+        self.start_identity_work(
+            move || {
+                // The passphrase copy is zeroized when the work drops it.
+                let result = importer
+                    .lock()
+                    .map_err(|_| "identity import is unavailable".to_string())
+                    .and_then(|importer| (*importer)(&source, &passphrase));
+                IdentityDone::Import(result)
+            },
+            |error| IdentityDone::Import(Err(error)),
+        );
+    }
+
+    fn finish_import(&mut self, imported: Result<MintedIdentity, String>) {
+        match imported {
             Ok(identity) => {
                 self.error = None;
-                self.flow.complete_connected(identity);
                 self.identity_ready_page = false;
-                self.journal_then(
-                    JournalChange::Store(PersistedStage::IdentityReady),
-                    AfterJournal::Nothing,
-                );
+                if self.flow.complete_connected(identity) {
+                    self.journal_then(
+                        JournalChange::Store(PersistedStage::IdentityReady),
+                        AfterJournal::Nothing,
+                    );
+                }
                 clear_secret(&self.connect_passphrase);
             }
             Err(error) => {
                 tracing::error!(target: "tilo::onboarding", %error, "identity import failed");
                 self.error = Some(error);
-                self.invalidation.structure();
             }
         }
     }
 
     fn retry_existing_identity(&mut self) {
-        match (self.minter)() {
+        let minter = Arc::clone(&self.minter);
+        self.start_identity_work(
+            move || IdentityDone::RetryMint(mint_with(&minter)),
+            |error| IdentityDone::RetryMint(Err(error)),
+        );
+    }
+
+    fn finish_retry(&mut self, identity: Result<MintedIdentity, String>) {
+        match identity {
             Ok(identity) => {
                 self.error = None;
-                self.flow.complete_connected(identity);
-                self.journal_then(
-                    JournalChange::Store(PersistedStage::IdentityReady),
-                    AfterJournal::Nothing,
-                );
+                if self.flow.complete_connected(identity) {
+                    self.journal_then(
+                        JournalChange::Store(PersistedStage::IdentityReady),
+                        AfterJournal::Nothing,
+                    );
+                }
                 self.invalidation.both();
             }
             Err(error) => {
@@ -1592,30 +1740,86 @@ impl OnboardingView {
                     "onboarding-keyring-unavailable",
                     &[("error", error.into())],
                 ));
-                self.invalidation.structure();
             }
         }
     }
 
     fn mint_identity(&mut self) {
         self.error = None;
-        match (self.minter)() {
+        let minter = Arc::clone(&self.minter);
+        self.start_identity_work(
+            move || IdentityDone::Mint(mint_with(&minter)),
+            |error| IdentityDone::Mint(Err(error)),
+        );
+    }
+
+    fn finish_mint(&mut self, minted: Result<MintedIdentity, String>) {
+        match minted {
             Ok(minted) => {
-                self.flow.complete(minted);
                 self.identity_ready_page = false;
-                self.journal_then(
-                    JournalChange::Store(PersistedStage::IdentityReady),
-                    AfterJournal::Nothing,
-                );
+                // The acknowledgement and Back hold still while the minter
+                // runs, so `complete`'s own `can_create` check still holds.
+                if self.flow.complete(minted) {
+                    self.journal_then(
+                        JournalChange::Store(PersistedStage::IdentityReady),
+                        AfterJournal::Nothing,
+                    );
+                }
             }
             Err(e) => {
                 tracing::error!(target: "tilo::onboarding", error = %e, "identity minting failed");
                 self.error = Some(e);
                 // Stay on the protected step. A failed write is not a
                 // completed identity and must never release the desktop.
-                self.invalidation.structure();
             }
         }
+    }
+
+    /// Write the portable backup of the minted identity to `destination`.
+    fn export_identity(&mut self, destination: PathBuf) {
+        let passphrase = Zeroizing::new(
+            self.backup_passphrase
+                .lock()
+                .map(|value| value.as_bytes().to_vec())
+                .unwrap_or_default(),
+        );
+        let Some(identity) = self.flow.minted().map(|identity| identity.path.clone()) else {
+            self.backup_error = Some("the identity is not ready to back up".to_string());
+            return;
+        };
+        let exporter = Arc::clone(&self.exporter);
+        self.start_identity_work(
+            move || {
+                // The passphrase copy is zeroized when the work drops it.
+                let result = exporter
+                    .lock()
+                    .map_err(|_| "identity backup is unavailable".to_string())
+                    .and_then(|exporter| (*exporter)(&identity, &destination, &passphrase));
+                IdentityDone::Export(result.map(|()| destination))
+            },
+            |error| IdentityDone::Export(Err(error)),
+        );
+    }
+
+    fn finish_export(&mut self, exported: Result<PathBuf, String>) {
+        match exported {
+            Ok(destination) => {
+                self.backup_saved = Some(destination);
+                self.backup_was_verified = true;
+                self.backup_copy_form_open = false;
+                self.journal_then(
+                    JournalChange::Store(PersistedStage::IdentityReadyBackedUp),
+                    AfterJournal::Nothing,
+                );
+                self.backup_error = None;
+                clear_secret(&self.backup_passphrase);
+                clear_secret(&self.backup_confirmation);
+            }
+            Err(error) => {
+                self.backup_error = Some(error);
+            }
+        }
+        self.invalidation.both();
     }
 
     fn progress_notice(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
@@ -3394,8 +3598,10 @@ impl Widget for OnboardingView {
         }
 
         // Steps whose journal changes have reached the disk since the last
-        // frame, before this frame's actions.
+        // frame, and identity work that has reported, before this frame's
+        // actions.
         self.settle_journal();
+        self.settle_identity_work();
 
         let picker_outcome = self
             .picker
@@ -3411,58 +3617,31 @@ impl Widget for OnboardingView {
                         self.connect_source_selected = true;
                         self.error = None;
                     }
-                    PickerPurpose::BackupIdentity => {
-                        let passphrase = Zeroizing::new(
-                            self.backup_passphrase
-                                .lock()
-                                .map(|value| value.as_bytes().to_vec())
-                                .unwrap_or_default(),
-                        );
-                        let export = self.flow.minted().map_or_else(
-                            || Err("the identity is not ready to back up".to_string()),
-                            |identity| (self.exporter)(&identity.path, &path, &passphrase),
-                        );
-                        match export {
-                            Ok(()) => {
-                                self.backup_saved = Some(path);
-                                self.backup_was_verified = true;
-                                self.backup_copy_form_open = false;
-                                self.journal_then(
-                                    JournalChange::Store(PersistedStage::IdentityReadyBackedUp),
-                                    AfterJournal::Nothing,
-                                );
-                                self.backup_error = None;
-                                clear_secret(&self.backup_passphrase);
-                                clear_secret(&self.backup_confirmation);
-                            }
-                            Err(error) => {
-                                self.backup_error = Some(error);
-                            }
-                        }
-                    }
+                    PickerPurpose::BackupIdentity => self.export_identity(path),
                 }
             }
             self.picker = None;
             self.invalidation.both();
         }
 
-        if self.pressed.take(KEY_BEGIN) {
+        if self.pressed.take(KEY_BEGIN) && self.identity_idle() {
             self.flow.begin();
         }
 
-        if self.pressed.take(KEY_EXISTING) {
+        if self.pressed.take(KEY_EXISTING) && self.identity_idle() {
             self.flow.begin_existing();
         }
 
-        if self.pressed.take(KEY_CHOOSE_RESTORE) {
+        if self.pressed.take(KEY_CHOOSE_RESTORE) && self.identity_idle() {
             self.error = None;
             self.flow.choose_restore();
         }
 
         // Choosing the nearby flow is the explicit request to pair, so the
         // screen opens with pairing already under way.
-        let mut start_nearby =
-            self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing;
+        let mut start_nearby = self.pressed.take(KEY_CHOOSE_NEARBY)
+            && self.flow.screen() == Screen::Existing
+            && self.identity_idle();
         if start_nearby {
             self.error = None;
             self.nearby_failure = None;
@@ -3571,6 +3750,7 @@ impl Widget for OnboardingView {
             && self.flow.screen() == Screen::Done
             && !self.identity_ready_page
             && self.picker.is_none()
+            && self.identity_idle()
         {
             self.backup_error = match (
                 self.backup_passphrase.lock(),
@@ -3633,7 +3813,9 @@ impl Widget for OnboardingView {
             }
         }
 
-        if self.pressed.take(KEY_BACK) {
+        // Back is ignored while identity work runs: its outcome belongs to
+        // the step that asked for it.
+        if self.pressed.take(KEY_BACK) && self.identity_idle() {
             self.error = None;
             clear_secret(&self.connect_passphrase);
             self.nearby = None;
@@ -3673,8 +3855,10 @@ impl Widget for OnboardingView {
         }
 
         // The checkbox drives the gate directly rather than being latched, so unticking really does close it again.
+        // The acknowledgement a running mint was started with holds until
+        // the mint reports.
         let understood = read_bool(state, root, KEY_UNDERSTOOD);
-        if understood != self.flow.acknowledged() {
+        if understood != self.flow.acknowledged() && self.identity_idle() {
             self.flow.set_acknowledged(understood);
             self.invalidation.structure();
         }
@@ -4055,12 +4239,13 @@ impl Widget for OnboardingView {
         // The codecs worker and status watcher only raise `codec_changed`,
         // and nearby pairing reports through its child and a status file;
         // nothing wakes the compositor for them, so look while they run.
-        // A journal write wakes the loop when it reports; the poll backs that
-        // up for a loop no wake reaches.
+        // A journal write and identity work wake the loop when they report;
+        // the poll backs that up for a loop no wake reaches.
         let polling = self.codec_running.is_some()
             || self.codec_watching
             || self.nearby.is_some()
-            || !self.journal_idle();
+            || !self.journal_idle()
+            || !self.identity_idle();
         let mut earliest = if polling {
             self.synced_at.checked_add(BACKGROUND_POLL)
         } else {
@@ -4082,6 +4267,10 @@ impl Widget for OnboardingView {
                 .journal
                 .front()
                 .is_some_and(|write| write.outcome.get().is_some())
+            || self
+                .identity_work
+                .as_ref()
+                .is_some_and(IdentityWork::reported)
             || (!self.reduce_motion && self.transition_started.elapsed() < self.transition_duration)
             || self
                 .picker
@@ -4562,16 +4751,216 @@ mod tests {
 
     /// `sync`, then let the state writer finish each journal change the frame
     /// handed it and sync again, as the loop does when the write wakes it.
+    /// Identity work is waited for the same way: the worker reports and the
+    /// loop syncs again.
     fn sync_journaled(view: &mut OnboardingView, document: &AutoCommit) {
         view.sync(document, &automerge::ROOT);
         for _ in 0..16 {
-            if view.journal_idle() {
+            if view.journal_idle() && view.identity_idle() {
                 return;
             }
             view.journal_writer.flush();
+            wait_for_identity_work(view);
             view.sync(document, &automerge::ROOT);
         }
-        panic!("journal changes kept coming");
+        panic!("journal changes and identity work kept coming");
+    }
+
+    /// Wait until the identity worker has reported, if one runs.
+    fn wait_for_identity_work(view: &OnboardingView) {
+        let deadline = Instant::now()
+            .checked_add(tilo_test_env::hang_bound())
+            .expect("deadline");
+        while view
+            .identity_work
+            .as_ref()
+            .is_some_and(|work| !work.reported())
+        {
+            assert!(Instant::now() < deadline, "identity work never reported");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// A handler that blocks until the returned sender releases it, and
+    /// records the thread it ran on: the test's stand-in for a mint, import
+    /// or export that waits seconds for the disk or a passphrase stretch.
+    fn blocking_handler() -> (
+        impl Fn() + Send + Sync + 'static,
+        std::sync::mpsc::Sender<()>,
+        Arc<Mutex<Option<std::thread::ThreadId>>>,
+    ) {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let ran_on = Arc::new(Mutex::new(None));
+        let recorded = Arc::clone(&ran_on);
+        let wait = move || {
+            *recorded.lock().unwrap() = Some(std::thread::current().id());
+            released
+                .lock()
+                .unwrap()
+                .recv_timeout(tilo_test_env::hang_bound())
+                .expect("the test releases the handler");
+        };
+        (wait, release, ran_on)
+    }
+
+    /// Minting, importing and exporting the identity wait for the disk, the
+    /// secret store and a passphrase stretch. They are taken from a frame on
+    /// the compositor's loop, so they must never run there: with a handler
+    /// that never finishes, every frame still returns and the step waits.
+    #[test]
+    fn minting_never_runs_on_the_frame_thread() {
+        {
+            let directory = TempDir::new().expect("identity directory");
+            let identity_dir = directory.path().join("identity");
+            let (wait, release, ran_on) = blocking_handler();
+            let record = identity_dir.join("primary.json");
+            let mut view = OnboardingView::with_minter(Box::new(move || {
+                wait();
+                Ok(MintedIdentity {
+                    fingerprint: "ab".repeat(32),
+                    path: record.clone(),
+                })
+            }));
+            view.identity_dir = Some(identity_dir.clone());
+            let mut document = AutoCommit::new();
+            for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+                press(&view, &mut document, key);
+                view.sync(&document, &automerge::ROOT);
+            }
+            // The journal reaches the disk; the next frame starts the mint.
+            view.journal_writer.flush();
+            view.sync(&document, &automerge::ROOT);
+            assert!(!view.identity_idle(), "the mint is running");
+            let deadline = Instant::now()
+                .checked_add(tilo_test_env::hang_bound())
+                .expect("deadline");
+            while ran_on.lock().unwrap().is_none() {
+                assert!(Instant::now() < deadline, "the minter never started");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_ne!(
+                *ran_on.lock().unwrap(),
+                Some(std::thread::current().id()),
+                "the minter runs off the frame thread"
+            );
+            // Frames keep coming while it runs; the step it belongs to holds.
+            press(&view, &mut document, KEY_BACK);
+            for _ in 0..3 {
+                view.sync(&document, &automerge::ROOT);
+            }
+            assert_eq!(view.flow().screen(), Screen::NoRecovery);
+            assert!(view.next_wake_deadline().is_some(), "the loop looks again");
+            assert_eq!(
+                load_progress(&identity_dir).expect("load progress"),
+                Some(PersistedStage::AcquiringIdentity)
+            );
+
+            release.send(()).unwrap();
+            sync_journaled(&mut view, &document);
+            assert_eq!(
+                view.flow().screen(),
+                Screen::Done,
+                "Back waited out the mint"
+            );
+            assert_eq!(
+                load_progress(&identity_dir).expect("load progress"),
+                Some(PersistedStage::IdentityReady),
+                "the journal records the identity after the mint reports"
+            );
+        }
+    }
+
+    /// See [`minting_never_runs_on_the_frame_thread`].
+    #[test]
+    fn importing_never_runs_on_the_frame_thread() {
+        {
+            let directory = TempDir::new().expect("identity directory");
+            let identity_dir = directory.path().join("identity");
+            let (wait, release, ran_on) = blocking_handler();
+            let record = identity_dir.join("primary.json");
+            let mut view = OnboardingView::with_handlers(
+                Box::new(|| Err("create should not run".to_string())),
+                Box::new(move |_, passphrase| {
+                    assert_eq!(passphrase, b"restore passphrase");
+                    wait();
+                    Ok(MintedIdentity {
+                        fingerprint: "cd".repeat(32),
+                        path: record.clone(),
+                    })
+                }),
+            );
+            view.identity_dir = Some(identity_dir);
+            let mut document = AutoCommit::new();
+            press(&view, &mut document, KEY_EXISTING);
+            press(&view, &mut document, KEY_CHOOSE_RESTORE);
+            view.connect_path.set("/media/backup/primary.json".into());
+            *view.connect_passphrase.lock().unwrap() = "restore passphrase".into();
+            sync_journaled(&mut view, &document);
+            press(&view, &mut document, KEY_IMPORT);
+            view.sync(&document, &automerge::ROOT);
+            view.journal_writer.flush();
+            view.sync(&document, &automerge::ROOT);
+            assert!(!view.identity_idle(), "the import is running");
+            for _ in 0..3 {
+                view.sync(&document, &automerge::ROOT);
+            }
+            assert_eq!(view.flow().screen(), Screen::Restore);
+
+            release.send(()).unwrap();
+            sync_journaled(&mut view, &document);
+            assert_ne!(*ran_on.lock().unwrap(), Some(std::thread::current().id()));
+            assert_eq!(view.flow().screen(), Screen::Done);
+            assert!(
+                view.connect_passphrase.lock().unwrap().is_empty(),
+                "the passphrase is cleared once the import reports"
+            );
+        }
+    }
+
+    /// See [`minting_never_runs_on_the_frame_thread`].
+    #[test]
+    fn exporting_never_runs_on_the_frame_thread() {
+        {
+            let progress = TempDir::new().expect("progress directory");
+            let (wait, release, ran_on) = blocking_handler();
+            let mut view = OnboardingView::with_all_handlers(
+                Box::new(|| Err("unused".to_string())),
+                Box::new(|_, _| Err("unused".to_string())),
+                Box::new(move |_, _, _| {
+                    wait();
+                    Ok(())
+                }),
+            );
+            view.flow.begin();
+            view.flow.set_acknowledged(true);
+            assert!(view.flow.complete(MintedIdentity {
+                fingerprint: "ef".repeat(32),
+                path: PathBuf::from("/identity/primary.json"),
+            }));
+            view.identity_dir = Some(progress.path().to_path_buf());
+            let mut document = AutoCommit::new();
+            *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
+            *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
+            press(&view, &mut document, KEY_BACKUP_BROWSE);
+            sync_journaled(&mut view, &document);
+            view.picker.as_mut().expect("save picker").1.click_open();
+            view.sync(&document, &automerge::ROOT);
+            assert!(!view.identity_idle(), "the export is running");
+            for _ in 0..3 {
+                view.sync(&document, &automerge::ROOT);
+            }
+            assert!(view.backup_saved.is_none());
+
+            release.send(()).unwrap();
+            sync_journaled(&mut view, &document);
+            assert_ne!(*ran_on.lock().unwrap(), Some(std::thread::current().id()));
+            assert!(view.backup_saved.is_some());
+            assert_eq!(
+                load_progress(progress.path()).expect("backed-up progress"),
+                Some(PersistedStage::IdentityReadyBackedUp)
+            );
+        }
     }
 
     fn finish_identity(view: &mut OnboardingView, document: &mut AutoCommit) {
