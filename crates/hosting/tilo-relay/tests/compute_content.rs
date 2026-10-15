@@ -1,5 +1,7 @@
 //! A compute job's inputs hydrate from its requester and its outputs return
-//! by digest, through a real relay, on the production worker path.
+//! by digest, through a real relay, on the production worker path. An input
+//! the worker already holds runs from its own copy once the requester
+//! proves it holds the same bytes, and never otherwise.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -14,8 +16,9 @@ use tilo_relay::{
     ComputeClient, ComputeContentStore, ComputeEnvelope, ComputeJobBinding, ComputeJobPhase,
     ComputeJobSpec, ComputeOutputSource, ComputeResourceLimits, ComputeResultUpdate,
     ComputeSandbox, ComputeSandboxInvocation, ComputeStatusUpdate, ComputeWorker,
-    ComputeWorkerAdvertisement, ContentFetchError, FileComputeContentStore, PowerAvailability,
-    WorkerEnvironments, fetch_job_content, run_compute_assignment, serve_worker_stream_with,
+    ComputeWorkerAdvertisement, ContentFetchError, FileComputeContentStore, HeldContent,
+    InputStaging, PowerAvailability, WorkerEnvironments, content_proof, fetch_job_content,
+    prove_job_input, run_compute_assignment, serve_worker_stream_with,
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -71,6 +74,29 @@ async fn next_result(client: &mut ComputeClient) -> ComputeResultUpdate {
             return result;
         }
     }
+}
+
+/// Report job `job_id`'s terminal `phase` from the worker.
+async fn finish(
+    worker: &mut ComputeClient,
+    binding: &ComputeJobBinding,
+    job_id: [u8; 16],
+    phase: &ComputeJobPhase,
+) {
+    worker
+        .send(&ComputeEnvelope::Result {
+            result: ComputeResultUpdate {
+                binding: ComputeJobBinding {
+                    job_id,
+                    ..binding.clone()
+                },
+                sequence: 2,
+                phase: phase.clone(),
+                log_tail: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
 }
 
 /// Take the next routed job on the worker and report it running.
@@ -234,7 +260,7 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
         limits: ComputeResourceLimits {
             cpu_time_ms: 5_000,
             memory_bytes: 64 * 1024 * 1024,
-            output_bytes: 4 * 1024 * 1024,
+            output_bytes: 16 * 1024 * 1024,
             gpu: false,
         },
         issued_at_ms,
@@ -341,6 +367,149 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
          {received} output bytes retrieved in {retrieval:?}",
         assignment.transfer.inputs, assignment.transfer.bytes, assignment.transfer.elapsed,
     );
+
+    // A worker that already holds an input runs the job on its own copy
+    // once the requester proves it holds the same bytes: nothing is sent.
+    let held_store = FileComputeContentStore::open(root.path().join("held")).unwrap();
+    let held: Arc<dyn HeldContent> = Arc::new(held_store.clone());
+    let staging = InputStaging {
+        root: root.path().join("inputs"),
+        held: Some(Arc::clone(&held)),
+    };
+    let mut next_job = 30_u8;
+    // 1 MiB, and the largest whole MiB whose upper-cased output still fits
+    // the job's 16 MiB output bound beside the entrypoint's stdout.
+    for len in [INPUT_BYTES, 15 * INPUT_BYTES] {
+        let bytes = (0..len)
+            .map(|index| b'a' + u8::try_from((index + len) % 26).unwrap())
+            .collect::<Vec<_>>();
+        let digest = *blake3::hash(&bytes).as_bytes();
+        let expected = *blake3::hash(&bytes.to_ascii_uppercase()).as_bytes();
+        workspace_content.put(digest, &bytes).unwrap();
+        held_store.put(digest, &bytes).unwrap();
+        let mut runs = Vec::new();
+        for staged in [
+            InputStaging::from(root.path().join("inputs")),
+            staging.clone(),
+        ] {
+            let spec = job([next_job; 16], vec![digest]);
+            next_job += 1;
+            requester_client.submit(&spec).await.unwrap();
+            assert_eq!(accept_job(&mut worker_client, &binding).await, spec);
+            let ran = tilo_test_env::within(
+                "the job stages and runs",
+                run_compute_assignment(
+                    Arc::clone(&executor),
+                    worker_client.connection(),
+                    spec.clone(),
+                    staged,
+                    CaptureCancellation::default(),
+                ),
+            )
+            .await;
+            assert_eq!(
+                ran.phase,
+                ComputeJobPhase::Completed {
+                    outputs: vec![expected]
+                },
+                "{}",
+                String::from_utf8_lossy(&ran.log_tail)
+            );
+            finish(&mut worker_client, &binding, spec.job_id, &ran.phase).await;
+            next_result(&mut requester_client).await;
+            runs.push(ran.transfer);
+        }
+        let len = u64::try_from(len).unwrap();
+        let (fetched, from_held) = (runs[0], runs[1]);
+        assert_eq!((fetched.inputs, fetched.bytes), (1, len));
+        assert_eq!((fetched.held, fetched.held_bytes), (0, 0));
+        assert_eq!(
+            (from_held.inputs, from_held.bytes),
+            (0, 0),
+            "a held input moves no bytes"
+        );
+        assert_eq!((from_held.held, from_held.held_bytes), (1, len));
+        eprintln!(
+            "compute input of {len} bytes: fetched from the requester in {:?}, \
+             proven and staged from the worker's copy in {:?}",
+            fetched.elapsed, from_held.elapsed,
+        );
+    }
+
+    // Holding bytes is no authority: a job naming bytes only the worker
+    // holds is refused a proof and fails as though the worker had none.
+    let secret = b"only on the worker".to_vec();
+    let secret_digest = *blake3::hash(&secret).as_bytes();
+    held_store.put(secret_digest, &secret).unwrap();
+    let probing = job([40; 16], vec![secret_digest]);
+    requester_client.submit(&probing).await.unwrap();
+    assert_eq!(accept_job(&mut worker_client, &binding).await, probing);
+    assert_eq!(
+        prove_job_input(
+            &worker_client.connection(),
+            (WORKSPACE, probing.job_id),
+            secret_digest,
+            [7; 32],
+        )
+        .await,
+        Err(ContentFetchError::Refused("missing".into()))
+    );
+    // Nor is a proof had for a digest the job does not list.
+    assert_eq!(
+        prove_job_input(
+            &worker_client.connection(),
+            (WORKSPACE, probing.job_id),
+            input_digest,
+            [7; 32],
+        )
+        .await,
+        Err(ContentFetchError::Refused("not_authorised".into()))
+    );
+    let probed = tilo_test_env::within(
+        "a job on worker-only bytes fails",
+        run_compute_assignment(
+            Arc::clone(&executor),
+            worker_client.connection(),
+            probing.clone(),
+            staging.clone(),
+            CaptureCancellation::default(),
+        ),
+    )
+    .await;
+    assert_eq!(
+        probed.phase,
+        ComputeJobPhase::Failed {
+            code: "input_unavailable".into()
+        }
+    );
+    assert_eq!((probed.transfer.held, probed.transfer.held_bytes), (0, 0));
+    finish(&mut worker_client, &binding, probing.job_id, &probed.phase).await;
+    next_result(&mut requester_client).await;
+
+    // A proof answers the worker's own challenge and nothing else.
+    let listed = job([41; 16], vec![input_digest]);
+    requester_client.submit(&listed).await.unwrap();
+    assert_eq!(accept_job(&mut worker_client, &binding).await, listed);
+    let (proof, locator) = prove_job_input(
+        &worker_client.connection(),
+        (WORKSPACE, listed.job_id),
+        input_digest,
+        [9; 32],
+    )
+    .await
+    .unwrap();
+    assert_eq!(proof, content_proof(&[9; 32], &input));
+    assert_eq!(locator, None, "a plain content store offers no locator");
+    finish(
+        &mut worker_client,
+        &binding,
+        listed.job_id,
+        &ComputeJobPhase::Failed {
+            code: "cancelled".into(),
+        },
+    )
+    .await;
+    next_result(&mut requester_client).await;
 
     // An input the requester's workspace does not hold fails the job with
     // a truthful code, promptly.

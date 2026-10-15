@@ -187,6 +187,8 @@ pub(crate) async fn serve_stream(
     if !context.still_trusted(&peer) {
         if matches!(open, StreamOpen::ComputeContent { .. }) {
             crate::compute_content::refuse(&mut send, "not_authorised").await?;
+        } else if matches!(open, StreamOpen::ComputeContentProof { .. }) {
+            crate::compute_content::refuse_proof(&mut send, "not_authorised").await?;
         } else {
             refuse(
                 &mut send,
@@ -207,6 +209,16 @@ pub(crate) async fn serve_stream(
         } => {
             let asked = (workspace_id, job_id, digest);
             crate::compute_content::route_content(&context, &peer, version, asked, &mut send).await
+        }
+        StreamOpen::ComputeContentProof {
+            version,
+            workspace_id,
+            job_id,
+            digest,
+            nonce,
+        } => {
+            let asked = (workspace_id, job_id, digest, nonce);
+            crate::compute_content::route_proof(&context, &peer, version, asked, &mut send).await
         }
         StreamOpen::Environment {
             version,
