@@ -62,6 +62,14 @@ async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
 }
 
 async fn connect(relay: &Relay, device: &TestDevice) -> RelayClient {
+    try_connect(relay, device).await.unwrap()
+}
+
+/// A connection the relay may refuse at its handshake.
+async fn try_connect(
+    relay: &Relay,
+    device: &TestDevice,
+) -> Result<RelayClient, tilo_relay::ClientError> {
     RelayClient::connect_to_pinned_host(
         device_endpoint(device).await,
         relay.node_addr(),
@@ -70,7 +78,6 @@ async fn connect(relay: &Relay, device: &TestDevice) -> RelayClient {
         RevocationList::new(),
     )
     .await
-    .unwrap()
 }
 
 /// The relay's first answer to `client` subscribing to `workspace_id`.
@@ -112,7 +119,7 @@ async fn admit(
     room: &str,
     role: MemberRole,
 ) {
-    let issued = invitation(&relay.rooms().unwrap(), host, room, role, member).await;
+    let issued = invitation(relay.rooms().unwrap(), host, room, role, member).await;
     redeem(member, &issued).await.unwrap();
 }
 
@@ -152,8 +159,7 @@ async fn redeem(device: &TestDevice, issued: &IssuedInvitation) -> Result<(), St
         None,
         &RevocationList::new(),
         tilo_clock::unix_now_ns(),
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     let mut request_id = [0; 32];
     getrandom::fill(&mut request_id).unwrap();
     WorkspaceJoinClient::new(device_endpoint(device).await)
@@ -283,10 +289,25 @@ fn persisted(root: &Path, marker: &[u8]) -> bool {
         if path.is_dir() {
             persisted(&path, marker)
         } else {
-            std::fs::read(&path)
-                .is_ok_and(|bytes| bytes.windows(marker.len()).any(|window| window == marker))
+            std::fs::read(&path).is_ok_and(|bytes| carries(&bytes, marker))
         }
     })
+}
+
+/// Everything `client` receives until it has been quiet for [`QUIET`], or
+/// its session ends.
+async fn received_until_quiet(client: &RelayClient) -> Vec<Envelope> {
+    let mut received = Vec::new();
+    while let Ok(Some(envelope)) = tokio::time::timeout(QUIET, client.recv()).await {
+        received.push(envelope);
+        assert!(received.len() < 10_000, "an unbounded stream of envelopes");
+    }
+    received
+}
+
+/// Whether `bytes` contains `marker`.
+fn carries(bytes: &[u8], marker: &[u8]) -> bool {
+    bytes.windows(marker.len()).any(|window| window == marker)
 }
 
 /// Whatever `client` receives within [`QUIET`], or `None`.
@@ -434,14 +455,8 @@ impl TwoTenants {
             .await
             .unwrap();
         admit(&relay, &host, &bob_phone, &globex.room, MemberRole::Editor).await;
-        let carol_invitation = invitation(
-            &rooms,
-            &host,
-            &globex.room,
-            MemberRole::Editor,
-            &carol_phone,
-        )
-        .await;
+        let carol_invitation =
+            invitation(rooms, &host, &globex.room, MemberRole::Editor, &carol_phone).await;
         Self {
             state,
             provider,
@@ -521,8 +536,8 @@ async fn one_tenants_administrator_reaches_nothing_in_another_tenants_room() {
 async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room() {
     let t = TwoTenants::start().await;
     let before = t.globex_governance().await;
-    let ann_in_acme = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
     let bob_in_globex = subscribed(&t.relay, &t.bob_phone, t.globex.workspace_id).await;
+    received_until_quiet(&bob_in_globex).await;
 
     // Reading: Ann's subscription to Globex is refused outright.
     let ann_probe = connect(&t.relay, &t.ann_laptop).await;
@@ -535,10 +550,12 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room(
     );
     drop(ann_probe);
 
-    // Writing: a delta Ann addresses to Globex reaches no Globex member and
-    // is persisted nowhere on the relay.
+    // Writing: a delta Ann addresses to Globex from her own room's session
+    // reaches no Globex member and is persisted nowhere on the relay. (The
+    // relay may end the session that sent it; that is a refusal too.)
     let marker = b"acme-writes-into-globex-7f3c";
-    ann_in_acme
+    let ann_writer = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
+    ann_writer
         .send(Envelope::Delta {
             workspace_id: t.globex.workspace_id,
             author_device_public_key: t.ann_laptop.device_pubkey(),
@@ -547,19 +564,24 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room(
             signature: [0; 64],
         })
         .unwrap();
-    let leaked = next_within_quiet(&bob_in_globex).await;
+    let leaked = received_until_quiet(&bob_in_globex).await;
     assert!(
-        !matches!(leaked, Some(Envelope::Delta { .. })),
+        !leaked.iter().any(|envelope| matches!(
+            envelope,
+            Envelope::Delta { delta, .. } if carries(delta, marker)
+        )),
         "Bob received Ann's write: {leaked:?}"
     );
     assert!(
         !persisted(t.state.path(), marker),
         "Ann's write was persisted"
     );
+    drop(ann_writer);
 
     // Invoking: Ann's catalogue in her own room lists Acme's governance and
     // nothing of Globex's, and invoking Globex's invite from her room does
     // nothing.
+    let ann_in_acme = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
     let resources = governance_resources(&ann_in_acme, &t.host, t.acme.workspace_id).await;
     assert!(
         resources.contains(&room_governance_resource(&t.acme.room)),
@@ -583,16 +605,19 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room(
         "Ann invited into Globex: {:?}",
         receipt.status
     );
-    // Addressed to Globex's workspace, the same action is not delivered.
+    drop(ann_in_acme);
+
+    // Addressed to Globex's workspace, the same action is not run.
+    let ann_foreign = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
     to_host(
-        &ann_in_acme,
+        &ann_foreign,
         &t.host,
         t.globex.workspace_id,
         invite_action(&t.globex.room),
     );
     let answer = tilo_test_env::within("the relay answers Ann's foreign action", async {
         loop {
-            match ann_in_acme.recv().await {
+            match ann_foreign.recv().await {
                 Some(
                     answer @ (Envelope::RemoteAction { .. }
                     | Envelope::RemoteActionUndeliverable { .. }
@@ -615,8 +640,11 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room(
             "Ann invoked an action in Globex's workspace: {message:?}"
         );
     }
+    drop(ann_foreign);
+
     // Nor may Ann address a Globex member's device directly.
-    ann_in_acme
+    let ann_direct = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
+    ann_direct
         .send(Envelope::RemoteAction {
             workspace_id: t.globex.workspace_id,
             version: REMOTE_ACTION_ENVELOPE_VERSION,
@@ -627,10 +655,12 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room(
                 .encode()
                 .unwrap(),
         })
-        .ok();
-    let leaked = next_within_quiet(&bob_in_globex).await;
+        .unwrap();
+    let leaked = received_until_quiet(&bob_in_globex).await;
     assert!(
-        !matches!(leaked, Some(Envelope::RemoteAction { .. })),
+        !leaked
+            .iter()
+            .any(|envelope| matches!(envelope, Envelope::RemoteAction { .. })),
         "Bob received Ann's action: {leaked:?}"
     );
     assert_eq!(t.globex_governance().await, before);
@@ -701,12 +731,15 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
         }
     })
     .await;
-    // A fresh connection is not admitted either.
-    let again = connect(&t.relay, &t.bob_phone).await;
-    assert!(matches!(
-        subscribe(&again, t.globex.workspace_id).await,
-        Some(Envelope::NotAuthorised { .. }) | None
-    ));
+    // A fresh connection is not admitted either: the handshake or the
+    // subscription refuses it.
+    if let Ok(again) = try_connect(&t.relay, &t.bob_phone).await {
+        let answer = subscribe(&again, t.globex.workspace_id).await;
+        assert!(
+            matches!(answer, Some(Envelope::NotAuthorised { .. }) | None),
+            "a removed member subscribed again: {answer:?}"
+        );
+    }
 
     // Acme is untouched by Globex's decision.
     assert!(
