@@ -1866,6 +1866,7 @@ pub fn native_services(
                 pairing: super::device_pairing::Pairing::session(),
             }) as Arc<dyn tilo_action_broker::services::DevicePairingServices>
         }),
+        identity_admin: membership.as_ref().map(super::identity_admin::broker_door),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),
