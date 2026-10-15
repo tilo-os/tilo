@@ -2144,6 +2144,16 @@ impl GroupRow {
         settling
     }
 
+    /// Keep the strip where a person's pan left it when its geometry later
+    /// changes, as [`Self::pan_to`] does, instead of re-framing it onto the
+    /// nearest window edge, until focus next pans a window into view. A
+    /// wheel spin stops wherever its notches took the strip, often with
+    /// windows cut at both edges; a window's width changing by a pixel
+    /// moved it by up to a window.
+    pub fn hold_strip_pan(&mut self) {
+        self.pan_of_lane_mut(self.focus_lane).absolute = true;
+    }
+
     /// A group focused the same frame it was spliced in hasn't been
     /// through a layout pass yet, so its rect is degenerate and any pan
     /// on it is a no-op.

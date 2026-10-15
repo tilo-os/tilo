@@ -200,8 +200,12 @@ jobs:
               [[ $from != "$target" ]] || from=$commit
               if ! git diff --quiet "$commit" "$target"; then
                 swap=shell
-                # tilo-vmd's input path runs in the VM (device profiles, uinput).
-                git diff --quiet "$from" "$target" -- crates/dev/tilo-vmd crates/dev/tilo-vm-protocol || swap+=",vmd"
+                # tilo-vmd's input path runs in the VM (device profiles, uinput)
+                # and must speak the protocol of the tilo-vm built from the ref.
+                # Compare against the base disk, not the branch point: a base
+                # disk older than a protocol change on main would otherwise
+                # refuse every request the ref's tilo-vm sends.
+                git diff --quiet "$commit" "$target" -- crates/dev/tilo-vmd crates/dev/tilo-vm-protocol || swap+=",vmd"
                 apps=""
                 for app in $(git diff --name-only "$from" "$target" -- apps/ | cut -d/ -f2 | sort -u); do
                   git cat-file -e "$target:apps/$app/Cargo.toml" 2>/dev/null && apps+=",app:$app"

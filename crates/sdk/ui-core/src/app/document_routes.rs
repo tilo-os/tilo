@@ -154,8 +154,13 @@ impl App {
     }
 
     /// Local queue state, not an acknowledgement of remote delivery/durability.
-    pub fn document_sync_status(&self) -> Option<&str> {
-        self.action_publication_failure.as_deref().or(self
+    ///
+    /// Silent for a document that was never meant to sync (local, outside
+    /// any room): only a document that had a collaboration service and lost
+    /// it is working offline.
+    pub fn document_sync_status(&self) -> Option<std::borrow::Cow<'_, str>> {
+        use std::borrow::Cow;
+        let reported = self.action_publication_failure.as_deref().or(self
             .document_routes
             .status
             .as_deref()
@@ -172,22 +177,25 @@ impl App {
                     .owners
                     .iter()
                     .find_map(|entry| entry.outbound_failure.as_deref())
-            })
-            .or_else(|| {
-                if self.document_routes.witness.is_none() && self.native_document_chrome {
-                    Some("Collaboration is unavailable; remote changes are not synchronized.")
-                } else if !self.document_routes.primary.is_empty()
-                    || self
-                        .document_routes
-                        .owners
-                        .iter()
-                        .any(|entry| !entry.pending.is_empty())
-                {
-                    Some("Remote updates will apply when the current edit finishes.")
-                } else {
-                    None
-                }
-            }))
+            }));
+        if let Some(reported) = reported {
+            return Some(Cow::Borrowed(reported));
+        }
+        let key = if self.document_routes.witness.is_none() {
+            (self.native_document_chrome && self.collaboration.manager.sync_lost())
+                .then_some("history-sync-offline")
+        } else if !self.document_routes.primary.is_empty()
+            || self
+                .document_routes
+                .owners
+                .iter()
+                .any(|entry| !entry.pending.is_empty())
+        {
+            Some("history-sync-remote-waiting")
+        } else {
+            None
+        };
+        key.map(|key| Cow::Owned(crate::i18n::I18nManager::lookup_plain(key)))
     }
     /// Queue acceptance may have advanced producer heads before a later
     /// worker failure. Restore history obligations before observing another
@@ -222,7 +230,9 @@ impl App {
         self.restore_failed_document_publications();
         #[cfg(test)]
         DOCUMENT_ROUTE_REFRESHES.set(DOCUMENT_ROUTE_REFRESHES.get() + 1);
-        let before = self.document_sync_status().map(str::to_owned);
+        let before = self
+            .document_sync_status()
+            .map(std::borrow::Cow::into_owned);
         let witness = self.bound_broker_route().cloned();
         let joins = self.document_routes.reconcile(
             self.root_widget.as_ref(),
@@ -247,7 +257,7 @@ impl App {
         for route in joins {
             self.collaboration.manager.join_route(route);
         }
-        if self.document_sync_status() != before.as_deref() {
+        if self.document_sync_status().as_deref() != before.as_deref() {
             self.layout.layout_dirty = true;
         }
     }

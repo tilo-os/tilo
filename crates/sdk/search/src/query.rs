@@ -14,7 +14,8 @@ use tantivy::query::{
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{Score, Term};
 
-use crate::index::{Fields, RECORD_SEGMENT};
+use crate::engine::Fields;
+use crate::index::RECORD_SEGMENT;
 use crate::tokenizer::{GRAM_WIDTH, VALUE_END, VALUE_START, WORD_END, WORD_START, marked, words};
 use crate::typo::{Typos, Vocabulary};
 use crate::weight::{FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MatchTier, Ranks};

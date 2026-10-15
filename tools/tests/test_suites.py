@@ -9,7 +9,8 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from contextlib import redirect_stdout
+import unittest.mock
+from contextlib import redirect_stderr, redirect_stdout
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("ci_suites", ROOT / "tools/ci/suites.py")
@@ -336,6 +337,19 @@ class CargoReaderTests(unittest.TestCase):
             text = 'let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/x.py");\n'
             manifest = READER_MANIFEST + '[[cargo-exempt]]\nfile = "apps/calc/src/lib.rs"\nreason = "ignored test"\n'
             self.assertEqual(self.audit({"apps/calc/src/lib.rs": text}, manifest), [])
+
+
+class GroupSelectionTests(unittest.TestCase):
+    def test_run_group_selects_that_groups_suites_and_rejects_unknown_names(self):
+        group = suites.load(ROOT).groups[0]
+        calls = []
+        with unittest.mock.patch.object(suites, "run", lambda root, selected, jobs: calls.append(selected) or 0):
+            self.assertEqual(suites.main(["run", "--group", group.name]), 0)
+        self.assertEqual(calls, [list(group.suites)])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            suites.main(["run", "--group", "no-such-group"])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            suites.main(["run", "--group", group.name, "--all"])
 
 
 if __name__ == "__main__":

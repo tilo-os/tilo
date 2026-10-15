@@ -296,10 +296,14 @@ pub struct NotesApp {
     /// The note's save + page/word status, surfaced on the save status
     /// surface (see `save_status`) instead of a permanent strip.
     status: StatusModel,
-    /// The framework's save status surface: autosave shows nothing; a
-    /// failed save is an error toast with "Try again", and the save that
-    /// ends it a one-time "Saved" bubble in the bottom-trailing corner.
+    /// The framework's save status surface: a save that takes noticeable
+    /// time says "Saving…" and then "Saved" in the note's header row; one
+    /// that gives up says "Not saved" with "Try again" there; a failed save
+    /// is an error toast with "Try again", and the save that ends it a
+    /// one-time "Saved".
     save_surface: ui::SaveStatusSurface,
+    /// The notification a save that gave up raises out of sight.
+    save_notices: crate::save_notice::SaveNotices,
     /// "Try again" was chosen on a failed save; the host drains it.
     save_retry: bool,
     transfer_toasts: ui::widget::toast::ToastStack,
@@ -664,6 +668,7 @@ impl NotesApp {
             main,
             status: StatusModel::new(),
             save_surface: ui::SaveStatusSurface::new(),
+            save_notices: crate::save_notice::SaveNotices::new(),
             save_retry: false,
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
             shots_save_status: None,
@@ -728,7 +733,10 @@ impl NotesApp {
     /// `apply_event`. The status bar diffs internally so a no-op
     /// refresh doesn't dirty its render.
     pub(crate) fn take_save_retry_request(&mut self) -> bool {
-        std::mem::take(&mut self.save_retry)
+        // A save the store has not confirmed for a while is submitted again
+        // on the surface's behalf, as "Retrying…" says.
+        let stalled = self.save_surface.take_retry();
+        std::mem::take(&mut self.save_retry) || stalled
     }
 
     fn refresh_status(&mut self) {
@@ -776,11 +784,24 @@ impl NotesApp {
             page_count: self.workspace.pages().len(),
             word_count,
         });
-        // Autosave is the system's job and shows nothing: only a failure
-        // (until the note saves or it is dismissed) and the save that ends
-        // it reach the screen. The state and counts stay in the
-        // accessibility status.
-        self.save_surface.set(self.save_state(), ui::time::now());
+        // A failure stays on the surface until the note saves or it is
+        // dismissed; "Saving…" and "Saved" pass. The state and counts stay
+        // in the accessibility status.
+        let now = ui::time::now();
+        self.save_surface.set(self.save_state(), now);
+        self.deliver_save_notice(now);
+    }
+
+    /// Raise, take down or answer the notification of a save that gave up
+    /// while the note was out of sight.
+    fn deliver_save_notice(&mut self, now: ui::time::Instant) {
+        if self
+            .save_notices
+            .deliver(&mut self.save_surface, self.main.title(), now)
+        {
+            self.save_retry = true;
+            self.self_dirty = true;
+        }
     }
 
     /// The save state the surface reports.
@@ -794,28 +815,28 @@ impl NotesApp {
         }
     }
 
-    /// `--shots`: stage the save surface as a change just happened, so a
-    /// still frame captures what it shows (nothing, for autosave).
-    pub fn stage_status_bubble(&mut self) {
-        self.refresh_status();
-        self.save_surface.poke(ui::time::now());
-    }
-
     /// `--shots`: capture an actual save-state presentation deterministically,
-    /// without depending on a timing-sensitive filesystem failure.
-    pub fn set_save_status_for_shots(&mut self, status: SaveStatus) {
+    /// without depending on a timing-sensitive filesystem failure: the save
+    /// began `waited` ago, and a `Saved` one landed just now after that
+    /// wait.
+    pub fn set_save_status_for_shots(&mut self, status: SaveStatus, waited: ui::time::Duration) {
+        let now = ui::time::now();
+        let began = now.checked_sub(waited).unwrap_or(now);
+        self.save_surface = ui::SaveStatusSurface::new();
+        self.save_surface.set(ui::SaveState::Saving, began);
+        self.save_surface.advance(now);
         self.shots_save_status = Some(status);
         let mut state = self.status.state().clone();
         state.save_status = status;
         let _ = self.status.set_state(state);
-        self.stage_status_bubble();
+        self.refresh_status();
     }
 
-    /// Draw the transient floating status bubble at the bottom-right of the
-    /// window — the reclaimed home of the old bottom status strip. It shows
-    /// on a status change or while the pointer hovers the bottom-right band,
-    /// then fades. All colours come from the theme (via `draw_pill`).
-    /// Returns where it painted, `self.rect` when it painted without saying.
+    /// Draw the save status: in the header row beside the note's title,
+    /// where it covers none of the note, and a failed save's card in the
+    /// bottom-right corner. It shows on a status change or while the pointer
+    /// rests on it, then fades. Returns where it painted, `self.rect` when
+    /// it painted without saying.
     fn draw_status_bubble(
         &mut self,
         scene: &mut Scene,
@@ -825,6 +846,8 @@ impl NotesApp {
     ) -> Option<Rect> {
         let now = ui::time::now();
         let before = scene.encoding().draw_tags.len();
+        self.save_surface
+            .set_header_slot(self.shell.header_status_slot());
         let painted = self
             .save_surface
             .paint(scene, transform, tr, theme, self.rect, now);
@@ -1377,9 +1400,21 @@ impl NotesApp {
             self.load_images_for_capture();
         }
         match scenario {
-            Some("status") => self.set_save_status_for_shots(SaveStatus::Saved),
-            Some("saving") => self.set_save_status_for_shots(SaveStatus::Saving),
-            Some("save_error") => self.set_save_status_for_shots(SaveStatus::Failed),
+            Some("status") => {
+                self.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_NOTICEABLE);
+            }
+            Some("saving") => {
+                self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_NOTICEABLE);
+            }
+            Some("save_retrying") => {
+                self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_STALL);
+            }
+            Some("save_not_saved") => {
+                self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_GIVE_UP);
+            }
+            Some("save_error") => {
+                self.set_save_status_for_shots(SaveStatus::Failed, ui::SAVE_NOTICEABLE);
+            }
             Some("import_success") => self.transfer_toasts.push(
                 "Imported Project brief",
                 ui::widget::toast::ToastKind::Success,
@@ -2477,6 +2512,9 @@ impl Widget for NotesApp {
             self.record_save_status = saved;
             self.refresh_status();
         }
+        // A save that gave up is raised as a notification only if no frame
+        // paints this note: the person could lose work they cannot see.
+        self.deliver_save_notice(ui::time::now());
         self.refresh_canonical_assets();
         let requested = std::mem::take(&mut self.opened.borrow_mut().requests);
         for page in requested {
@@ -2485,17 +2523,24 @@ impl Widget for NotesApp {
         // Moving to another note writes nothing, so it is taken up here, in
         // the frame that asked; edits wait for the settle pass.
         let mut pending = std::mem::take(&mut self.pending_events);
+        let mut moved = false;
         pending.retain(|event| match event {
             OutEvent::Select(id) => {
                 if self.workspace.get(*id).is_some() {
                     self.workspace.set_selected(Some(*id));
                     self.record_current_route();
+                    moved = true;
                 }
                 false
             }
             _ => true,
         });
         self.pending_events = pending;
+        if moved {
+            // A presented window takes no projection for a move, so the
+            // page tree marks the note it now shows here.
+            self.sidebar.sync_from_workspace(&self.workspace);
+        }
         // Project the workspace only when its inputs moved: committed
         // heads, an open transaction (a settle pass may have written),
         // the selected page or the tag filter. Re-projecting every frame
@@ -4097,6 +4142,58 @@ mod tests {
         );
     }
 
+    /// A note whose save gives up says "Not saved" with "Try again" in its
+    /// bubble while it is painted, and raises nothing; one that nothing
+    /// paints raises a notification whose "Try again" submits the note
+    /// again.
+    #[test]
+    fn a_save_that_gives_up_asks_in_place_in_view_and_notifies_out_of_sight() {
+        ui::i18n::I18nManager::init("en-US");
+        let later = || ui::time::now() + ui::time::Duration::from_secs(2);
+        let staged = |recording: &std::sync::Arc<ui::notify::conformance::Recording>| {
+            let (mut app, state, tmp, _) = app_seeded_into_doc();
+            app.save_notices.set_notifier(recording.clone());
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_GIVE_UP);
+            (app, state, tmp)
+        };
+
+        let in_view = std::sync::Arc::new(ui::notify::conformance::Recording::default());
+        let (mut app, _state, _tmp) = staged(&in_view);
+        app.draw_status_bubble(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+        )
+        .expect("the bubble is painted");
+        assert!(app.save_surface.gave_up());
+        assert_eq!(app.save_surface.bubble_text(), "Not saved");
+        assert!(app.save_surface.failure().is_none(), "no toast");
+        app.deliver_save_notice(later());
+        assert!(in_view.shown().is_empty(), "in view, nothing is notified");
+
+        let out_of_sight = std::sync::Arc::new(ui::notify::conformance::Recording::default());
+        let (mut app, _state, _tmp) = staged(&out_of_sight);
+        app.deliver_save_notice(later());
+        let shown = out_of_sight.shown();
+        assert_eq!(shown.len(), 1, "nothing painted it: notify");
+        let title = app.main.title().expect("the seeded note has a title");
+        assert_eq!(shown[0].title, format!("{title} wasn't saved"));
+        assert_eq!(shown[0].body, "Your changes are still in Notes.");
+        assert_eq!(shown[0].action.as_deref(), Some("Try again"));
+        assert_eq!(shown[0].severity, ui::notify::Severity::Warning);
+        let tag = shown[0].tag.clone();
+        // The retry the stall asked for on the way.
+        app.take_save_retry_request();
+        assert!(!app.take_save_retry_request());
+        app.save_notices.click();
+        app.deliver_save_notice(later());
+        assert!(app.take_save_retry_request(), "Try again submits the note");
+        assert_eq!(out_of_sight.withdrawn(), [tag], "and takes it down");
+        assert!(!app.save_surface.gave_up(), "the wait starts over");
+    }
+
     #[test]
     fn status_reports_live_word_counts_persistent_failures_and_calm_motion() {
         eprintln!(
@@ -4165,12 +4262,7 @@ mod tests {
         {
             let (mut app, state, _tmp, _) = app_seeded_into_doc();
             app.theme.reduce_motion = false;
-            // The only transient left: the save that ends a failure.
-            app.shots_save_status = Some(SaveStatus::Failed);
-            app.refresh_status();
-            app.shots_save_status = Some(SaveStatus::Saved);
-            app.refresh_status();
-            assert!(app.save_surface.is_visible(ui::time::now()));
+            app.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_NOTICEABLE);
             assert!(app.needs_animation_frame(), "normal fade requests frames");
 
             app.theme.reduce_motion = true;
@@ -4204,11 +4296,16 @@ mod tests {
     }
 
     fn assert_expired_save_feedback_presents(app: &mut NotesApp, state: &ui::State) {
-        app.save_surface.poke(
-            ui::time::now()
-                .checked_sub(ui::time::Duration::from_secs(3))
-                .expect("the test clock can age the transient chip"),
-        );
+        let landed = ui::time::now()
+            .checked_sub(ui::time::Duration::from_secs(3))
+            .expect("the test clock can age the transient chip");
+        let began = landed
+            .checked_sub(ui::SAVE_NOTICEABLE)
+            .expect("the test clock can age the save");
+        app.save_surface = ui::SaveStatusSurface::new();
+        app.save_surface.set(ui::SaveState::Saving, began);
+        app.save_surface.advance(landed);
+        app.save_surface.set(ui::SaveState::Saved, landed);
         app.mark_drawn();
         assert!(!app.self_dirty);
         assert!(

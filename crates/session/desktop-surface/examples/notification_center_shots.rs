@@ -108,6 +108,24 @@ fn fixture() -> Fixture {
     host
 }
 
+/// Focus the dialog control drawn at `rect`, as an assistive technology
+/// would by its path.
+fn focus_at(
+    center: &mut NotificationCenter,
+    host: &dyn tilo_desktop_surface::notifications::NotificationHost,
+    layout: &CenterLayout,
+    rect: Rect,
+) {
+    let dialog = center.accessibility(host, layout, ui::time::now());
+    if let Some(index) = dialog
+        .children
+        .iter()
+        .position(|node| node.bounds.map(ui::a11y::AccessBounds::to_rect) == Some(rect))
+    {
+        center.focus_accessibility_path(host, layout, &[index]);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::i18n::I18nManager::init("en-US");
     let out = std::env::args().nth(1).map_or_else(
@@ -141,6 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "clear-focused",
             "back-focused",
             "dismiss-focused",
+            "older-focused",
             "undo-focused",
             "restored",
         ] {
@@ -149,21 +168,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "rest" => {}
                 "hover" => cursor = Some(layout.row(0).center()),
                 "clear-focused" => {
-                    center.focus_accessibility_path(&host, &[1]);
+                    center.focus_accessibility_path(&host, &layout, &[1]);
                 }
                 "back-focused" => {
-                    let dialog = center.accessibility(&host, &layout, ui::time::now());
-                    center.focus_accessibility_path(
-                        &host,
-                        &[dialog.children.len().saturating_sub(1)],
-                    );
+                    focus_at(&mut center, &host, &layout, layout.back());
+                }
+                "older-focused" => {
+                    focus_at(&mut center, &host, &layout, layout.pager().1);
                 }
                 "dismiss-focused" => {
-                    center.focus_accessibility_path(&host, &[0, 0, 0]);
+                    center.focus_accessibility_path(&host, &layout, &[0, 0, 0]);
                 }
                 "undo-focused" => {
                     center.click(&host, &layout, layout.clear().center());
-                    center.focus_accessibility_path(&host, &[2]);
+                    center.focus_accessibility_path(&host, &layout, &[2]);
                 }
                 _ => {
                     center.key(&host, &layout, &Key::Named(NamedKey::Enter));

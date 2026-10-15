@@ -95,7 +95,7 @@ fn narrow_header_keeps_clear_undo_and_nested_back_journeys() {
             assert!(host.log().history().is_empty());
             let height = center.preferred_height_for_width(&host, &metrics, 320.0);
             let cleared = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), &metrics);
-            assert!(center.focus_accessibility_path(&host, &[2]));
+            assert!(center.focus_accessibility_path(&host, &layout, &[2]));
             assert_eq!(
                 center.key(&host, &cleared, &Key::Named(NamedKey::Enter)),
                 CenterOutcome::Handled
@@ -113,7 +113,7 @@ fn narrow_header_keeps_clear_undo_and_nested_back_journeys() {
                 center.accessibility_rect_for_path(&host, &layout, &back_path),
                 Some(layout.back())
             );
-            assert!(center.focus_accessibility_path(&host, &back_path));
+            assert!(center.focus_accessibility_path(&host, &layout, &back_path));
             assert_eq!(
                 center.click(
                     &host,
