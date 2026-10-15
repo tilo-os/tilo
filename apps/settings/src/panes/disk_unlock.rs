@@ -480,12 +480,13 @@ impl DiskUnlockModel {
         }
         let authority = Arc::clone(&self.authority);
         let (tx, rx) = channel::channel();
-        match std::thread::Builder::new()
-            .name("tilo-disk-unlock-read".into())
-            .spawn(move || {
+        match crate::device_read::thread(
+            "tilo-disk-unlock-read",
+            Box::new(move || {
                 let _ = tx.send(read(authority.as_ref()));
-            }) {
-            Ok(_) => self.read_rx = Some(rx),
+            }),
+        ) {
+            Ok(()) => self.read_rx = Some(rx),
             Err(error) => self.volumes = Some(Err(error.to_string())),
         }
     }
@@ -507,13 +508,14 @@ impl DiskUnlockModel {
         let authority = Arc::clone(&self.authority);
         let (tx, rx) = channel::channel();
         let sent = operation.clone();
-        match std::thread::Builder::new()
-            .name("tilo-disk-unlock-change".into())
-            .spawn(move || {
+        match crate::device_read::thread(
+            "tilo-disk-unlock-change",
+            Box::new(move || {
                 let result = change(authority.as_ref(), &sent);
                 let _ = tx.send((sent, result));
-            }) {
-            Ok(_) => {
+            }),
+        ) {
+            Ok(()) => {
                 self.change_rx = Some(rx);
                 self.outcome = None;
                 self.structure_dirty = true;

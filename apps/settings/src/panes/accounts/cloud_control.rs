@@ -86,14 +86,15 @@ impl CloudMounts {
         let due = self.next.is_none_or(|next| ui::time::now() >= next);
         if let (true, Some(socket)) = (due, self.socket.clone()) {
             let (answer, listing) = crate::channel::channel();
-            let started = std::thread::Builder::new()
-                .name("settings-cloud-mounts".into())
-                .spawn(move || {
+            let started = crate::device_read::thread(
+                "settings-cloud-mounts",
+                Box::new(move || {
                     let mounts = CloudClient::connect(&socket)
                         .and_then(|mut client| client.mounts())
                         .ok();
                     let _ = answer.send(mounts);
-                });
+                }),
+            );
             if started.is_ok() {
                 self.listing = Some(listing);
             } else {

@@ -1053,11 +1053,14 @@ impl AccountsPane {
                 let custodian = self.custodian.clone();
                 // Publishing may renew a session over the network; the
                 // account is already saved, so this never blocks the pane.
-                std::thread::spawn(move || {
-                    if let Err(error) = custodian.signed_in(&id) {
-                        warn!(target: "tilo::settings", %error, "could not publish the first credential for a new sign-in");
-                    }
-                });
+                let _ = crate::device_read::thread(
+                    "settings-accounts-worker",
+                    Box::new(move || {
+                        if let Err(error) = custodian.signed_in(&id) {
+                            warn!(target: "tilo::settings", %error, "could not publish the first credential for a new sign-in");
+                        }
+                    }),
+                );
                 if current {
                     self.sign_in = None;
                 }
@@ -2356,7 +2359,12 @@ impl AccountsPane {
         {
             let account = account.clone();
             let custodian = self.custodian.clone();
-            std::thread::spawn(move || custodian.revoke(&account, &secret));
+            let _ = crate::device_read::thread(
+                "settings-accounts-worker",
+                Box::new(move || {
+                    custodian.revoke(&account, &secret);
+                }),
+            );
         }
         settle(self, Ok(()))
     }
@@ -2493,9 +2501,12 @@ impl AccountsPane {
     ) {
         let tester = std::sync::Arc::clone(&self.account_tester);
         let (sender, receiver) = crate::channel::sync_channel(1);
-        std::thread::spawn(move || {
-            let _ = sender.send(tester.test(&account, &secret));
-        });
+        let _ = crate::device_read::thread(
+            "settings-accounts-worker",
+            Box::new(move || {
+                let _ = sender.send(tester.test(&account, &secret));
+            }),
+        );
         self.form_candidate = Some(draft);
         self.form_probe = Some(ProbeJob::new(receiver));
         self.form_error = Some(t("accounts-checking"));
@@ -2602,9 +2613,12 @@ impl AccountsPane {
                             let tester = std::sync::Arc::clone(&pane.account_tester);
                             let candidate = secret.clone();
                             let (sender, receiver) = crate::channel::sync_channel(1);
-                            std::thread::spawn(move || {
-                                let _ = sender.send(tester.test(&account, &candidate));
-                            });
+                            let _ = crate::device_read::thread(
+                                "settings-accounts-worker",
+                                Box::new(move || {
+                                    let _ = sender.send(tester.test(&account, &candidate));
+                                }),
+                            );
                             pane.reauth_candidate = Some((account_id, secret));
                             pane.reauth_probe = Some(ProbeJob::new(receiver));
                             pane.changed = true;

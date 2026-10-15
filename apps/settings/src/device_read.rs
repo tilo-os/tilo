@@ -263,6 +263,23 @@ fn spawn_erased(work: Work) -> Option<Receiver<Erased>> {
         .map(|()| receiver)
 }
 
+/// Start `job` on a thread of its own named `name`, for work that holds a
+/// thread for long (a watch loop, a sign-in waiting on the person) or must
+/// not queue behind the background executor. Not generic: `std::thread`'s
+/// start-up and its result plumbing are compiled once for every thread
+/// Settings starts, rather than once per closure (about a kilobyte each).
+///
+/// # Errors
+///
+/// When the system refuses a new thread; `job` is dropped unrun, so a
+/// channel it held reports the work gone.
+pub(crate) fn thread(name: &str, job: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(job)
+        .map(drop)
+}
+
 /// Blocking work running off the UI thread for a model, which takes its
 /// result in when it lands ([`Landing::poll`]).
 pub(crate) struct Landing(Receiver<Erased>);

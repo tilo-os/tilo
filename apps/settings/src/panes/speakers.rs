@@ -449,12 +449,13 @@ impl SpeakersModel {
             });
             return;
         }
-        let spawned = std::thread::Builder::new()
-            .name("settings-speakers".into())
-            .spawn(move || {
+        let spawned = crate::device_read::thread(
+            "settings-speakers",
+            Box::new(move || {
                 let result = service.call(command);
                 let _ = finished.send(Finished { purpose, result });
-            });
+            }),
+        );
         if let Err(error) = spawned {
             self.in_flight = self.in_flight.saturating_sub(1);
             self.setup.set_message(Some(t_args(
