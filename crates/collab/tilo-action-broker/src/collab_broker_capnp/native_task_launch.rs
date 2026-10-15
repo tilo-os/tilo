@@ -51,6 +51,8 @@ impl NativeLaunch {
             resource: format!("app.{}", self.app),
             action: "open".into(),
             need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
+            consequential: false,
+            confirmed: false,
         })
     }
 
@@ -82,6 +84,8 @@ impl NativeLaunch {
                         resource: self.resource.clone(),
                         action: self.action.clone(),
                         need: retained.contract.need(),
+                        consequential: false,
+                        confirmed: false,
                     },
                 )?;
         }
@@ -368,7 +372,7 @@ impl NativeLaunch {
                     action: &self.action,
                     argument: self.argument.as_deref(),
                 },
-                Some(&(self.caller.clone(), self.invocation)),
+                (Some(&(self.caller.clone(), self.invocation)), false),
                 offered,
             )
             .map(|job| job.id)
@@ -458,6 +462,8 @@ impl CapnpBrokerState {
             resource: target.resource.into(),
             action: target.action.into(),
             need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
+            consequential: false,
+            confirmed: false,
         };
         service.admit_host_launch(&run.cluster_id, &binding, &requirement, &mut || {
             caller.authorize_host_action(self, &run.cluster_id, &requirement)?;

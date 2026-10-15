@@ -25,15 +25,26 @@ pub struct NativeTaskActionRequirement {
     pub resource: String,
     pub action: String,
     pub need: tilo_actions::ActionNeed,
+    /// The action's contract asks for confirmation with these arguments
+    /// (it sends, publishes or deletes for good): the agent's person is
+    /// asked first unless they allowed this very action.
+    pub consequential: bool,
+    /// The person the run acts for confirmed this invocation, or it was
+    /// admitted on their confirmation: an answer that asks first is
+    /// answered.
+    pub confirmed: bool,
 }
 
 impl NativeTaskActionRequirement {
     /// Apply the room's grants for the agent to this action, on the live
-    /// admitted document, held to the exact task/run's frozen authority. An unattended run has nobody to ask, so only an action the
-    /// agent and its task are allowed passes.
+    /// admitted document, held to the exact task/run's frozen authority.
+    /// Where any of them asks first, the run pauses for its person: unless
+    /// the invocation is [`Self::confirmed`], the answer is an error starting
+    /// with [`tilo_actions::draft::AWAITING_CONFIRMATION`].
     ///
     /// # Errors
-    /// The room is unavailable or the current agent is not allowed this action.
+    /// The room is unavailable, the current agent is not allowed this
+    /// action, or it waits for its person's confirmation.
     pub fn check(
         &self,
         peer: &tilo_peer_state::StatePeer,
@@ -41,7 +52,7 @@ impl NativeTaskActionRequirement {
         agent: &str,
         now: std::time::SystemTime,
     ) -> Result<(), String> {
-        use tilo_action_policy::{Answer, Authority, Context, Subject};
+        use tilo_action_policy::{Answer, Authority, Context, Subject, agent_answers};
         let doc = peer
             .admitted_room()
             .ok_or("native action policy unavailable")?;
@@ -60,11 +71,9 @@ impl NativeTaskActionRequirement {
             self.need.kind,
             &cx,
         );
-        let verdict = if self.need.privileged {
-            verdict.privileged()
-        } else {
-            verdict
-        };
+        let agent_answer = verdict.parts.first().map_or(Answer::Deny, |decision| {
+            agent_answers::held_to_contract(decision, self.consequential)
+        });
         let binding = self
             .binding
             .as_ref()
@@ -92,64 +101,83 @@ impl NativeTaskActionRequirement {
         }
         let approval = run.approval.as_ref().ok_or("native task starter absent")?;
         let member = peer.permissions(approval.device, now)?;
-        if member.person != approval.person || !member.allows(&node, self.need.kind, now) {
+        let foreign = tilo_action_policy::roles::foreign_device_bound();
+        let starter = member
+            .authority(&foreign)
+            .decide(&node, self.need.kind, &cx)
+            .answer;
+        if member.person != approval.person || starter == Answer::Deny {
             return Err("native task action is no longer authorized by its starter".into());
         }
         let bound = control
             .execution_authority
             .as_ref()
             .ok_or("native task authority absent")?;
-        if bound.epoch != binding.epoch || !bound.allows(&node, self.need.kind, now) {
+        let frozen = if bound.scope.covers(&node) {
+            bound.starter.answer(&node, self.need.kind, &cx)
+        } else {
+            Answer::Deny
+        };
+        if bound.epoch != binding.epoch || frozen == Answer::Deny {
             return Err("native task action exceeds its frozen execution authority".into());
         }
-        if verdict.answer != Answer::Allow {
-            let basis = match verdict.parts.first().map(|part| part.basis) {
-                Some(tilo_action_policy::Basis::Grant(grant)) => {
-                    format!("grant {} on {}", grant.id, grant.node)
-                }
-                _ => format!("no grant covers {}", verdict.node),
-            };
-            return Err(unattended_refusal(
-                verdict.answer,
-                self.need.kind,
-                &format!("the agent's grants in this workspace ({basis})"),
-            ));
-        }
-        if let Some(answer) = policy
+        let task = policy
             .task_answer(&binding.task_id, &node, self.need.kind, &cx)
-            .filter(|answer| *answer != Answer::Allow)
-        {
-            return Err(unattended_refusal(
-                answer,
-                self.need.kind,
-                "this task's own grants",
+            .unwrap_or(Answer::Allow);
+        if agent_answer == Answer::Deny {
+            return Err(not_allowed(self.need.kind, &agent_basis(&verdict)));
+        }
+        if task == Answer::Deny {
+            return Err(not_allowed(self.need.kind, "this task's own grants"));
+        }
+        let answer = [agent_answer, starter, frozen, task]
+            .into_iter()
+            .fold(Answer::Allow, Answer::min);
+        if answer == Answer::Ask && !self.confirmed {
+            let whose = if agent_answer == Answer::Ask {
+                agent_basis(&verdict)
+            } else {
+                "the person's own grants".to_owned()
+            };
+            return Err(format!(
+                "{}: {} asks a person first: {whose} answer \"ask\" for {}",
+                tilo_actions::draft::AWAITING_CONFIRMATION,
+                self.action,
+                self.need.kind.phrase()
             ));
         }
         Ok(())
     }
+
+    /// Whether `error`, from [`Self::check`], says the action waits for the
+    /// person's confirmation rather than being refused.
+    #[must_use]
+    pub fn awaits_confirmation(error: &str) -> bool {
+        error.contains(tilo_actions::draft::AWAITING_CONFIRMATION)
+    }
 }
 
-/// Why an unattended task run may not take an action `whose` grants answer
-/// `answer` (anything but Allow) for: one that asks first has nobody to ask,
-/// so it is refused as surely as one they deny, but the agent (and whoever
-/// reads its report) should learn which it was rather than retry it.
-fn unattended_refusal(
-    answer: tilo_action_policy::Answer,
-    kind: tilo_action_policy::ActionKind,
-    whose: &str,
-) -> String {
-    if answer == tilo_action_policy::Answer::Ask {
-        format!(
-            "native task action asks a person first: {whose} answer \"ask\" for {}, and an \
-             unattended task run has nobody to ask",
-            kind.phrase()
-        )
-    } else {
-        format!(
-            "native task action is not allowed: {whose} do not allow {}",
-            kind.phrase()
-        )
+/// The agent's grants that decided `verdict`, by the grant, so the agent (and
+/// whoever reads its report) learns why rather than retrying.
+fn agent_basis(verdict: &tilo_action_policy::Verdict<'_>) -> String {
+    match verdict.parts.first().map(|part| part.basis) {
+        Some(tilo_action_policy::Basis::Grant(grant)) => format!(
+            "the agent's grants in this workspace (grant {} on {})",
+            grant.id, grant.node
+        ),
+        _ => format!(
+            "the agent's grants in this workspace (no grant covers {})",
+            verdict.node
+        ),
     }
+}
+
+/// Why a task run may not take an action `whose` grants deny.
+fn not_allowed(kind: tilo_action_policy::ActionKind, whose: &str) -> String {
+    format!(
+        "native task action is not allowed: {whose} do not allow {}",
+        kind.phrase()
+    )
 }
 
 pub trait WorkspaceTaskExecution: Send + Sync {

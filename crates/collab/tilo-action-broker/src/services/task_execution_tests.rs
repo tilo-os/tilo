@@ -48,10 +48,10 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
     );
 }
 
-/// An action the agent's grants answer "ask" for is refused to an
-/// unattended run, saying it asks first, apart from one they deny.
+/// An action the agent's grants answer "ask" for pauses the run for its
+/// person, naming the grant, apart from one they deny.
 #[test]
-fn an_unattended_run_is_told_an_action_asks_first() {
+fn a_run_is_told_an_action_asks_first() {
     let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let (mut peer, starter, key, now) = policy_fixture(room);
     let authority = WorkspaceTaskAuthority::Person { caller: starter };
@@ -72,6 +72,10 @@ fn an_unattended_run_is_told_an_action_asks_first() {
     let asks = requirement.check(&peer, room, "scribe", now).unwrap_err();
     assert!(asks.contains("asks a person first"), "{asks}");
     assert!(asks.contains("agent-asks"), "{asks}");
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
     peer.governance_mut()
         .put_governed_grants(&[grant("agent-denied", Answer::Deny)], &key, now)
         .unwrap();
@@ -186,6 +190,8 @@ fn approve_task(
             field: None,
             privileged: false,
         },
+        consequential: false,
+        confirmed: false,
     }
 }
 
@@ -244,11 +250,12 @@ fn assert_frozen_starter(
         .unwrap();
     let mut widened = requirement.clone();
     widened.need.kind = tilo_action_policy::ActionKind::Outside;
+    // The frozen starter asked first for outside effects: the later Allow
+    // does not let the run take one unasked, it pauses for the person.
+    let error = widened.check(peer, room, "scribe", now).unwrap_err();
     assert!(
-        widened
-            .check(peer, room, "scribe", now)
-            .unwrap_err()
-            .contains("frozen")
+        NativeTaskActionRequirement::awaits_confirmation(&error),
+        "{error}"
     );
 }
 
@@ -372,4 +379,75 @@ fn assert_live_starter_revocation(
             .unwrap_err();
         assert!(error.contains("every execution permission"), "{error}");
     }
+}
+
+#[test]
+fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let (mut peer, starter, key, now) = policy_fixture(room);
+    let authority = WorkspaceTaskAuthority::Person { caller: starter };
+    let requirement = approve_task(&mut peer, &authority, now);
+    let awaits = |requirement: &NativeTaskActionRequirement, peer: &StatePeer| {
+        let error = requirement.check(peer, room, "scribe", now).unwrap_err();
+        NativeTaskActionRequirement::awaits_confirmation(&error)
+    };
+
+    // An action whose contract confirms (it deletes for good) asks first,
+    // though the agent's grants allow its kind.
+    let mut purge = requirement.clone();
+    purge.consequential = true;
+    assert!(awaits(&purge, &peer));
+    purge.confirmed = true;
+    purge.check(&peer, room, "scribe", now).unwrap();
+
+    // The person tells the agent Notes asks first.
+    let scope = AnswerScope::app("so.tilo.notes");
+    let set = |answer: Answer, peer: &mut StatePeer| {
+        peer.governance_mut()
+            .put_governed_grants(
+                &[agent_answers::grant(
+                    room,
+                    "scribe",
+                    (&scope, tilo_action_policy::ActionKind::Undoable),
+                    answer,
+                    Subject::person("governor"),
+                )],
+                &key,
+                now,
+            )
+            .unwrap();
+    };
+    set(Answer::Ask, &mut peer);
+    assert!(awaits(&requirement, &peer));
+    let mut confirmed = requirement.clone();
+    confirmed.confirmed = true;
+    confirmed.check(&peer, room, "scribe", now).unwrap();
+
+    // Not allowed: refused outright, confirmed or not.
+    set(Answer::Deny, &mut peer);
+    let error = confirmed.check(&peer, room, "scribe", now).unwrap_err();
+    assert!(
+        !NativeTaskActionRequirement::awaits_confirmation(&error),
+        "{error}"
+    );
+
+    // Always allowing the one action lifts its contract's confirmation.
+    let always = AnswerScope::action("so.tilo.notes", "document", "append");
+    peer.governance_mut()
+        .put_governed_grants(
+            &[agent_answers::grant(
+                room,
+                "scribe",
+                (&always, tilo_action_policy::ActionKind::Undoable),
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    let mut purge = requirement;
+    purge.consequential = true;
+    purge.check(&peer, room, "scribe", now).unwrap();
 }
