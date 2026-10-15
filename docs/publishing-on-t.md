@@ -75,6 +75,8 @@ sed, since the skopeo image the checks run in has no jq.
 | room service | `image-room-service-context`, `image-room-service` | `sign-room-service` | `publish-room-service`: `dev-<commit>` | `release-room-service`: `sha-<commit>`, signed, receipt |
 | web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry`: `dev-<commit>` | `release-web-entry`: `sha-<commit>`, signed, receipt |
 | ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built) | | `publish-ci-fast`: `sha-<commit>` | (CI tooling, not a product) |
+| local model catalog | `model-catalog-compiler` | `sign-model-catalog`, `review-speech-catalog` (dispatch) | | `publish-model-catalog` (dispatch): the signed catalog in generic packages |
+| cloud promotion | `cloud-drift` (Mondays, reports only) | | | `cloud-promotion` (dispatch): the infra pull request |
 
 `t test image-room-service` builds the image from your tree exactly as a release would, without
 publishing anything. The publishing checks run only as trusted runs; `t test publish-room-service`
@@ -126,10 +128,10 @@ fixed credentials in the server config, limited by reference and node, only wher
 | `release-apps.yml` | push main (paths); `apps-v*` tags validate only; dispatch | `TAPP_PUBLISHER_IDENTITY`, `RUNTIME_BUNDLE_SIGNING_KEY` (raw keys), OIDC token as Forgejo API credential, writes repository variables `TILO_APP_COLLECTION_*` | x86_64 and arm64 builds in the builder image, llvmpipe smoke tests | tapps and collections in generic packages, registry entries at apps.tilo.so, the runtime package | build per arch (`dist/apps/package-apps.sh` compile and package with throwaway keys) as ordinary checks; signing with the publisher identity as a separate check; publication from main stays the development collection, the release collection from stable; the repository variables become a published pointer (see gaps) |
 | `release-desktop.yml` | PR preflight, weekly, `desktop-v*` tags, dispatch | `REGISTRY_TOKEN`, `RELEASE_TOKEN`; RPM signing through a broker on the runner (OIDC) | distribution containers, a full clone for Nix | packages, a Forgejo release on tags, the OS payload and its repository variables | builds as checks; RPM signing with an OpenPGP key in KMS as a signing check; release on `tag:desktop-v*` |
 | `host-session-e2e.yml` | called by release-desktop, dispatch, PR | none | `disk-100g` x86_64, KVM | test result | a check needing the RPM build, `requires = ["/dev/kvm", "disk-100g"]` |
-| `release-local-model-catalog.yml` | dispatch on main | `TILO_MODEL_CATALOG_SIGNING_KEY` (raw seed), `REGISTRY_TOKEN` | builder image | signed catalog in generic packages | dispatch check on stable |
+| ~~`release-local-model-catalog.yml`~~ | dispatch on main | `TILO_MODEL_CATALOG_SIGNING_KEY` (raw seed), `REGISTRY_TOKEN` | builder image | signed catalog in generic packages | ported: dispatch checks on stable (above) |
 | `release-verifier-bundles.yml` | dispatch | none | x86_64 and arm64 | artifacts | dispatch check with `outputs` |
 | `perf-scheduled.yml`, `vm-acceptance.yml` (results) | daily | `REGISTRY_TOKEN` to append results | various | `tilo-perf-results` packages | scheduled checks with `cache = false` and a token that may only write that package |
-| `cloud-promotion.yml` | weekly drift report, dispatch | `INFRA_PROMOTION_TOKEN` | Git history | a promotion pull request on the infra repository | dispatch check with `git = true` once t serves it |
+| ~~`cloud-promotion.yml`~~ | weekly drift report, dispatch | `INFRA_PROMOTION_TOKEN` | Git history | a promotion pull request on the infra repository | ported: `cloud-drift` on a schedule, `cloud-promotion` a dispatch on stable with `git = true`; the pull request is opened through the forge's API, so it pushes nothing itself |
 | `check.yml` (`checks` job) | push main | `REGISTRY_TOKEN` as a Git write token | | the CI receipt as a Git note | t's own commit statuses replace the receipt |
 
 ### The imager
@@ -168,6 +170,9 @@ t's server config (sops-encrypted in the infra repository), none in this reposit
 | name | refs | nodes | what |
 |---|---|---|---|
 | `TAPP_PUBLISHER_IDENTITY`, `RUNTIME_BUNDLE_SIGNING_KEY` | `stable`, `tag:*` | `release` | the app and runtime publisher identities, for the app and OS chains once ported |
+| `TILO_MODEL_CATALOG_SIGNING_KEY` | `stable` | `release` | the local model catalog's signing seed: `sign-model-catalog`, `review-speech-catalog` |
+| `REGISTRY_TOKEN` | `stable` | `release` | a Forgejo token that may write generic packages, which do not take t's identity tokens: `publish-model-catalog` |
+| `INFRA_PROMOTION_TOKEN` | `stable` | `release` | may create branches and pull requests on the infra repository: `cloud-promotion` |
 
 ## Windows
 
