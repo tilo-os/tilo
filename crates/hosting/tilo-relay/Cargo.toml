@@ -220,7 +220,7 @@ toml.workspace = true
 anyhow.workspace = true
 libc.workspace = true
 sd-notify.workspace = true
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 # The daemon's bounded runtime.
 tilo-rt.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
@@ -294,5 +294,14 @@ test = true
 name = "relay_load"
 test = true
 
+# The original timed median-one-write assertion, run only in Perf / scheduled.
+# Examples with test = false are compiled, not executed, by normal test jobs.
+[[example]]
+name = "keystroke_writes"
+test = false
+
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

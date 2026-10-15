@@ -110,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let layout = CenterLayout::new(panel, CenterLayout::metrics(&theme, &mut text));
             match state {
                 "row-focused" => {
-                    center.focus_accessibility_path(&host, &[0, 0]);
+                    center.focus_accessibility_path(&host, &layout, &[0, 0]);
                 }
                 "reading-start" => {
                     center.key(&host, &layout, &Key::Named(NamedKey::Enter));
@@ -119,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     center.key(&host, &layout, &Key::Named(NamedKey::End));
                 }
                 "back-focused" => {
-                    center.focus_accessibility_path(&host, &[0]);
+                    center.focus_accessibility_path(&host, &layout, &[0]);
                 }
                 "pointer-opened" => {
                     // Opened by the pointer: no focus ring until the

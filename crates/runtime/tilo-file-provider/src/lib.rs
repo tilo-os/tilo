@@ -39,7 +39,7 @@ fn home_directory() -> Option<PathBuf> {
     // strings `entry` points into, and `found` is only read afterwards.
     let status = unsafe {
         libc::getpwuid_r(
-            libc::getuid(),
+            rustix::process::getuid().as_raw(),
             entry.as_mut_ptr(),
             buffer.as_mut_ptr(),
             buffer.len(),

@@ -38,7 +38,17 @@ for crate in "$@"; do
     echo "$crate/Cargo.toml has no [workspace] table" >&2
     exit 1
   fi
-  cp Cargo.lock "$crate/Cargo.lock"
+  dir=$crate
+  if [ ! -w "$crate" ]; then
+    # A read-only checkout (a t check) takes the lock in a copy of the
+    # vendored tree, beside the workspace's Cargo configuration and the test
+    # runner that configuration names.
+    copy=$(mktemp -d)
+    trap 'rm -rf -- "$copy"' EXIT
+    cp -a vendor tools .cargo rust-toolchain.toml "$copy/"
+    dir=$copy/$crate
+  fi
+  cp Cargo.lock "$dir/Cargo.lock"
   echo "== cargo test in $crate"
-  (cd "$crate" && cargo test)
+  (cd "$dir" && cargo test)
 done

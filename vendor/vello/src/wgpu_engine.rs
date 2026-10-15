@@ -113,8 +113,7 @@ impl ComputePipelineParts {
 }
 
 /// Pipelines a renderer registered but did not build before its first frame
-/// (Tilo patch, `Renderer::new_deferring`).
-#[cfg(not(target_arch = "wasm32"))]
+/// (Tilo patch, `Renderer::new_deferring`, `Renderer::new_async_deferring`).
 #[derive(Default)]
 struct DeferredBuild {
     /// Which registrations defer while `full_shaders` runs; `None` after.
@@ -131,15 +130,24 @@ struct DeferredBuild {
     /// the builder takes them last.
     spare: HashSet<usize>,
     /// Threads the builder compiles on (the renderer's init threads).
+    #[cfg(not(target_arch = "wasm32"))]
     threads: usize,
     /// Pipelines the background builder finished, in its order.
+    #[cfg(not(target_arch = "wasm32"))]
     built: Option<Receiver<(ShaderId, WgpuShader)>>,
+    /// Pipelines the device compiles asynchronously
+    /// ([`WgpuEngine::start_deferred_pipelines_async`]), polled by renders.
+    compiling: Vec<(ShaderId, CompilingShader)>,
     started: bool,
     /// Pipelines a dispatch needed before any builder had them.
     built_inline: u64,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// A pipeline the device is compiling (`createComputePipelineAsync` on
+/// WebGPU, already created elsewhere). Send on wasm through wgpu's
+/// `fragile-send-sync-non-atomic-wasm`.
+type CompilingShader = std::pin::Pin<Box<dyn Future<Output = WgpuShader> + Send>>;
+
 fn defers_registration(deferred: &DeferredBuild) -> bool {
     match deferred.mode {
         crate::PipelineDeferral::None => false,
@@ -159,7 +167,6 @@ pub(crate) struct WgpuEngine {
     /// deferred to [`Self::build_shaders_if_needed`] or
     /// [`Self::build_shaders_async`].
     shaders_to_initialise: Option<Vec<UninitialisedShader>>,
-    #[cfg(not(target_arch = "wasm32"))]
     deferred: DeferredBuild,
     pub(crate) use_cpu: bool,
     /// Overrides from a specific `Image::data`'s [`id`](peniko::Blob::id) to a wgpu `Texture`.
@@ -1818,12 +1825,7 @@ impl WgpuEngine {
     /// Which registrations defer their pipeline (Tilo patch). `full_shaders`
     /// runs between setting a mode and resetting it to `None`.
     pub(crate) fn set_pipeline_deferral(&mut self, mode: crate::PipelineDeferral) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.deferred.mode = mode;
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = mode;
+        self.deferred.mode = mode;
     }
 
     /// How many threads [`Self::start_deferred_pipelines`] compiles on.
@@ -1839,12 +1841,7 @@ impl WgpuEngine {
     /// Mark the registrations that follow as ones a full frame on the
     /// default path never dispatches, until called with `false`.
     pub(crate) fn defer_unused(&mut self, unused: bool) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.deferred.unused = unused;
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = unused;
+        self.deferred.unused = unused;
     }
 
     /// Build every deferred pipeline in the background on the init threads,
@@ -1945,25 +1942,67 @@ impl WgpuEngine {
     /// Deferred pipelines not installed yet, and how many a dispatch had to
     /// build itself.
     pub(crate) fn deferred_pipeline_counts(&mut self) -> (usize, u64) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.receive_deferred();
-            (self.deferred.pending.len(), self.deferred.built_inline)
-        }
-        #[cfg(target_arch = "wasm32")]
-        (0, 0)
+        self.receive_deferred();
+        (self.deferred.pending.len(), self.deferred.built_inline)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Start compiling every deferred pipeline through the device's
+    /// asynchronous pipeline creation, without waiting for any (Tilo patch):
+    /// the WebGPU counterpart of [`Self::start_deferred_pipelines`]' threads.
+    /// Renders install each once it is compiled. Once only.
+    pub(crate) fn start_deferred_pipelines_async(&mut self, device: &Device) {
+        if self.deferred.started {
+            return;
+        }
+        self.deferred.started = true;
+        let pending = &self.deferred.pending;
+        let pipeline_cache = self.pipeline_cache.as_ref();
+        self.deferred.compiling = self
+            .deferred
+            .specs
+            .iter()
+            .filter(|spec| pending.contains(&spec.shader_id.0))
+            .map(|spec| {
+                let compiling: CompilingShader = Box::pin(Self::start_compute_pipeline(
+                    device,
+                    spec.label,
+                    spec.wgsl.clone(),
+                    spec.entries.clone(),
+                    pipeline_cache,
+                ));
+                (spec.shader_id, compiling)
+            })
+            .collect();
+    }
+
     fn install_deferred(&mut self, id: ShaderId, shader: WgpuShader) {
         if self.deferred.pending.remove(&id.0) {
             self.shaders[id.0].wgpu = Some(shader);
         }
     }
 
-    /// Install whatever the builder has finished, without waiting.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Install whatever the builder or the device has finished, without
+    /// waiting.
     fn receive_deferred(&mut self) {
+        if !self.deferred.compiling.is_empty() {
+            // Polled, never awaited: a render cannot wait for a promise, and a
+            // compile that is not done yet is checked again by the next one.
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            let mut finished = Vec::new();
+            self.deferred.compiling.retain_mut(|(id, compiling)| {
+                match compiling.as_mut().poll(&mut context) {
+                    std::task::Poll::Ready(shader) => {
+                        finished.push((*id, shader));
+                        false
+                    }
+                    std::task::Poll::Pending => true,
+                }
+            });
+            for (id, shader) in finished {
+                self.install_deferred(id, shader);
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         while let Some(built) = self.deferred.built.as_ref() {
             match built.try_recv() {
                 Ok((id, shader)) => self.install_deferred(id, shader),
@@ -1975,8 +2014,11 @@ impl WgpuEngine {
 
     /// Every deferred GPU pipeline `recording` dispatches is installed before
     /// it is encoded: from the builder (waiting for it when it is still
-    /// running), else built here. A dispatch never runs without its pipeline.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// running) or the device's finished compiles, else built here. A
+    /// dispatch never runs without its pipeline. On WebGPU a render cannot
+    /// wait for an asynchronous compile, so one still running is created
+    /// again synchronously: the GPU process then compiles it before the
+    /// dispatch runs.
     fn ensure_deferred(&mut self, device: &Device, recording: &Recording) {
         if self.deferred.pending.is_empty() {
             return;
@@ -1989,6 +2031,7 @@ impl WgpuEngine {
             if self.shaders[id.0].cpu.is_some() || !self.deferred.pending.contains(&id.0) {
                 continue;
             }
+            #[cfg(not(target_arch = "wasm32"))]
             while self.deferred.pending.contains(&id.0) {
                 let Some(built) = self.deferred.built.as_ref() else {
                     break;
@@ -2014,6 +2057,9 @@ impl WgpuEngine {
                     self.pipeline_cache.as_ref(),
                 );
                 self.deferred.built_inline += 1;
+                self.deferred
+                    .compiling
+                    .retain(|(compiling, _)| compiling.0 != id.0);
                 self.install_deferred(*id, shader);
             }
         }
@@ -2169,7 +2215,6 @@ impl WgpuEngine {
         let entries = Self::create_bind_group_layout_entries(
             layout.iter().map(|b| (*b, wgpu::ShaderStages::COMPUTE)),
         );
-        #[cfg(not(target_arch = "wasm32"))]
         if defers_registration(&self.deferred) {
             let id = add(Shader {
                 label,
@@ -2661,7 +2706,6 @@ impl WgpuEngine {
         F: FnOnce(&mut CommandEncoder),
         G: FnOnce() -> bool,
     {
-        #[cfg(not(target_arch = "wasm32"))]
         self.ensure_deferred(device, recording);
         let cpu_pathtag_reuse_active = self.cpu_pathtag_reuse_active();
         let cpu_metadata_active = self.cpu_metadata_active();

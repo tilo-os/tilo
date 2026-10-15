@@ -1035,6 +1035,26 @@ impl Widget for BrowserShell {
         }
     }
 
+    /// The desktop surface's strip pan is view-only, while nothing above
+    /// the strip takes the wheel first: the People popover, the Tilo menu,
+    /// the overview, or the bar under the pointer (its centre cycles
+    /// widgets). The surface is the area's top layer, so a wheel it takes
+    /// never reaches the empty-workspace launchpad beneath.
+    fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        !self.people_open
+            && !self.people.wants_pointer_capture()
+            && !self.tilo_menu.is_open()
+            && !self.overview.is_open()
+            && self
+                .cursor
+                .is_none_or(|point| point.y >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX))
+            && self
+                .area
+                .children()
+                .last()
+                .is_some_and(|surface| surface.view_only_scroll(event))
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         vec![
             &self.backdrop,

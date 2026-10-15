@@ -123,9 +123,11 @@ export async function launch({args = []} = {}) {
     ws.send(JSON.stringify({id: n, method, params, sessionId}));
   });
 
-  /** A tab: navigate, evaluate (awaiting promises), collect errors. */
-  async function tab() {
-    const {result: {targetId}} = await send('Target.createTarget', {url: 'about:blank'});
+  /** A tab: navigate, evaluate (awaiting promises), collect errors. In
+   * `context` (from `context()`) when given, else the browser's own profile. */
+  async function tab({context} = {}) {
+    const {result: {targetId}} = await send('Target.createTarget',
+      {url: 'about:blank', ...(context ? {browserContextId: context} : {})});
     const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
     const log = [];
     const listener = message => {
@@ -183,6 +185,9 @@ export async function launch({args = []} = {}) {
 
   return {
     tab,
+    /** A fresh browser context: storage, cookies and Web Locks of its own, as
+     * another person's browser profile would have. Resolves to its id. */
+    context: async () => (await send('Target.createBrowserContext', {disposeOnDetach: true})).result.browserContextId,
     send,
     /** Observe every protocol event; returns the unsubscribe function. */
     on: listener => { listeners.add(listener); return () => listeners.delete(listener); },

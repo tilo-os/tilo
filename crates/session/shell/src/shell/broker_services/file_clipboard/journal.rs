@@ -253,8 +253,7 @@ impl Journal {
             .open(directory.anchored_root().join(name))
             .map_err(|error| error.to_string())?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
-        // SAFETY: geteuid reads the process identity without pointers.
-        let owner = unsafe { libc::geteuid() };
+        let owner = rustix::process::geteuid().as_raw();
         if !metadata.is_file()
             || metadata.len() > MAX_RECEIPT_BYTES
             || metadata.uid() != owner

@@ -5582,23 +5582,8 @@ where
             Ok(info) => {
                 let connected =
                     matches!(info.state(), drm_re::control::connector::State::Connected);
-                let modes: Vec<ModeInfo> = info
-                    .modes()
-                    .iter()
-                    .map(|m| {
-                        let (w, h) = m.size();
-                        let preferred = m
-                            .mode_type()
-                            .contains(drm_re::control::ModeTypeFlags::PREFERRED);
-                        ModeInfo {
-                            width: w,
-                            height: h,
-                            // `vrefresh()` returns plain Hz; multiply by 1000 to get milli-Hz (mode_info's canonical unit so 59.94 vs 60.00 stay distinguishable when fractional rates arrive upstream).
-                            refresh_mhz: m.vrefresh().saturating_mul(1000),
-                            preferred,
-                        }
-                    })
-                    .collect();
+                let modes: Vec<ModeInfo> =
+                    info.modes().iter().map(super::scanout::mode_info).collect();
                 connectors.push(ConnectorInfo {
                     device_id: dev_id_raw,
                     connector_id: u32::from(handle),

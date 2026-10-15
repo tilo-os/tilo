@@ -4818,6 +4818,7 @@ dependencies = [
  "fs-content",
  "hex",
  "libc",
+ "rustix 1.1.4",
  "workspace-hack",
 ]
 
@@ -7001,6 +7002,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "staging-handoff-model",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -7012,6 +7014,7 @@ dependencies = [
  "tilo-net",
  "tilo-ntfs-protocol",
  "tilo-paths",
+ "tilo-process",
  "tilo-relay-protocol",
  "tilo-test-env",
  "tilo-user-identity",
@@ -7166,6 +7169,7 @@ dependencies = [
  "os-actions",
  "serde",
  "serde_json",
+ "staging-handoff-model",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -8077,6 +8081,7 @@ version = "0.1.0"
 dependencies = [
  "legacy-agent-protocol",
  "libc",
+ "rustix 1.1.4",
  "tempfile",
  "tilo-clock",
  "tilo-desktop-entry",
@@ -13214,6 +13219,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-paths",
  "tilo-test-env",
  "tokio",
  "tokio-util",
@@ -14465,6 +14471,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-thumbnail",
+ "tilo-tray-host",
  "tilo-tts",
  "tilo-ui",
  "tilo-unlock-protocol",
@@ -15052,6 +15059,15 @@ dependencies = [
  "libc",
  "psm",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "staging-handoff-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -16623,6 +16639,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "serde_json",
+ "tilo-paths",
  "workspace-hack",
 ]
 
@@ -17046,6 +17063,7 @@ dependencies = [
  "libc",
  "runtime-fs",
  "runtime-portal",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -17270,6 +17288,7 @@ dependencies = [
  "postcard",
  "rand_core 0.10.0",
  "runtime-identity",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -17781,6 +17800,7 @@ dependencies = [
 name = "tilo-paths"
 version = "0.1.0"
 dependencies = [
+ "rustix 1.1.4",
  "tilo-platform-caps",
  "windows-sys 0.61.2",
  "workspace-hack",
@@ -17864,6 +17884,7 @@ name = "tilo-polkit-agent"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix 1.1.4",
  "tilo-copy-lint",
  "tokio",
  "tokio-util",
@@ -18006,6 +18027,7 @@ dependencies = [
  "rand 0.10.1",
  "runtime-identity",
  "runtime-portal",
+ "rustix 1.1.4",
  "rustls",
  "sd-notify",
  "serde",
@@ -18068,6 +18090,7 @@ dependencies = [
 name = "tilo-relay-client"
 version = "0.1.0"
 dependencies = [
+ "collab-types",
  "ed25519-dalek 3.0.0",
  "iroh",
  "iroh-base",
@@ -18453,6 +18476,7 @@ dependencies = [
  "hex",
  "libc",
  "postcard",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -18633,6 +18657,20 @@ dependencies = [
  "tilo-pdf",
  "workspace-hack",
  "zip",
+]
+
+[[package]]
+name = "tilo-tray-host"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde_json",
+ "tilo-clock",
+ "tilo-copy-lint",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -18841,6 +18879,7 @@ dependencies = [
  "hex",
  "libc",
  "postcard",
+ "rustix 1.1.4",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -19029,12 +19068,16 @@ dependencies = [
  "tilo-app",
  "tilo-browser-runtime",
  "tilo-desktop-surface",
+ "tilo-search",
+ "tilo-spellcheck",
+ "tilo-ui",
  "totp",
  "tube",
  "typst-editor",
  "video-editor",
  "video-player",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "weather",
  "word-processor",
  "workspace-hack",
