@@ -214,13 +214,14 @@ fn room_media_combined_certificate_and_delegation_has_one_basis_revision() {
     )
     .unwrap();
     assert!(
-        peer.admit_certificate_with_workspace_delegation(
-            cert.clone(),
-            delegation.clone(),
-            &key,
-            now
-        )
-        .unwrap()
+        peer.governance_mut()
+            .admit_certificate_with_workspace_delegation(
+                cert.clone(),
+                delegation.clone(),
+                &key,
+                now
+            )
+            .unwrap()
     );
     assert_eq!(
         peer.validated_media_policy()
@@ -231,6 +232,7 @@ fn room_media_combined_certificate_and_delegation_has_one_basis_revision() {
     );
     assert!(
         !peer
+            .governance_mut()
             .admit_certificate_with_workspace_delegation(cert, delegation, &key, now)
             .unwrap()
     );

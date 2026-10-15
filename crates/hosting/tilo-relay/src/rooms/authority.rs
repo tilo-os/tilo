@@ -260,6 +260,7 @@ fn is_administrator(
 ) -> Result<bool, CollaborationError> {
     Ok(room
         .peer()
+        .governance()
         .governed_members(system_time(now))
         .map_err(CollaborationError::new)?
         .iter()

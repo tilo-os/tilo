@@ -116,7 +116,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
                 .permissions(fixture.certificate.device_public_key, fixture.now)?
                 .person;
             let mut candidate = before.clone();
-            candidate.put_governed_grants(
+            candidate.governance_mut().put_governed_grants(
                 &[tilo_action_policy::Grant::new(
                     "app-open-read-only-person",
                     tilo_action_policy::Subject::Person(person.clone()),

@@ -3,6 +3,10 @@ use crate::application_record::tests::{Fixture, fixture};
 use tilo_actions::{ActionContext, ActionFacet, EffectReceiptStatus, InvocationId};
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn member_effect_uses_original_durable_receipt_and_refuses_changed_or_foreign_audit() {
     let mut fixture = fixture();
     let room = RoomId::parse(crate::testing::ROOM).unwrap();
@@ -74,7 +78,11 @@ fn member_effect_uses_original_durable_receipt_and_refuses_changed_or_foreign_au
     let messages = reopened
         .with_current(room, |view| {
             let mut peer = view.peer().clone();
-            assert!(peer.remove_member(member.user_public_key, &fixture.key, fixture.now)?);
+            assert!(peer.governance_mut().remove_member(
+                member.user_public_key,
+                &fixture.key,
+                fixture.now
+            )?);
             peer.durable_mutation_messages(
                 view.peer(),
                 &fixture.key,

@@ -248,7 +248,8 @@ pub fn raw_fixture_at(
     .unwrap();
     peer.select_admission_v5().unwrap();
     assert!(
-        peer.admit_invited_member(&redemption, &governor_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &governor_key, now)
             .unwrap()
     );
     let policy = media::RoomMediaV1 {

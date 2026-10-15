@@ -23,7 +23,11 @@ fn signed_governance(
             let mut candidate = before.clone();
             match change {
                 Governed::Grant(grant) => {
-                    candidate.put_governed_grants(std::slice::from_ref(grant), &key, now)?;
+                    candidate.governance_mut().put_governed_grants(
+                        std::slice::from_ref(grant),
+                        &key,
+                        now,
+                    )?;
                 }
             }
             candidate.durable_mutation_messages(
@@ -252,7 +256,11 @@ fn admit_viewer(
         .with_current(room, |view| {
             let before = view.peer().clone();
             let mut candidate = before.clone();
-            assert!(candidate.admit_invited_member(&redemption, &governor_key, now)?);
+            assert!(candidate.governance_mut().admit_invited_member(
+                &redemption,
+                &governor_key,
+                now
+            )?);
             candidate.durable_mutation_messages(
                 &before,
                 &governor_key,

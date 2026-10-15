@@ -48,7 +48,34 @@ pub struct PeerOutboxMut<'peer> {
     pub(crate) peer: &'peer mut StatePeer,
 }
 
+/// The room's membership and its governance, read side: who is a member,
+/// agent or bot and with what access, and the checks that verify a member's
+/// or owner's refresh against the admitted roster.
+#[derive(Clone, Copy)]
+pub struct PeerGovernance<'peer> {
+    pub(crate) peer: &'peer StatePeer,
+}
+
+/// The room's membership and its governance, write side: inviting, removing,
+/// banning and re-roling members, admitting agents, installing delegations,
+/// editing grants, and naming the room.
+pub struct PeerGovernanceMut<'peer> {
+    pub(crate) peer: &'peer mut StatePeer,
+}
+
 impl StatePeer {
+    /// Read this peer's room membership and governance.
+    #[must_use]
+    pub fn governance(&self) -> PeerGovernance<'_> {
+        PeerGovernance { peer: self }
+    }
+
+    /// Author this peer's room membership and governance.
+    #[must_use]
+    pub fn governance_mut(&mut self) -> PeerGovernanceMut<'_> {
+        PeerGovernanceMut { peer: self }
+    }
+
     /// Read this peer's room media governance.
     #[must_use]
     pub fn media(&self) -> PeerMediaGovernance<'_> {

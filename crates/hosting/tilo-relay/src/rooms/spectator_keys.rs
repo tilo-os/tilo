@@ -62,7 +62,7 @@ impl Rooms {
         }
         let channel = collab_types::document_channel_id(&route.app_id, &route.room, &route.record);
         let now = SystemTime::now();
-        let access = room.peer().governed_access(now)?;
+        let access = room.peer().governance().governed_access(now)?;
         if readers(room.peer(), &access, room.stewardship.as_deref(), now)?.withholds(channel) {
             return Err(
                 "this record is kept from some of the room, and from those who watch".into(),

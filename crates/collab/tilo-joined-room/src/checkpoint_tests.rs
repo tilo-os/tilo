@@ -870,7 +870,11 @@ fn checkpoint_certificate_evidence_gates_reads_and_retries() {
     assert!(capture_member(&fixture, &fixture.owner, &substituted, id).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), durable);
     publish_peer_change(&fixture, |peer| {
-        assert!(peer.remove_member(member.user_public_key, &fixture.key, fixture.now)?);
+        assert!(peer.governance_mut().remove_member(
+            member.user_public_key,
+            &fixture.key,
+            fixture.now
+        )?);
         Ok(())
     });
     let reopened = open_file(&path).unwrap();

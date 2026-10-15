@@ -309,7 +309,7 @@ impl Policy {
     fn read(peer: &StatePeer) -> Result<Self, String> {
         Ok(Self {
             calls: peer.validated_media_policy()?,
-            access: peer.governed_access(SystemTime::now())?,
+            access: peer.governance().governed_access(SystemTime::now())?,
         })
     }
 }

@@ -334,6 +334,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
     tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[62; 32]))
         .unwrap();
     remote
+        .governance_mut()
         .publish_governed_revocations(&[revoked.clone()], &governor_key, now)
         .unwrap();
     owner

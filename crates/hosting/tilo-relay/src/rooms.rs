@@ -133,7 +133,7 @@ fn readers(
     let routes = steward
         .map(stewardship::Steward::routes)
         .unwrap_or_default();
-    let record_readers = peer.withheld_record_readers(now, &routes)?;
+    let record_readers = peer.governance().withheld_record_readers(now, &routes)?;
     let withheld = record_readers
         .withheld
         .into_iter()
@@ -474,7 +474,11 @@ impl GovernedRoom {
             workspace_id: self.record.workspace_id,
             name: self.record.name.clone(),
             generation: self.record.generation,
-            members: self.peer.governed_members(now).unwrap_or_default(),
+            members: self
+                .peer
+                .governance()
+                .governed_members(now)
+                .unwrap_or_default(),
         }
     }
 }
@@ -507,7 +511,8 @@ fn prepare_governance(
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<(), String> {
-    peer.reconcile_administrator_grants(key, now)?;
+    peer.governance_mut()
+        .reconcile_administrator_grants(key, now)?;
     peer.media_mut().reconcile_media_governance(key, now)?;
     peer.media().validate_media_governance_for_publication()
 }
@@ -810,13 +815,17 @@ impl Rooms {
         let name = valid_name(name)?;
         let state = self.room(room).await.map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
-        if governed.record.name == name && governed.peer.room_name().as_deref() == Some(name) {
+        if governed.record.name == name
+            && governed.peer.governance().room_name().as_deref() == Some(name)
+        {
             return Ok(governed.summary());
         }
         let now = SystemTime::now();
         let key = &self.inner.host.key;
         let mut candidate = governed.peer.clone();
-        candidate.author_room_name(name, key, now)?;
+        candidate
+            .governance_mut()
+            .author_room_name(name, key, now)?;
         let prior = std::mem::replace(&mut governed.record.name, name.to_owned());
         let collaboration = governed.collaboration().clone();
         if let Err(error) = governed.commit(candidate, key, now, |_, _| Ok(collaboration)) {
@@ -854,7 +863,12 @@ impl Rooms {
         room: &str,
     ) -> Result<Vec<tilo_peer_state::GovernedAgent>, CollaborationError> {
         let room = self.room(room).await?;
-        let agents = room.lock().await.peer().governed_agents(SystemTime::now());
+        let agents = room
+            .lock()
+            .await
+            .peer()
+            .governance()
+            .governed_agents(SystemTime::now());
         agents.map_err(CollaborationError::new)
     }
 
@@ -1004,6 +1018,7 @@ impl Rooms {
         let owner = self.inner.host.cert.user_public_key;
         let marks = governed
             .peer()
+            .governance()
             .governed_members(now)
             .unwrap_or_default()
             .into_iter()
@@ -1292,7 +1307,7 @@ impl Rooms {
                 return Ok(());
             };
             let now = SystemTime::now();
-            let access = governed.peer().governed_access(now)?;
+            let access = governed.peer().governance().governed_access(now)?;
             self.learn_queued_routes(room, &steward, &access)?;
             let room_readers = readers(governed.peer(), &access, Some(&*steward), now)?;
             let taken = (
@@ -1485,7 +1500,7 @@ impl Rooms {
     async fn settle(&self, room: &mut GovernedRoom) -> Result<(), String> {
         let host = &self.inner.host;
         let now = SystemTime::now();
-        let access: GovernedAccess = room.peer().governed_access(now)?;
+        let access: GovernedAccess = room.peer().governance().governed_access(now)?;
         let readers = readers(room.peer(), &access, room.stewardship.as_deref(), now)?;
         host.access
             .replace(room.workspace_id(), true, access)
@@ -1495,7 +1510,9 @@ impl Rooms {
             .replace_standings(
                 room.workspace_id(),
                 true,
-                room.peer().governed_standings(SystemTime::now())?,
+                room.peer()
+                    .governance()
+                    .governed_standings(SystemTime::now())?,
             )
             .await
             .map_err(|error| error.to_string())?;

@@ -40,7 +40,7 @@ const MAX_ROUTES: usize = 2 * MAX_CHANNELS;
 
 /// The devices governance lets read a room's channels: every reader of the
 /// room, less the ones a Read Deny keeps out of a record's channel
-/// (`tilo_peer_state::StatePeer::withheld_record_readers`).
+/// (`tilo_peer_state::PeerGovernance::withheld_record_readers`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Readers {
     room: BTreeSet<Ed25519PublicKey>,
