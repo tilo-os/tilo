@@ -313,3 +313,71 @@ fn a_build_started_at_once_serves_the_first_frame() {
         &draw(&gpu, &mut eager, &many_clips_scene()),
     );
 }
+
+/// The web's renderer (`Renderer::new_async_deferring`): only the default
+/// path's pipelines are awaited, the rest compile asynchronously once the
+/// first frame is out. A frame that dispatches one before its compile is in
+/// creates it itself; none is ever drawn without its pipeline, and every
+/// frame draws what an eager renderer draws.
+#[test]
+fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
+    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let mut eager = Renderer::new(&gpu.device, options()).unwrap();
+    let window = window_scene();
+    let clips = many_clips_scene();
+    let expected_window = draw(&gpu, &mut eager, &window);
+    let expected_clips = draw(&gpu, &mut eager, &clips);
+
+    let mut web = pollster::block_on(Renderer::new_async_deferring(
+        &gpu.device,
+        options(),
+        PipelineDeferral::Unused,
+    ))
+    .unwrap();
+    let deferred = web.deferred_pipelines().pending;
+    assert_eq!(
+        deferred,
+        Renderer::new_deferring(&gpu.device, options(), PipelineDeferral::Unused)
+            .unwrap()
+            .deferred_pipelines()
+            .pending,
+        "the web defers what a native window defers"
+    );
+    assert!(deferred > 0);
+    assert_same(
+        "a first frame",
+        &draw(&gpu, &mut web, &window),
+        &expected_window,
+    );
+    assert_eq!(web.deferred_pipelines().built_inline, 0);
+
+    // Right after the first frame, before any compile is in: a frame that
+    // dispatches a deferred pipeline creates it.
+    assert_same("many clips", &draw(&gpu, &mut web, &clips), &expected_clips);
+    let after_clips = web.deferred_pipelines();
+    assert!(
+        after_clips.built_inline >= 1 && after_clips.pending < deferred,
+        "the clip reduce was created for the frame that dispatched it: {after_clips:?}"
+    );
+
+    web.start_deferred_pipelines_async(&gpu.device);
+    web.start_deferred_pipelines_async(&gpu.device);
+    let started = crate::time::now();
+    while web.deferred_pipelines().pending > 0 {
+        assert!(
+            started.elapsed() < crate::HANG_BOUND,
+            "the deferred pipelines never arrived"
+        );
+        std::thread::park_timeout(std::time::Duration::from_millis(5));
+    }
+    assert_same(
+        "after the compiles",
+        &draw(&gpu, &mut web, &clips),
+        &expected_clips,
+    );
+    assert_eq!(
+        web.deferred_pipelines().built_inline,
+        after_clips.built_inline,
+        "compiled asynchronously, nothing is created inline again"
+    );
+}

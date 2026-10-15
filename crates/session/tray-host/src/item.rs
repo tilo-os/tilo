@@ -7,7 +7,9 @@ use std::sync::Arc;
 use futures_util::StreamExt as _;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
-use super::{ItemAddress, ItemStatus, MenuEntry, Tray, TrayItem, TrayRequest, icon};
+use super::{
+    IconRasteriser, ItemAddress, ItemStatus, MenuEntry, Tray, TrayItem, TrayRequest, icon,
+};
 
 pub const ITEM_INTERFACE: &str = "org.kde.StatusNotifierItem";
 pub const MENU_INTERFACE: &str = "com.canonical.dbusmenu";
@@ -58,7 +60,11 @@ pub fn key_for(destination: Option<&str>, path: &str) -> String {
 /// # Errors
 ///
 /// When the item's object cannot be addressed at all.
-pub async fn read(address: ItemAddress, key: String) -> zbus::Result<TrayItem> {
+pub async fn read(
+    address: ItemAddress,
+    key: String,
+    rasteriser: &IconRasteriser,
+) -> zbus::Result<TrayItem> {
     let item = proxy(&address, &address.path, ITEM_INTERFACE).await?;
     let id: String = item.get_property("Id").await.unwrap_or_default();
     let title: String = item
@@ -102,6 +108,7 @@ pub async fn read(address: ItemAddress, key: String) -> zbus::Result<TrayItem> {
     drop(item);
     let display = if title.is_empty() { key.clone() } else { title };
     let icon = icon::resolve(
+        rasteriser,
         &pixmaps,
         icon_name.as_deref(),
         theme_path.as_deref(),
@@ -309,7 +316,7 @@ pub async fn track(
         path,
         menu_path: None,
     };
-    let item = read(address.clone(), key.clone()).await?;
+    let item = read(address.clone(), key.clone(), tray.rasteriser()).await?;
     tray.upsert(item);
     if connection.is_bus()
         && let Some(destination) = destination
@@ -369,7 +376,7 @@ async fn follow(tray: Arc<Tray>, address: ItemAddress, destination: String, key:
         if !changed {
             break;
         }
-        match read(address.clone(), key.clone()).await {
+        match read(address.clone(), key.clone(), tray.rasteriser()).await {
             Ok(item) => tray.upsert(item),
             Err(_) => break,
         }

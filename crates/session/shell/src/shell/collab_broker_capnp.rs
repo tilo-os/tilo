@@ -26,7 +26,6 @@ const NATIVE_CONSENT_FIXTURE_ROOT: &str = "TILO_NATIVE_CONSENT_FIXTURE_ROOT";
 #[cfg(test)]
 pub(crate) fn run_isolated_native_consent_test(test_name: &str, assertions: impl FnOnce()) {
     use std::os::unix::fs::PermissionsExt as _;
-    use std::time::{Duration, Instant};
 
     if let Some(marker) = std::env::var_os(NATIVE_CONSENT_CHILD_TEST) {
         assert_eq!(marker, test_name, "isolated child ran the wrong exact test");
@@ -66,20 +65,9 @@ pub(crate) fn run_isolated_native_consent_test(test_name: &str, assertions: impl
             .env("TILO_USER_ID", "environment-owner-must-not-select-identity")
             .env("TILO_USER_ID", "environment-owner-must-not-select-identity");
         let mut child = child.spawn().expect("spawn isolated native-consent test");
-        let deadline = tilo_test_env::hang_deadline();
-        let status = loop {
-            match child.try_wait().expect("poll isolated native-consent test") {
-                Some(status) => break status,
-                None if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                None => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!("isolated native-consent test timed out: {test_name}");
-                }
-            }
-        };
+        let status = bounded_command::wait_or_kill(&mut child, tilo_test_env::hang_bound())
+            .expect("wait for isolated native-consent test")
+            .unwrap_or_else(|| panic!("isolated native-consent test timed out: {test_name}"));
         assert!(
             status.success(),
             "isolated native-consent child failed: {status}"

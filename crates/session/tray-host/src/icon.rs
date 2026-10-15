@@ -2,11 +2,18 @@
 //!
 //! An item sends either pixels (`IconPixmap`, ARGB32 in network byte
 //! order, possibly several sizes) or a name (`IconName`) to look up in the
-//! icon theme, optionally under its own `IconThemePath`, through
-//! [`crate::app_icons`]; an item whose icon cannot be found or decoded still
-//! gets a letter badge, so it is never an invisible, unclickable gap.
+//! icon theme, optionally under its own `IconThemePath`, through the
+//! host's [`IconRasteriser`]; an item whose icon cannot be found or decoded
+//! still gets a letter badge, so it is never an invisible, unclickable gap.
 
 use std::sync::Arc;
+
+/// Looks a named icon up in the icon theme — under the item's own theme
+/// path first, when it gives one — and rasterises it with an edge of the
+/// given device pixels: `(width, height, straight-alpha RGBA)`, or `None`
+/// when it cannot be found or decoded.
+pub type IconRasteriser =
+    Arc<dyn Fn(&str, Option<&str>, u32) -> Option<(u32, u32, Arc<Vec<u8>>)> + Send + Sync>;
 
 /// The edge the bar draws tray icons at; the pixmap nearest above it wins.
 pub const PREFERRED_PX: i32 = 22;
@@ -78,26 +85,31 @@ pub fn from_pixmaps(pixmaps: &[(i32, i32, Vec<u8>)]) -> Option<TrayIcon> {
 
 /// Look `name` up in the icon theme (under the item's own `theme_path`
 /// first) and rasterise it at twice the bar size, crisp on a high-density output.
-pub fn from_name(name: &str, theme_path: Option<&str>) -> Option<TrayIcon> {
+pub fn from_name(
+    rasteriser: &IconRasteriser,
+    name: &str,
+    theme_path: Option<&str>,
+) -> Option<TrayIcon> {
     let edge = u32::try_from(PREFERRED_PX.saturating_mul(2)).ok()?;
-    let raster = crate::app_icons::tray_raster(name, theme_path, edge)?;
+    let (width, height, rgba) = rasteriser(name, theme_path, edge)?;
     Some(TrayIcon::Pixels {
-        width: raster.width,
-        height: raster.height,
-        rgba: raster.rgba,
+        width,
+        height,
+        rgba,
     })
 }
 
 /// The icon to show: pixels when the item sent usable ones, else its
 /// named theme icon, else a letter.
 pub fn resolve(
+    rasteriser: &IconRasteriser,
     pixmaps: &[(i32, i32, Vec<u8>)],
     name: Option<&str>,
     theme_path: Option<&str>,
     title: &str,
 ) -> TrayIcon {
     from_pixmaps(pixmaps)
-        .or_else(|| name.and_then(|name| from_name(name, theme_path)))
+        .or_else(|| name.and_then(|name| from_name(rasteriser, name, theme_path)))
         .unwrap_or_else(|| TrayIcon::letter_for(title))
 }
 
@@ -135,8 +147,15 @@ mod tests {
 
     #[test]
     fn an_item_with_no_image_gets_its_initial() {
+        let finds_nothing: IconRasteriser = Arc::new(|_, _, _| None);
         assert_eq!(
-            resolve(&[], Some("no-such-icon-anywhere"), None, "keepassxc"),
+            resolve(
+                &finds_nothing,
+                &[],
+                Some("no-such-icon-anywhere"),
+                None,
+                "keepassxc"
+            ),
             TrayIcon::Letter('K')
         );
         assert_eq!(TrayIcon::letter_for("  "), TrayIcon::Letter('?'));

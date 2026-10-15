@@ -1021,6 +1021,24 @@ impl FrameBuilder {
     /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle), with
     /// the peer-sync palette rows on or off.
     ///
+    /// As [`Self::with_tree`], with `inputs` as its owned fixture's hosted
+    /// inputs: a capture gives them the clock its frames show.
+    pub fn with_tree_and_inputs(
+        tree: &WorkspaceTree,
+        viewport: (u32, u32),
+        inputs: crate::shell::hosted_inputs::HostedTileInputs,
+    ) -> Self {
+        Self::from_parts(
+            crate::shell::build_tilo_overlay_host_with_inputs(
+                tree.clone().shared(),
+                false,
+                ui::record::RecordStore::in_memory(),
+                inputs,
+            ),
+            viewport,
+        )
+    }
+
     /// The compositor needs this rather than [`Self::with_tree`] because
     /// peer-sync writes into the same tree the chrome reads: a replica
     /// applying a peer's change and the strip that paints it must look at

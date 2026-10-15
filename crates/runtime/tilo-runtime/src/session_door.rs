@@ -8,118 +8,15 @@
 //! a standalone runtime there: a second, empty authority beside the desktop
 //! would answer every question about the desktop wrongly, and silently.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
-
-/// The desktop name a Tilo login announces in `XDG_CURRENT_DESKTOP`.
-pub const TILO_DESKTOP: &str = "tilo";
-/// The session's private directory under `XDG_RUNTIME_DIR`, shared with the
-/// compositor's other control sockets.
-pub const SESSION_DIR: &str = "tilo-session";
-/// The agent door's file name in [`SESSION_DIR`].
-pub const AGENT_SOCKET_FILE: &str = "agent.sock";
-
-/// Whether an `XDG_CURRENT_DESKTOP` value names a Tilo login. The value is a
-/// colon list (a Tilo session exports `tilo:GNOME`), so Tilo is one entry of
-/// it, never necessarily the whole value.
-#[must_use]
-pub fn names_tilo(current_desktop: Option<&OsStr>) -> bool {
-    current_desktop
-        .and_then(OsStr::to_str)
-        .is_some_and(|value| {
-            value
-                .split(':')
-                .any(|part| part.eq_ignore_ascii_case(TILO_DESKTOP))
-        })
-}
-
-/// The sockets a Tilo compositor serves in [`SESSION_DIR`] for the life of
-/// its session. Either one's presence is the session's own marker.
-const SESSION_SOCKETS: [&str; 2] = [AGENT_SOCKET_FILE, "admin-control.sock"];
-
-/// The directory this login's runtime files live in: `XDG_RUNTIME_DIR` when
-/// it is set and absolute, else the account's `/run/user/<uid>` where
-/// `exists` says it is there. A terminal multiplexer, `ssh` or a service
-/// manager can each start a process without the variable, and the directory
-/// is where the session put its sockets all the same.
-#[must_use]
-pub fn session_runtime_dir(
-    runtime_dir: Option<OsString>,
-    uid: u32,
-    exists: impl FnOnce(&Path) -> bool,
-) -> Option<PathBuf> {
-    let named = runtime_dir
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute());
-    named.or_else(|| {
-        let conventional = PathBuf::from(format!("/run/user/{uid}"));
-        exists(&conventional).then_some(conventional)
-    })
-}
-
-/// Whether `runtime_dir` holds a Tilo session's marker: one of the
-/// compositor's own sockets in its private [`SESSION_DIR`]. Only a
-/// compositor of this account creates them, in a directory only this
-/// account can write, so they say "this login is a Tilo desktop" without any
-/// environment variable a launcher may have dropped on the way.
-#[cfg(unix)]
-#[must_use]
-pub fn has_session_marker(runtime_dir: &Path) -> bool {
-    use std::os::unix::fs::FileTypeExt as _;
-    let session = runtime_dir.join(SESSION_DIR);
-    SESSION_SOCKETS.iter().any(|name| {
-        std::fs::symlink_metadata(session.join(name))
-            .is_ok_and(|metadata| metadata.file_type().is_socket())
-    })
-}
-
-#[cfg(not(unix))]
-#[must_use]
-pub fn has_session_marker(_runtime_dir: &Path) -> bool {
-    false
-}
-
-/// Whether a process with these facts runs inside a Tilo login: its
-/// environment names the desktop, **or** its account's runtime directory
-/// holds the session's own marker. The environment is a hint that can only
-/// add: a process that lost it (tmux, ssh, a service) is still inside the
-/// login its runtime directory belongs to.
-#[must_use]
-pub fn in_tilo_login(
-    current_desktop: Option<&OsStr>,
-    runtime_dir: Option<&Path>,
-    marker: impl FnOnce(&Path) -> bool,
-) -> bool {
-    names_tilo(current_desktop) || runtime_dir.is_some_and(marker)
-}
-
-/// This process's login runtime directory ([`session_runtime_dir`]).
-#[must_use]
-pub fn current_runtime_dir() -> Option<PathBuf> {
-    // SAFETY: `geteuid` has no failure mode.
-    let uid = unsafe { libc::geteuid() };
-    session_runtime_dir(std::env::var_os("XDG_RUNTIME_DIR"), uid, Path::is_dir)
-}
-
-/// Whether this process runs inside a Tilo login ([`in_tilo_login`]).
-#[must_use]
-pub fn is_tilo_login() -> bool {
-    in_tilo_login(
-        std::env::var_os("XDG_CURRENT_DESKTOP").as_deref(),
-        current_runtime_dir().as_deref(),
-        has_session_marker,
-    )
-}
 
 /// The agent door's path under `runtime_dir`; `None` when there is none to
 /// look in, which leaves no private place for it.
 #[must_use]
 pub fn agent_socket_path(runtime_dir: Option<OsString>) -> Option<PathBuf> {
-    let runtime_dir = PathBuf::from(runtime_dir?);
-    runtime_dir
-        .is_absolute()
-        .then(|| runtime_dir.join(SESSION_DIR).join(AGENT_SOCKET_FILE))
+    Some(tilo_paths::login::session_dir(runtime_dir)?.join(tilo_paths::login::AGENT_SOCKET_FILE))
 }
 
 /// Where a `--connect` client goes.
@@ -441,81 +338,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_tilo_login_is_one_entry_of_the_colon_list() {
-        for value in ["tilo", "tilo:GNOME", "GNOME:tilo", "Tilo"] {
-            assert!(names_tilo(Some(OsStr::new(value))), "{value}");
-        }
-        for value in ["", "GNOME", "tilox:GNOME", "KDE"] {
-            assert!(!names_tilo(Some(OsStr::new(value))), "{value}");
-        }
-        assert!(!names_tilo(None));
-    }
-
-    #[test]
-    fn a_process_that_lost_its_environment_is_still_inside_its_login() {
-        let runtime = Path::new("/run/user/1000");
-        // tmux, ssh and services drop `XDG_CURRENT_DESKTOP`; the session's
-        // own sockets in the runtime directory still say whose login this is.
-        assert!(in_tilo_login(None, Some(runtime), |_| true));
-        assert!(in_tilo_login(Some(OsStr::new("")), Some(runtime), |_| true));
-        assert!(in_tilo_login(
-            Some(OsStr::new("GNOME")),
-            Some(runtime),
-            |_| true
-        ));
-        // The environment alone is enough too, and the marker never subtracts.
-        assert!(in_tilo_login(Some(OsStr::new("tilo:GNOME")), None, |_| {
-            false
-        }));
-        assert!(in_tilo_login(
-            Some(OsStr::new("tilo")),
-            Some(runtime),
-            |_| false
-        ));
-        // A foreign desktop with no Tilo session in its runtime directory.
-        assert!(!in_tilo_login(
-            Some(OsStr::new("GNOME")),
-            Some(runtime),
-            |_| false
-        ));
-        assert!(!in_tilo_login(None, None, |_| true));
-    }
-
-    #[test]
-    fn the_runtime_directory_falls_back_to_the_accounts_own() {
-        let present = |_: &Path| true;
-        assert_eq!(
-            session_runtime_dir(Some("/run/user/7".into()), 1000, present),
-            Some(PathBuf::from("/run/user/7"))
-        );
-        for lost in [None, Some(OsString::new()), Some("relative/run".into())] {
-            assert_eq!(
-                session_runtime_dir(lost.clone(), 1000, present),
-                Some(PathBuf::from("/run/user/1000")),
-                "{lost:?}"
-            );
-            assert_eq!(session_runtime_dir(lost, 1000, |_| false), None);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn only_a_compositors_socket_is_the_session_marker() {
-        use std::os::unix::net::UnixListener;
-        let runtime = tempfile::tempdir().unwrap();
-        assert!(!has_session_marker(runtime.path()), "no session directory");
-        let session = runtime.path().join(SESSION_DIR);
-        std::fs::create_dir(&session).unwrap();
-        assert!(!has_session_marker(runtime.path()), "an empty directory");
-        // A plain file of the same name is nobody's door.
-        std::fs::write(session.join(AGENT_SOCKET_FILE), b"").unwrap();
-        assert!(!has_session_marker(runtime.path()), "a regular file");
-        std::fs::remove_file(session.join(AGENT_SOCKET_FILE)).unwrap();
-        let _admin = UnixListener::bind(session.join("admin-control.sock")).unwrap();
-        assert!(has_session_marker(runtime.path()), "the admin socket");
-    }
 
     #[test]
     fn a_login_whose_door_is_missing_says_why_and_how_to_go_on() {

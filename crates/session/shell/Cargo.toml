@@ -191,9 +191,6 @@ os-actions = { path = "../../system/os-actions" }
 # the GStreamer encoder/decoder, which picks hardware first, then
 # royalty-free software, then Cisco's openh264 binary loaded by the system.
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime", "voice", "pipewire"] }
-# Recording muxes the encoder's access units through `appsrc`; the same pin
-# as `media`, so one copy resolves.
-gstreamer-app = { workspace = true, features = ["v1_24"] }
 hex.workspace = true
 sha2.workspace = true
 xattr = "1.6.1"
@@ -249,11 +246,13 @@ fs-protocol = { path = "../../system/fs-protocol" }
 # shared with every other peer that speaks the collaboration protocol.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 channel-crypto = { path = "../../collab/channel-crypto" }
-# The reusable video-streaming stack (H.264 encode/decode, per-share frame
-# transport substrate, throttle). `network::{encoder,surface_stream,streaming}`
-# re-export from here so the compositor's surface streaming and the chat call
-# app share a single copy of the codec + wire format.
-tilo-callstream = { path = "../../collab/tilo-callstream" }
+# The reusable video-streaming stack (encode/decode, per-share frame transport
+# substrate, throttle). `network::{encoder,
+# surface_stream,streaming}` re-export from here so the compositor's surface
+# streaming and the chat call app share a single copy of the codec + wire
+# format. `surface-decoder` is the peer-view receive path; `recording` the
+# MP4/MOV muxer behind screen recordings and `shots --mode recording`.
+tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-decoder", "recording"] }
 # `firstboot` provisions a fresh single-device identity at first login
 # via `threshold-identity::ThresholdIdentity::bootstrap_single_device_seed`,
 # which yields the raw dalek-compatible seed + pubkey that the
@@ -329,6 +328,9 @@ tokio-util.workspace = true
 # The session's polkit authentication agent; the shell supplies the sheet it
 # asks in (`polkit_agent`).
 tilo-polkit-agent = { path = "../polkit-agent" }
+# The session's status-notifier tray host; the shell supplies the icon
+# rasteriser for named icons (`tray`).
+tilo-tray-host = { path = "../tray-host" }
 # capnp-rpc speaks futures-io; `io` supplies its buffered reader/writer.
 futures-util = { workspace = true, features = ["io"] }
 # The shell re-serialises signed op envelopes and presence keys onto

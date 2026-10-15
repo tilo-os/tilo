@@ -707,7 +707,21 @@ impl SettingsApp {
     }
 }
 
+// The panes that act through the host's actions (pairing a nearby device)
+// carry their requests and answers on the app's collaboration connection.
+impl ui::widget::Collaborative for SettingsApp {
+    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+        ui::widget::Collaborative::take_collab_requests(self.device_mesh.remote_mut())
+    }
+
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        ui::widget::Collaborative::handle_collab_event(self.device_mesh.remote_mut(), event);
+    }
+}
+
 impl Widget for SettingsApp {
+    ui::provides!(dyn ui::widget::Collaborative);
+
     fn native_input_snapshot(
         &self,
         state: &AppModel,

@@ -38,7 +38,7 @@ fn composer_process_group() -> Option<libc::pid_t> {
 /// still reachable.
 pub(crate) fn composer_authority_path(runtime_dir: &Path) -> PathBuf {
     runtime_dir
-        .join("tilo-session")
+        .join(tilo_paths::login::SESSION_DIR)
         .join("xwayland")
         .join("composer-Xauthority")
 }

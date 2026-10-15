@@ -151,8 +151,7 @@ impl Desktop {
         // SUN_LEN caps a unix socket path near 108 bytes, so the runtime dir is short.
         let runtime_dir = PathBuf::from(format!(
             "/run/user/{}/tilo-smoke-{}-{}",
-            // SAFETY: `getuid` takes no arguments and cannot fail.
-            unsafe { libc::getuid() },
+            rustix::process::getuid().as_raw(),
             std::process::id(),
             next_id(),
         ));

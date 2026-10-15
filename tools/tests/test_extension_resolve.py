@@ -22,7 +22,6 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[2]
 RESOLVER = REPO / "tools/extensions/resolve.py"
 RECIPE = REPO / "tools/extensions/media-codecs/recipe.toml"
-DEVICE_HELPER = REPO / "os/usr/libexec/tilo-extension"
 CATALOGUE = REPO / "os/usr/share/tilo/system-extensions/sysext.d/media-codecs.json"
 
 
@@ -100,11 +99,17 @@ class Fingerprint(unittest.TestCase):
         readme = (REPO / "os/usr/share/tilo/system-extensions/README.md").read_text()
         self.assertIn("tilo.base-packages.v1\\n", readme)
 
-    @unittest.skipUnless(DEVICE_HELPER.is_file(), "the device helper is not in this tree")
     def test_the_device_computes_the_same_fingerprint(self):
-        helper = load(DEVICE_HELPER, "tilo_extension_device_helper_for_fingerprint")
-        for lines in (resolver.base_package_lines(self.RPM), [], ["only 0:1-1.noarch\n"]):
-            self.assertEqual(helper.base_packages_sha256(lines), resolver.base_packages_sha256(lines))
+        # The device helper (crates/system/extension-helper, test
+        # the_device_computes_the_publishers_fingerprint) pins the same digest
+        # for the same rpm output.
+        lines = resolver.base_package_lines(self.RPM)
+        self.assertEqual(resolver.base_packages_sha256(lines),
+                         "5a21779b0a9aca5bb5638fa2177fbbd69c074ed1611aaab0071468cbb6c24e13")
+        device_test = (REPO / "crates/system/extension-helper/tests/extension.rs").read_text()
+        self.assertIn('"5a21779b0a9aca5bb5638fa2177fbbd69c074ed1611aaab0071468cbb6c24e13"', device_test)
+        for rpm_line in self.RPM.splitlines():
+            self.assertIn(rpm_line, device_test)
 
 
 class VersionComparison(unittest.TestCase):
