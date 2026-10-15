@@ -760,6 +760,56 @@ fn an_agent_reads_a_pdf_the_room_holds_in_its_worker() {
     );
 }
 
+/// A page of a PDF the room holds is rendered as a picture inside the
+/// confined worker, with the portable engine, and kept as content the room
+/// keeps: what a planning model is shown of the page.
+#[test]
+fn an_agent_looks_at_a_pdf_page_in_its_worker() {
+    let room = ContentStore::memory();
+    let hash = room
+        .put(&pdf(&["Floor plan: hall", "Floor plan: attic"]))
+        .unwrap();
+    let agent = new_record(PDF, &room);
+    let import = operation(&agent, "import-pdf-content");
+    agent
+        .invoke(
+            &import.address,
+            &arguments(serde_json::json!({
+                "content": tilo_actions::content_resource(&hash).unwrap(),
+            })),
+            false,
+        )
+        .expect("the worker opens the room's PDF");
+    agent.take_mutation().unwrap();
+
+    let look = operation(&agent, "look-page");
+    assert_eq!(look.kind, OperationKind::View);
+    assert!(tilo_agent_participant::planner::readable(&look), "{look:?}");
+    let looked = agent
+        .invoke(
+            &look.address,
+            &arguments(serde_json::json!({"page": 2, "size": 512})),
+            false,
+        )
+        .expect("look-page renders in the worker for the agent");
+    let picture = tilo_agent_participant::planner::rendered_picture(&looked)
+        .expect("it names the picture it made");
+    let kept = room
+        .read(tilo_actions::content_hash(&picture).unwrap())
+        .expect("the room keeps the page's picture");
+    assert_eq!(
+        tilo_agent_participant::vision::picture_size(&kept),
+        Some(("PNG", 396, 512))
+    );
+    let value = looked.value.unwrap();
+    assert_eq!(value["page"], 2, "{value}");
+    assert_eq!(value["pageCount"], 2, "{value}");
+    assert!(
+        agent.take_mutation().unwrap().is_none(),
+        "a look changes nothing"
+    );
+}
+
 /// A .docx the room holds becomes an agent's Writer document, read with
 /// read-text as any other.
 #[test]

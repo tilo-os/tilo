@@ -186,6 +186,20 @@ pub enum PdfEffect {
         #[param("Characters of the first page to skip, from a previous answer's next (default 0)")]
         offset: Option<usize>,
     },
+    /// Look at a page
+    ///
+    /// See a page of the PDF as a picture, rendered as the reader shows it
+    /// (markup included) and kept as content. Answers the picture's content
+    /// address with its width, height, page and pageCount.
+    #[effect(view, returns, idempotent, programmatic)]
+    LookPage {
+        #[param("Page to look at, from 1")]
+        page: usize,
+        #[param("Longest side of the picture in pixels, 64 to 1536 (default 1024)")]
+        size: Option<u32>,
+        #[param("png (default) or jpeg")]
+        format: Option<String>,
+    },
     /// Open PDF
     ///
     /// Opens a PDF on its own markup record, in this window.

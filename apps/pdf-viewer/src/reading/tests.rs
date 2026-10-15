@@ -288,3 +288,69 @@ fn an_agent_opens_a_pdf_the_room_holds_and_reads_it() {
         "{refused}"
     );
 }
+
+#[test]
+fn an_agent_looks_at_a_page_as_a_picture_kept_as_content() {
+    let (markup, content) = pinned(&three_pages());
+    let looked = look_page(&markup, Some(&content), 2, None, None).unwrap();
+    let value = looked.value.clone().unwrap();
+    let address = value["content"].as_str().unwrap();
+    assert_eq!(
+        looked.resources,
+        vec![address.to_owned()],
+        "the content it made"
+    );
+    assert_eq!(value["page"], 2, "{value}");
+    assert_eq!(value["pageCount"], 3, "{value}");
+    assert_eq!(value["format"], "png", "{value}");
+    // A US Letter page, its longest side the default 1024 pixels.
+    assert_eq!(value["height"], 1024, "{value}");
+    assert!(
+        value["width"]
+            .as_u64()
+            .is_some_and(|width| (790..=792).contains(&width))
+    );
+    let kept = content
+        .read(tilo_actions::content_hash(address).unwrap())
+        .expect("the picture is kept as content");
+    let picture = image::load_from_memory(&kept).unwrap().to_rgb8();
+    assert_eq!(picture.height(), 1024);
+    assert!(
+        picture.pixels().any(|pixel| pixel.0[0] < 128),
+        "the page's text is drawn"
+    );
+    assert!(
+        picture
+            .pixels()
+            .filter(|pixel| pixel.0 == [255, 255, 255])
+            .count()
+            > picture.pixels().len() / 2,
+        "on white paper"
+    );
+
+    let small = look_page(&markup, Some(&content), 1, Some(10), Some("JPEG")).unwrap();
+    let value = small.value.unwrap();
+    assert_eq!(value["format"], "jpeg");
+    assert_eq!(value["height"], 64, "the side is bounded below: {value}");
+
+    let beyond = look_page(&markup, Some(&content), 4, None, None).unwrap_err();
+    assert!(beyond.contains("has 3 pages"), "{beyond}");
+    let format = look_page(&markup, Some(&content), 1, None, Some("gif")).unwrap_err();
+    assert!(format.contains("png or jpeg"), "{format}");
+    let none = look_page(&PdfMarkup::default(), Some(&content), 1, None, None).unwrap_err();
+    assert!(none.contains("import-pdf-content"), "{none}");
+}
+
+#[test]
+fn looking_at_a_page_is_a_view_an_agent_may_run_as_a_read() {
+    let spec = PdfEffect::specs()
+        .into_iter()
+        .find(|spec| spec.id == "look-page")
+        .expect("look-page is published");
+    assert_eq!(spec.kind, tilo_actions::OperationKind::View);
+    assert!(matches!(
+        spec.contract.result,
+        tilo_actions::ResultSpec::Json { .. }
+    ));
+    assert!(tilo_actions::PermissionRequirement::Read.covers(spec.contract.permission));
+}

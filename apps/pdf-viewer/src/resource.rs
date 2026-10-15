@@ -278,6 +278,14 @@ impl ResourceSurface<PdfViewer, PdfEffect> for PdfApp {
                 offset,
             )
             .map(ui::framework::Effected::value),
+            PdfEffect::LookPage { page, size, format } => crate::reading::look_page(
+                &cx.live().get(),
+                ui::tilo_resource::content::current().as_ref(),
+                page,
+                size,
+                format.as_deref(),
+            )
+            .map(ui::framework::Effected::Done),
             effect => self.answer_effect(&effect, || cx.reply()),
         }
     }

@@ -1,11 +1,12 @@
 //! The PDF a record marks up as agents and scripts read it: its pages' text
 //! in the reader's page order, a bounded run of pages at a time, with the
-//! page count and what the file says about itself.
+//! page count and what the file says about itself; and a page as a picture
+//! ([`look_page`]), kept as content for a planning model to be shown.
 //!
-//! Text is extracted with the portable engine in this process, never the
-//! pdfium helper, so a read runs where an agent's confined worker runs: it
-//! needs no other process, no file and no network, only the bytes the
-//! room's content store holds.
+//! Text is extracted and pages rendered with the portable engine in this
+//! process, never the pdfium helper, so a read runs where an agent's
+//! confined worker runs: it needs no other process, no file and no network,
+//! only the bytes the room's content store holds.
 
 use std::collections::HashMap;
 
@@ -172,6 +173,127 @@ pub fn read_text(
         ),
     );
     Ok(Value::Object(answer))
+}
+
+/// The longest side of a page picture when none is asked for.
+pub const LOOK_SIDE: u32 = 1024;
+
+/// The sides a page picture may be asked at.
+const LOOK_SIDES: std::ops::RangeInclusive<u32> = 64..=1536;
+
+/// Page `page` (1-based, in the reader's order) of `markup`'s document as
+/// a picture `size` pixels on its longest side ([`LOOK_SIDE`] when `None`),
+/// a PNG or (`format` `jpeg`) a JPEG kept in `content`: the answer names it
+/// by address beside its size, the page and the page count, and lists it
+/// as the content it made.
+///
+/// # Errors
+/// Why there is no picture: no document, its bytes not here, a page it does
+/// not have, a page that is a placed picture, or the render failed.
+pub fn look_page(
+    markup: &PdfMarkup,
+    content: Option<&ContentStore>,
+    page: usize,
+    size: Option<u32>,
+    format: Option<&str>,
+) -> Result<tilo_actions::ActionOutput, String> {
+    let source = markup.source.as_ref().ok_or(NO_DOCUMENT)?;
+    let content = content.ok_or("this window keeps no content to render the PDF from")?;
+    let jpeg = match format.map(|format| format.trim().to_ascii_lowercase()) {
+        None => false,
+        Some(format) if format == "png" => false,
+        Some(format) if format == "jpeg" || format == "jpg" => true,
+        Some(format) => return Err(format!("format is png or jpeg, not {format}")),
+    };
+    let bytes = content.read(&source.hash).ok_or_else(|| {
+        format!(
+            "the PDF's bytes (content `{}`) are not available on this machine",
+            source.hash
+        )
+    })?;
+    let document = open(&bytes)?;
+    let shown = shown_pages(&markup.pages, document.page_count());
+    let count = shown.len();
+    let place = page
+        .checked_sub(1)
+        .and_then(|index| shown.get(index))
+        .ok_or_else(|| {
+            format!(
+                "there is no page {page}: the document has {count} page{}",
+                if count == 1 { "" } else { "s" }
+            )
+        })?;
+    let imported;
+    let (rendered, index) = match place {
+        PageSource::Source(at) => (&document, at.saturating_sub(1)),
+        PageSource::Imported(hash, at) => {
+            imported = content
+                .read(hash)
+                .ok_or_else(|| format!("the PDF page {page} comes from is not on this machine"))
+                .and_then(|bytes| open(&bytes))?;
+            (&imported, at.saturating_sub(1))
+        }
+        PageSource::Picture => {
+            return Err(format!(
+                "page {page} is a picture placed in the document, not a PDF page"
+            ));
+        }
+    };
+    let page_size = rendered
+        .page_size(index)
+        .ok_or_else(|| format!("page {page} has no size"))?;
+    let longest_pixels = size
+        .unwrap_or(LOOK_SIDE)
+        .clamp(*LOOK_SIDES.start(), *LOOK_SIDES.end());
+    let longest_points = page_size.width.max(page_size.height);
+    if longest_points <= 0.0 {
+        return Err(format!("page {page} has no size"));
+    }
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a side of at most 1536 pixels is exact in f32"
+    )]
+    let scale = longest_pixels as f32 / longest_points;
+    let bitmap = rendered
+        .render(
+            index,
+            &tilo_pdf::RenderOptions {
+                scale,
+                ..tilo_pdf::RenderOptions::default()
+            },
+        )
+        .map_err(|error| format!("page {page} could not be rendered: {error}"))?;
+    let (width, height) = (bitmap.width(), bitmap.height());
+    // The page is drawn on white paper: its pixels are opaque.
+    let pixels = image::RgbaImage::from_raw(width, height, bitmap.pixels().to_vec())
+        .ok_or_else(|| format!("page {page} rendered no picture"))?;
+    let picture = image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(pixels).to_rgb8());
+    let mut encoded = Vec::new();
+    let written = if jpeg {
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, 85).encode_image(&picture)
+    } else {
+        picture.write_to(
+            &mut std::io::Cursor::new(&mut encoded),
+            image::ImageFormat::Png,
+        )
+    };
+    written.map_err(|error| format!("page {page} could not be written as a picture: {error}"))?;
+    let hash = content
+        .put(&encoded)
+        .map_err(|error| format!("the page picture could not be kept: {error}"))?;
+    let address = tilo_actions::content_resource(&hash)
+        .ok_or_else(|| "the page picture has no content address".to_owned())?;
+    Ok(tilo_actions::ActionOutput {
+        value: Some(json!({
+            "page": page,
+            "pageCount": count,
+            "width": width,
+            "height": height,
+            "format": if jpeg { "jpeg" } else { "png" },
+            "content": address,
+        })),
+        resources: vec![address],
+    })
 }
 
 /// The pages the reader shows, in order: the record's page plan when it has
