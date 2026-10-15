@@ -9,7 +9,7 @@ use crate::shell::automation_host::{
     DocumentShare, FinishedShortcutRun, document_share, ordered_steps, record_run_steps,
 };
 use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::room_records::RoomRecords;
+use crate::shell::room_records::{LocalRecordReader, RoomRecords};
 use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     Workspace, WorkspaceId, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
@@ -168,6 +168,30 @@ pub(crate) struct PendingShortcutRun {
     looked: HashMap<RecordId, (Option<LookedRevision>, Option<DocumentShare>)>,
 }
 
+/// One persisted document a waiting run needs looked at, read off the loop.
+struct PersistedLook {
+    run: tilo_automation::RunId,
+    id: RecordId,
+    /// The revision the last look read it at.
+    seen: Option<LookedRevision>,
+}
+
+/// What a persisted look found.
+struct PersistedFound {
+    run: tilo_automation::RunId,
+    id: RecordId,
+    revision: Option<LookedRevision>,
+    share: PersistedShare,
+}
+
+/// A persisted document's share of a run, as a look found it.
+enum PersistedShare {
+    /// The document did not move since the last look: what it found stands.
+    Unchanged,
+    /// The document as read now.
+    Read(Option<DocumentShare>),
+}
+
 impl PendingShortcutRun {
     pub(crate) fn new(finished: FinishedShortcutRun, since: Instant) -> Self {
         Self {
@@ -177,28 +201,29 @@ impl PendingShortcutRun {
         }
     }
 
-    /// The run's steps among `candidates`: documents open in `records` are
-    /// read in memory, the others from `local`, and only those whose
-    /// revision moved since the last look.
-    fn look(
+    /// Look at the run's candidates open in `records`, in memory, and name
+    /// the persisted ones for a read off the loop: only documents whose
+    /// revision moved since the last look are read again.
+    fn look_open(
         &mut self,
         candidates: &BTreeSet<RecordId>,
         open: &BTreeSet<RecordId>,
         records: &RecordStore,
-        local: &RoomRecords,
-    ) -> Vec<ui::RunStep> {
+    ) -> Vec<PersistedLook> {
         use automerge::transaction::Transactable as _;
         let run = self.finished.report.run;
         self.looked.retain(|id, _| candidates.contains(id));
+        let mut persisted = Vec::new();
         for id in candidates {
-            let is_open = open.contains(id);
-            let revision = if is_open {
-                records.read(id, |doc| LookedRevision::Open(doc.base_heads()))
-            } else {
-                local
-                    .local_record_revision(id)
-                    .map(LookedRevision::Persisted)
-            };
+            if !open.contains(id) {
+                persisted.push(PersistedLook {
+                    run,
+                    id: id.clone(),
+                    seen: self.looked.get(id).and_then(|(seen, _)| seen.clone()),
+                });
+                continue;
+            }
+            let revision = records.read(id, |doc| LookedRevision::Open(doc.base_heads()));
             if revision.is_some()
                 && self
                     .looked
@@ -207,17 +232,30 @@ impl PendingShortcutRun {
             {
                 continue;
             }
-            let share = if is_open {
-                records
-                    .read(id, |doc| document_share(run, id.as_str(), doc))
-                    .flatten()
-            } else {
-                local
-                    .load_local_record(id)
-                    .and_then(|doc| document_share(run, id.as_str(), &doc))
-            };
+            let share = records
+                .read(id, |doc| document_share(run, id.as_str(), doc))
+                .flatten();
             self.looked.insert(id.clone(), (revision, share));
         }
+        persisted
+    }
+
+    /// Take in what a persisted look found for this run.
+    fn take_persisted(&mut self, found: PersistedFound) {
+        match found.share {
+            PersistedShare::Read(share) => {
+                self.looked.insert(found.id, (found.revision, share));
+            }
+            PersistedShare::Unchanged => {
+                if let Some((seen, _)) = self.looked.get_mut(&found.id) {
+                    *seen = found.revision;
+                }
+            }
+        }
+    }
+
+    /// The run's steps among the documents looked at so far.
+    fn steps(&self) -> Vec<ui::RunStep> {
         ordered_steps(
             self.looked
                 .values()
@@ -227,13 +265,77 @@ impl PendingShortcutRun {
     }
 }
 
+/// Read the persisted documents `looks` names: a `stat` each, and the
+/// document itself only when it moved since its last look. Blocks on the
+/// disk (a record may be up to 16 MiB): never on the compositor loop.
+fn read_persisted(reader: &LocalRecordReader, looks: Vec<PersistedLook>) -> Vec<PersistedFound> {
+    #[cfg(test)]
+    held_looks::hold(&looks);
+    looks
+        .into_iter()
+        .map(|look| {
+            let revision = reader.revision(&look.id).map(LookedRevision::Persisted);
+            let share = if revision.is_some() && look.seen == revision {
+                PersistedShare::Unchanged
+            } else {
+                PersistedShare::Read(
+                    reader
+                        .load(&look.id)
+                        .and_then(|doc| document_share(look.run, look.id.as_str(), &doc)),
+                )
+            };
+            PersistedFound {
+                run: look.run,
+                id: look.id,
+                revision,
+                share,
+            }
+        })
+        .collect()
+}
+
+/// Test support: hold the persisted reads of a run until released, as a
+/// disk that does not answer would.
+#[cfg(test)]
+pub(crate) mod held_looks {
+    use std::sync::{Mutex, mpsc};
+
+    static HELD: Mutex<Vec<(tilo_automation::RunId, mpsc::Receiver<()>)>> = Mutex::new(Vec::new());
+
+    /// Hold the next persisted read for `run` until the returned sender is
+    /// used or dropped.
+    pub(crate) fn hold_run(run: tilo_automation::RunId) -> mpsc::Sender<()> {
+        let (release, held) = mpsc::channel();
+        HELD.lock().unwrap().push((run, held));
+        release
+    }
+
+    pub(super) fn hold(looks: &[super::PersistedLook]) {
+        let mut all = HELD.lock().unwrap();
+        let held = all
+            .iter()
+            .position(|(run, _)| looks.iter().any(|look| look.run == *run))
+            .map(|index| all.remove(index).1);
+        drop(all);
+        // Bounded, so a read that regressed onto the test's own thread
+        // fails the test instead of hanging it.
+        if let Some(held) = held {
+            let _ = held.recv_timeout(std::time::Duration::from_secs(30));
+        }
+    }
+}
+
 /// Records each shortcut run the broker finishes as one undoable run in the
 /// workspace document, from the documents it changed: those open here and
 /// those persisted on this device. Driven by the frame pump, never by paint.
+/// Persisted documents are read on a worker, and the workspace tree is
+/// locked only to write a run that was found.
 #[derive(Default)]
 pub(crate) struct ShortcutRunRecorder {
     pending: Vec<PendingShortcutRun>,
     next_look: Option<Instant>,
+    /// What a look is reading off the loop, until its reads are in.
+    reading: Option<mpsc::Receiver<Vec<PersistedFound>>>,
 }
 
 impl ShortcutRunRecorder {
@@ -255,15 +357,34 @@ impl ShortcutRunRecorder {
         self.pending.len()
     }
 
+    /// Whether a look's persisted reads are still running.
+    #[cfg(test)]
+    pub(crate) fn reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
+    /// Wait for the persisted reads in flight, so the next pass sees them.
+    /// Blocks: tests only.
+    #[cfg(test)]
+    pub(crate) fn finish_reading(&mut self) {
+        if let Some(running) = self.reading.take() {
+            let (done, ready) = mpsc::channel();
+            let _ = done.send(running.recv().unwrap_or_default());
+            self.reading = Some(ready);
+        }
+    }
+
     /// Take `broker`'s finished runs and record every waiting run whose
-    /// changes reached a document here in `tree`'s document, committing it.
-    /// A run with no changes found is given up once [`SHORTCUT_RUN_SETTLE`]
-    /// has passed since it finished: it changed nothing this device can undo.
-    /// Returns whether `tree` was written.
-    pub(crate) fn record(
+    /// changes reached a document here in the tree `lock_tree` locks,
+    /// committing it. A look reads the open documents in memory and hands
+    /// the persisted ones to a worker; the runs are judged once those reads
+    /// are in, on a later pass. A run with no changes found is given up once
+    /// [`SHORTCUT_RUN_SETTLE`] has passed since it finished: it changed
+    /// nothing this device can undo. Returns whether the tree was written.
+    pub(crate) fn record<T: std::ops::DerefMut<Target = WorkspaceTree>>(
         &mut self,
         broker: Option<&AppActionBroker>,
-        tree: &mut WorkspaceTree,
+        lock_tree: impl FnOnce() -> T,
         records: &RecordStore,
         local: &RoomRecords,
         now: Instant,
@@ -279,18 +400,54 @@ impl ShortcutRunRecorder {
                     .map(|finished| PendingShortcutRun::new(finished, now)),
             );
         }
-        if self.pending.is_empty() || self.next_look.is_some_and(|at| now < at) {
+        let found = match self.reading.take() {
+            Some(running) => match running.try_recv() {
+                Ok(found) => Some(found),
+                Err(mpsc::TryRecvError::Empty) => {
+                    // The look is not over until its reads are in.
+                    self.reading = Some(running);
+                    return false;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => Some(Vec::new()),
+            },
+            None => None,
+        };
+        if self.pending.is_empty() {
             return false;
         }
-        self.next_look = now.checked_add(SHORTCUT_RUN_LOOK_INTERVAL);
+        if let Some(found) = found {
+            for found in found {
+                if let Some(run) = self
+                    .pending
+                    .iter_mut()
+                    .find(|run| run.finished.report.run == found.run)
+                {
+                    run.take_persisted(found);
+                }
+            }
+        } else {
+            if self.next_look.is_some_and(|at| now < at) {
+                return false;
+            }
+            self.next_look = now.checked_add(SHORTCUT_RUN_LOOK_INTERVAL);
+            if self.look(records, local) {
+                return false;
+            }
+        }
+        self.judge(lock_tree, now)
+    }
+
+    /// Look at every waiting run's documents. Returns whether persisted
+    /// ones are being read off the loop, so the runs wait for them.
+    fn look(&mut self, records: &RecordStore, local: &RoomRecords) -> bool {
         let open: BTreeSet<RecordId> = records
             .open_records()
             .into_iter()
             .map(|checkout| checkout.id)
             .collect();
         let known = local.known();
-        let mut recorded = false;
-        for mut run in std::mem::take(&mut self.pending) {
+        let mut persisted = Vec::new();
+        for run in &mut self.pending {
             let room = crate::shell::state::RoomId::parse(&run.finished.room);
             let candidates: BTreeSet<RecordId> = open
                 .iter()
@@ -302,10 +459,56 @@ impl ShortcutRunRecorder {
                         .map(|record| record.id.clone()),
                 )
                 .collect();
-            let steps = run.look(&candidates, &open, records, local);
-            if record_run_steps(&mut tree.doc, &run.finished, &steps).is_some() {
-                recorded = true;
-                continue;
+            persisted.extend(run.look_open(&candidates, &open, records));
+        }
+        let Some(reader) = local.local_reader().filter(|_| !persisted.is_empty()) else {
+            return false;
+        };
+        let (found, running) = mpsc::channel();
+        // Made on the loop's thread, so the reads wake the loop they are for.
+        let wake = crate::shell::search::invocation_wake::waker();
+        let spawned = std::thread::Builder::new()
+            .name("tilo-shortcut-look".into())
+            .spawn(move || {
+                let _ = found.send(read_persisted(&reader, persisted));
+                wake.wake();
+            });
+        match spawned {
+            Ok(_) => {
+                self.reading = Some(running);
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, "shortcut run look did not start; persisted documents wait");
+                false
+            }
+        }
+    }
+
+    /// Record each waiting run whose changes were found, locking the tree
+    /// only if one was, and give up the runs that settled with nothing.
+    fn judge<T: std::ops::DerefMut<Target = WorkspaceTree>>(
+        &mut self,
+        lock_tree: impl FnOnce() -> T,
+        now: Instant,
+    ) -> bool {
+        let mut lock_tree = Some(lock_tree);
+        let mut tree: Option<T> = None;
+        let mut recorded = false;
+        for run in std::mem::take(&mut self.pending) {
+            let steps = run.steps();
+            if !steps.is_empty() {
+                if tree.is_none()
+                    && let Some(lock) = lock_tree.take()
+                {
+                    tree = Some(lock());
+                }
+                if let Some(tree) = tree.as_mut()
+                    && record_run_steps(&mut tree.doc, &run.finished, &steps).is_some()
+                {
+                    recorded = true;
+                    continue;
+                }
             }
             let settling = now.saturating_duration_since(run.since) < SHORTCUT_RUN_SETTLE;
             if settling && !run.finished.report.invocations().is_empty() {
@@ -317,7 +520,7 @@ impl ShortcutRunRecorder {
                 );
             }
         }
-        if recorded {
+        if recorded && let Some(tree) = tree.as_mut() {
             tree.commit_room_change();
         }
         recorded
@@ -652,8 +855,10 @@ fn morning_source_actions_from(
                 .for_room(&workspace.room.to_string())
                 .iter()
                 .flat_map(|source| {
-                    let app = crate::shell::launcher::display_name_for_app_id(&source.app)
-                        .unwrap_or_else(|| source.app.clone());
+                    let app = crate::shell::launcher::display_name_for_app_id_without_waiting(
+                        &source.app,
+                    )
+                    .unwrap_or_else(|| source.app.clone());
                     [
                         (
                             format!("{MORNING_NEXT}{}.{}", workspace.room, source.key()),
@@ -796,7 +1001,7 @@ impl ActivityHost for NativeActivityHost {
         true
     }
     fn app_display_name(&self, app: &str) -> Option<String> {
-        crate::shell::launcher::display_name_for_app_id(app)
+        crate::shell::launcher::display_name_for_app_id_without_waiting(app)
     }
     fn agent_members(&self, workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
         workspace.agent_members()
@@ -967,14 +1172,16 @@ impl RoomActivityPane {
     }
     /// Record the shortcut runs the broker finished in `tree`'s document,
     /// each as one undoable run; see [`ShortcutRunRecorder::record`].
-    pub(crate) fn record_finished_shortcut_runs(
+    /// `lock_tree` is called only to write a run that was found.
+    pub(crate) fn record_finished_shortcut_runs<T: std::ops::DerefMut<Target = WorkspaceTree>>(
         &mut self,
-        tree: &mut WorkspaceTree,
+        lock_tree: impl FnOnce() -> T,
         records: &RecordStore,
         local: &RoomRecords,
         now: Instant,
     ) -> bool {
-        self.2.record(self.1.as_ref(), tree, records, local, now)
+        self.2
+            .record(self.1.as_ref(), lock_tree, records, local, now)
     }
     #[cfg(test)]
     pub(crate) fn shortcut_run_recorder_mut(&mut self) -> &mut ShortcutRunRecorder {
@@ -1394,8 +1601,8 @@ mod tests {
         let next = now
             .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
             .expect("the next look");
-        pane.record_finished_shortcut_runs(&mut tree, &records, &local, now);
-        pane.record_finished_shortcut_runs(&mut tree, &records, &local, next);
+        pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, now);
+        pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, next);
 
         let runs = ui::read_runs(&tree.doc);
         assert_eq!(runs.len(), 1, "recorded exactly once");
@@ -1406,6 +1613,11 @@ mod tests {
         let pending_left = pane.shortcut_run_recorder_mut().pending_len();
         drop(pane);
         assert_eq!(pending_left, 0, "the recorded run is no longer pending");
+    }
+
+    /// `tree` as the recorder locks it.
+    fn locked<'a>(tree: &'a mut WorkspaceTree) -> impl FnOnce() -> &'a mut WorkspaceTree + 'a {
+        move || tree
     }
 
     /// A change the "Publish a draft" fixture app makes as a step of `run`.
@@ -1504,8 +1716,21 @@ mod tests {
             ));
 
         // The run finished before the app's save reached the disk: nothing
-        // to record yet, and the run keeps waiting.
-        assert!(!pane.record_finished_shortcut_runs(&mut tree, &records, &local, finished_at));
+        // to record yet, and the run keeps waiting. The look reads the
+        // record off the loop; the run is judged once that read is in.
+        assert!(!pane.record_finished_shortcut_runs(
+            locked(&mut tree),
+            &records,
+            &local,
+            finished_at
+        ));
+        pane.shortcut_run_recorder_mut().finish_reading();
+        assert!(!pane.record_finished_shortcut_runs(
+            locked(&mut tree),
+            &records,
+            &local,
+            finished_at
+        ));
         assert!(ui::read_runs(&tree.doc).is_empty());
         assert!(
             pane.shortcut_runs_pending(),
@@ -1518,7 +1743,9 @@ mod tests {
         let next = finished_at
             .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
             .expect("the next look");
-        assert!(pane.record_finished_shortcut_runs(&mut tree, &records, &local, next));
+        assert!(!pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, next));
+        pane.shortcut_run_recorder_mut().finish_reading();
+        assert!(pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, next));
         let still_pending = pane.shortcut_runs_pending();
         drop(pane);
         assert!(!still_pending, "the recorded run no longer waits");
@@ -1543,6 +1770,67 @@ mod tests {
         );
     }
 
+    /// Looking for a finished run's changes in a record on disk reads the
+    /// record off the loop and never under the workspace tree's lock: while
+    /// the read is held up, as by a disk under pressure, every pass returns
+    /// at once without locking the tree, and the run is recorded on the
+    /// first pass after the read is in.
+    #[test]
+    fn a_shortcut_run_look_never_reads_the_disk_on_the_loop_or_under_the_tree_lock() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let records = RecordStore::in_memory();
+        let record = RecordId::for_file("receipts.sheet");
+        let kind = ui::RecordKind::new("sheet");
+        let run = tilo_automation::RunId::new();
+        let data = tempfile::tempdir().expect("data home");
+        let path = RoomRecords::record_document_path_for_test(
+            data.path(),
+            "so.tilo.fixture-drafts",
+            "receipts",
+        );
+        std::fs::create_dir_all(path.parent().expect("record directory")).unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        ui::record::init(&mut doc, &record, &kind, &room.to_string());
+        doc.commit();
+        commit_draft_step(&mut doc, run);
+        std::fs::write(&path, doc.save()).unwrap();
+        let mut local = RoomRecords::in_memory();
+        local.scan_now_for_test(data.path());
+
+        let mut pane = RoomActivityPane::new();
+        let finished_at = Instant::now();
+        pane.shortcut_run_recorder_mut()
+            .push(PendingShortcutRun::new(
+                finished_invoked_run(room, run),
+                finished_at,
+            ));
+        let release = held_looks::hold_run(run);
+        let untouched = || -> &'static mut WorkspaceTree {
+            panic!("the tree was locked while the record was being read")
+        };
+        let mut at = finished_at;
+        for _ in 0..3 {
+            assert!(!pane.record_finished_shortcut_runs(untouched, &records, &local, at));
+            assert!(
+                pane.shortcut_run_recorder_mut().reading(),
+                "the read is still held up"
+            );
+            at = at
+                .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
+                .expect("a later pass");
+        }
+        assert!(ui::read_runs(&tree.doc).is_empty());
+
+        release.send(()).expect("the read is held");
+        pane.shortcut_run_recorder_mut().finish_reading();
+        assert!(pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, at));
+        drop(pane);
+        let runs = ui::read_runs(&tree.doc);
+        assert_eq!(runs.len(), 1, "recorded once the read was in");
+        assert_eq!(runs[0].steps[0].record, record.to_string());
+    }
+
     /// A run whose changes never reach a document here waits on the wall
     /// clock, not on how many frames were painted, and is then given up.
     #[test]
@@ -1565,13 +1853,13 @@ mod tests {
             .expect("the settle time");
         let mut at = finished_at;
         while at < settled {
-            assert!(!pane.record_finished_shortcut_runs(&mut tree, &records, &local, at));
+            assert!(!pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, at));
             assert!(pane.shortcut_runs_pending());
             at = at
                 .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
                 .expect("the next look");
         }
-        assert!(!pane.record_finished_shortcut_runs(&mut tree, &records, &local, at));
+        assert!(!pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, at));
         let still_pending = pane.shortcut_runs_pending();
         drop(pane);
         assert!(!still_pending, "given up once settled");

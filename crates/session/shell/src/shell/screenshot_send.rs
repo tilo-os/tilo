@@ -207,6 +207,27 @@ impl ScreenshotSendBridge for FabricSendBridge<'_> {
     }
 }
 
+/// "Save to this workspace's files" alone, for the capture worker: the copy
+/// writes to the workspace mount, which may be remote, so it never runs on
+/// the compositor loop. It reaches no device.
+pub struct WorkspaceFilesBridge {
+    pub workspace_root: PathBuf,
+}
+
+impl ScreenshotSendBridge for WorkspaceFilesBridge {
+    fn devices(&self) -> Vec<ScreenshotSendDevice> {
+        Vec::new()
+    }
+
+    fn offer_to_device(&mut self, _id: &str, _path: &Path) -> Result<(), String> {
+        Err(t("screenshot-send-device-offline"))
+    }
+
+    fn save_to_workspace(&mut self, path: &Path) -> Result<PathBuf, String> {
+        copy_into_workspace(path, &self.workspace_root)
+    }
+}
+
 /// Your other devices that are online, as "Send…" lists them.
 pub fn online_devices(network: &crate::shell::network::ShellNetwork) -> Vec<ScreenshotSendDevice> {
     let local = network

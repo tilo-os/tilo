@@ -131,6 +131,48 @@ pub(crate) fn blocking_source(directory: &std::path::Path, name: &str) -> std::p
     path
 }
 
+/// Run `body` on this thread with `fifo` (from [`blocking_source`])
+/// watched. Should anything open the FIFO to read while `body` runs, a
+/// rescuer writes `bytes` so that read finishes instead of hanging the test,
+/// and the second value is `true`: `body` waited on a file. A rescuer that
+/// cannot open the FIFO (no reader) leaves it alone.
+///
+/// # Panics
+///
+/// When the rescuer thread cannot be started.
+pub(crate) fn read_while<T>(
+    fifo: &std::path::Path,
+    bytes: &[u8],
+    body: impl FnOnce() -> T,
+) -> (T, bool) {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let rescuer = scope.spawn(|| {
+            while !done.load(Ordering::Acquire) {
+                // Opening the write end without blocking succeeds only
+                // while a reader has the FIFO open.
+                if let Ok(mut writer) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(fifo)
+                {
+                    let _ = writer.write_all(bytes);
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            false
+        });
+        let value = body();
+        done.store(true, Ordering::Release);
+        let read = rescuer.join().expect("the rescuer finished");
+        (value, read)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

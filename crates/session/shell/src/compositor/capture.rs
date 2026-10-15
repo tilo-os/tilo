@@ -92,12 +92,15 @@ pub enum CaptureOutcome {
     ScreenshotMarkupOpened(PathBuf),
     ScreenshotMarkupClosed,
     ScreenshotRevealed(PathBuf),
-    /// "Send…" chose a target for the saved screenshot; the compositor
-    /// routes it over the device fabric or into the workspace.
+    /// "Send…" chose a device for the saved screenshot; the compositor
+    /// offers it over the device fabric.
     ScreenshotSendRequested {
         path: PathBuf,
         target: ScreenshotSendTarget,
     },
+    /// "Send…" finished off the loop: the screenshot was copied into the
+    /// workspace files, or why not.
+    ScreenshotSent(Result<crate::shell::screenshot_send::SendReceipt, String>),
     /// A Screenshot portal selection completed in trusted shell chrome. Kept
     /// distinct from a keyboard-initiated capture so its URI is returned only
     /// to the authenticated request that armed the selector.
@@ -798,18 +801,9 @@ impl CaptureExecutor {
                         None
                     }
                     ScreenshotCommand::SendLast(target) => {
-                        // After any screenshot still being written, so the
-                        // one sent is the one the person just took.
-                        let last = self.last_screenshot.clone();
-                        self.with_last_artifact(
-                            &last,
-                            "there is no saved screenshot to send",
-                            move |path| {
-                                CaptureDone::outcome(CaptureOutcome::ScreenshotSendRequested {
-                                    path,
-                                    target,
-                                })
-                            },
+                        self.send_last_screenshot(
+                            target,
+                            crate::shell::screenshot_send::workspace_files_root(),
                         );
                         None
                     }
@@ -1391,6 +1385,29 @@ impl CaptureExecutor {
         }
         frame_builder.set_capture_replay_active(false, AudioCaptureMode::None);
         Ok(CaptureOutcome::ReplayStopped)
+    }
+
+    /// "Send…" for the last screenshot, after any screenshot still being
+    /// written, so the one sent is the one the person just took. Saving into
+    /// the workspace files copies onto the workspace mount, which may be
+    /// remote, so the copy runs on the capture worker; a device send is
+    /// handed to the loop, which owns the device fabric.
+    fn send_last_screenshot(&mut self, target: ScreenshotSendTarget, workspace_root: PathBuf) {
+        let last = self.last_screenshot.clone();
+        self.with_last_artifact(&last, "there is no saved screenshot to send", move |path| {
+            CaptureDone::outcome(match target {
+                ScreenshotSendTarget::Workspace => {
+                    CaptureOutcome::ScreenshotSent(crate::shell::screenshot_send::route(
+                        &path,
+                        &target,
+                        &mut crate::shell::screenshot_send::WorkspaceFilesBridge { workspace_root },
+                    ))
+                }
+                ScreenshotSendTarget::Device(_) => {
+                    CaptureOutcome::ScreenshotSendRequested { path, target }
+                }
+            })
+        });
     }
 
     fn reveal_last_screenshot(&mut self) {
@@ -2839,6 +2856,64 @@ mod tests {
             }]
         );
         assert_eq!(frame_builder.host_mut().capture_mirror_count_for_tests(), 1);
+    }
+
+    /// "Save to this workspace's files" copies onto the workspace mount,
+    /// which may be a peer's: the copy runs on the capture worker. While
+    /// the worker is held up, frames return and nothing lands in the
+    /// workspace; once it runs, the copy is reported on a later frame.
+    #[test]
+    fn saving_a_screenshot_into_the_workspace_never_holds_a_frame() {
+        let directory = tempfile::tempdir().unwrap();
+        let shot = directory.path().join("Tilo Screenshot.png");
+        write_png(&shot, 2, 1, &[18, 32, 64, 255, 240, 120, 30, 255]).unwrap();
+        let workspace = directory.path().join("workspace");
+
+        let mut executor = CaptureExecutor::default();
+        executor.last_screenshot.set(shot.clone());
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        executor.io.submit(move || {
+            let _ = held.recv();
+            CaptureDone::new(|_, _| None)
+        });
+        let mut frame_builder = FrameBuilder::new((800, 600));
+        frame_builder.relayout();
+        executor.send_last_screenshot(ScreenshotSendTarget::Workspace, workspace.clone());
+        for _ in 0..3 {
+            let mut scene = frame_builder.paint();
+            let (outcomes, _) = executor.execute_ready(&mut frame_builder, &mut scene);
+            assert!(
+                outcomes.is_empty(),
+                "nothing to report while the copy waits"
+            );
+        }
+        let landed = workspace
+            .join(crate::shell::screenshot_send::WORKSPACE_SCREENSHOTS_DIR)
+            .join("Tilo Screenshot.png");
+        assert!(
+            !landed.exists(),
+            "the copy did not run on the frame's thread"
+        );
+
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut outcomes = Vec::new();
+        while outcomes.is_empty() {
+            assert!(Instant::now() < deadline, "the copy never finished");
+            std::thread::sleep(Duration::from_millis(1));
+            let mut scene = frame_builder.paint();
+            outcomes = executor.execute_ready(&mut frame_builder, &mut scene).0;
+        }
+        assert_eq!(
+            outcomes,
+            vec![CaptureOutcome::ScreenshotSent(Ok(
+                crate::shell::screenshot_send::SendReceipt::Saved(landed.clone())
+            ))]
+        );
+        assert_eq!(
+            std::fs::read(&landed).unwrap(),
+            std::fs::read(&shot).unwrap()
+        );
     }
 
     #[test]

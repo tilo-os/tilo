@@ -1953,7 +1953,6 @@ hosted-window-running-on = Läuft auf { $device }
 shell-document-unavailable = Dokument nicht verfügbar
 shell-named-document-unavailable = { $name } nicht verfügbar
 shell-path-open-failed = { $path } kann nicht geöffnet werden: { $error }
-shell-path-read-failed = { $path } kann nicht gelesen werden: { $error }
 editor-disk-conflict = Die Datei wurde auf dem Datenträger geändert; ungespeicherte Änderungen bleiben für die Konfliktlösung erhalten
 editor-hint-disk-conflict = Datei auf dem Datenträger geändert – ungespeicherte Änderungen bleiben erhalten
 editor-hint-focused = Live geteilter Code  ·  Strg+Z zum Rückgängigmachen

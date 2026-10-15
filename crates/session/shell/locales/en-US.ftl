@@ -1958,7 +1958,6 @@ hosted-window-running-on = Running on { $device }
 shell-document-unavailable = Document unavailable
 shell-named-document-unavailable = { $name } unavailable
 shell-path-open-failed = Cannot open { $path }: { $error }
-shell-path-read-failed = Cannot read { $path }: { $error }
 editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
 editor-hint-disk-conflict = File changed on disk — unsaved edits preserved
 editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo

@@ -1871,6 +1871,49 @@ fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
     Ok((generation, apps))
 }
 
+/// [`installed_apps`] for the compositor loop: the last enumeration, fresh
+/// or stale, and never a registry read, which scans the registry and parses
+/// every manifest. One past its TTL or invalidated by the registry watch is
+/// refreshed on a worker and served until the refresh lands; before the
+/// first enumeration there is none.
+pub(crate) fn installed_apps_without_waiting() -> Vec<InstalledApp> {
+    let (apps, fresh) = {
+        let cache = lock(&APP_CACHE);
+        cache.as_ref().map_or_else(
+            || (Vec::new(), false),
+            |(apps, at)| {
+                (
+                    apps.clone(),
+                    at.is_some_and(|at| at.elapsed() < APP_CACHE_TTL),
+                )
+            },
+        )
+    };
+    if !fresh {
+        refresh_installed_apps_in_background();
+    }
+    apps
+}
+
+/// Re-read the registry on a worker, one refresh at a time.
+fn refresh_installed_apps_in_background() {
+    static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if REFRESHING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("tilo-apps-refresh".into())
+        .spawn(|| {
+            if let Err(error) = installed_apps_snapshot() {
+                tracing::debug!(%error, "installed apps refresh failed; the last list stays");
+            }
+            REFRESHING.store(false, Ordering::Release);
+        });
+    if spawned.is_err() {
+        REFRESHING.store(false, Ordering::Release);
+    }
+}
+
 /// Store a registry read that started at `read_epoch` as the new baseline.
 fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) -> u64 {
     let mut cache = lock(&APP_CACHE);
@@ -4809,6 +4852,21 @@ pub(crate) fn clear_launched_for_test() {
 /// label — closing that gap needs the client correlated back to the
 /// spawned pid (`SO_PEERCRED`), not this module.
 pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
+    display_name_among(app_id, || installed_apps().unwrap_or_default())
+}
+
+/// [`display_name_for_app_id`] for the compositor loop: the installed
+/// packages as last enumerated ([`installed_apps_without_waiting`]), never
+/// a registry read. An app installed since may show its id until the
+/// refresh lands.
+pub(crate) fn display_name_for_app_id_without_waiting(app_id: &str) -> Option<String> {
+    display_name_among(app_id, installed_apps_without_waiting)
+}
+
+fn display_name_among(
+    app_id: &str,
+    installed: impl FnOnce() -> Vec<InstalledApp>,
+) -> Option<String> {
     {
         let session = LaunchSession::current();
         let launched = lock(&session.launched);
@@ -4822,12 +4880,11 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
     // Not launched by this session, but the machine still has it: a
     // package's manifest name is the app's name regardless of who
     // started the window.
-    if let Ok(apps) = installed_apps()
-        && let Some(app) = apps
-            .iter()
-            .find(|a| app_id_matches_package(app_id, &a.package_id))
+    if let Some(app) = installed()
+        .into_iter()
+        .find(|a| app_id_matches_package(app_id, &a.package_id))
     {
-        return Some(app.display_name.clone());
+        return Some(app.display_name);
     }
     // Nor a package launched this session — maybe a host app started
     // another way; its `.desktop` entry gives a nicer label than the raw id.
@@ -6376,6 +6433,47 @@ mod tests {
         .unwrap();
         std::fs::write(&registry, existing).unwrap();
         payload
+    }
+
+    /// The compositor loop asks for installed apps while building tiles and
+    /// naming apps in Activity. It is served the last enumeration, stale or
+    /// not, and never reads the registry itself: a stale list is refreshed
+    /// on a worker and the refresh lands for a later ask.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_loop_is_served_the_last_app_list_while_a_worker_refreshes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        invalidate_app_cache();
+        let initial = installed_apps().unwrap();
+        assert_eq!(initial[0].version, "1.2.3");
+
+        let manifest = payload.join("manifest.toml");
+        let changed_manifest = std::fs::read_to_string(&manifest)
+            .unwrap()
+            .replace("1.2.3", "1.2.4");
+        std::fs::write(&manifest, changed_manifest).unwrap();
+        lock(&APP_CACHE).as_mut().unwrap().1 = None;
+
+        let served = installed_apps_without_waiting();
+        assert_eq!(
+            served, initial,
+            "the stale list is served; the registry was not read here"
+        );
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let refreshed = loop {
+            let served = installed_apps_without_waiting();
+            if served.first().is_some_and(|app| app.version == "1.2.4") {
+                break served;
+            }
+            assert!(Instant::now() < deadline, "the refresh never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        env.remove("TILO_APPS_DATA_DIR");
+        invalidate_app_cache();
+        assert_eq!(refreshed.len(), 1);
     }
 
     #[test]
