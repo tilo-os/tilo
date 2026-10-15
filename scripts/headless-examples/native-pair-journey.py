@@ -807,7 +807,7 @@ class Fixture:
                            for message in messages) != 1 for text in texts):
                     return False
                 observed = [message for message in messages if message.get("text") in expected_authors]
-                if any(message.get("author") != expected_authors[message["text"]] for message in observed):
+                if any(message.get("authorId") != expected_authors[message["text"]] for message in observed):
                     raise RuntimeError("native message attribution differs from its certified invoker")
                 observations[name] = observed
             return True
