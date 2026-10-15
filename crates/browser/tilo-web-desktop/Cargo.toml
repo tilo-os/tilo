@@ -26,7 +26,7 @@ tilo-search = { path = "../../sdk/search", features = ["lazy-engine"] }
 # The spelling dictionaries load the first time a field checks spelling.
 tilo-spellcheck = { path = "../../text/spellcheck", features = ["lazy-dictionaries"] }
 # Hyphenation patterns load the first time text hyphenates.
-tilo-ui = { path = "../../sdk/ui-core", default-features = false, features = ["lazy-hyphenation"] }
+tilo-ui = { path = "../../sdk/ui-core", default-features = false, features = ["lazy-hyphenation", "lazy-image-decode"] }
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 # generated apps: begin (tools/web/generate_web_desktop.py)

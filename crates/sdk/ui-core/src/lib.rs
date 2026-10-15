@@ -228,6 +228,8 @@ pub mod storage;
 #[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
+#[cfg(any(test, feature = "lazy-hyphenation", feature = "lazy-image-decode"))]
+mod deferred;
 pub mod personal_dictionary;
 pub mod text_assistance;
 pub mod text_break;
