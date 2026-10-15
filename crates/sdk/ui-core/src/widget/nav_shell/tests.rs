@@ -651,6 +651,59 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
 }
 
 #[test]
+fn sync_status_reads_as_quiet_text_before_the_rows_trailing_controls() {
+    const OFFLINE: &str = "Working offline. Changes will sync when you're back.";
+    let status = |h: &FrameHarness| {
+        h.root::<NavShell>()
+            .children()
+            .into_iter()
+            .find(|child| child.name() == "HeaderStatus")
+            .map(|child| (child.get_rect(), child.accessibility()))
+    };
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    assert!(h.root_mut::<NavShell>().set_sync_status(Some(OFFLINE)));
+    h.root_mut::<NavShell>()
+        .set_history_control(Some(HistoryControl::Closed));
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    let (rect, node) = status(&h).unwrap();
+    let node = node.unwrap();
+    assert_eq!(node.name.as_deref(), Some(OFFLINE));
+    assert_eq!(node.live, Some(crate::a11y::Politeness::Polite));
+    assert!(rect.width() > 0.0, "painted in the row");
+    assert!(
+        rect.y1 <= g.header_height,
+        "inside the header row, not a band"
+    );
+    assert!(
+        rect.x1 <= g.history.x0,
+        "{rect:?} ends before History {g:?}"
+    );
+    assert!(
+        rect.x0 >= g.content_column.x0,
+        "stays in the content column's row"
+    );
+    let slot = h.root::<NavShell>().header_status_slot();
+    assert!(slot.width() > 0.0, "room is left for a save status");
+    assert!(
+        slot.x1 < rect.x0 && slot.y1 <= g.header_height,
+        "{slot:?} sits in the row before the sync status {rect:?}"
+    );
+
+    assert!(h.root_mut::<NavShell>().set_sync_status(None));
+    settle(&mut h, 1280, 800);
+    assert!(
+        status(&h).and_then(|(_, node)| node).is_none(),
+        "nothing to announce"
+    );
+    let slot = h.root::<NavShell>().header_status_slot();
+    assert!(
+        slot.x1 <= g.history.x0 && slot.x1 > rect.x0,
+        "without a sync status the save status takes its place: {slot:?}"
+    );
+}
+
+#[test]
 fn slides_take_the_motion_duration_and_reduced_motion_jumps() {
     let theme = Theme::dark();
     let mut h = harness(mail_shell(), 1280, 800, theme.clone());

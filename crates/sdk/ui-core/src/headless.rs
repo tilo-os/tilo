@@ -3445,22 +3445,35 @@ impl FrameHarness {
     /// bound is measured on it too: an executor with a virtual clock (a
     /// pumped test) cannot run the bound out before an entrance has ended.
     pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
+        /// How long [`Self::settle_for_capture`] waits between idle passes.
+        const CAPTURE_IDLE_SLICE: crate::time::Duration = crate::time::Duration::from_millis(16);
         let Some(deadline) = crate::time::now().checked_add(bound) else {
             return false;
         };
         loop {
             self.relayout();
             self.idle_control_tick();
+            // A live window hands edits to the record's writer on its idle
+            // pass, so a first save confirms while the window settles.
+            self.persist_tick();
             self.relayout();
             if crate::time::now() > deadline {
                 return false;
             }
+            // Wait in slices: each ends in the idle pass above, which a
+            // pending save needs to be written at all.
+            let slice = crate::time::now()
+                .checked_add(CAPTURE_IDLE_SLICE)
+                .map_or(deadline, |slice| slice.min(deadline));
             if !self.capture_is_ready()
-                && !self.wait_until_deadline(deadline, crate::time::now, |driver| {
+                && !self.wait_until_deadline(slice, crate::time::now, |driver| {
                     crate::time::now() <= deadline && driver.capture_is_ready()
                 })
             {
-                return false;
+                if crate::time::now() >= deadline {
+                    return false;
+                }
+                continue;
             }
             // Endpoint draw can invalidate layout or start another finite
             // image/detail job. Flush it, then await that work within the
