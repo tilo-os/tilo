@@ -104,7 +104,7 @@ pub fn reveal_media_address(id: Uuid) -> ActionAddress {
 
 /// What the editor does that is no edit of the project: revealing a track,
 /// clip, effect, marker or source, and the project file and render jobs.
-#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "video_editor.effect")]
 pub enum VideoEditorEffect {
     /// Reveal track.
@@ -194,6 +194,79 @@ pub enum VideoEditorEffect {
         #[param("The format: json, the only one")]
         format: Option<String>,
     },
+    /// Export video as content
+    ///
+    /// Render the timeline (its marked range, if any; at most two minutes)
+    /// to an MP4 (H.264, AAC when it has sound) kept in the content store,
+    /// with no file to write. Waits up to `wait` seconds, then answers
+    /// `{state: "done", content, duration, frames, width, height, fps,
+    /// bytes}`, or `{state: "rendering", job, done, total}` to ask
+    /// export-video-status about. Exporting the same timeline again with the
+    /// same settings answers the same render.
+    #[effect(job, returns, permission = "read", tag = tilo_actions::HOST_RENDER_TAG)]
+    ExportVideoContent {
+        #[param("The format: mp4, the only one")]
+        format: Option<String>,
+        #[param("Frame width in pixels, even, at most 1920 (default 1280)")]
+        width: Option<u32>,
+        #[param("Frame height in pixels, even, at most 1080 (default 720)")]
+        height: Option<u32>,
+        #[param("Frames per second: 24, 30 or 60 (default 30)")]
+        fps: Option<u32>,
+        #[param(
+            "Seconds to wait for the render before answering how far it got (default 60, at most 120)"
+        )]
+        wait: Option<u32>,
+    },
+    /// Video export status
+    ///
+    /// How the render export-video-content started is going, waiting up to
+    /// `wait` seconds for it to finish: the same answers as that export, or
+    /// `{state: "failed", error}`.
+    #[effect(job, returns, permission = "read", tag = tilo_actions::HOST_RENDER_TAG)]
+    ExportVideoStatus {
+        #[param("The job export-video-content answered")]
+        job: String,
+        #[param("Seconds to wait for it to finish (default 60, at most 120)")]
+        wait: Option<u32>,
+    },
+    /// Cancel video export
+    ///
+    /// Stop the render export-video-content started.
+    #[effect(returns, permission = "read", tag = tilo_actions::HOST_RENDER_TAG)]
+    CancelVideoExport {
+        #[param("The job export-video-content answered")]
+        job: String,
+    },
+    /// View frame as content
+    ///
+    /// Draw the timeline at one time, exactly as the export renders it, as a
+    /// PNG kept in the content store: look at it to check a cut. Answers
+    /// `{content, at, width, height}`.
+    #[effect(job, returns, permission = "read", tag = tilo_actions::HOST_RENDER_TAG)]
+    ViewFrameContent {
+        #[param("Seconds from the start of the timeline")]
+        at: f64,
+        #[param(
+            "Width in pixels, even, 16 to 1920 (default 640); the height follows the frame's aspect"
+        )]
+        width: Option<u32>,
+    },
+}
+
+impl VideoEditorEffect {
+    /// Whether this effect is a render of the timeline an agent's host
+    /// answers in its render service ([`tilo_actions::HOST_RENDER_TAG`]).
+    #[must_use]
+    pub const fn is_host_render(&self) -> bool {
+        matches!(
+            self,
+            Self::ExportVideoContent { .. }
+                | Self::ExportVideoStatus { .. }
+                | Self::CancelVideoExport { .. }
+                | Self::ViewFrameContent { .. }
+        )
+    }
 }
 
 impl VideoEditorEffect {
@@ -6234,6 +6307,44 @@ mod tests {
                     assert_eq!(action.contract.result, ResultSpec::Job, "{id}");
                     assert_eq!(action.params()[0].name.as_ref(), "path", "{id}");
                 }
+            }
+        }
+        // Case `renders_for_a_caller_are_the_hosts_render_service_and_only_read`.
+        {
+            use ui::tilo_resource::Effect;
+            let specs = VideoEditorEffect::specs();
+            let renders = [
+                "export-video-content",
+                "export-video-status",
+                "cancel-video-export",
+                "view-frame-content",
+            ];
+            for action in &specs {
+                let tagged = action
+                    .contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == tilo_actions::HOST_RENDER_TAG);
+                assert_eq!(
+                    tagged,
+                    renders.contains(&action.id.as_ref()),
+                    "{}",
+                    action.id
+                );
+            }
+            for id in renders {
+                let action = specs.iter().find(|action| action.id == id).unwrap();
+                assert_eq!(
+                    action.contract.permission,
+                    tilo_actions::PermissionRequirement::Read
+                );
+                assert!(
+                    action
+                        .params()
+                        .iter()
+                        .all(|param| param.name.as_ref() != "path"),
+                    "{id} names no path"
+                );
             }
         }
         // Case `concurrent_effect_actions_replay_in_either_order_with_one_stable_stack`.

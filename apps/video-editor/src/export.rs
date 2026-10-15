@@ -414,6 +414,23 @@ pub fn pipeline_desc_with_audio(
     out: &str,
     with_audio: bool,
 ) -> String {
+    pipeline_desc_to(
+        *settings,
+        w,
+        h,
+        &format!("filesink location={out}"),
+        with_audio,
+    )
+}
+
+/// [`pipeline_desc_with_audio`] into the sink element `sink`.
+fn pipeline_desc_to(
+    settings: ExportSettings,
+    w: u32,
+    h: u32,
+    sink: &str,
+    with_audio: bool,
+) -> String {
     let (enc, parse, mux) = encode_chain(settings.container);
     let fps = settings.frame_rate.fps() as u32;
     let parse = parse.map(|p| format!("{p} ! ")).unwrap_or_default();
@@ -434,7 +451,7 @@ pub fn pipeline_desc_with_audio(
         "appsrc name=tilo_src is-live=false format=time \
          caps=video/x-raw,format=RGBA,width={w},height={h},framerate={fps}/1 \
          ! videoconvert ! {enc} {bitrate_arg} ! {parse}{mux} name=tilo_mux \
-         ! filesink location={out}{audio}"
+         ! {sink}{audio}"
     )
 }
 
@@ -528,10 +545,8 @@ pub struct ExportJob {
 /// What the worker publishes and the UI reads. Small enough to poll every
 /// frame without ceremony.
 struct JobState {
-    /// Frames written so far, and how many there are in total.
-    done: AtomicU64,
-    total: AtomicU64,
-    cancel: AtomicBool,
+    /// Frames written so far, how many there are in total, and the stop.
+    render: RenderState,
     outcome: Mutex<Option<ExportStatus>>,
 }
 
@@ -542,8 +557,8 @@ impl ExportJob {
         if let Some(done) = self.shared.outcome.lock().ok().and_then(|o| o.clone()) {
             return done;
         }
-        let total = self.shared.total.load(Ordering::Relaxed).max(1);
-        let done = self.shared.done.load(Ordering::Relaxed);
+        let total = self.shared.render.total.load(Ordering::Relaxed).max(1);
+        let done = self.shared.render.done.load(Ordering::Relaxed);
         ExportStatus::Rendering {
             progress: (done as f64 / total as f64).clamp(0.0, 1.0),
         }
@@ -559,7 +574,7 @@ impl ExportJob {
     /// cancelled reason — a half-written file is removed rather than left
     /// looking like a finished render.
     pub fn cancel(&self) {
-        self.shared.cancel.store(true, Ordering::Relaxed);
+        self.shared.render.cancel.store(true, Ordering::Relaxed);
     }
 
     /// Block until the worker finishes, returning its outcome. Mostly for
@@ -583,7 +598,7 @@ impl Drop for ExportJob {
     fn drop(&mut self) {
         // A dropped handle must not leave an encoder running against a file
         // nobody is waiting for.
-        self.shared.cancel.store(true, Ordering::Relaxed);
+        self.shared.render.cancel.store(true, Ordering::Relaxed);
     }
 }
 
@@ -599,9 +614,7 @@ pub fn start_export(
     destination: std::path::PathBuf,
 ) -> ExportJob {
     let shared = Arc::new(JobState {
-        done: AtomicU64::new(0),
-        total: AtomicU64::new(0),
-        cancel: AtomicBool::new(false),
+        render: RenderState::default(),
         outcome: Mutex::new(None),
     });
     // The worker owns its own copy: the UI thread keeps editing the project
@@ -705,7 +718,7 @@ fn render(
     }
     #[cfg(feature = "gst")]
     {
-        gst_pipeline::run(project, settings, destination, state)
+        gst_pipeline::run(project, settings, destination, &state.render)
     }
     #[cfg(not(feature = "gst"))]
     {
@@ -741,6 +754,524 @@ pub fn unavailable_reason() -> Option<&'static str> {
 /// faked progress bar or a success for a file that was never written.
 pub fn begin_export(project: &Project, settings: &ExportSettings) -> ExportStatus {
     start_export(project, settings, output_path(settings, project)).join()
+}
+
+/// The longest timeline an agent's render encodes, in seconds: a render
+/// holds the host's one render slot for its whole run, and two minutes of
+/// 1080p is already most of what a content item may weigh.
+pub const AGENT_MAX_SECONDS: f64 = 120.0;
+
+/// How long an agent's export waits for its render when it names no `wait`,
+/// and the most it may name, in seconds.
+pub const AGENT_DEFAULT_WAIT: u64 = 60;
+pub const AGENT_MAX_WAIT: u64 = 120;
+
+/// The frame rates an agent may ask for: the editor's presets.
+pub const AGENT_FRAME_RATES: [u32; 3] = [24, 30, 60];
+
+/// The software encoder every agent render writes H.264 with.
+///
+/// `OpenH264` is BSD-licensed and Baseline-only, and it is the one encoder
+/// that is both free to ship and deterministic single-threaded: two renders
+/// of one timeline are byte-equal, so a repeated export is recognisable as
+/// the same file. A hardware encoder is neither.
+pub const AGENT_VIDEO_ENCODER: &str = "openh264enc";
+
+/// What an agent's render answers when this host's `GStreamer` lacks
+/// [`AGENT_VIDEO_ENCODER`].
+pub const AGENT_ENCODER_MISSING: &str = "this host cannot encode an agent's video: the \
+    GStreamer OpenH264 encoder (openh264enc, from the openh264 plugin of gst-plugins-bad) \
+    is not installed";
+
+/// An agent's video export, as `export-video-content` names it: MP4 /
+/// H.264 (Baseline, through [`AGENT_VIDEO_ENCODER`]) at an even frame size
+/// within 1920×1080 (either way round) and one of
+/// [`AGENT_FRAME_RATES`].
+///
+/// Unlike [`ExportSettings`], which a person picks from presets in a
+/// dialog, these are explicit numbers from a caller that has no dialog, and
+/// they are the render's identity: two exports of one timeline with equal
+/// settings are one render.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct AgentExportSettings {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
+impl Default for AgentExportSettings {
+    fn default() -> Self {
+        Self {
+            width: 1280,
+            height: 720,
+            fps: 30,
+        }
+    }
+}
+
+impl AgentExportSettings {
+    /// The settings `args` name, for a project of `aspect` (width over
+    /// height): `format` (mp4, the only one), `width`, `height`, `fps`.
+    /// Neither dimension named is 1280×720; one named gives the other from
+    /// the project's aspect, rounded to even.
+    ///
+    /// # Errors
+    ///
+    /// Why the arguments name no render an agent may ask for, in words the
+    /// caller can correct.
+    pub fn from_args(
+        args: &serde_json::Map<String, serde_json::Value>,
+        aspect: f64,
+    ) -> Result<Self, String> {
+        if let Some(format) = optional_text(args, "format")? {
+            let format = format.trim();
+            if !format.eq_ignore_ascii_case("mp4") {
+                return Err(format!("an agent's video exports as mp4, not {format}"));
+            }
+        }
+        let aspect = if aspect.is_finite() && aspect > 0.0 {
+            aspect
+        } else {
+            16.0 / 9.0
+        };
+        let width = optional_whole(args, "width")?;
+        let height = optional_whole(args, "height")?;
+        let even = |value: f64| ((value / 2.0).round() * 2.0).max(2.0) as u64;
+        let (width, height) = match (width, height) {
+            (None, None) => (1280, 720),
+            (Some(width), None) => (width, even(width as f64 / aspect)),
+            (None, Some(height)) => (even(height as f64 * aspect), height),
+            (Some(width), Some(height)) => (width, height),
+        };
+        for (name, value) in [("width", width), ("height", height)] {
+            if value % 2 != 0 {
+                return Err(format!("the {name} must be even (H.264), not {value}"));
+            }
+            if value < 16 {
+                return Err(format!(
+                    "the {name} must be at least 16 pixels, not {value}"
+                ));
+            }
+        }
+        if width.max(height) > 1920 || width.min(height) > 1080 {
+            return Err(format!(
+                "{width}×{height} is larger than an agent's render may be: at most 1920×1080, \
+                 either way round"
+            ));
+        }
+        let fps = optional_whole(args, "fps")?.unwrap_or(30);
+        if !AGENT_FRAME_RATES.iter().any(|rate| u64::from(*rate) == fps) {
+            return Err(format!("the frame rate is 24, 30 or 60, not {fps}"));
+        }
+        Ok(Self {
+            width: u32::try_from(width).map_err(|_| "the width is too large".to_owned())?,
+            height: u32::try_from(height).map_err(|_| "the height is too large".to_owned())?,
+            fps: u32::try_from(fps).map_err(|_| "the frame rate is too large".to_owned())?,
+        })
+    }
+
+    /// The video bitrate the encoder is asked for, in bits per second:
+    /// 2.5 megabits at 720p30, scaled by pixels per second and capped at
+    /// 3.5, so two minutes stay under the 60 MiB a render may keep when the
+    /// encoder holds to its rate. (`OpenH264` does not always: very busy
+    /// pictures can come out larger, and such a render is refused by size.)
+    #[must_use]
+    pub fn video_bitrate(&self) -> u64 {
+        let pixels = u64::from(self.width) * u64::from(self.height) * u64::from(self.fps);
+        let base = 1280 * 720 * 30;
+        (2_500_000 * pixels / base).clamp(500_000, 3_500_000)
+    }
+}
+
+/// How long an agent's call waits for its render, from its `wait` (seconds,
+/// at most [`AGENT_MAX_WAIT`]; [`AGENT_DEFAULT_WAIT`] when absent).
+///
+/// # Errors
+///
+/// A `wait` that is not a whole number of seconds from 0.
+pub fn agent_wait_from_args(
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<std::time::Duration, String> {
+    let wait = optional_whole(args, "wait")?.unwrap_or(AGENT_DEFAULT_WAIT);
+    Ok(std::time::Duration::from_secs(wait.min(AGENT_MAX_WAIT)))
+}
+
+/// One still of the timeline an agent asks for (`view-frame-content`): the
+/// time, and the width it is drawn at (the height follows the project's
+/// aspect).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AgentFrameSettings {
+    pub at: f64,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl AgentFrameSettings {
+    /// The still `args` name: `at` seconds (required, within the timeline
+    /// of `duration` seconds), `width` (default 640, even, 16 to 1920).
+    ///
+    /// # Errors
+    ///
+    /// Why the arguments name no still of this timeline.
+    pub fn from_args(
+        args: &serde_json::Map<String, serde_json::Value>,
+        aspect: f64,
+        duration: f64,
+    ) -> Result<Self, String> {
+        let at = args
+            .get("at")
+            .and_then(serde_json::Value::as_f64)
+            .ok_or("name the time to view, in seconds: `at`")?;
+        if !at.is_finite() || at < 0.0 || at > duration.max(0.0) {
+            return Err(format!(
+                "{at} s is not on the timeline, which runs from 0 to {duration} s"
+            ));
+        }
+        let width = optional_whole(args, "width")?.unwrap_or(640);
+        if width % 2 != 0 || !(16..=1920).contains(&width) {
+            return Err(format!(
+                "the width is an even number from 16 to 1920, not {width}"
+            ));
+        }
+        let aspect = if aspect.is_finite() && aspect > 0.0 {
+            aspect
+        } else {
+            16.0 / 9.0
+        };
+        let height = (((width as f64 / aspect) / 2.0).round() * 2.0).clamp(2.0, 1920.0) as u32;
+        Ok(Self {
+            at,
+            width: width as u32,
+            height,
+        })
+    }
+}
+
+/// What a finished agent render made, as its caller is told.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AgentRendered {
+    pub frames: u64,
+    pub duration: f64,
+}
+
+/// The answer of a finished render: its content address and what it holds.
+#[must_use]
+pub fn agent_done_answer(
+    content: &str,
+    rendered: AgentRendered,
+    settings: AgentExportSettings,
+    bytes: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "state": "done",
+        "content": content,
+        "duration": rendered.duration,
+        "frames": rendered.frames,
+        "width": settings.width,
+        "height": settings.height,
+        "fps": settings.fps,
+        "bytes": bytes,
+    })
+}
+
+/// The answer of a render still running after the caller's wait: the job to
+/// ask about again (`export-video-status`) and how far it has come.
+#[must_use]
+pub fn agent_rendering_answer(job: &str, done: u64, total: u64) -> serde_json::Value {
+    serde_json::json!({ "state": "rendering", "job": job, "done": done, "total": total })
+}
+
+/// The answer of a render that failed or was cancelled.
+#[must_use]
+pub fn agent_failed_answer(job: &str, error: &str) -> serde_json::Value {
+    serde_json::json!({ "state": "failed", "job": job, "error": error })
+}
+
+/// Why `project` is no timeline an agent's render takes: longer than
+/// [`AGENT_MAX_SECONDS`], or placing a source that is not room content.
+///
+/// # Errors
+///
+/// The refusal, naming the offending source.
+pub fn agent_renderable(project: &Project) -> Result<(), String> {
+    let duration = project.export_duration();
+    if duration > AGENT_MAX_SECONDS {
+        return Err(format!(
+            "the timeline runs {duration:.1} s; an agent's render takes at most {AGENT_MAX_SECONDS:.0} s \
+             (mark a range, or shorten the cut)"
+        ));
+    }
+    for item in &project.media {
+        if item.kind.is_generated() || !project.clips.iter().any(|c| c.media == item.id) {
+            continue;
+        }
+        if crate::media::content_hash(&item.path).is_none() {
+            return Err(format!(
+                "{} is not room content: an agent's render reads only sources imported with \
+                 import-content",
+                item.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The room content every source `project` places is read from, once each.
+#[must_use]
+pub fn placed_content(project: &Project) -> Vec<String> {
+    let mut hashes: Vec<String> = Vec::new();
+    for item in &project.media {
+        if item.kind.is_generated() || !project.clips.iter().any(|c| c.media == item.id) {
+            continue;
+        }
+        if let Some(hash) = crate::media::content_hash(&item.path)
+            && !hashes.iter().any(|seen| seen == hash)
+        {
+            hashes.push(hash.to_owned());
+        }
+    }
+    hashes
+}
+
+fn optional_text<'a>(
+    args: &'a serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<Option<&'a str>, String> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => Ok(Some(text)),
+        Some(other) => Err(format!("`{name}` is text, not {other}")),
+    }
+}
+
+/// A whole, non-negative number argument; `30.0` reads as `30`.
+fn optional_whole(
+    args: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<Option<u64>, String> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0 && *n < 1e9)
+                    .map(|n| n as u64)
+            })
+            .map(Some)
+            .ok_or_else(|| format!("`{name}` is a whole number from 0, not {value}")),
+    }
+}
+
+/// The `GStreamer` graph an agent's render runs: the composited RGBA frames
+/// through [`AGENT_VIDEO_ENCODER`] with fixed settings — one thread, one
+/// slice, no frame skipping, a keyframe every second — into `mp4mux` and
+/// `sink`, with the timeline's mix as 48 kHz stereo AAC when there is any.
+/// Pure, so the graph is checked without an encoder.
+#[must_use]
+pub fn agent_pipeline_desc(settings: &AgentExportSettings, sink: &str, with_audio: bool) -> String {
+    let AgentExportSettings { width, height, fps } = *settings;
+    let bitrate = settings.video_bitrate();
+    let audio = with_audio
+        .then(|| audio_branch_desc(Container::Mp4, "tilo_mux"))
+        .flatten()
+        .map(|b| format!(" {b}"))
+        .unwrap_or_default();
+    format!(
+        "appsrc name=tilo_src is-live=false format=time \
+         caps=video/x-raw,format=RGBA,width={width},height={height},framerate={fps}/1 \
+         ! videoconvert ! video/x-raw,format=I420 \
+         ! {AGENT_VIDEO_ENCODER} gop-size={fps} multi-thread=1 slice-mode=n-slices num-slices=1 \
+         enable-frame-skip=false rate-control=bitrate bitrate={bitrate} \
+         ! h264parse ! mp4mux name=tilo_mux ! {sink}{audio}"
+    )
+}
+
+/// Where a render's file goes: a path it creates, or a file it is handed
+/// already open (a render helper that may open nothing).
+#[cfg(feature = "gst")]
+pub enum Sink<'a> {
+    Path(&'a std::path::Path),
+    File(&'a std::fs::File),
+}
+
+#[cfg(feature = "gst")]
+impl Sink<'_> {
+    /// The sink element of the graph.
+    fn element(&self) -> String {
+        match self {
+            Self::Path(path) => format!("filesink location={}", path.display()),
+            Self::File(file) => {
+                use std::os::fd::AsRawFd;
+                format!("fdsink fd={}", file.as_raw_fd())
+            }
+        }
+    }
+
+    /// How much has been written.
+    fn len(&self) -> Option<u64> {
+        match self {
+            Self::Path(path) => crate::files::metadata(path).ok().map(|m| m.len),
+            Self::File(file) => file.metadata().ok().map(|m| m.len()),
+        }
+    }
+
+    /// Rewrite what was written through `edit`.
+    fn rewrite(&self, edit: impl FnOnce(&mut Vec<u8>)) -> Result<(), String> {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let failed = |e: std::io::Error| format!("the render could not be finished: {e}");
+        match self {
+            Self::Path(path) => {
+                let mut bytes = std::fs::read(path).map_err(failed)?;
+                edit(&mut bytes);
+                std::fs::write(path, &bytes).map_err(failed)
+            }
+            Self::File(file) => {
+                let mut file: &std::fs::File = file;
+                let mut bytes = Vec::new();
+                file.seek(SeekFrom::Start(0)).map_err(failed)?;
+                file.read_to_end(&mut bytes).map_err(failed)?;
+                edit(&mut bytes);
+                file.seek(SeekFrom::Start(0)).map_err(failed)?;
+                file.write_all(&bytes).map_err(failed)?;
+                file.flush().map_err(failed)
+            }
+        }
+    }
+
+    /// Throw away what a failed render wrote, so nothing half-written looks
+    /// like a render.
+    fn discard(&self) {
+        match self {
+            Self::Path(path) => crate::files::remove(path),
+            Self::File(file) => {
+                let _ = file.set_len(0);
+            }
+        }
+    }
+}
+
+/// What a render encodes: an export a person chose in the dialog, at the
+/// frame size [`output_dims`] gives it, or an agent's.
+#[cfg(feature = "gst")]
+#[derive(Clone, Copy, Debug)]
+pub enum Encoding {
+    Preset {
+        settings: ExportSettings,
+        width: u32,
+        height: u32,
+    },
+    Agent(AgentExportSettings),
+}
+
+#[cfg(feature = "gst")]
+impl Encoding {
+    fn size(&self) -> (u32, u32) {
+        match self {
+            Self::Preset { width, height, .. } => (*width, *height),
+            Self::Agent(settings) => (settings.width, settings.height),
+        }
+    }
+
+    fn fps(&self) -> f64 {
+        match self {
+            Self::Preset { settings, .. } => settings.frame_rate.fps(),
+            Self::Agent(settings) => f64::from(settings.fps),
+        }
+    }
+
+    fn pipeline(&self, sink: &Sink<'_>, with_audio: bool) -> Result<String, String> {
+        let sink = sink.element();
+        match self {
+            Self::Preset {
+                settings,
+                width,
+                height,
+            } => Ok(pipeline_desc_to(
+                *settings, *width, *height, &sink, with_audio,
+            )),
+            Self::Agent(settings) => {
+                if !registry_available(AGENT_VIDEO_ENCODER) {
+                    return Err(AGENT_ENCODER_MISSING.to_owned());
+                }
+                Ok(agent_pipeline_desc(settings, &sink, with_audio))
+            }
+        }
+    }
+}
+
+/// Where a render has got to, for whoever started it: frames written of
+/// how many, and whether it should stop.
+#[derive(Debug, Default)]
+pub struct RenderState {
+    pub done: AtomicU64,
+    pub total: AtomicU64,
+    pub cancel: AtomicBool,
+}
+
+/// Render `project` to `sink` as `encoding` says, publishing progress in
+/// `state`. Blocks until the file is complete.
+///
+/// # Errors
+///
+/// Why nothing (or only stand-in pictures) could be rendered; whatever the
+/// sink held is discarded then.
+#[cfg(feature = "gst")]
+pub fn run_to_sink(
+    project: &Project,
+    encoding: &Encoding,
+    sink: &Sink<'_>,
+    state: &RenderState,
+) -> Result<AgentRendered, String> {
+    let missing = unreadable_sources(project);
+    if !missing.is_empty() {
+        return Err(unreadable_reason(&missing));
+    }
+    gst_pipeline::run_to_sink(project, encoding, sink, state)
+}
+
+/// Draw the timeline at `frame.at` at `frame.width × frame.height` and
+/// answer it as PNG: the still an agent looks at to check its cut.
+///
+/// # Errors
+///
+/// No GPU, or a still that could not be encoded.
+#[cfg(feature = "decode")]
+pub fn render_frame_png(project: &Project, frame: &AgentFrameSettings) -> Result<Vec<u8>, String> {
+    let missing = unreadable_sources(project);
+    if !missing.is_empty() {
+        return Err(unreadable_reason(&missing));
+    }
+    let mut compositor =
+        crate::gpu::HeadlessCompositor::new().map_err(|e| format!("frame compositor: {e}"))?;
+    let mut sources = crate::gpu::MediaFrameSource::new(project, crate::gpu::Fetch::Exact);
+    let rgba = compositor.frame(project, frame.at, frame.width, frame.height, &mut sources);
+    if places_decoded_video(project)
+        && !sources.served_real_picture()
+        && at_footage(project, frame.at)
+    {
+        return Err("none of the footage under that time could be decoded".to_owned());
+    }
+    thumbnail::encode_png(&thumbnail::RgbaThumb {
+        rgba,
+        width: frame.width,
+        height: frame.height,
+    })
+    .ok_or_else(|| "the still could not be encoded as PNG".to_owned())
+}
+
+/// Whether a decoded picture is placed at `at`, so a still there must show
+/// footage rather than a stand-in.
+#[cfg(feature = "decode")]
+fn at_footage(project: &Project, at: f64) -> bool {
+    project.clips.iter().any(|c| {
+        c.start <= at
+            && at < c.end()
+            && project
+                .media(c.media)
+                .is_some_and(|m| m.kind.is_visual() && !m.kind.is_generated())
+    })
 }
 
 #[cfg(feature = "gst")]
@@ -796,30 +1327,50 @@ mod gst_pipeline {
         project: &Project,
         settings: ExportSettings,
         destination: &std::path::Path,
-        state: &super::JobState,
+        state: &super::RenderState,
     ) -> Result<String, String> {
-        gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
-
-        let (w, h) = output_dims(&settings, project);
-        let fps = settings.frame_rate.fps();
-        let out = destination.to_path_buf();
-        if let Some(parent) = out.parent() {
+        let (width, height) = output_dims(&settings, project);
+        if let Some(parent) = destination.parent() {
             crate::files::create_dir_all(parent);
         }
-        let out_str = out.to_string_lossy().into_owned();
+        // State which encoders this machine actually resolved to, so a slow
+        // export is diagnosable — "it fell back to openh264enc because no
+        // vah264enc is installed" rather than a guess.
+        if gst::init().is_ok() {
+            tracing::info!(
+                "export: {}",
+                selected_encoders(settings.container).describe()
+            );
+        }
+        let encoding = Encoding::Preset {
+            settings,
+            width,
+            height,
+        };
+        run_to_sink(project, &encoding, &Sink::Path(destination), state)?;
+        Ok(destination.to_string_lossy().into_owned())
+    }
+
+    /// [`super::run_to_sink`] past its source check: the graph, every frame
+    /// pushed, and the flush.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one export pipeline: probe, encode, mux and finish in order, sharing cleanup on every exit"
+    )]
+    pub fn run_to_sink(
+        project: &Project,
+        encoding: &Encoding,
+        sink: &Sink<'_>,
+        state: &super::RenderState,
+    ) -> Result<super::AgentRendered, String> {
+        gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
+        let (w, h) = encoding.size();
+        let fps = encoding.fps();
 
         // Only ask for an audio branch when there is something to put in it:
         // a muxer left holding an empty pad never finishes the file.
         let with_audio = crate::audio::has_audio(project);
-        // State which encoders this machine actually resolved to, so a slow
-        // export is diagnosable — "it fell back to openh264enc because no
-        // vah264enc is installed" rather than a guess. `gst::init` above has
-        // populated the registry, so this is read, not assumed.
-        tracing::info!(
-            "export: {}",
-            selected_encoders(settings.container).describe()
-        );
-        let desc = pipeline_desc_with_audio(&settings, w, h, &out_str, with_audio);
+        let desc = encoding.pipeline(sink, with_audio)?;
         let pipeline = gst::parse::launch(&desc)
             .map_err(|e| format!("build export pipeline: {e}"))?
             .downcast::<gst::Pipeline>()
@@ -892,7 +1443,7 @@ mod gst_pipeline {
             if state.cancel.load(Ordering::Relaxed) {
                 let _ = pipeline.set_state(gst::State::Null);
                 // A half-written file must not be left looking like a render.
-                crate::files::remove(&out);
+                sink.discard();
                 return Err(super::CANCELLED.to_string());
             }
             let t = plan.time_of(i);
@@ -960,17 +1511,14 @@ mod gst_pipeline {
             .bus()
             .ok_or_else(|| "export pipeline bus".to_string())?;
         let mut result = Ok(());
-        let mut watch = FlushWatch::new(
-            crate::files::metadata(&out).map_or(0, |m| m.len),
-            ui::time::now(),
-        );
+        let mut watch = FlushWatch::new(sink.len().unwrap_or(0), ui::time::now());
         loop {
             use gst::MessageView;
             if state.cancel.load(Ordering::Relaxed) {
                 result = Err(super::CANCELLED.to_string());
                 break;
             }
-            if let Ok(len) = crate::files::metadata(&out).map(|m| m.len) {
+            if let Some(len) = sink.len() {
                 watch.observe_len(len, ui::time::now());
             }
             if watch.stalled(ui::time::now(), QUIET_LIMIT) {
@@ -1001,7 +1549,7 @@ mod gst_pipeline {
         }
         let _ = pipeline.set_state(gst::State::Null);
         if result.is_err() {
-            crate::files::remove(&out);
+            sink.discard();
         }
         result?;
 
@@ -1009,7 +1557,7 @@ mod gst_pipeline {
         // stand-in fills. It is a valid container and it is not the user's
         // work, so it is removed rather than handed back as a render.
         if expects_pictures && !any_real {
-            crate::files::remove(&out);
+            sink.discard();
             return Err(
                 "Cannot export: none of the timeline's footage could be decoded, so the \
                  file would have held stand-in frames rather than the picture."
@@ -1017,11 +1565,22 @@ mod gst_pipeline {
             );
         }
 
+        // An agent's render is identified by its bytes: the muxer's wall
+        // clock is the one thing that would make two renders differ.
+        if matches!(encoding, Encoding::Agent(_)) {
+            sink.rewrite(|bytes| {
+                crate::probe::zero_mp4_times(bytes);
+            })?;
+        }
+
         // Never report success unless a real, non-empty file exists.
-        match crate::files::metadata(&out) {
-            Ok(m) if m.len > 0 => Ok(out_str),
-            Ok(_) => Err("export produced an empty file".to_string()),
-            Err(e) => Err(format!("export wrote no file: {e}")),
+        match sink.len() {
+            Some(len) if len > 0 => Ok(super::AgentRendered {
+                frames: total,
+                duration: total as f64 / fps,
+            }),
+            Some(_) => Err("export produced an empty file".to_string()),
+            None => Err("export wrote no file".to_string()),
         }
     }
 }
@@ -2591,5 +3150,180 @@ mod tests {
             frame_rate: FrameRate::F30,
         };
         begin_export(project, &settings)
+    }
+    fn agent_args(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        match value {
+            serde_json::Value::Object(map) => map,
+            other => panic!("arguments are an object, not {other}"),
+        }
+    }
+
+    #[test]
+    fn an_agents_export_settings_default_to_720p30_and_refuse_what_it_may_not_render() {
+        let parse = |value| AgentExportSettings::from_args(&agent_args(value), 16.0 / 9.0);
+        assert_eq!(
+            parse(serde_json::json!({})),
+            Ok(AgentExportSettings {
+                width: 1280,
+                height: 720,
+                fps: 30
+            })
+        );
+        assert_eq!(
+            parse(serde_json::json!({"format": "MP4", "width": 1920, "height": 1080, "fps": 60})),
+            Ok(AgentExportSettings {
+                width: 1920,
+                height: 1080,
+                fps: 60
+            })
+        );
+        // One side named: the other follows the project, rounded to even.
+        assert_eq!(
+            parse(serde_json::json!({"width": 640})).map(|s| (s.width, s.height)),
+            Ok((640, 360))
+        );
+        let portrait = AgentExportSettings::from_args(
+            &agent_args(serde_json::json!({"height": 1920})),
+            9.0 / 16.0,
+        );
+        assert_eq!(
+            portrait.map(|s| (s.width, s.height)),
+            Ok((1080, 1920)),
+            "either way round"
+        );
+        assert_eq!(
+            parse(serde_json::json!({"fps": 24.0})).map(|s| s.fps),
+            Ok(24)
+        );
+        for refused in [
+            serde_json::json!({"format": "webm"}),
+            serde_json::json!({"width": 1281, "height": 720}),
+            serde_json::json!({"width": 2560, "height": 1440}),
+            serde_json::json!({"width": 8, "height": 8}),
+            serde_json::json!({"fps": 25}),
+            serde_json::json!({"fps": "fast"}),
+            serde_json::json!({"width": -2}),
+        ] {
+            assert!(parse(refused.clone()).is_err(), "{refused} is refused");
+        }
+        let wait = |value| agent_wait_from_args(&agent_args(value));
+        assert_eq!(
+            wait(serde_json::json!({})),
+            Ok(std::time::Duration::from_secs(60))
+        );
+        assert_eq!(
+            wait(serde_json::json!({"wait": 600})),
+            Ok(std::time::Duration::from_secs(120))
+        );
+        assert_eq!(
+            wait(serde_json::json!({"wait": 0})),
+            Ok(std::time::Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn a_still_is_on_the_timeline_at_an_even_width() {
+        let parse = |value| AgentFrameSettings::from_args(&agent_args(value), 16.0 / 9.0, 4.0);
+        assert_eq!(
+            parse(serde_json::json!({"at": 2.5})),
+            Ok(AgentFrameSettings {
+                at: 2.5,
+                width: 640,
+                height: 360
+            })
+        );
+        assert!(parse(serde_json::json!({})).is_err(), "a time is named");
+        assert!(
+            parse(serde_json::json!({"at": 4.5})).is_err(),
+            "past the end"
+        );
+        assert!(parse(serde_json::json!({"at": 1.0, "width": 321})).is_err());
+    }
+
+    #[test]
+    fn an_agents_render_encodes_with_openh264_deterministically_into_its_sink() {
+        let settings = AgentExportSettings::default();
+        let desc = agent_pipeline_desc(&settings, "fdsink fd=7", false);
+        for part in [
+            "width=1280,height=720,framerate=30/1",
+            "openh264enc gop-size=30 multi-thread=1 slice-mode=n-slices num-slices=1",
+            "enable-frame-skip=false rate-control=bitrate bitrate=2500000",
+            "! h264parse ! mp4mux name=tilo_mux ! fdsink fd=7",
+        ] {
+            assert!(desc.contains(part), "{part} in {desc}");
+        }
+        assert!(
+            !desc.contains("tilo_audio"),
+            "no sound, no audio branch: {desc}"
+        );
+        let voiced = agent_pipeline_desc(&settings, "fdsink fd=7", true);
+        assert!(
+            voiced.contains("rate=48000") && voiced.contains("channels=2"),
+            "{voiced}"
+        );
+        assert!(voiced.contains("! tilo_mux."), "{voiced}");
+        let largest = AgentExportSettings {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+        };
+        // Two minutes of the largest render stay under a content item.
+        assert!(
+            largest.video_bitrate() * 120 / 8 < 60 * 1024 * 1024,
+            "{}",
+            largest.video_bitrate()
+        );
+    }
+
+    #[test]
+    fn an_agent_renders_only_short_timelines_of_room_content() {
+        use crate::model::{Clip, MediaItem, MediaKind};
+        let mut project = Project::new("cut");
+        let track = crate::model::Track {
+            id: uuid::Uuid::new_v4(),
+            ..Default::default()
+        };
+        let room = MediaItem {
+            id: uuid::Uuid::new_v4(),
+            name: "room.mov".into(),
+            kind: MediaKind::Video,
+            duration: 200.0,
+            path: crate::media::content_address(&"ab".repeat(32)),
+            ..Default::default()
+        };
+        project.clips.push(Clip {
+            id: uuid::Uuid::new_v4(),
+            track: track.id,
+            media: room.id,
+            out_point: 10.0,
+            ..Default::default()
+        });
+        project.media.push(room);
+        project.tracks.push(track.clone());
+        assert_eq!(agent_renderable(&project), Ok(()));
+        assert_eq!(placed_content(&project), vec!["ab".repeat(32)]);
+        project.clips[0].out_point = 150.0;
+        assert!(
+            agent_renderable(&project).is_err(),
+            "longer than two minutes"
+        );
+        project.clips[0].out_point = 10.0;
+        let file = MediaItem {
+            id: uuid::Uuid::new_v4(),
+            name: "local.mov".into(),
+            path: "/home/u/local.mov".into(),
+            ..Default::default()
+        };
+        project.clips.push(Clip {
+            id: uuid::Uuid::new_v4(),
+            track: track.id,
+            media: file.id,
+            start: 20.0,
+            out_point: 1.0,
+            ..Default::default()
+        });
+        project.media.push(file);
+        let refused = agent_renderable(&project).unwrap_err();
+        assert!(refused.contains("local.mov"), "{refused}");
     }
 }
