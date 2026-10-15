@@ -92,13 +92,26 @@ async fn open_resume(
     Ok(skip)
 }
 
+/// A room that admitted a `Subscribe`, with what its admitting membership
+/// read showed.
+struct AdmittedSubscription {
+    workspace: SharedWorkspace,
+    /// The subscriber channel the room held for this device when it admitted
+    /// the subscription; the replay completion checks it is still the same.
+    expected: Option<mpsc::Sender<Envelope>>,
+    store: crate::store::WorkspaceStore,
+}
+
+/// How [`admit_subscription`] answered a `Subscribe`.
+enum SubscribeAdmission {
+    Admitted(AdmittedSubscription),
+    /// Refused without ending the session; the reply to send.
+    Refused(Envelope),
+}
+
 /// Handle `Subscribe`: gate on membership (or admit, for a
 /// same-owner autobind), replay retained baselines + this device's
 /// pending queue, then register the live subscriber.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-)]
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the ticket and replay handle move into the connection's replay slot; the lint does not see the move"
@@ -111,12 +124,90 @@ pub(super) async fn handle_subscribe(
     workspace_id: u64,
     resume: Subscription,
 ) -> Result<Option<Envelope>, PeerError> {
+    let AdmittedSubscription {
+        workspace: ws,
+        expected,
+        store,
+    } = match admit_subscription(peer, session, subscribed, workspace_id).await? {
+        SubscribeAdmission::Admitted(admitted) => admitted,
+        SubscribeAdmission::Refused(reply) => return Ok(Some(reply)),
+    };
+    let work = store.root().join(crate::store::replay::WORK_DIR);
+    let skip = open_resume(session, peer, workspace_id, store, resume).await?;
+    let owner = crate::persistence::handle(&ws).await;
+    let source = StateSource::new(peer, session);
+    let state_tx = session
+        .state_outbound
+        .cloned()
+        .unwrap_or_else(|| mpsc::channel(1).0);
+    let completion_workspace = ws.clone();
+    let ticket =
+        ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned()).await?;
+    let capture = ticket.authority.clone();
+    let bind = ticket.authority.clone();
+    let catchup = Arc::new(ReplayCatchup::new(&work));
+    let registration = SubscriberRegistration {
+        workspace: completion_workspace,
+        source,
+        expected,
+        bind,
+        presence: session.presence.cloned(),
+        state_tx,
+        catchup: catchup.clone(),
+        lag: session.lag.clone(),
+    };
+
+    let rx = owner
+        .submit_replay_resumable_wait(
+            true,
+            1,
+            async { Ok(()) },
+            move |state, _| {
+                let step = state.capture_resumed_replay(&capture, skip.clone())?;
+                match step {
+                    Step::More => Ok(Step::More),
+                    Step::Done(handle) => Ok(Step::Done(SubscribeReplayCompletion::Ready(handle))),
+                }
+            },
+            move |result| async move {
+                let SubscribeReplayCompletion::Ready(handle) = result? else {
+                    return Err(crate::persistence::error(
+                        "only replay completion can classify a subscriber as superseded",
+                    ));
+                };
+                register_subscriber(registration, handle).await
+            },
+        )
+        .await?;
+    let completion = crate::persistence::receipt(rx).await?;
+    let handle = match completion {
+        SubscribeReplayCompletion::Ready(handle) => handle,
+        SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
+    };
+    *replay = Some((workspace_id, ticket, handle, catchup));
+    if !subscribed.contains(&workspace_id) {
+        subscribed.push(workspace_id);
+    }
+    Ok(None)
+}
+
+/// The admission half of [`handle_subscribe`]: the agent's delegation, the
+/// room's binding (autobinding it for the relay owner's own devices), and
+/// the room's decision under a fresh membership read, enrolling the device
+/// when the room says so. A connection whose own authorization changed
+/// meanwhile ends.
+async fn admit_subscription(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    workspace_id: u64,
+) -> Result<SubscribeAdmission, PeerError> {
     // An agent outside its delegation never gets a room bound for it.
     if let Err(reason) = session
         .trust()
         .agent(&peer.device_public_key, workspace_id, unix_now_ns())
     {
-        return Ok(Some(Envelope::NotAuthorised {
+        return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
             workspace_id,
             reason: reason.reason().into(),
         }));
@@ -128,7 +219,7 @@ pub(super) async fn handle_subscribe(
         .filter(|_| peer.user_public_key == *session.own_user_public_key);
     let ws = get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?;
     let Some(ws) = ws else {
-        return Ok(Some(Envelope::NotAuthorised {
+        return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
             workspace_id,
             reason: "workspace not bound on this relay".into(),
         }));
@@ -160,7 +251,7 @@ pub(super) async fn handle_subscribe(
             }
         }
         Decision::Deny(reason) => {
-            return Ok(Some(Envelope::NotAuthorised {
+            return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
                 workspace_id,
                 reason: reason.reason().into(),
             }));
@@ -172,121 +263,112 @@ pub(super) async fn handle_subscribe(
         .map(|sub| sub.tx.clone());
     let store = wr.store.clone();
     drop(wr);
-    let work = store.root().join(crate::store::replay::WORK_DIR);
-    let skip = open_resume(session, peer, workspace_id, store, resume).await?;
-    let owner = crate::persistence::handle(&ws).await;
-    let source = StateSource::new(peer, session);
-    let state_tx = session
-        .state_outbound
-        .cloned()
-        .unwrap_or_else(|| mpsc::channel(1).0);
-    let completion_workspace = ws.clone();
-    let ticket =
-        ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned()).await?;
-    let capture = ticket.authority.clone();
-    let bind = ticket.authority.clone();
-    let catchup = Arc::new(ReplayCatchup::new(&work));
-    let session_catchup = catchup.clone();
-    let session_lag = session.lag.clone();
-    let presence = session.presence.cloned();
+    Ok(SubscribeAdmission::Admitted(AdmittedSubscription {
+        workspace: ws,
+        expected,
+        store,
+    }))
+}
 
-    let rx = owner
-        .submit_replay_resumable_wait(
-            true,
-            1,
-            async { Ok(()) },
-            move |state, _| {
-                let step = state.capture_resumed_replay(&capture, skip.clone())?;
-                match step {
-                    Step::More => Ok(Step::More),
-                    Step::Done(handle) => Ok(Step::Done(SubscribeReplayCompletion::Ready(handle))),
-                }
-            },
-            move |result| async move {
-                let SubscribeReplayCompletion::Ready(handle) = result? else {
-                    return Err(crate::persistence::error(
-                        "only replay completion can classify a subscriber as superseded",
-                    ));
-                };
-                let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
-                let current = wr.subscribers.get(&source.peer.device_public_key);
-                let unchanged = match (expected.as_ref(), current) {
-                    (Some(expected), Some(current)) => expected.same_channel(&current.tx),
-                    (None, None) => true,
-                    // The device's earlier connection held the slot when this
-                    // one subscribed, and its teardown has since released it.
-                    // This subscription would have displaced it anyway, so it
-                    // takes the slot. Only this connection's own slot
-                    // vanishing is a loss of authorization.
-                    (Some(expected), None) => !expected.same_channel(&source.tx),
-                    (None, Some(_)) => false,
-                };
-                // The spectator seat is taken here, under the room's lock:
-                // of two spectators let in for the last seat, one ends here.
-                if !source.alive()
-                    || !source.admits(&wr, &source.peer)
-                    || !room_access::seated(&wr, &source.peer)
-                {
-                    return Err(crate::persistence::error(
-                        "replay subscriber authorization changed",
-                    ));
-                }
-                let replaced = current.is_some_and(|current| !current.tx.same_channel(&source.tx))
-                    && !unchanged;
-                if replaced {
-                    return Ok(SubscribeReplayCompletion::Superseded);
-                }
-                if !unchanged {
-                    return Err(crate::persistence::error(
-                        "replay subscriber authorization changed",
-                    ));
-                }
-                let live = wr
-                    .subscribers
-                    .get(&source.peer.device_public_key)
-                    .filter(|current| current.tx.same_channel(&source.tx))
-                    .and_then(|_| wr.state_sessions.get(&source.peer.device_public_key))
-                    .map_or_else(
-                        || Arc::new(std::sync::atomic::AtomicBool::new(true)),
-                        |session| session.live.clone(),
-                    );
-                // Binding may fail when the waiting connection/receipt was dropped.
-                // It must precede every registration side effect.
-                bind.bind(live.clone())?;
-                wr.add_subscriber(Subscriber {
-                    device_public_key: source.peer.device_public_key,
-                    role: source.peer.role,
-                    tx: source.tx,
-                    disconnect: source.disconnect,
-                });
-                if let Some(mailbox) = presence {
-                    wr.route_presence(source.peer.device_public_key, mailbox);
-                }
-                wr.state_sessions.insert(
-                    source.peer.device_public_key,
-                    StateSession {
-                        live,
-                        peer: source.peer,
-                        tx: state_tx,
-                        replay: Some(session_catchup),
-                        lag: Some(session_lag),
-                    },
-                );
-                drop(wr);
-                Ok(SubscribeReplayCompletion::Ready(handle))
-            },
-        )
-        .await?;
-    let completion = crate::persistence::receipt(rx).await?;
-    let handle = match completion {
-        SubscribeReplayCompletion::Ready(handle) => handle,
-        SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
+/// What a subscriber's replay completion registers in the room once its
+/// capture is ready.
+struct SubscriberRegistration {
+    workspace: SharedWorkspace,
+    source: StateSource,
+    /// The subscriber channel the room held at admission.
+    expected: Option<mpsc::Sender<Envelope>>,
+    /// The replay ticket's authority, bound to the session's liveness.
+    bind: Arc<crate::persistence::ReplayAuthority>,
+    presence: Option<Arc<crate::presence_mailbox::PresenceMailbox>>,
+    state_tx: mpsc::Sender<StateDelivery>,
+    catchup: Arc<ReplayCatchup>,
+    lag: Arc<Lag>,
+}
+
+/// The completion half of [`handle_subscribe`], run under the room's lock
+/// once the replay capture is ready: re-check the subscriber against the
+/// room, then bind the ticket and register the live subscriber, its
+/// presence route and its state session.
+async fn register_subscriber(
+    registration: SubscriberRegistration,
+    handle: ReplayHandle,
+) -> Result<SubscribeReplayCompletion, StoreError> {
+    let SubscriberRegistration {
+        workspace: completion_workspace,
+        source,
+        expected,
+        bind,
+        presence,
+        state_tx,
+        catchup: session_catchup,
+        lag: session_lag,
+    } = registration;
+    let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
+    let current = wr.subscribers.get(&source.peer.device_public_key);
+    let unchanged = match (expected.as_ref(), current) {
+        (Some(expected), Some(current)) => expected.same_channel(&current.tx),
+        (None, None) => true,
+        // The device's earlier connection held the slot when this
+        // one subscribed, and its teardown has since released it.
+        // This subscription would have displaced it anyway, so it
+        // takes the slot. Only this connection's own slot
+        // vanishing is a loss of authorization.
+        (Some(expected), None) => !expected.same_channel(&source.tx),
+        (None, Some(_)) => false,
     };
-    *replay = Some((workspace_id, ticket, handle, catchup));
-    if !subscribed.contains(&workspace_id) {
-        subscribed.push(workspace_id);
+    // The spectator seat is taken here, under the room's lock:
+    // of two spectators let in for the last seat, one ends here.
+    if !source.alive()
+        || !source.admits(&wr, &source.peer)
+        || !room_access::seated(&wr, &source.peer)
+    {
+        return Err(crate::persistence::error(
+            "replay subscriber authorization changed",
+        ));
     }
-    Ok(None)
+    let replaced =
+        current.is_some_and(|current| !current.tx.same_channel(&source.tx)) && !unchanged;
+    if replaced {
+        return Ok(SubscribeReplayCompletion::Superseded);
+    }
+    if !unchanged {
+        return Err(crate::persistence::error(
+            "replay subscriber authorization changed",
+        ));
+    }
+    let live = wr
+        .subscribers
+        .get(&source.peer.device_public_key)
+        .filter(|current| current.tx.same_channel(&source.tx))
+        .and_then(|_| wr.state_sessions.get(&source.peer.device_public_key))
+        .map_or_else(
+            || Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            |session| session.live.clone(),
+        );
+    // Binding may fail when the waiting connection/receipt was dropped.
+    // It must precede every registration side effect.
+    bind.bind(live.clone())?;
+    wr.add_subscriber(Subscriber {
+        device_public_key: source.peer.device_public_key,
+        role: source.peer.role,
+        tx: source.tx,
+        disconnect: source.disconnect,
+    });
+    if let Some(mailbox) = presence {
+        wr.route_presence(source.peer.device_public_key, mailbox);
+    }
+    wr.state_sessions.insert(
+        source.peer.device_public_key,
+        StateSession {
+            live,
+            peer: source.peer,
+            tx: state_tx,
+            replay: Some(session_catchup),
+            lag: Some(session_lag),
+        },
+    );
+    drop(wr);
+    Ok(SubscribeReplayCompletion::Ready(handle))
 }
 
 /// Handle `Unsubscribe`: drop the live subscriber (if the workspace

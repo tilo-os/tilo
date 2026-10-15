@@ -150,6 +150,8 @@ pub(super) async fn handle_envelope(
     }
 }
 
+/// The v2 private lane: negotiating a room's action capability and routing
+/// directed actions. State frames travel on the v1 lane, except `Ping`.
 pub(super) async fn handle_private(
     frame: EnvelopeV2,
     peer: &AuthenticatedPeer,
@@ -157,92 +159,16 @@ pub(super) async fn handle_private(
 ) -> Result<Option<EnvelopeV2>, PeerError> {
     match frame {
         EnvelopeV2::State(Envelope::Ping) => Ok(Some(EnvelopeV2::State(Envelope::Pong))),
-        EnvelopeV2::EnableActions { room } => {
-            if room.is_nil() || !current_action_peer(peer, session) {
-                return Err(PeerError::Protocol(
-                    "private capability not authorised".into(),
-                ));
-            }
-            let Some(ws) = private_workspace(room, peer, session).await? else {
-                return Err(PeerError::Protocol("private room not subscribed".into()));
-            };
-            let mut wr =
-                private_membership(&ws, peer, session, "private room not subscribed").await?;
-            wr.action_targets.insert(
-                peer.device_public_key,
-                ActionTarget {
-                    broker_host: None,
-                    broker_protocol: false,
-                    room,
-                    peer: peer.clone(),
-                    state_tx: session.outbound.clone(),
-                    tx: session.private_tx.clone(),
-                },
-            );
-            drop(wr);
-            Ok(Some(EnvelopeV2::ActionsReady {
-                room,
-                capability: ActionCapability::TransportOnly,
-            }))
-        }
-        EnvelopeV2::EnableBrokerClient { room } => {
-            if !current_action_peer(peer, session) {
-                return Err(PeerError::Protocol("broker protocol not authorised".into()));
-            }
-            let ws = private_workspace(room, peer, session)
-                .await?
-                .ok_or_else(|| PeerError::Protocol("room not subscribed".into()))?;
-            let mut wr =
-                private_membership(&ws, peer, session, "broker protocol not authorised").await?;
-            let target = wr
-                .action_targets
-                .get_mut(&peer.device_public_key)
-                .filter(|t| t.room == room && t.state_tx.same_channel(session.outbound))
-                .ok_or_else(|| PeerError::Protocol("private lane not enabled".into()))?;
-            target.broker_protocol = true;
-            drop(wr);
-            Ok(None)
-        }
+        EnvelopeV2::EnableActions { room } => enable_actions(room, peer, session).await,
+        EnvelopeV2::EnableBrokerClient { room } => enable_broker_client(room, peer, session).await,
         EnvelopeV2::RegisterBroker { room, host } => {
-            if host.is_nil() || !current_action_peer(peer, session) {
-                return Err(PeerError::Protocol("broker not authorised".into()));
-            }
-            let ws = private_workspace(room, peer, session)
-                .await?
-                .ok_or_else(|| PeerError::Protocol("room not subscribed".into()))?;
-            let mut wr = private_membership(&ws, peer, session, "broker not authorised").await?;
-            let target = wr
-                .action_targets
-                .get_mut(&peer.device_public_key)
-                .filter(|t| t.room == room && t.state_tx.same_channel(session.outbound))
-                .ok_or_else(|| PeerError::Protocol("private lane not enabled".into()))?;
-            target.broker_host = Some(host);
-            target.broker_protocol = true;
-            drop(wr);
-            Ok(Some(EnvelopeV2::ActionsReady {
-                room,
-                capability: ActionCapability::DurableBroker { host },
-            }))
+            register_broker(room, host, peer, session).await
         }
         EnvelopeV2::Directed(action) => {
             let reason = route_private(&action, peer, session).await?;
             Ok(reason.map(|reason| EnvelopeV2::unavailable(&action, reason)))
         }
-        // The relay forwards the source's signed bytes; it never signs. A
-        // signature that is not this session's device's is refused here, so
-        // it cannot reach (and close) the target's attachment.
-        EnvelopeV2::SignedDirected(signed) => {
-            let action = signed.action();
-            if signed.verify(&peer.device_public_key).is_err() {
-                private_phase(action, "route_rejected_signature");
-                return Ok(Some(EnvelopeV2::unavailable(
-                    action,
-                    UnavailableReason::NotAuthorised,
-                )));
-            }
-            let reason = route_private_signed(action, Some(&signed), peer, session).await?;
-            Ok(reason.map(|reason| EnvelopeV2::unavailable(action, reason)))
-        }
+        EnvelopeV2::SignedDirected(signed) => route_signed_directed(&signed, peer, session).await,
         // Peers may send private results only inside a source-bound Directed
         // frame. Relay control responses can never be forged by a peer.
         _ => Err(PeerError::Protocol(
