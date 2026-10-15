@@ -1105,12 +1105,6 @@ impl std::ops::Deref for Edits<'_> {
     }
 }
 
-/// Where `doc` stands, to tell whether a settle pass changed it.
-pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
-    use automerge::transaction::Transactable as _;
-    (doc.base_heads(), doc.pending_ops())
-}
-
 thread_local! {
     static RESOURCE_PRESENTATION_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }

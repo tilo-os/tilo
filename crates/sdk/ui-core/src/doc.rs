@@ -14,6 +14,11 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
 use std::any::Any;
 
+/// Where `doc` stands, to tell whether a settle pass changed it.
+pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
+    (doc.base_heads(), doc.pending_ops())
+}
+
 /// The document and object a widget pass lent as its
 /// [`AppModel`](crate::widget::AppModel) and [`ModelPath`](crate::widget::ModelPath).
 ///

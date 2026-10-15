@@ -1307,7 +1307,7 @@ fn owner_marks(root: &dyn Widget, outer: &AutoCommit, standing: bool) -> Vec<Bou
             #[cfg(feature = "native")]
             let generation = binding.generation().ok().flatten();
             let document = binding
-                .read_document(outer, |doc, _| crate::widget::settle_mark(doc))
+                .read_document(outer, |doc, _| crate::doc::settle_mark(doc))
                 .ok();
             let standing = standing.then(|| OwnerStanding {
                 permissions: binding.permissions.borrow().directory_witness(),

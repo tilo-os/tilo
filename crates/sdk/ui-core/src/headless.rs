@@ -2069,7 +2069,7 @@ impl FrameHarness {
     fn read_witness(&self) -> FrameWitness {
         FrameWitness {
             local_epoch: self.local_epoch,
-            document: crate::widget::settle_mark(&self.state.doc),
+            document: crate::doc::settle_mark(&self.state.doc),
             presentation: crate::widget::resource_presentation_epoch(),
             focused: self.focused,
             permissions: self.permissions.directory_witness(),
@@ -2088,7 +2088,7 @@ impl FrameHarness {
             && witness.presentation == crate::widget::resource_presentation_epoch()
             && witness.document.1 == 0
             && self.bookkeeping_followed()
-            && witness.document == crate::widget::settle_mark(&self.state.doc)
+            && witness.document == crate::doc::settle_mark(&self.state.doc)
             && witness.permissions == self.permissions.directory_witness()
             && crate::bound_dispatch::same_owner_standing(
                 &witness.owners,
@@ -2123,12 +2123,12 @@ impl FrameHarness {
         self.root.sync(&self.state.doc, &self.state.root);
         // A sync reads the document only. What it took up is written now,
         // through actions, and shown in this same frame.
-        let before = crate::widget::settle_mark(&self.state.doc);
+        let before = crate::doc::settle_mark(&self.state.doc);
         self.root.settle(
             &mut crate::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
-        let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        let settled = crate::doc::settle_mark(&self.state.doc) != before;
         let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
         if settled || submitted {
             self.idle_control_tick();
@@ -2149,7 +2149,7 @@ impl FrameHarness {
         let shown = |harness: &mut Self| {
             (
                 serde_json::to_string(&harness.inspection()).unwrap_or_default(),
-                crate::widget::settle_mark(&harness.state.doc),
+                crate::doc::settle_mark(&harness.state.doc),
                 harness.root.layout_needs_measure(),
             )
         };
