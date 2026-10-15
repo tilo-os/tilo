@@ -18,6 +18,16 @@ pub trait PublishesPresence: Widget {
     ) -> Option<(super::PresenceKey, crate::collaboration::PresencePayload)> {
         None
     }
+
+    /// What the person has selected here while this widget is focused, for
+    /// asking an agent about it. `None` derives it from
+    /// [`Self::presence_payload`] and the accessibility node (see
+    /// [`crate::shared_selection::selection_of`]); a widget whose selection
+    /// those cannot describe (one spanning blocks, offsets in another text)
+    /// answers itself.
+    fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
+        None
+    }
 }
 
 /// `widget`'s presence identity.

@@ -97,6 +97,7 @@ enum CtxAction {
     IgnoreInField(String),
     UndoAutocorrection,
     TextAction(usize),
+    AskAgent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4702,6 +4703,15 @@ impl TextInput {
             menu.push(MenuItem::separator());
             actions.push(None);
         }
+        if can_share && crate::shared_selection::agent_host_available() {
+            menu.push(MenuItem::action(
+                crate::i18n::I18nManager::lookup_plain("ask-agent-about-selection"),
+                || {},
+            ));
+            actions.push(Some(CtxAction::AskAgent));
+            menu.push(MenuItem::separator());
+            actions.push(None);
+        }
         if can_share {
             menu.push(MenuItem::action("Cut", || {}));
             actions.push(Some(CtxAction::Cut));
@@ -4785,6 +4795,12 @@ impl TextInput {
                         range: (start, end),
                     });
                 }
+            }
+            CtxAction::AskAgent => {
+                crate::shared_selection::ask_agent(
+                    self.shareable_selection()
+                        .map(crate::shared_selection::SharedSelection::of_text),
+                );
             }
         }
         self.context_menu.close();
@@ -6013,6 +6029,15 @@ impl crate::presence::capability::PublishesPresence for TextInput {
             },
         };
         Some((key, payload))
+    }
+
+    /// The selected text while focused. A field is no resource item, so it
+    /// names no place; a secret field shares nothing.
+    fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
+        self.is_focused
+            .then(|| self.shareable_selection())
+            .flatten()
+            .map(crate::shared_selection::SharedSelection::of_text)
     }
 }
 
