@@ -7,7 +7,7 @@
 
 use crate::widget::ModelPath;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -19,9 +19,7 @@ use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
-};
+use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunnelDirection {
@@ -351,18 +349,14 @@ impl InteractiveChart for FunnelChart {
         self.activated = Some(stage.id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self.valid();
-        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
-        if let Some(bounds) = self
-            .geometry()
+    fn keyboard_items(&self) -> Vec<usize> {
+        self.valid()
+    }
+    fn anchor(&self, &index: &usize) -> Option<Point> {
+        self.geometry()
             .into_iter()
-            .find(|stage| Some(stage.index) == self.inspection.hovered)
-            .map(|stage| stage.bounds)
-        {
-            self.inspection.pointer = bounds.center();
-        }
-        self.inspection.hovered.is_some()
+            .find(|stage| stage.index == index)
+            .map(|stage| stage.bounds.center())
     }
 }
 
@@ -377,15 +371,7 @@ impl Widget for FunnelChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.inspection.keyboard
-            && let Some(bounds) = self
-                .geometry()
-                .into_iter()
-                .find(|stage| Some(stage.index) == self.inspection.hovered)
-                .map(|stage| stage.bounds)
-        {
-            self.inspection.pointer = bounds.center();
-        }
+        self.follow_keyboard_anchor();
         if !self.title.is_empty() {
             tr.draw_style(
                 scene,

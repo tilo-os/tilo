@@ -18,9 +18,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
-use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
-};
+use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
 
 #[derive(Clone, Debug)]
 pub struct Candle {
@@ -363,21 +361,16 @@ impl InteractiveChart for CandlestickChart {
         self.activated = Some(candle.id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self
-            .candles
-            .iter()
+    fn keyboard_items(&self) -> Vec<usize> {
+        let valid = self.candles.iter().map(Candle::valid);
+        valid
             .enumerate()
-            .filter(|(_, candle)| candle.valid())
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
-        if let Some(index) = self.inspection.hovered
-            && let Some(candle) = self.candles.get(index)
-        {
-            self.inspection.pointer = Point::new(self.center_x(index), self.price_y(candle.close));
-        }
-        self.inspection.hovered.is_some()
+            .filter_map(|(index, valid)| valid.then_some(index))
+            .collect()
+    }
+    fn anchor(&self, &index: &usize) -> Option<Point> {
+        let candle = self.candles.get(index)?;
+        Some(Point::new(self.center_x(index), self.price_y(candle.close)))
     }
 }
 
@@ -398,12 +391,7 @@ impl Widget for CandlestickChart {
     ) {
         let price = self.price_rect();
         let (min, max) = self.price_range();
-        if self.inspection.keyboard
-            && let Some(index) = self.inspection.hovered
-            && let Some(candle) = self.candles.get(index)
-        {
-            self.inspection.pointer = Point::new(self.center_x(index), self.price_y(candle.close));
-        }
+        self.follow_keyboard_anchor();
         if !self.title.is_empty() {
             tr.draw_style(
                 scene,
