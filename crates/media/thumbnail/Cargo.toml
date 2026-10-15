@@ -20,12 +20,6 @@ description = "Shared thumbnail generation and content-addressed caching for fil
 name = "thumbnail"
 path = "src/lib.rs"
 
-# The thumbnails package's compute entrypoint: thumbnails a staged batch on
-# whichever of a person's devices a compute job was placed on.
-[[bin]]
-name = "thumbnail-batch"
-path = "src/bin/thumbnail_batch.rs"
-
 [features]
 default = []
 # PDF first-page rasterisation through tilo-pdf (the sandboxed PDF engine);

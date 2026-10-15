@@ -15858,6 +15858,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "thumbnails"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hex",
+ "image",
+ "runtime-dylib",
+ "serde_json",
+ "tempfile",
+ "tilo-app-package",
+ "tilo-thumbnail",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tiff"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

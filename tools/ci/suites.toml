@@ -884,6 +884,8 @@ inputs = [
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
   # Canonical worker builder sources and the real packaging manifest fixture.
   "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
+  # Workspace certification tells a compute package from a window by its manifest.
+  "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml",
   # The production resource regression reads Music and its whole normal local
   # dependency closure. SDK/platform/vendor roots above already cover theirs;
   # keep the remaining source roots explicit when the Music graph changes.
@@ -953,6 +955,8 @@ readers = [
   "crates/dev/tilo-app-cli/src/android.rs",
   "crates/dev/tilo-app-cli/src/targets/web.rs",
   "crates/dev/tilo-app-cli/src/resource_kinds.rs",
+  # Workspace certification's compute-package test reads real manifests.
+  "crates/dev/tilo-app-cli/src/main.rs",
   "crates/dev/tilo-app-cli/src/native_sdk/tests.rs", "crates/dev/tilo-app-cli/tests/native_sdk.rs",
 ]
 

@@ -121,6 +121,7 @@ members = [
     "apps/store",
     "apps/terminal",
     "apps/themes",
+    "apps/thumbnails",
     "apps/totp",
     "apps/tube",
     "apps/typst-editor",

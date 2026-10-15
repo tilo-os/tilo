@@ -511,20 +511,25 @@ fn launchers_build_on_the_shared_launch_specs() {
     // bespoke launcher silently loses that acceptance matrix, so keep the fleet on
     // `LaunchSpec` — directly or through a framework entry point that builds it —
     // unless the binary is itself an automation agent rather than a user-facing
-    // app window.
+    // app window, or a package with no window at all (a `cli` entrypoint).
     {
         let apps = repository_root().join("apps");
+        let cli_entrypoint = Regex::new(r#"(?m)^\[entrypoint\]\s*$[^\[]*?^type\s*=\s*"cli""#)
+            .expect("entrypoint pattern compiles");
         let mut missing = Vec::new();
         for entry in fs::read_dir(&apps)
             .expect("apps directory exists")
             .flatten()
         {
             let app = entry.path();
-            if !app.join("tilo-app.toml").is_file() {
+            let Ok(manifest) = fs::read_to_string(app.join("tilo-app.toml")) else {
                 continue;
-            }
+            };
             let main = app.join("src/main.rs");
-            if !main.is_file() || app.file_name().is_some_and(|name| name == "agent") {
+            if !main.is_file()
+                || app.file_name().is_some_and(|name| name == "agent")
+                || cli_entrypoint.is_match(&manifest)
+            {
                 continue;
             }
             let source = fs::read_to_string(&main).expect("app main is readable");
