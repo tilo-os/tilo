@@ -1449,10 +1449,17 @@ answer; that route is not built yet.
   between the same person's devices**, never with collaborators. They are what
   makes "continue on the desktop what you did on the laptop" instant. The
   "recently used on another device" hint is the `ReplicationIntent` seam
-  (`docs/device-mesh.md`). Today (`smart/history.rs`) the graph is per mount,
-  in memory and bounded: two files opened within two minutes of each other on
-  two separate occasions predict each other, and a partner is fetched only if
-  the mount's identity may read it. Sharing between devices is still to come.
+  (`docs/device-mesh.md`). Today (`smart/history.rs`) the graph is per mount
+  and bounded: two files opened within two minutes of each other on two
+  separate occasions predict each other, and a partner is fetched only if the
+  mount's identity may read it at prediction time. The pairs survive restarts
+  in one owner-only file per workspace, `<cache dir>/prefetch-history/<workspace>`
+  (`smart/kept_history.rs`): record ids only, at most 2048 pairs, none older
+  than 30 days, checksummed and replaced atomically (a damaged file is deleted,
+  never partly trusted), written by a keeper 20 s after the last change and
+  never on the request path. Turning prefetching off deletes it and stops
+  learning; a mount deletes the files of workspaces its cache directory no
+  longer serves. Sharing between devices is still to come.
 - **Directory locality:** opening a file hydrates the directory's next
   siblings of the same type in natural order (`page-9` before `page-10`): two
   ahead, or four once three files were opened in order, forwards or
