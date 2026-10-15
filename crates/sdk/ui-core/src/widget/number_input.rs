@@ -137,17 +137,6 @@ fn round_to_i64(v: f64) -> i64 {
     v.round().clamp(I64_MIN_AS_F64, I64_MAX_AS_F64) as i64
 }
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
-              or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 /// One of a stepper's two buttons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepperPart {
@@ -343,7 +332,7 @@ impl<'a> NumberStepperFace<'a> {
             ctx.scene,
             self.value,
             ctx.theme.tokens.colors.text_primary,
-            translated(ctx.transform, x, y),
+            ctx.transform.pre_translate((x, y).into()),
             None,
             &style,
         );

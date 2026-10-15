@@ -5912,7 +5912,7 @@ fn draw_formula_preview(
             "Type a formula above to preview it",
             12.0,
             theme.tokens.colors.text_dim,
-            translated(transform, rect.x0 + 8.0, rect.y0 + 8.0),
+            transform.pre_translate((rect.x0 + 8.0, rect.y0 + 8.0).into()),
             None,
         );
         return;
@@ -5956,7 +5956,7 @@ fn draw_formula_preview(
             &message,
             11.0,
             theme.tokens.colors.text_dim,
-            translated(transform, rect.x0 + 6.0, rect.y1 - 15.0),
+            transform.pre_translate((rect.x0 + 6.0, rect.y1 - 15.0).into()),
             None,
         );
     }
@@ -5988,11 +5988,8 @@ fn draw_formula_chrome(
         syntax,
         11.0,
         colors.text_primary,
-        translated(
-            transform,
-            chrome.syntax_badge.x0 + 7.0,
-            chrome.syntax_badge.y0 + 5.0,
-        ),
+        transform
+            .pre_translate((chrome.syntax_badge.x0 + 7.0, chrome.syntax_badge.y0 + 5.0).into()),
         None,
     );
     for (rect, label, selected) in [
@@ -6026,7 +6023,7 @@ fn draw_formula_chrome(
             } else {
                 colors.text_dim
             },
-            translated(transform, rect.x0 + 7.0, rect.y0 + 5.0),
+            transform.pre_translate((rect.x0 + 7.0, rect.y0 + 5.0).into()),
             None,
         );
     }
@@ -7130,17 +7127,6 @@ impl BlockEditor {
     }
 }
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
-              matrix math; it never panics or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 /// See [`translated`]: `Affine * Point` is the same plain f64 math.
 #[allow(
     clippy::arithmetic_side_effects,
@@ -7275,7 +7261,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                             ctx.scene,
                             label,
                             ctx.theme.tokens.colors.text_primary,
-                            translated(ctx.transform, x, y),
+                            ctx.transform.pre_translate((x, y).into()),
                             width,
                             &TextStyle::new(14.0).with_weight(crate::text_render::TextWeight::Bold),
                         );
@@ -7285,7 +7271,8 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                         ctx.scene,
                         value,
                         ctx.theme.tokens.colors.text_primary,
-                        translated(ctx.transform, x, y + label_height + 4.0 * scale),
+                        ctx.transform
+                            .pre_translate((x, y + label_height + 4.0 * scale).into()),
                         width,
                         &TextStyle::new(14.0),
                     );
@@ -7362,7 +7349,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                     ctx.scene,
                     value,
                     ctx.theme.tokens.colors.text_primary,
-                    translated(ctx.transform, x, y),
+                    ctx.transform.pre_translate((x, y).into()),
                     Some((column_width - 2.0 * layout.padding_x).max(1.0) as f32),
                     &TextStyle::new(14.0).with_weight(if row_index == 0 {
                         crate::text_render::TextWeight::Bold
@@ -7448,11 +7435,8 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene,
         label,
         ctx.theme.tokens.colors.text_primary,
-        translated(
-            ctx.transform,
-            rect.x0 + 58.0 * scale,
-            rect.y0 + 18.0 * scale,
-        ),
+        ctx.transform
+            .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 18.0 * scale).into()),
         Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
         &TextStyle::new(16.0).with_weight(crate::text_render::TextWeight::Medium),
     );
@@ -7461,11 +7445,8 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         destination,
         13.0,
         ctx.theme.tokens.colors.text_dim,
-        translated(
-            ctx.transform,
-            rect.x0 + 58.0 * scale,
-            rect.y0 + 42.0 * scale,
-        ),
+        ctx.transform
+            .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 42.0 * scale).into()),
         Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
     );
 }
@@ -7735,7 +7716,7 @@ fn draw_transclusion_card(
         scene,
         &title,
         ink.ink,
-        translated(transform, title_x, title_y),
+        transform.pre_translate((title_x, title_y).into()),
         None,
         &title_style,
     );
@@ -7745,11 +7726,7 @@ fn draw_transclusion_card(
         scene,
         &excerpt,
         ink.ink_dim,
-        translated(
-            transform,
-            title_x,
-            title_y + title_h + f64::from(tokens.spacing.s1),
-        ),
+        transform.pre_translate((title_x, title_y + title_h + f64::from(tokens.spacing.s1)).into()),
         None,
         &excerpt_style,
     );
@@ -7801,7 +7778,7 @@ fn draw_numbered_prefix(
         &label,
         font_size,
         ctx.theme.tokens.colors.text_primary,
-        translated(ctx.transform, origin.x, origin.y),
+        ctx.transform.pre_translate((origin.x, origin.y).into()),
         None,
     );
 }
@@ -9363,7 +9340,7 @@ impl Widget for BlockEditor {
                 0.0
             };
             let delta = drag_offset;
-            let ghost_transform = translated(ctx.transform, delta.x, delta.y);
+            let ghost_transform = ctx.transform.pre_translate((delta.x, delta.y).into());
             let card = vello::kurbo::RoundedRect::from_rect(bounds, 6.0);
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -9412,7 +9389,7 @@ impl Widget for BlockEditor {
                 .is_some_and(|group| group.contains(start));
             let chrome_transform = if dragging_this_group {
                 let delta = drag_offset;
-                translated(ctx.transform, delta.x, delta.y)
+                ctx.transform.pre_translate((delta.x, delta.y).into())
             } else {
                 ctx.transform
             };

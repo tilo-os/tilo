@@ -4449,18 +4449,6 @@ enum SharedFrame {
     ),
 }
 
-/// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
-/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
-/// `Mul` is pure floating-point matrix composition and cannot panic or
-/// overflow.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
-)]
-fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
-    base * Affine::translate((dx, dy))
-}
-
 /// `base` composed with a translation to `(dx, dy)` and then a non-uniform
 /// scale by `(sx, sy)`. See [`translated`] for why the allow is warranted.
 #[allow(
@@ -4639,7 +4627,7 @@ impl Widget for ForeignSurfaceWidget {
             scene,
             &headline,
             on_card,
-            translated(transform, cx - f64::from(tw) / 2.0, y),
+            transform.pre_translate((cx - f64::from(tw) / 2.0, y).into()),
             None,
             &style,
         );
@@ -4649,11 +4637,8 @@ impl Widget for ForeignSurfaceWidget {
             scene,
             &detail,
             on_card_dim,
-            translated(
-                transform,
-                cx - f64::from(dw) / 2.0,
-                y + f64::from(style.size) + 8.0,
-            ),
+            transform
+                .pre_translate((cx - f64::from(dw) / 2.0, y + f64::from(style.size) + 8.0).into()),
             None,
             &sm,
         );

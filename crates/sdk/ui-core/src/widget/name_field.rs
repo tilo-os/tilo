@@ -40,17 +40,6 @@ fn name_char(character: char) -> bool {
     !character.is_control()
 }
 
-/// Composes `base` with a translation for text placement. Affine
-/// composition is floating-point matrix multiply — it cannot overflow or
-/// panic the way integer arithmetic can.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
-)]
-fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
-    base * Affine::translate((dx, dy))
-}
-
 /// What a key did to the field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NameFieldOutcome {
@@ -299,7 +288,7 @@ impl NameField {
         tr.draw_rich(
             scene,
             layout,
-            translated(transform, origin.x, origin.y),
+            transform.pre_translate((origin.x, origin.y).into()),
             color,
         );
         visual.caret = Some(caret);

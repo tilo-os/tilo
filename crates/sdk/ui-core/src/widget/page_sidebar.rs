@@ -200,17 +200,6 @@ fn label_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption)
 }
 
-/// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
-/// `f64` matrix math with no overflow trap, so it cannot panic regardless of
-/// operand magnitude.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix math and cannot panic"
-)]
-fn translated(base: Affine, x: f64, y: f64) -> Affine {
-    base * Affine::translate((x, y))
-}
-
 /// Offsets a rect vertically. `Rect`'s `Add<Vec2>` is pure `f64` geometry
 /// with no overflow trap, so it cannot panic regardless of operand
 /// magnitude.
@@ -744,7 +733,7 @@ impl PageSidebar {
                 scene,
                 &self.header,
                 c.text_dim,
-                translated(base, self.rect.x0 + self.m.pad, hy),
+                base.pre_translate((self.rect.x0 + self.m.pad, hy).into()),
                 None,
                 &style.clone().with_weight(TextWeight::Semibold),
             );
@@ -962,7 +951,7 @@ impl PageSidebar {
             scene,
             &label,
             col,
-            translated(base, lx.max(self.list_vp.x0 + SCROLLBAR_INSET), ly),
+            base.pre_translate((lx.max(self.list_vp.x0 + SCROLLBAR_INSET), ly).into()),
             None,
             &style.clone().with_weight(weight),
         );
@@ -1004,7 +993,7 @@ impl PageSidebar {
             scene,
             &self.add_label,
             c.text_primary,
-            translated(base, x0 + icon + gap, ty),
+            base.pre_translate((x0 + icon + gap, ty).into()),
             None,
             &style,
         );
@@ -1070,7 +1059,7 @@ impl PageSidebar {
                 scene,
                 label,
                 col,
-                translated(base, row.x0 + f64::from(theme.padding_standard), ty),
+                base.pre_translate((row.x0 + f64::from(theme.padding_standard), ty).into()),
                 None,
                 &style,
             );

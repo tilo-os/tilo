@@ -1386,10 +1386,12 @@ impl VideoPlayer {
             &time_text,
             time_size,
             colors.text_dim,
-            translated(
-                transform,
-                time_x,
-                mid_y - f64::from(time_size) * f64::from(theme.text_scale) * 0.5,
+            transform.pre_translate(
+                (
+                    time_x,
+                    mid_y - f64::from(time_size) * f64::from(theme.text_scale) * 0.5,
+                )
+                    .into(),
             ),
             None,
         );
@@ -1671,7 +1673,7 @@ impl VideoPlayer {
                 scene,
                 &text,
                 ink_dim,
-                translated(transform, time_x0, top),
+                transform.pre_translate((time_x0, top).into()),
                 None,
                 &time.style,
             );
@@ -1950,7 +1952,7 @@ impl VideoPlayer {
                 scene,
                 t,
                 colors.text_dim,
-                translated(transform, x0 + pad, y + (row_h - f64::from(th)) * 0.5),
+                transform.pre_translate((x0 + pad, y + (row_h - f64::from(th)) * 0.5).into()),
                 None,
                 &title_style,
             );
@@ -2050,7 +2052,7 @@ impl VideoPlayer {
             scene,
             &s.name,
             colors.text_primary,
-            translated(transform, icon_r.x1 + 8.0, label_top),
+            transform.pre_translate((icon_r.x1 + 8.0, label_top).into()),
             None,
             &label_style,
         );
@@ -2076,10 +2078,8 @@ impl VideoPlayer {
                 scene,
                 &value,
                 tint,
-                translated(
-                    transform,
-                    x1 - pad - f64::from(vw),
-                    y + (row_h - f64::from(vh)) * 0.5,
+                transform.pre_translate(
+                    (x1 - pad - f64::from(vw), y + (row_h - f64::from(vh)) * 0.5).into(),
                 ),
                 None,
                 &label_style,
@@ -2118,7 +2118,7 @@ impl VideoPlayer {
             &name,
             13.0,
             colors.text_primary,
-            translated(transform, text_x, row_rect.y0 + 6.0),
+            transform.pre_translate((text_x, row_rect.y0 + 6.0).into()),
             None,
         );
         let value = setting_value(setting);
@@ -2132,7 +2132,7 @@ impl VideoPlayer {
                 &value,
                 12.0,
                 tint,
-                translated(transform, text_x, row_rect.y0 + row_h * 0.5),
+                transform.pre_translate((text_x, row_rect.y0 + row_h * 0.5).into()),
                 None,
             );
         }
@@ -2212,7 +2212,7 @@ impl VideoPlayer {
             scene,
             &label,
             tint,
-            translated(transform, x0 + indent, label_top),
+            transform.pre_translate((x0 + indent, label_top).into()),
             None,
             &label_style,
         );
@@ -2222,10 +2222,8 @@ impl VideoPlayer {
                 scene,
                 "✓",
                 accent,
-                translated(
-                    transform,
-                    x1 - pad - f64::from(cw),
-                    y + (row_h - f64::from(ch)) * 0.5,
+                transform.pre_translate(
+                    (x1 - pad - f64::from(cw), y + (row_h - f64::from(ch)) * 0.5).into(),
                 ),
                 None,
                 &label_style,
@@ -2286,19 +2284,6 @@ impl VideoPlayer {
             );
         }
     }
-}
-
-/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
-/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
-/// but composing two f64-based affine transforms cannot meaningfully
-/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
-/// for.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
-)]
-fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
-    transform * Affine::translate((dx, dy))
 }
 
 fn rgba_image(width: u32, height: u32, rgba: Arc<Vec<u8>>) -> PenikoImage {
