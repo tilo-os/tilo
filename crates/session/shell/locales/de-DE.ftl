@@ -156,6 +156,7 @@ shortcut-name-magnifier-zoom-out = Lupe verkleinern
 shortcut-name-power-menu = Ein/Aus-Menü
 shortcut-name-next-input-source = Nächstes Tastaturlayout
 shortcut-name-emoji-picker = Emoji
+shortcut-name-ask-agent = Agent zur Auswahl fragen
 
 # Die Gruppen, in denen Tastenkürzel aufgeführt werden
 shortcut-category-system = System
@@ -908,6 +909,7 @@ osd-microphone-on = Mikrofon an
 osd-keyboard-backlight-off = Tastaturbeleuchtung aus
 osd-keyboard-backlight = Tastaturbeleuchtung { $percent } %
 osd-no-backlight = Kein regelbarer Bildschirm
+osd-no-agent = Hier ist kein Agent verfügbar
 osd-airplane-mode-on = Flugmodus an
 osd-airplane-mode-off = Flugmodus aus
 osd-touchpad-on = Touchpad an
@@ -2588,6 +2590,8 @@ portal-chooser-file-grant-unavailable = Die ausgewählte Datei ist nicht mehr ve
 
 ## Der Agent-Verfasser: ein Feld, um einen Agenten zu fragen oder ihm zu sagen, was er tun soll
 agent-quick-title = { $agent }
+agent-quick-about-selection = Zu deiner Auswahl in { $app }: „{ $selection }“
+agent-quick-about-window = Zu { $app }; nichts ist ausgewählt
 agent-quick-accessible-name = Agent-Verfasser
 agent-quick-shots-context = Zu deiner Auswahl in Notes: „[tilo OS](search for the tilo homepage)“
 agent-quick-shots-draft = Wohin führt dieser Link?
