@@ -110,6 +110,39 @@ resource descriptors—including resources with no actions—and project them to
 stable `tilo://workspace/...` MCP resource addresses. Hard-coded facts in the
 agent app can then disappear as apps adopt the shared contract.
 
+### Web search and page reading
+
+The agent has no network of its own (`net mode = "off"`). It searches the web
+and reads pages the same way it does anything else: by invoking actions. The
+headless service app `apps/web-search` (`so.tilo.web-search`) publishes
+`search` and `fetch` on the resource `web.search:default`. The agent finds them
+through the usual discovery sequence. The agent has no tool code for them.
+
+The service runs on the device. It needs no account, no API key and no hosted
+service. `crates/platform/tilo-web-search` asks keyless search engines
+directly. Its scrapers and merge logic are ported from metasearch2 (CC0, see
+the crate's `PROVENANCE.md`). If one engine fails, the others still answer, and
+the result reports each engine's status. `fetch` only reads public `https`
+pages:
+
+- It refuses local and private addresses, both before connecting and after
+  DNS resolution.
+- It sends no cookies.
+- It caps time and size.
+- It turns HTML into readable text, a window of characters at a time, so a long
+  page fits the agent's result limit.
+
+Services cannot be launched on demand, so the shell starts the packages in
+`AGENT_COMPANION_PACKAGE_IDS` together with a workspace agent
+(`crates/session/shell/src/shell/launcher.rs`).
+
+Both actions are `Read` with `RiskLevel::Low` and no confirmation, because they
+read public pages without signing in. Their results carry the untrusted-content
+tag, because the text comes from the open web. Note that a query or an address
+can carry data out. An agent that reads private data and then searches can
+leak that data in its query, just as it could by opening a page in the
+browser.
+
 ## Delivery order
 
 1. **Identity and access truth** — preserve agent kind end to end; durable

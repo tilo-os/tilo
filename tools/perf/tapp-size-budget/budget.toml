@@ -289,6 +289,10 @@ aarch64 = 1048576
 x86_64 = 1179648
 aarch64 = 1114112
 
+[apps."so.tilo.web-search"]
+x86_64 = 2097152
+aarch64 = 1966080
+
 [apps."so.tilo.windows"]
 x86_64 = 1376256
 aarch64 = 1310720
