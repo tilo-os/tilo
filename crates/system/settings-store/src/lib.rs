@@ -128,7 +128,14 @@ pub use source::{
     writes_deferred_on_this_thread,
 };
 
-/// The file name under the Tilo config root.
+/// The directory under the Tilo config root that holds the settings document
+/// and nothing else of Tilo's: its lock, and the temp files a replace leaves
+/// for a moment. Settings, sandboxed, is given this directory and not the
+/// root beside it, which holds the identity store, the trust lists and the
+/// workspace tree.
+pub const SESSION_DIR: &str = "session";
+
+/// The settings document's file name.
 const FILE: &str = "settings.json";
 
 /// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
@@ -149,13 +156,69 @@ pub fn config_path(relative: &Path) -> Option<PathBuf> {
 /// other than the remapped `$XDG_CONFIG_HOME`. Empty is ignored.
 pub const SESSION_SETTINGS_ENV: &str = "TILO_SESSION_SETTINGS";
 
-/// The shared settings file: `<config root>/settings.json`, or the session
-/// document named by [`SESSION_SETTINGS_ENV`] when a sandbox remapped XDG.
+/// The shared settings file: `<config root>/session/settings.json`, or the
+/// session document named by [`SESSION_SETTINGS_ENV`] when a sandbox
+/// remapped XDG.
+///
+/// The document used to live at `<config root>/settings.json`. Resolving the
+/// path moves a document still there into place, once
+/// ([`adopt_legacy_document`]), so neither the session nor a reader started
+/// before the session loses the person's settings.
 pub fn settings_path() -> Option<PathBuf> {
     match std::env::var_os(SESSION_SETTINGS_ENV) {
         Some(path) if !path.is_empty() => Some(PathBuf::from(path)),
-        _ => config_path(Path::new(FILE)),
+        _ => {
+            let root = config_root()?;
+            let path = settings_path_in(&root);
+            adopt_legacy_document(&root, &path);
+            Some(path)
+        }
     }
+}
+
+/// Where the settings document lives under the config root `root`.
+pub fn settings_path_in(root: &Path) -> PathBuf {
+    root.join(SESSION_DIR).join(FILE)
+}
+
+/// Move a settings document left at `<root>/settings.json` to `path`, unless
+/// a document is already there. A rename within one directory tree is atomic,
+/// so two processes resolving the path at once move it once; the loser finds
+/// it gone. Failing leaves the old document where it was and reads start from
+/// defaults, as for any unreadable document.
+///
+/// Remembers the last path it found settled, so the readers that poll the
+/// document's stamp do not look for the old one on every poll.
+fn adopt_legacy_document(root: &Path, path: &Path) {
+    static SETTLED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+    let mut settled = SETTLED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if settled.as_deref() == Some(path) {
+        return;
+    }
+    if std::fs::symlink_metadata(path).is_err() {
+        let legacy = root.join(FILE);
+        let is_document = std::fs::symlink_metadata(&legacy).is_ok_and(|meta| meta.is_file());
+        if !is_document {
+            return;
+        }
+        let moved = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::rename(&legacy, path));
+        if let Err(error) = moved
+            && std::fs::symlink_metadata(path).is_err()
+        {
+            eprintln!(
+                "settings-store: could not move {} to {}: {error}",
+                legacy.display(),
+                path.display()
+            );
+            return;
+        }
+    }
+    *settled = Some(path.to_path_buf());
 }
 
 /// Read and parse the whole document. Returns an empty object for a missing, unreadable or
@@ -562,13 +625,14 @@ mod tests {
         let error = update_section("notifications", values.clone())
             .expect_err("a hand-started harness wrote the caller's settings");
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!home.join(".config/tilo/session/settings.json").exists());
         assert!(!home.join(".config/tilo/settings.json").exists());
 
         // A test that names its own config directory still writes there.
         let config = home.join("own-config");
         env.set("XDG_CONFIG_HOME", &config);
         update_section("notifications", values).expect("an explicit config directory");
-        assert!(config.join("tilo/settings.json").is_file());
+        assert!(config.join("tilo/session/settings.json").is_file());
         drop(env);
         let _ = std::fs::remove_dir_all(&home);
 
@@ -656,6 +720,74 @@ mod tests {
             drop(env);
             let _ = std::fs::remove_dir_all(&session);
             let _ = std::fs::remove_dir_all(&xdg);
+        }
+    }
+
+    #[test]
+    fn the_document_lives_in_its_own_directory_and_an_old_one_moves_there() {
+        // Phase `a_fresh_root_names_the_session_directory`.
+        {
+            let xdg = tmpdir();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .remove(SESSION_SETTINGS_ENV);
+            let path = settings_path().expect("a config root");
+            assert_eq!(path, xdg.join("tilo/session/settings.json"));
+            update_section(
+                "region",
+                json!({"units": "metric"}).as_object().unwrap().clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                load_section_at(&xdg.join("tilo/session/settings.json"), "region")["units"],
+                "metric"
+            );
+            assert!(
+                !xdg.join("tilo/settings.json").exists(),
+                "nothing is written beside the identity store and trust lists"
+            );
+            drop(env);
+            std::fs::remove_dir_all(&xdg).unwrap();
+        }
+        // Phase `a_document_at_the_old_path_moves_once_and_keeps_every_section`.
+        {
+            let xdg = tmpdir();
+            let root = xdg.join("tilo");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join("settings.json"),
+                r#"{"appearance":{"theme":"Light"},"region":{"units":"imperial"}}"#,
+            )
+            .unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .remove(SESSION_SETTINGS_ENV);
+            assert_eq!(load_section("appearance")["theme"], "Light");
+            assert_eq!(load_section("region")["units"], "imperial");
+            assert!(!root.join("settings.json").exists(), "the old copy is gone");
+            assert!(root.join("session/settings.json").is_file());
+            // A later document at the old path is not taken over the current one.
+            std::fs::write(
+                root.join("settings.json"),
+                r#"{"region":{"units":"metric"}}"#,
+            )
+            .unwrap();
+            assert_eq!(load_section("region")["units"], "imperial");
+            drop(env);
+            std::fs::remove_dir_all(&xdg).unwrap();
+        }
+        // Phase `the_session_records_stay_under_the_root`.
+        {
+            let xdg = tmpdir();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .remove(SESSION_SETTINGS_ENV);
+            let paths = SessionPaths::configured().expect("a config root");
+            assert_eq!(paths.copy, xdg.join("tilo/session/settings.json"));
+            assert_eq!(paths.person, xdg.join("tilo/records/person.json"));
+            assert_eq!(paths.device, xdg.join("tilo/records/device.json"));
+            drop(env);
+            std::fs::remove_dir_all(&xdg).unwrap();
         }
     }
 

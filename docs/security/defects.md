@@ -1035,6 +1035,20 @@ rename an ancestor aside (`SeatbeltPolicy::hidden`/`pinned`). Held by the live `
 launches in `crates/packaging/launcher-macos/tests/seatbelt_launch.rs`
 (`a_home_grant_never_reaches_tilos_private_stores` and its symlink and sibling-grant cases).
 
+The Settings app's own bind of the store is not a grant, and it used to bind the whole
+`$XDG_CONFIG_HOME/tilo` read-write so Settings could replace `settings.json` by rename. It is now
+narrowed (`appdir::SESSION_SETTINGS_BINDS`, `run::splice_session_settings`): the settings document
+moved into its own directory, `~/.config/tilo/session/` (`settings_store::SESSION_DIR`; a document
+left at the old path is moved there once), and Settings is given that directory, the account
+stores it is the custodian of (`accounts/`, with their vault), the identity store, and, read-only,
+`state.json` and `continuity-provenance.json`. The trust and revocation lists, the app registries,
+the session's settings records and anything added to the root later stay out. Held by
+`room_confinement::settings_reaches_only_its_own_parts_of_the_session_configuration`. **Still
+open:** the identity store remains in the Settings sandbox, because the Users pane's activate,
+protect and remove and the device fleet's revocation still edit it in-process; it leaves once
+those run behind host actions. A read-only file bind holds the inode it found, so the Permissions
+pane shows the workspace tree as of the launch.
+
 ## P2-9 — The per-launch identity broker loads the root secret and never uses it
 
 `crates/packaging/launcher/src/run.rs`, `start_identity_broker`. Every authored launch loads the

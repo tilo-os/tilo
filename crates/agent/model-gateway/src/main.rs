@@ -828,13 +828,10 @@ impl ProfileSources {
     /// nothing is kept.
     fn current() -> Option<Self> {
         let root = accounts::config_root()?;
-        // As `settings_store::settings_path`: the session document a sandbox
-        // names, else the one under the same config root as the vault.
-        let settings = std::env::var_os("TILO_SESSION_SETTINGS")
-            .filter(|path| !path.is_empty())
-            .map_or_else(|| root.join("settings.json"), PathBuf::from);
+        // The session document a sandbox names, else the one under the same
+        // config root as the vault.
         Some(Self {
-            settings,
+            settings: settings_store::settings_path()?,
             vault: accounts::vault_dir_in(&root).join("vault.enc"),
         })
     }
