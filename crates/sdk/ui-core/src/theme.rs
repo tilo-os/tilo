@@ -427,8 +427,8 @@ impl Theme {
         self.status_success = c.semantic.success;
     }
 
-    /// Reads `$XDG_CONFIG_HOME/tilo/settings.json` (falling back to
-    /// `~/.config/tilo/settings.json`), the shared preference Settings and
+    /// Reads `$XDG_CONFIG_HOME/tilo/session/settings.json` (falling back to
+    /// `~/.config/tilo/session/settings.json`), the shared preference Settings and
     /// Theme Studio update through their respective domain stores.
     /// Unreadable, absent and unrecognised all mean the dark default — a
     /// machine with no preference and one whose settings file is corrupt

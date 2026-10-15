@@ -165,7 +165,7 @@ EOF
 }
 
 step_settings() {
-    local file=/home/$user/.config/tilo/settings.json
+    local file=/home/$user/.config/tilo/session/settings.json
     [[ ! -f $file ]] || cat "$file"
 }
 
@@ -208,7 +208,7 @@ step_collect() {
     coredumpctl --no-pager info /usr/bin/tilo-shell >"$out/coredump-tilo-shell.txt" 2>&1 || true
     cp -r "$home/.local/state/tilo/session-logs" "$out/" 2>/dev/null || true
     cp -r "$home/.cache/tilo/crashes" "$out/" 2>/dev/null || true
-    cp "$home/.config/tilo/settings.json" "$out/settings.json" 2>/dev/null || true
+    cp "$home/.config/tilo/session/settings.json" "$out/settings.json" 2>/dev/null || true
     ps -eo pid,ppid,user,etimes,args --forest >"$out/processes.txt" 2>&1 || true
     rpm -q tilo-session tilo-session-apps sddm gnome-keyring kernel-core mesa-vulkan-drivers \
         >"$out/packages.txt" 2>&1 || true

@@ -116,7 +116,7 @@ def bluetooth(ctx, res):
 
 
 def _settings(ctx) -> dict:
-    raw = ctx.vm.exec('cat "$HOME/.config/tilo/settings.json" 2>/dev/null || echo "{}"')
+    raw = ctx.vm.exec('cat "$HOME/.config/tilo/session/settings.json" 2>/dev/null || echo "{}"')
     return json.loads("\n".join(l for l in raw.splitlines() if not l.startswith("receipt:")) or "{}")
 
 
@@ -140,7 +140,7 @@ def keyboard_layout(ctx, res):
     res.metrics["us_y"] = _typed_in_search(ctx, "y")
     doc.setdefault("input", {}).update(keyboard_layout="de:nodeadkeys",
                                        keyboard_layouts=["de:nodeadkeys"], compose_key="ralt")
-    ctx.vm.write_home_file(".config/tilo/settings.json", json.dumps(doc, indent=2).encode())
+    ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(doc, indent=2).encode())
     time.sleep(2.5)
     try:
         # The physical Y key is `z` on a German layout; a US one types `y`.
@@ -150,7 +150,7 @@ def keyboard_layout(ctx, res):
     finally:
         doc = _settings(ctx)
         doc["input"] = saved
-        ctx.vm.write_home_file(".config/tilo/settings.json", json.dumps(doc, indent=2).encode())
+        ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(doc, indent=2).encode())
         time.sleep(2.5)
     expect(res.metrics["us_y"] == "y", f"with the default layout the Y key typed {res.metrics['us_y']!r}")
     expect(typed == "z", f"with de:nodeadkeys the physical Y key typed {typed!r}, not 'z'")

@@ -2079,10 +2079,15 @@ fn splice_app_dir(
     Ok(())
 }
 
-/// Settings remaps XDG into the app dir. Bind the session store over that
-/// path so a write to `~/.config/tilo/settings.json` is the document the
-/// open Settings window watches and paints.
+/// Settings remaps XDG into the app dir. Bind the parts of the session's
+/// `~/.config/tilo` it edits over that path
+/// ([`crate::appdir::SESSION_SETTINGS_BINDS`]), so a write to the settings
+/// document is the one the compositor watches and the open Settings window
+/// paints, while the rest of that directory (trust lists, registries,
+/// records) stays out of the sandbox.
 fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(), RunError> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
     if package_id != "so.tilo.settings" {
         return Ok(());
     }
@@ -2090,7 +2095,14 @@ fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(
         return Ok(());
     };
     let host = host.join("tilo");
-    std::fs::create_dir_all(&host)?;
+    for (relative, bind) in crate::appdir::SESSION_SETTINGS_BINDS {
+        if *bind == crate::appdir::SessionBind::Writable {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(host.join(relative))?;
+        }
+    }
     let entry = pop_entry(argv)?;
     crate::appdir::push_session_settings_bind(argv, &host);
     argv.push(entry);
@@ -4955,13 +4967,34 @@ mod app_dir_tests {
 
         splice_session_settings(&mut argv, "so.tilo.settings").expect("settings");
         let host = config.path().join("tilo");
-        assert!(host.is_dir(), "session store directory must exist to bind");
+        for writable in ["session", "accounts"] {
+            assert!(
+                host.join(writable).is_dir(),
+                "{writable} must exist to bind read-write"
+            );
+            assert!(
+                argv.windows(3).any(|w| w[0] == "--bind"
+                    && w[1] == host.join(writable).to_string_lossy()
+                    && w[2] == format!("/run/tilo/app/.config/tilo/{writable}")),
+                "Settings must bind {writable} over remapped XDG: {argv:?}"
+            );
+        }
         assert!(
-            argv.windows(3).any(|w| w[0] == "--bind"
-                && w[1] == host.to_string_lossy()
-                && w[2] == "/run/tilo/app/.config/tilo"),
-            "Settings must bind the session store over remapped XDG: {argv:?}"
+            !argv.iter().any(|arg| arg == host.to_string_lossy().as_ref()
+                || arg == crate::appdir::SANDBOX_SESSION_CONFIG),
+            "the whole session configuration root must never be bound: {argv:?}"
         );
+        for private in [
+            "trusted-attestors.toml",
+            "revoked-keys.toml",
+            "registries.toml",
+            "records",
+        ] {
+            assert!(
+                !argv.iter().any(|arg| arg.ends_with(private)),
+                "{private} must stay out of the Settings sandbox: {argv:?}"
+            );
+        }
         assert!(
             argv.windows(3).any(|w| w[0] == "--setenv"
                 && w[1] == "TILO_SESSION_SETTINGS"

@@ -17693,6 +17693,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "settings-store",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",

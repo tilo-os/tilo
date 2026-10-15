@@ -9,7 +9,7 @@
 //! Preferences live in the **same** shared document the region store uses:
 //!
 //! ```text
-//! $XDG_CONFIG_HOME/tilo/settings.json   (falls back to ~/.config/tilo/settings.json)
+//! $XDG_CONFIG_HOME/tilo/session/settings.json   (falls back to ~/.config/tilo/session/settings.json)
 //! ```
 //!
 //! namespaced by domain so each section grows independently and unrelated
