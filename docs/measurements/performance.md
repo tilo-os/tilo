@@ -106,6 +106,11 @@ node scripts/perf/native_stream_qualification.mjs target/qualify --out stream.js
   --renderer gpu --expect-revision "$(git rev-parse HEAD)" --max-load 0.25 --enforce-goals
 ```
 
+The nightly runs the qualification twice in one job: H.264, then `--codec vp9`,
+the software VP9 a session with no H.264 encoder (a stock device) streams. The
+VP9 run is its own series, with the codec after the group in each KPI id
+(`stream.vp9.frame.latency`), so neither codec's baseline judges the other's.
+
 `--carrier https` takes the live plane over the HTTPS stream fallback instead of
 WebTransport.
 
