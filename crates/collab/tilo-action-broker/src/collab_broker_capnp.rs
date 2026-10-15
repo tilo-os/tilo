@@ -2049,6 +2049,7 @@ impl PendingInvocation {
 mod action_host;
 mod admission_memo;
 mod app_consent;
+mod host_steps;
 mod launchable;
 mod local_action_host;
 mod witness;

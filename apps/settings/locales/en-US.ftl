@@ -1765,6 +1765,7 @@ time-status-error = Can't read time settings: { $error }
 time-zones-error = Can't list time zones: { $error }
 time-zone-unread = Current time zone unknown
 settings-users-read-error = Can't read this device's accounts: { $error }
+settings-users-identities-read-error = Can't read your identities: { $error }
 settings-users-autologin-error = Can't read automatic login: { $error }
 settings-bluetooth-read-error = Can't read Bluetooth: { $error }
 settings-bluetooth-no-adapter = No Bluetooth adapter on this device

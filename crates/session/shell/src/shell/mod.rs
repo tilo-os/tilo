@@ -83,6 +83,7 @@ pub mod host_apps;
 pub mod host_shell_allow;
 pub mod hosted_inputs;
 pub mod i18n;
+pub(crate) mod identity_admin;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;

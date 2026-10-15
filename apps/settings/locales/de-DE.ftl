@@ -1764,6 +1764,7 @@ time-status-error = Zeiteinstellungen können nicht gelesen werden: { $error }
 time-zones-error = Zeitzonen können nicht aufgelistet werden: { $error }
 time-zone-unread = Aktuelle Zeitzone unbekannt
 settings-users-read-error = Die Konten dieses Geräts können nicht gelesen werden: { $error }
+settings-users-identities-read-error = Deine Identitäten können nicht gelesen werden: { $error }
 settings-users-autologin-error = Automatische Anmeldung kann nicht gelesen werden: { $error }
 settings-bluetooth-read-error = Bluetooth kann nicht gelesen werden: { $error }
 settings-bluetooth-no-adapter = Kein Bluetooth-Adapter an diesem Gerät
