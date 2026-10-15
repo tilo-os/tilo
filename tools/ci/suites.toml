@@ -762,6 +762,19 @@ inputs = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
 readers = ["crates/system/image-policy-check/tests/policy.rs"]
 
 [[cargo]]
+package = "tilo-staging-reclaim"
+# The reclaim tests check the units on both sides of a USB-free install, the
+# installer image that enables them and the component that ships the helper.
+inputs = [
+  "os/usr/lib/systemd/system/tilo-staging-reclaim.service",
+  "os/usr/lib/systemd/system/tilo-staging-handoff.service",
+  "os/usr/lib/systemd/system/tilo-installer-grow-root.service",
+  "os/Containerfile.installer",
+  "os/components.toml",
+]
+readers = ["crates/system/staging-reclaim/tests/reclaim.rs"]
+
+[[cargo]]
 package = "greeter"
 # The greeter offers exactly the sessions the image ships.
 inputs = ["os/usr/share/wayland-sessions/*.desktop"]
