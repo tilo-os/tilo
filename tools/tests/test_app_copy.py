@@ -45,6 +45,7 @@ class AppCopyTests(unittest.TestCase):
             dropdown.with_id("settings-picker-id");
             thread.name("settings-worker".into());
             request.thread_name("settings-portal");
+            crate::device_read::thread("settings-reader", Box::new(job));
             DeviceInfo { icon: "net-device-icon".into() };
             self.push_confirm(body, package,
                 ("settings-confirm-id", "settings-cancel-id"), action);
