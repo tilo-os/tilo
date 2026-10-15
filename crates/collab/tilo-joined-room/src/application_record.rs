@@ -162,8 +162,7 @@ impl NativeWorkspaceOwner {
                         key,
                         now,
                     )?;
-                    let tilo_peer_state::NeighbourMsg::AppDocument { envelope, .. } = message
-                    else {
+                    let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
                         return Err("application initialization is not a document write".into());
                     };
                     Ok(OwnerCommitRequest {
