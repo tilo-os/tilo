@@ -199,7 +199,9 @@ impl Fixture {
         let text = deployment();
         let helpers = between(&text, "esp_path() {", "# --- listing");
         let (counters, repair_stub) = if repair {
-            (between(&text, "cmd_entries() {", "case \"${1:-}\" in"), "")
+            // Everything up to the subcommand dispatch, the one `case` that
+            // starts a line.
+            (between(&text, "cmd_entries() {", "\ncase \""), "")
         } else {
             (
                 between(
@@ -207,7 +209,7 @@ impl Fixture {
                     "cmd_entries() {",
                     "# Derive the repair-mode boot entry",
                 ),
-                "cmd_repair_entry() { :; }",
+                "cmd_repair_entry() ( : )",
             )
         };
         let script = format!(
@@ -530,7 +532,7 @@ fn malformed_dev_kernel_initrd_entries_are_refused() {
     let shapes = [
         // Outside bootc's managed directory, or not its file names.
         format!("linux /vmlinuz\ninitrd {managed}/initrd\n"),
-        format!("linux /EFI/Linux/other/vmlinuz\ninitrd /EFI/Linux/other/initrd\n"),
+        "linux /EFI/Linux/other/vmlinuz\ninitrd /EFI/Linux/other/initrd\n".to_owned(),
         format!("linux {managed}/../vmlinuz\ninitrd {managed}/initrd\n"),
         format!("linux {managed}/Image\ninitrd {managed}/initrd\n"),
         // Kernel and initrd from different deployments.
