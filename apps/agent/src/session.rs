@@ -223,6 +223,9 @@ pub struct Config {
     /// Applications started beside the agent whose actions its first run
     /// waits for ([`Session::await_companions`]).
     pub companions: Vec<String>,
+    /// The model the desktop chose for this agent, when it launched it with
+    /// one; otherwise the Settings default this process can read, if any.
+    pub provider: Option<crate::providers::ProviderSelection>,
 }
 
 pub struct Session {
@@ -323,7 +326,7 @@ impl Session {
                 anyhow::ensure!(chooser.is_live(), "managed model gateway unavailable");
                 chooser
             }
-            None => default_selection().map_or_else(
+            None => cfg.provider.clone().or_else(default_selection).map_or_else(
                 || Chooser::new(false, cfg.model_timeout),
                 |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
             ),
@@ -1369,6 +1372,7 @@ mod tests {
                         ),
                         content: tilo_content::ContentStore::memory(),
                         companions: Vec::new(),
+                        provider: None,
                     },
                     link,
                     chooser: Chooser::new(false, Duration::ZERO),

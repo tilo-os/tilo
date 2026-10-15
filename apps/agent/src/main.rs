@@ -58,8 +58,9 @@ struct Cli {
     /// than added to it, so shortening this also shortens how long the agent
     /// will wait out a busy service.
     ///
-    /// Default 9000 ms; a managed (launcher-started) agent defaults to
-    /// 30000 ms, the whole budget of a multi-turn action decision.
+    /// Default 9000 ms; a managed (launcher-started) agent, or one given
+    /// `--provider` by the desktop, defaults to 30000 ms, the whole budget of
+    /// a multi-turn action decision.
     #[arg(long)]
     model_timeout_ms: Option<u64>,
     /// An application the desktop started beside this agent for its tasks
@@ -68,11 +69,28 @@ struct Cli {
     /// is not planned without them.
     #[arg(long = "companion")]
     companions: Vec<String>,
+    /// The model to plan with, as the desktop's nonsecret
+    /// `{"profile_id","model_id","protocol"}` selection. The model gateway
+    /// holds the endpoint and the credential; a launched agent cannot read
+    /// Settings, so without this it plans by keyword only.
+    #[arg(long)]
+    provider: Option<String>,
 }
 
 /// The total model budget of one managed action decision (all its turns).
 /// The launcher passes no `--model-timeout-ms`, so this is the default there.
 const MANAGED_MODEL_TIMEOUT_MS: u64 = 30_000;
+
+/// The model deadline when `--model-timeout-ms` is not given. A desktop that
+/// hands over its model selection (`provider_given`) launched the agent for
+/// its tasks, so it plans on the same multi-turn budget as a managed one.
+fn default_model_timeout_ms(managed: bool, provider_given: bool) -> u64 {
+    if managed || provider_given {
+        MANAGED_MODEL_TIMEOUT_MS
+    } else {
+        9000
+    }
+}
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
@@ -91,11 +109,9 @@ fn main() -> anyhow::Result<()> {
         "tilo-agent runs broker-leased tasks only: pass --task-runs"
     );
     let managed = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some();
-    let model_timeout_ms = cli.model_timeout_ms.unwrap_or(if managed {
-        MANAGED_MODEL_TIMEOUT_MS
-    } else {
-        9000
-    });
+    let model_timeout_ms = cli
+        .model_timeout_ms
+        .unwrap_or_else(|| default_model_timeout_ms(managed, cli.provider.is_some()));
     if managed {
         anyhow::ensure!(
             cli.task_runs && !cli.no_model && cli.endpoint.is_none() && cli.record.is_none(),
@@ -114,8 +130,19 @@ fn main() -> anyhow::Result<()> {
             ui::permissions::KindSet::READ_UNDOABLE,
         )
     };
+    let provider = cli
+        .provider
+        .as_deref()
+        .map(|raw| {
+            serde_json::from_str(raw)
+                .map_err(|error| error.to_string())
+                .and_then(|value| tilo_agent::model::managed_provider_selection(&value))
+                .map_err(|error| anyhow::anyhow!("--provider: {error}"))
+        })
+        .transpose()?;
     let cfg = Config {
         agent_id,
+        provider,
         endpoint: cli.endpoint,
         endpoint_identity: None,
         app_id: cli.app,
@@ -139,4 +166,24 @@ fn device_content() -> tilo_content::ContentStore {
         return device;
     }
     tilo_content::ContentStore::memory()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A shell-launched agent given `--provider` gets a managed agent's
+    /// budget: the short default would cut off a multi-turn plan midway.
+    #[test]
+    fn a_desktop_launched_agent_plans_on_the_managed_budget() {
+        assert_eq!(default_model_timeout_ms(false, false), 9000);
+        assert_eq!(
+            default_model_timeout_ms(false, true),
+            MANAGED_MODEL_TIMEOUT_MS
+        );
+        assert_eq!(
+            default_model_timeout_ms(true, false),
+            MANAGED_MODEL_TIMEOUT_MS
+        );
+    }
 }
