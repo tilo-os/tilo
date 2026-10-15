@@ -316,10 +316,13 @@ systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DR
 else
   # greetd's own command line, so the deployment that is not under test runs
   # exactly what it ran before. The unit may name the program bare
-  # (ExecStart=greetd); `path=` is what systemd resolved it to, and argv after
-  # the first word are its arguments.
+  # (ExecStart=greetd, which systemd reports as path=greetd and looks up when
+  # it starts it), so a bare name is resolved in the guest the same way.
   GREETD_EXEC="$(guest 'systemctl show -p ExecStart --value greetd.service' | tr -d '\r' | head -1)"
   greetd_path="$(sed -n 's/.*path=\([^ ;]*\).*/\1/p' <<<"$GREETD_EXEC")"
+  if [[ -n "$greetd_path" && "$greetd_path" != /* ]]; then
+    greetd_path="$(guest "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin command -v $(printf '%q' "$greetd_path")" | tr -d '\r\n')"
+  fi
   greetd_args="$(sed -n 's/.*argv\[\]=\([^;]*[^; ]\) *;.*/\1/p' <<<"$GREETD_EXEC" | cut -s -d' ' -f2-)"
   GREETD_ARGV="$greetd_path${greetd_args:+ $greetd_args}"
   [[ "$greetd_path" == /* ]] || fail "could not read greetd's ExecStart to wrap it (got '$GREETD_EXEC')"
