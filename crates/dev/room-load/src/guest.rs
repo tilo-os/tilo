@@ -381,6 +381,9 @@ pub fn take_events(
                         stats.chat(sent, latency as f64);
                     }
                 }
+                // The governor's compaction of the chat's history: messages
+                // the page already holds, as one snapshot.
+                Some(DocumentMutation::Snapshot(_)) => stats.chat_history(),
                 other => stats.fail(format!(
                     "document without a readable change (sealed: {}, mutation: {})",
                     document.decrypted_payload.is_some(),
