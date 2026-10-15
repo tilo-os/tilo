@@ -284,6 +284,41 @@ impl GovernedRoom {
         &self.peer
     }
 
+    /// The governance this room published that the relay has not retained,
+    /// in order, each with its place reserved in `records`; `published`
+    /// moves past them. Stops before a change that does not read, with why.
+    fn unpublished(
+        &mut self,
+        records: &crate::room_records::RoomRecords,
+    ) -> (Vec<publisher::Publication>, Result<(), String>) {
+        let mut publications = Vec::new();
+        while let Some(entry) = self.record.outgoing.get(self.record.published) {
+            let channel = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&entry.bytes)
+                .map_err(|error| error.to_string())
+                .and_then(|message| {
+                    neighbour_wire::retention(&message, entry.checkpoint)
+                        .map(|(channel, _)| channel)
+                        .ok_or_else(|| "room governance message has no retention channel".into())
+                });
+            let channel = match channel {
+                Ok(channel) => channel,
+                Err(error) => return (publications, Err(error)),
+            };
+            publications.push(publisher::Publication::new(
+                records,
+                self.record.workspace_id,
+                Some(self.record.published),
+                crate::room_records::HostCommit {
+                    body: entry.bytes.clone(),
+                    channel,
+                    checkpoint: entry.checkpoint,
+                },
+            ));
+            self.record.published = self.record.published.saturating_add(1);
+        }
+        (publications, Ok(()))
+    }
+
     /// Take a member's write to a record the governor has into its copy.
     /// Not persisted: the relay retains the write, and opening the room
     /// replays it.
@@ -1372,37 +1407,9 @@ impl Rooms {
         let publisher = Arc::clone(&room.publisher);
         let epoch = publisher.reconcile(&mut room.record.published);
         let workspace_id = room.workspace_id();
-        let mut publications = Vec::new();
-        let mut unreadable = None;
-        while let Some(entry) = room.record.outgoing.get(room.record.published) {
-            let channel = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&entry.bytes)
-                .map_err(|error| error.to_string())
-                .and_then(|message| {
-                    neighbour_wire::retention(&message, entry.checkpoint)
-                        .map(|(channel, _)| channel)
-                        .ok_or_else(|| "room governance message has no retention channel".into())
-                });
-            let channel = match channel {
-                Ok(channel) => channel,
-                Err(error) => {
-                    // What precedes it is still published, in order.
-                    unreadable = Some(error);
-                    break;
-                }
-            };
-            publications.push(publisher::Publication::new(
-                &host.records,
-                workspace_id,
-                Some(room.record.published),
-                crate::room_records::HostCommit {
-                    body: entry.bytes.clone(),
-                    channel,
-                    checkpoint: entry.checkpoint,
-                },
-            ));
-            room.record.published = room.record.published.saturating_add(1);
-        }
-        if let Some(error) = unreadable {
+        let (mut publications, unreadable) = room.unpublished(&host.records);
+        if let Err(error) = unreadable {
+            // What precedes it is still published, in order.
             publisher.push(
                 &host.records,
                 room.room(),
