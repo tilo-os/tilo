@@ -4133,7 +4133,6 @@ dependencies = [
 name = "example-shared-checklist"
 version = "0.1.0"
 dependencies = [
- "hex",
  "runtime-dylib",
  "tilo-app",
  "workspace-hack",

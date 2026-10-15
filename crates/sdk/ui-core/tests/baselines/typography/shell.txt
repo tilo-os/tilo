@@ -3,12 +3,7 @@
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 crates/session/shell/src/compositor/lock_screen.rs legacy_size_api 11
 crates/session/shell/src/shell/display_identify.rs legacy_size_api 2
-crates/session/shell/src/shell/editor_app.rs font_size_const 1
-crates/session/shell/src/shell/editor_app.rs legacy_size_api 11
-crates/session/shell/src/shell/frame.rs legacy_size_api 1
-crates/session/shell/src/shell/notes_app.rs font_size_const 1
-crates/session/shell/src/shell/notes_app.rs legacy_size_api 6
 crates/session/shell/src/shell/overlay_host/mod.rs legacy_size_api 9
 crates/session/shell/src/shell/pad_map.rs legacy_size_api 7
-crates/session/shell/src/shell/peer_sync_overlay.rs legacy_size_api 34
+crates/session/shell/src/shell/peer_sync_overlay.rs legacy_size_api 33
 crates/session/shell/src/shell/speaker_calibration.rs legacy_size_api 1
