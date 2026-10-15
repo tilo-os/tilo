@@ -94,9 +94,25 @@ macro_rules! app_worker {
     };
 }
 
+/// The stack a worker started from a test binary serves on: that of the
+/// main thread [`dispatch_early`] serves on in a program. Libtest runs a
+/// test on a thread of 2 MiB, which an app's view tree (Notes' shell, built
+/// when its record is mounted) overflows in an unoptimised build: the
+/// worker aborts and the record never opens.
+const TEST_WORKER_STACK: usize = 8 * 1024 * 1024;
+
 #[doc(hidden)]
 pub fn serve_test_worker() {
-    if let Some(code) = dispatch_early() {
+    let served = std::thread::Builder::new()
+        .name(ARG.into())
+        .stack_size(TEST_WORKER_STACK)
+        .spawn(dispatch_early)
+        // A worker that panicked failed, as `dispatch_early` reports one.
+        .map_or_else(
+            |_| dispatch_early(),
+            |worker| worker.join().unwrap_or(Some(1)),
+        );
+    if let Some(code) = served {
         #[expect(
             clippy::exit,
             reason = "the worker's test must not return to the test harness"
