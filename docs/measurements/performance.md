@@ -80,8 +80,8 @@ The `hosting` group has two jobs: the relay's cost per collaborator-hour
 `adapters.py room-load`), which guards the guests' p99 join and chat delivery
 and the host's peak memory and CPU. The capacity curve behind that point and
 the deployed caps (guests and spectators from 50 to 4000, the caps at once, and
-the price of 100 concurrent guests per node) is the `perf-room-capacity` check
-(`t dispatch perf-room-capacity`, `tools/perf/room_capacity.py`);
+the price of 100 concurrent guests per node) is **Perf / room host capacity**
+(`perf-room-capacity.yml`, manual dispatch, `tools/perf/room_capacity.py`);
 [docs/benchmarks/room-host-capacity-2026-10.md](../benchmarks/room-host-capacity-2026-10.md)
 records a run.
 

@@ -1230,6 +1230,10 @@ by = "os/tests/imager_release_invariants.sh"
 suite = "os/tests/winget_publication_idempotency.sh"
 by = "os/tests/imager_release_invariants.sh"
 
+[[covered]]
+suite = "tools/ci/focused_test.py"
+by = "tools/tests/test_focused_test.py"
+
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
 
@@ -1253,7 +1257,8 @@ workflow = "room-service-image.yml"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
-reason = "needs the built registry-server image: t's image-registry-server check runs it"
+reason = "needs the built registry-server image"
+workflow = "release-registry-server.yml"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
@@ -1539,7 +1544,8 @@ workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
 suite = "os/tests/release_tools_image.sh"
-reason = "needs the built release-tools image: t's image-release-tools-<arch> checks run it"
+reason = "needs the built release-tools image"
+workflow = "build-release-tools.yml"
 
 [[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"

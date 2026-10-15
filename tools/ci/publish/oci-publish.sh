@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# The publishing half of an image: push OUT/image.oci.tar (one image, or an index of them from
-# oci-index.py) to REPOSITORY with its digest unchanged, attach the signature oci-sign.sh made if
-# there is one, and point TAG... at it.
+# The publishing half of an image: push OUT/image.oci.tar to REPOSITORY with its digest
+# unchanged, attach the signature oci-sign.sh made if there is one, and point TAG... at it.
 # Writes OUT/receipt.json, the digest receipt deployments pin. Logs in to the registry as `oidc`
 # with an identity token from t for the registry (`id_token = ["registry.tilo.so"]`), which the
 # registry accepts for this repository's main, stable and v* tags; never signing credentials.
@@ -31,7 +30,7 @@ printf '%s' "$password" | skopeo login --authfile "$auth" -u oidc --password-std
 unset password
 cp "$auth" "$DOCKER_CONFIG/config.json"
 first=${1//\{commit\}/$T_COMMIT}
-skopeo copy --all --preserve-digests --authfile "$auth" "oci-archive:$out/image.oci.tar" "docker://$repository:$first"
+skopeo copy --preserve-digests --authfile "$auth" "oci-archive:$out/image.oci.tar" "docker://$repository:$first"
 pushed=$(skopeo inspect --raw --authfile "$auth" "docker://$repository@$digest" | sha256sum | cut -d' ' -f1)
 [[ sha256:$pushed == "$digest" ]] || die "the registry holds sha256:$pushed, not $digest"
 if [[ -s $out/signature ]]; then
@@ -42,7 +41,7 @@ fi
 tags="\"$first\""
 for tag in "${@:2}"; do
   tag=${tag//\{commit\}/$T_COMMIT}
-  skopeo copy --all --preserve-digests --authfile "$auth" "docker://$repository@$digest" "docker://$repository:$tag"
+  skopeo copy --preserve-digests --authfile "$auth" "docker://$repository@$digest" "docker://$repository:$tag"
   tags+=",\"$tag\""
 done
 signed=false

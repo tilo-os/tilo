@@ -356,9 +356,8 @@ catalogue payload and verifier are internal to its CLI. It has no speech engine
 launch verb or checked-in speech release. Extend that shared lifecycle rather
 than inventing a second unsigned installer or an ambient executable path.
 
-Current main supplies the existing release route in t's model catalog checks
-(`t.toml`: `model-catalog-compiler`, `sign-model-catalog`, `publish-model-catalog`,
-`review-speech-catalog`), documented by
+Current main supplies the existing release route in
+`.forgejo/workflows/release-local-model-catalog.yml`, documented by
 `crates/agent/local-model-service/RELEASE.md`. Its production catalogue source is
 `dist/local-models/catalog-source.json`, and its public key identifier is
 `tilo-local-model-release-2026-10`. Immutable Forgejo package URLs already host
@@ -666,9 +665,9 @@ hashes, full notices, CPU capability and hardware requirements. It rejects
 insecure transport, altered receipts, excess bytes and overwriting. Its output
 is staging, not installation or permission to record.
 
-The existing protected release route has two explicit dispatches on `stable`:
+The existing protected `release-local-model-catalog.yml` has two explicit modes:
 
-1. `t dispatch review-speech-catalog --ref stable` stages public inputs without credentials, signs a candidate
+1. `review-speech` stages public inputs without credentials, signs a candidate
    with the existing `TILO_MODEL_CATALOG_SIGNING_KEY`, compares the resulting
    public key with the installed image key, and uploads only signed catalog,
    public key, declarative source and review hashes. It publishes no weights,
@@ -1441,11 +1440,12 @@ still contain only U²-Net, so an ordinary installed desktop still refuses to
 load speech until the reviewed release is approved. No new signing identity,
 trust root, account, API charge or microphone permission is introduced.
 
-The normal route is the existing manual dispatch on `stable`:
-`review-speech-catalog` fetches exact upstream receipts and creates a review artifact using the
+The normal route is the existing manual
+`.forgejo/workflows/release-local-model-catalog.yml` on `main`: `review-speech`
+fetches exact upstream receipts and creates a review artifact using the
 existing protected catalogue identity, with trust-key equality checked.
 After explicit release approval and promotion of reviewed source/signed image
-inputs, `publish-model-catalog` uses the existing protected package credential, immutable
+inputs, `publish` uses the existing protected package credential, immutable
 model/license URLs and anonymous exact readback, then reproduces and compares
 the signed image inputs before publishing the catalogue. Image deployment is
 a separate authorized operation. Source support for the four-entry candidate

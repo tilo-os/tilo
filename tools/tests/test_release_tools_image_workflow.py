@@ -1,6 +1,5 @@
 from pathlib import Path
 import re
-import tomllib
 import unittest
 
 
@@ -21,8 +20,9 @@ def job_block(workflow: str, name: str) -> str:
 
 class ReleaseToolsImageWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
-        t = tomllib.loads((ROOT / "t.toml").read_text())
-        self.checks = {check["name"]: check for check in t["check"]}
+        self.workflow = (
+            ROOT / ".forgejo/workflows/build-release-tools.yml"
+        ).read_text()
         self.release_workflow = (
             ROOT / ".forgejo/workflows/release-apps.yml"
         ).read_text()
@@ -42,33 +42,57 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
             for package in ("gawk", "grep"):
                 self.assertRegex(install, rf"\b{package}\b")
             self.assertIn('for compiler in cargo rustc cc gcc clang', self.containerfile)
-        with self.subTest(phase='both native platforms are built and tested before publication'):
+        with self.subTest(phase='both native platforms are built and tested'):
             self.doCleanups()
             self.setUp()
-            for arch in ("x86_64", "aarch64"):
-                build = self.checks[f"image-release-tools-{arch}"]
-                self.assertEqual(build["requires"], [f"arch={arch}"])
-                self.assertIn("os/tests/release_tools_image.sh", build["run"])
-                self.assertNotIn("id_token", build)
-                self.assertNotIn("secrets", build)
-            index = self.checks["image-release-tools"]
-            self.assertEqual(
-                index["needs"], ["image-release-tools-x86_64", "image-release-tools-aarch64"]
-            )
-            self.assertIn("oci-index.py", index["run"])
+            self.assertIn("platform: linux/amd64", self.workflow)
+            self.assertIn("platform: linux/arm64", self.workflow)
+            self.assertIn("runner: runner-arm64", self.workflow)
+            self.assertIn("os/tests/release_tools_image.sh", self.workflow)
+            self.assertIn("docker buildx imagetools create", self.workflow)
+            self.assertIn("verify-public:", self.workflow)
+            self.assertIn("Pull and test the public image without credentials", self.workflow)
             smoke = (ROOT / "os/tests/release_tools_image.sh").read_text()
             self.assertIn("max_image_bytes=536870912", smoke)
-        with self.subTest(phase='main publishes one immutable index, proven anonymously pullable'):
+            self.assertIn("docker image inspect --format '{{.Size}}'", smoke)
+        with self.subTest(phase='pr code runs before registry credentials exist'):
             self.doCleanups()
             self.setUp()
-            publish = self.checks["publish-release-tools"]
-            self.assertEqual(publish["needs"], ["image-release-tools"])
-            self.assertEqual(publish["on"], ["main"])
-            self.assertEqual(publish["id_token"], ["registry.tilo.so"])
-            self.assertIn("registry.tilo.so/tilo/tilo-release-tools", publish["run"])
-            self.assertIn("'sha-{commit}'", publish["run"])
-            self.assertNotRegex(publish["run"], r"latest|:main")
-            self.assertIn("oci-anonymous.sh", publish["run"])
+            checkout, after_checkout = self.workflow.split(
+                "      - uses: actions/checkout@", 1
+            )[1].split("\n\n      - name:", 1)
+            self.assertIn("persist-credentials: false", checkout)
+            self.assertNotIn("REGISTRY_TOKEN", checkout)
+
+            before_login = after_checkout.split(
+                "\n      - name: Log in only after the candidate passed\n", 1
+            )[0]
+            self.assertIn("os/tests/release_tools_image.sh", before_login)
+            self.assertNotIn("REGISTRY_TOKEN", before_login)
+        with self.subTest(phase='only immutable candidate or source tags are published'):
+            self.doCleanups()
+            self.setUp()
+            self.assertIn('tag="sha-$SOURCE_REVISION"', self.workflow)
+            self.assertIn('tag="candidate-$SOURCE_REVISION"', self.workflow)
+            self.assertNotRegex(self.workflow, r"(?m)^\s*(?:tags:|tag=).*(?:latest|:main)\s*$")
+            self.assertIn("release-tools-image-receipt/release-tools-image.json", self.workflow)
+        with self.subTest(phase='tested index is verified anonymously'):
+            self.doCleanups()
+            self.setUp()
+            publish = job_block(self.workflow, "publish-index")
+            self.assertIn(
+                "IMAGE_REPOSITORY: registry.tilo.so/tilo/tilo-release-tools",
+                publish,
+            )
+            self.assertIn('"$IMAGE_REPOSITORY@$digest" --raw', publish)
+            self.assertIn('DOCKER_CONFIG="$anonymous_config"', publish)
+            self.assertIn('[[ $actual_children == "$expected_children" ]]', publish)
+
+            verify = job_block(self.workflow, "verify-public")
+            self.assertNotIn("\n      credentials:", verify)
+            self.assertNotIn("REGISTRY_TOKEN", verify)
+            self.assertIn("docker pull --platform '${{ matrix.platform }}'", verify)
+            self.assertIn('bash os/tests/release_tools_image.sh "$image"', verify)
         with self.subTest(phase='isolated publisher uses the verified public compiler free image'):
             self.doCleanups()
             self.setUp()

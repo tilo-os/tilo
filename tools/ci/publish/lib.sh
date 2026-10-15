@@ -41,21 +41,6 @@ id_token() {
   printf '%s' "$token"
 }
 
-# buildah without a daemon, as root in t's sandbox: chroot isolation and the vfs driver need no
-# user namespace of their own and no writable root. The store lives under $scratch/NAME; `b`
-# runs buildah on it.
-use_buildah() {
-  local store=$scratch/${1:-buildah}
-  export STORAGE_DRIVER=vfs BUILDAH_ISOLATION=chroot
-  mkdir -p "$store"
-  # The image's own storage.conf names an additional image store under its read-only root.
-  printf '[storage]\ndriver = "vfs"\n' > "$store/storage.conf"
-  export CONTAINERS_STORAGE_CONF=$store/storage.conf
-  buildah_root=$store/root
-  buildah_runroot=$store/run
-}
-b() { buildah --root "$buildah_root" --runroot "$buildah_runroot" "$@"; }
-
 # The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH.
 use_cosign() {
   command -v cosign >/dev/null && return

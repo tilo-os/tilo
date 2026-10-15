@@ -11,7 +11,7 @@
 //! that answered "no" but acted anyway still fails.
 //!
 //! The suite is the `tenant_isolation::` module of the relay's `it` target;
-//! the `security-isolation` check in `t.toml` runs it nightly and on
+//! `.forgejo/workflows/security-isolation.yml` runs it nightly and on
 //! demand alongside the room-access and agent-confinement suites.
 
 #![allow(

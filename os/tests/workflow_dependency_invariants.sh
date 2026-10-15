@@ -15,7 +15,7 @@ kernel_workflow="$workflows/build-kernel.yml"
 rpm_snapshot_workflow="$workflows/build-rpms.yml"
 containerfile="$repo/os/Containerfile"
 nightly_workflow="$workflows/ci-nightly.yml"
-visual_refresh="$repo/tools/ci/visual-baselines.sh"
+visual_refresh_workflow="$workflows/dev-visual-baselines.yml"
 github_cache_workflows=(
   "$workflows/build-ci-builder.yml"
   "$workflows/build-image.yml"
@@ -136,16 +136,19 @@ else
   fail=1
 fi
 
-# The refresh renders on the project's builder image and records it with its
-# candidates; the nightly verifies against the recorded one.
+# Both render on the builder every job resolves; the refresh records it with
+# its candidates and the nightly verifies against the recorded one.
 if grep -Fq 'image: ${{ needs.builder.outputs.image }}' "$nightly_workflow" \
+  && grep -Fq 'image: ${{ needs.builder.outputs.image }}' "$visual_refresh_workflow" \
   && grep -Fq 'golden-image.sh check "$BUILDER_IMAGE"' "$nightly_workflow" \
-  && grep -Fq 'bash tools/ci/golden-image.sh record "$image"' "$visual_refresh" \
+  && grep -Fq 'golden-image.sh record "$BUILDER_IMAGE"' "$visual_refresh_workflow" \
   && grep -Eq '^registry\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}$' \
     "$repo/.config/visual-goldens-image" \
-  && grep -Fq 'xargs -0 -r git add -N --' "$visual_refresh" \
-  && grep -Fq 'sha256sum candidates.patch > candidates.patch.sha256' "$visual_refresh" \
-  && ! grep -Fq 'git push' "$visual_refresh"; then
+  && grep -Fq 'Upload candidates for visual review' "$visual_refresh_workflow" \
+  && grep -Fq 'xargs -0 -r git add -N --' "$visual_refresh_workflow" \
+  && grep -Fq 'sha256sum candidates.patch > candidates.patch.sha256' \
+    "$visual_refresh_workflow" \
+  && ! grep -Fq 'git push origin' "$visual_refresh_workflow"; then
   printf 'ok    visual verification and reviewed candidates name one recorded builder\n'
 else
   printf 'visual candidates must record the builder the nightly verifies on and never auto-commit pixels\n' >&2

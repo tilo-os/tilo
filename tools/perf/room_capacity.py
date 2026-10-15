@@ -15,8 +15,8 @@ and log. `summarize` reads a sweep's reports and derives:
 - what 100 concurrent guests cost on each `[room_node.*]` of
   tools/perf/prices.toml.
 
-The perf-room-capacity check in t.toml (`t dispatch perf-room-capacity`)
-runs both on a node of known size; docs/benchmarks/room-host-capacity-2026-10.md
+The Perf / room host capacity workflow (.forgejo/workflows/perf-room-capacity.yml)
+runs both on a runner of known size; docs/benchmarks/room-host-capacity-2026-10.md
 records a run.
 
     python3 tools/perf/room_capacity.py sweep --bin target/release/tilo-room-load --out sweep
