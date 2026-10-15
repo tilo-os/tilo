@@ -157,7 +157,7 @@ impl HostedRoom {
                     replication: tilo_relay::ReplicationIntent::FullWorkspace,
                     admitted_users: vec![],
                     shell_authority: Some(
-                        tilo_peer_state::retained_proof::RetentionAuthority::new(
+                        tilo_relay_protocol::retention::RetentionAuthority::new(
                             &room.to_string(),
                             governor.clone(),
                         )

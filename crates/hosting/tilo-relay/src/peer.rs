@@ -5735,7 +5735,7 @@ mod private_transport_tests {
         runtime
             .store
             .bind_shell_authority(
-                tilo_peer_state::retained_proof::RetentionAuthority::new(
+                tilo_relay_protocol::retention::RetentionAuthority::new(
                     &room,
                     governor.cert.clone(),
                 )
@@ -5841,7 +5841,7 @@ mod private_transport_tests {
             fixtures::{producer_frame, producer_metadata},
         };
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_relay_protocol::retention::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )
@@ -6008,7 +6008,7 @@ mod private_transport_tests {
         use tilo_relay_shell::selection::{self as shell_selection, SelectedRead, Selection};
 
         fn frame(
-            authority: &tilo_peer_state::retained_proof::RetentionAuthority,
+            authority: &tilo_relay_protocol::retention::RetentionAuthority,
             message: &neighbour_wire::NeighbourMsg,
         ) -> Vec<u8> {
             let channel = neighbour_wire::retention(message, true).unwrap().0;
@@ -6099,7 +6099,7 @@ mod private_transport_tests {
             )
             .unwrap();
         let authority =
-            tilo_peer_state::retained_proof::RetentionAuthority::new(room, cert.clone()).unwrap();
+            tilo_relay_protocol::retention::RetentionAuthority::new(room, cert.clone()).unwrap();
         let baseline = publisher
             .durable_bootstrap_messages(&key, now, 1)
             .unwrap()
@@ -6541,7 +6541,7 @@ mod private_transport_tests {
     async fn checkpoint_stage_allocation_error_registers_candidate_for_owner_cleanup() {
         use tilo_relay_shell::selection::fixtures::{producer_frame, producer_metadata};
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_relay_protocol::retention::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )
@@ -6632,7 +6632,7 @@ mod private_transport_tests {
             fixtures::{producer_frame, producer_metadata},
         };
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_relay_protocol::retention::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )
@@ -6845,7 +6845,7 @@ mod private_transport_tests {
             fixtures::{producer_frame, producer_metadata},
         };
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_relay_protocol::retention::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )
@@ -7173,7 +7173,7 @@ mod private_transport_tests {
             admit_frames, producer_fixture, producer_frame, producer_metadata,
         };
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_relay_protocol::retention::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )
@@ -7387,7 +7387,7 @@ mod private_transport_tests {
             admit_frames, producer_fixture, producer_frame, producer_metadata,
         };
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_relay_protocol::retention::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )

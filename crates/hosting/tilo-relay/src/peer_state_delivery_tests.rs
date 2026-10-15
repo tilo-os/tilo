@@ -34,7 +34,7 @@ async fn writer_boundary(
         unix_now_ns(),
     )
     .unwrap();
-    let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+    let authority = tilo_relay_protocol::retention::RetentionAuthority::new(
         meta["room"].as_str().unwrap(),
         cert.clone(),
     )
@@ -332,7 +332,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         unix_now_ns(),
     )
     .unwrap();
-    let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+    let authority = tilo_relay_protocol::retention::RetentionAuthority::new(
         meta["room"].as_str().unwrap(),
         cert.clone(),
     )

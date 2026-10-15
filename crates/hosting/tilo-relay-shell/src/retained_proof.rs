@@ -5,12 +5,13 @@
 //! proofs neither admit live packets nor select/retire stored files. Historical
 //! signature verification deliberately does not replace live freshness,
 //! membership, revocation or capability checks in `StatePeer`.
-use crate::{NeighbourMsg, coverage::Coverage, durability::DurableReceipt};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::{DocumentMutation, WholeDocumentPayload};
+use neighbour_wire::NeighbourMsg;
 use std::collections::BTreeMap;
 use tilo_automerge_isolate::{Applied, Dependencies};
+use tilo_peer_state::{coverage::Coverage, durability::DurableReceipt};
 
 pub use tilo_relay_protocol::retention::RetentionAuthority;
 
@@ -159,7 +160,7 @@ fn document(bytes: &[u8]) -> Result<AutoCommit, ProofError> {
     Ok(doc)
 }
 /// A room frame's framing: each entry exactly one change chunk. Nothing is
-/// decoded here; `crate::room::candidate` decodes them in the isolate.
+/// decoded here; `tilo_peer_state::room::candidate` decodes them in the isolate.
 fn room_framing(changes: &[Vec<u8>]) -> Result<(), ProofError> {
     if changes.is_empty() {
         return Err(ProofError::Unknown);
@@ -174,7 +175,7 @@ fn room_framing(changes: &[Vec<u8>]) -> Result<(), ProofError> {
     }
     Ok(())
 }
-/// The changes of a room frame that `crate::room::candidate` has already
+/// The changes of a room frame that `tilo_peer_state::room::candidate` has already
 /// accepted, parsed in this process only now: the isolate's worker decoded
 /// each of these chunks the same way first.
 ///
@@ -198,7 +199,7 @@ fn admitted_changes(changes: &[Vec<u8>]) -> Result<Vec<automerge::Change>, Proof
 }
 fn valid_coverage(authority: &RetentionAuthority, key: &str, coverage: &Coverage) -> bool {
     coverage.room == authority.room()
-        && key == crate::coverage::route_key(&coverage.app, &coverage.record)
+        && key == tilo_peer_state::coverage::route_key(&coverage.app, &coverage.record)
         && coverage.author == authority.governor().device_public_key
         && coverage.sequence > 0
         && coverage.watermarks.get(&hex::encode(coverage.author)) == Some(&coverage.sequence)
@@ -248,12 +249,12 @@ fn identities(
     doc: &AutoCommit,
 ) -> Result<(), ProofError> {
     let parse = |doc| {
-        crate::room::governance_of(doc)
+        tilo_peer_state::room::governance_of(doc)
             .identities
             .into_iter()
             .map(|(id, bytes)| {
-                let identity: crate::state::GovernedIdentity =
-                    serde_json::from_slice(&bytes).map_err(|_| ProofError::Unknown)?;
+                let identity =
+                    tilo_peer_state::room::identity_row(&bytes).map_err(|_| ProofError::Unknown)?;
                 if id != hex::encode(identity.device_cert.device_public_key) {
                     return Err(ProofError::Unknown);
                 }
@@ -336,7 +337,7 @@ pub fn verify_room(
         RoomInput::Delta => Some(&prior.ok_or(ProofError::Unpaired)?.doc),
     };
     // The isolate decodes the changes first; only then are they parsed here.
-    let doc = crate::room::candidate(base, &changes).map_err(|_| ProofError::Unknown)?;
+    let doc = tilo_peer_state::room::candidate(base, &changes).map_err(|_| ProofError::Unknown)?;
     admitted_changes(&changes)?;
     if !doc.get_missing_deps(&[]).is_empty() {
         return Err(ProofError::Unknown);
@@ -347,10 +348,10 @@ pub fn verify_room(
         _ => return Err(ProofError::Unknown),
     }
     let before = prior.map(|prior| &prior.doc);
-    crate::room::media::validate_transition(
+    tilo_peer_state::room::media::validate_transition(
         before,
         &doc,
-        crate::room::media::TransitionMode::Admission,
+        tilo_peer_state::room::media::TransitionMode::Admission,
     )
     .map_err(|_| ProofError::Unknown)?;
     let pinned = hex::encode(source);
@@ -365,16 +366,22 @@ pub fn verify_room(
     {
         return Err(ProofError::Unknown);
     }
-    if !crate::room::governance_change_allowed(before, &doc, false, Some(&pinned), &pinned)
-        || !crate::room::immutable_receipts(before, &doc)
+    if !tilo_peer_state::room::governance_change_allowed(
+        before,
+        &doc,
+        false,
+        Some(&pinned),
+        &pinned,
+    ) || !tilo_peer_state::room::immutable_receipts(before, &doc)
     {
         return Err(ProofError::Unknown);
     }
-    crate::topology::validate(before, &doc, &pinned, &pinned).map_err(|_| ProofError::Unknown)?;
-    crate::coverage::monotonic(before, &doc).map_err(|_| ProofError::Unknown)?;
-    crate::durability::monotonic(before, &doc).map_err(|_| ProofError::Unknown)?;
-    let coverage = crate::coverage::entries(&doc).map_err(|_| ProofError::Unknown)?;
-    if !crate::coverage::canonical(&doc) {
+    tilo_peer_state::topology::validate(before, &doc, &pinned, &pinned)
+        .map_err(|_| ProofError::Unknown)?;
+    tilo_peer_state::coverage::monotonic(before, &doc).map_err(|_| ProofError::Unknown)?;
+    tilo_peer_state::durability::monotonic(before, &doc).map_err(|_| ProofError::Unknown)?;
+    let coverage = tilo_peer_state::coverage::entries(&doc).map_err(|_| ProofError::Unknown)?;
+    if !tilo_peer_state::coverage::canonical(&doc) {
         return Err(ProofError::Unknown);
     }
     if coverage
@@ -383,8 +390,8 @@ pub fn verify_room(
     {
         return Err(ProofError::Unknown);
     }
-    let durable = crate::durability::entries(&doc).map_err(|_| ProofError::Unknown)?;
-    if !crate::durability::canonical(&doc) {
+    let durable = tilo_peer_state::durability::entries(&doc).map_err(|_| ProofError::Unknown)?;
+    if !tilo_peer_state::durability::canonical(&doc) {
         return Err(ProofError::Unknown);
     }
     for (key, receipt) in durable {
@@ -428,7 +435,7 @@ fn signed_document(
     else {
         return Err(ProofError::Unknown);
     };
-    if peer != crate::peer_handle(&source)
+    if peer != tilo_peer_state::peer_handle(&source)
         || cluster_id != room
         || envelope.author.as_bytes() != &source
         || channel != *blake3::hash(format!("app\0{app_id}\0{record_id}").as_bytes()).as_bytes()
@@ -467,16 +474,18 @@ pub fn verify_snapshot(
         return Err(ProofError::Unknown);
     };
     let mut doc = document(&bytes)?;
-    if let Some(policy) = crate::room::media::parse(&room.doc).map_err(|_| ProofError::Unknown)? {
-        crate::room::media::validate_bound_chat_change(&policy, &app, &record, &doc)
+    if let Some(policy) =
+        tilo_peer_state::room::media::parse(&room.doc).map_err(|_| ProofError::Unknown)?
+    {
+        tilo_peer_state::room::media::validate_bound_chat_change(&policy, &app, &record, &doc)
             .map_err(|_| ProofError::Unknown)?;
     }
-    let key = crate::coverage::route_key(&app, &record);
-    let coverage = crate::coverage::entries(&room.doc)
+    let key = tilo_peer_state::coverage::route_key(&app, &record);
+    let coverage = tilo_peer_state::coverage::entries(&room.doc)
         .map_err(|_| ProofError::Unknown)?
         .remove(&key)
         .ok_or(ProofError::Unpaired)?;
-    let receipt = crate::durability::entries(&room.doc)
+    let receipt = tilo_peer_state::durability::entries(&room.doc)
         .map_err(|_| ProofError::Unknown)?
         .remove(&key)
         .ok_or(ProofError::Unpaired)?;
@@ -522,7 +531,7 @@ impl VerifiedRoom {
     ///
     /// Returns a [`ProofError`] if the room coverage rows are malformed.
     pub fn coverages(&self) -> Result<BTreeMap<String, Coverage>, ProofError> {
-        crate::coverage::entries(&self.doc).map_err(|_| ProofError::Unknown)
+        tilo_peer_state::coverage::entries(&self.doc).map_err(|_| ProofError::Unknown)
     }
     /// Causality only. A Covered room frame may still be an indispensable exact
     /// app prerequisite. Cross-channel selection must check its app pairs.
@@ -544,7 +553,7 @@ impl VerifiedRoom {
             return CoverageDecision::Unknown;
         }
         // Decode the frame in the isolate, on its own, before parsing it here.
-        if crate::room::candidate(None, &changes).is_err() {
+        if tilo_peer_state::room::candidate(None, &changes).is_err() {
             return CoverageDecision::Unknown;
         }
         let Ok(changes) = admitted_changes(&changes) else {
@@ -793,5 +802,7 @@ fn tail_decision(
     }
 }
 
+#[cfg(test)]
+mod media_tests;
 #[cfg(test)]
 mod tests;

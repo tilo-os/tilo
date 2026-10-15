@@ -157,7 +157,7 @@ impl Recovery {
             runtime
                 .store
                 .bind_shell_authority(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(room, cert).unwrap(),
+                    tilo_relay_protocol::retention::RetentionAuthority::new(room, cert).unwrap(),
                 )
                 .unwrap();
             runtime.checkpoint_prefix_recovery =

@@ -315,7 +315,7 @@ impl Fixture {
             runtime
                 .store
                 .bind_shell_authority(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(
+                    tilo_relay_protocol::retention::RetentionAuthority::new(
                         &room,
                         fixture.source.peer.cert.clone(),
                     )
