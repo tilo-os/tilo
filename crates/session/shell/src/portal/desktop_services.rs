@@ -6,6 +6,7 @@
 //! tests can use deterministic recording implementations.  The default is
 //! always an explicit cancellation/unavailable result, never fabricated data.
 
+use super::reply::Ended;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Read;
@@ -32,6 +33,20 @@ impl<T> PortalResult<T> {
             Self::Success(_) => 0,
             Self::Cancelled => 1,
             Self::Unavailable(_) | Self::Failed(_) => 2,
+        }
+    }
+
+    /// The service's value, or how the request ended without one.
+    ///
+    /// # Errors
+    ///
+    /// [`Ended::Cancelled`] when the user declined, [`Ended::Failed`] when
+    /// the service is unavailable or failed.
+    pub fn into_result(self) -> Result<T, Ended> {
+        match self {
+            Self::Success(value) => Ok(value),
+            Self::Cancelled => Err(Ended::Cancelled),
+            Self::Unavailable(_) | Self::Failed(_) => Err(Ended::Failed),
         }
     }
 }

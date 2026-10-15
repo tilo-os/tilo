@@ -12,8 +12,6 @@ use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
-#[cfg(target_os = "linux")]
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -349,8 +347,7 @@ impl NotificationBackend {
         id: String,
         notification: HashMap<String, OwnedValue>,
     ) {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
+        let Ok(auth) = authenticate_call(&self.ctx, &hdr, &app_id, None).await else {
             return;
         };
         if id.is_empty() || id.len() > 255 || id.chars().any(char::is_control) {
@@ -393,8 +390,7 @@ impl NotificationBackend {
         app_id: String,
         id: String,
     ) {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        if authenticate_call(&self.ctx, sender.as_ref(), &app_id, None)
+        if authenticate_call(&self.ctx, &hdr, &app_id, None)
             .await
             .is_err()
         {

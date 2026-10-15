@@ -11,8 +11,6 @@ use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
-#[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 use zbus::zvariant::OwnedValue;
 #[cfg(target_os = "linux")]
@@ -61,9 +59,7 @@ impl WallpaperBackend {
         uri: String,
         options: HashMap<String, OwnedValue>,
     ) -> u32 {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        let Ok(auth) = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window)).await
         else {
             return 2;
         };
