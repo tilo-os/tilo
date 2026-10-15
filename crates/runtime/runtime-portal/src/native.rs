@@ -181,53 +181,12 @@ mod unix {
             .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
     }
 
-    /// The desktop name a Tilo login announces before its compositor starts;
-    /// the compositor's own test for a real Tilo session reads the same value.
-    const TILO_DESKTOP: &str = "tilo";
-
-    /// Host executables to attach to, in preference order. Inside the Tilo
-    /// desktop only the session's own host serves, so an app never attaches
+    /// Host executables to attach to, in preference order. Inside a Tilo
+    /// login only the session's own host serves, so an app never attaches
     /// to a second authority beside it; elsewhere the standalone host comes
     /// first.
     fn host_names() -> &'static [&'static str] {
-        if session_marker_present() {
-            return &["tilo-runtime-mcp"];
-        }
-        host_names_for(env::var_os("XDG_CURRENT_DESKTOP").as_deref())
-    }
-
-    /// Whether this account's runtime directory holds a Tilo compositor's own
-    /// sockets (`tilo_runtime::session_door` is the client's copy of this
-    /// test). A terminal multiplexer, `ssh` or a service can start an app
-    /// without `XDG_CURRENT_DESKTOP`; the session's sockets still say which
-    /// login it is in.
-    fn session_marker_present() -> bool {
-        use std::os::unix::fs::FileTypeExt as _;
-        let runtime = env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_absolute())
-            .unwrap_or_else(|| {
-                // SAFETY: `geteuid` has no failure mode.
-                PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }))
-            });
-        ["agent.sock", "admin-control.sock"].iter().any(|name| {
-            std::fs::symlink_metadata(runtime.join("tilo-session").join(name))
-                .is_ok_and(|metadata| metadata.file_type().is_socket())
-        })
-    }
-
-    /// [`host_names`] for one `XDG_CURRENT_DESKTOP` value. The value is a
-    /// colon list, and a Tilo login exports `tilo:GNOME`: Tilo is one of its
-    /// entries, matched as the compositor's own `is_tilo_login` matches it.
-    fn host_names_for(current_desktop: Option<&OsStr>) -> &'static [&'static str] {
-        let tilo = current_desktop
-            .and_then(OsStr::to_str)
-            .is_some_and(|value| {
-                value
-                    .split(':')
-                    .any(|part| part.eq_ignore_ascii_case(TILO_DESKTOP))
-            });
-        if tilo {
+        if tilo_paths::login::is_tilo_login() {
             &["tilo-runtime-mcp"]
         } else {
             &["tilo-runtime", "tilo-runtime-mcp"]
@@ -303,28 +262,5 @@ mod unix {
                 .join("crates/runtime/tilo-runtime/Cargo.toml")
                 .is_file())
         .then(|| target.to_path_buf())
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn a_tilo_login_attaches_only_to_the_sessions_host() {
-            for desktop in ["tilo", "tilo:GNOME", "GNOME:tilo"] {
-                assert_eq!(
-                    host_names_for(Some(OsStr::new(desktop))),
-                    ["tilo-runtime-mcp"],
-                    "{desktop}"
-                );
-            }
-            for desktop in [Some("GNOME"), Some("tilox"), None] {
-                assert_eq!(
-                    host_names_for(desktop.map(OsStr::new)),
-                    ["tilo-runtime", "tilo-runtime-mcp"],
-                    "{desktop:?}"
-                );
-            }
-        }
     }
 }

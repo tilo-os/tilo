@@ -989,15 +989,12 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
 /// Returns bounded startup, transport, thread-spawn or stdio errors, and a
 /// Tilo login's missing or silent agent door.
 pub fn connect(profile: &Path, standalone: bool) -> io::Result<()> {
-    let runtime_dir = crate::session_door::current_runtime_dir();
     let route = crate::session_door::route(
         standalone,
-        crate::session_door::in_tilo_login(
-            std::env::var_os("XDG_CURRENT_DESKTOP").as_deref(),
-            runtime_dir.as_deref(),
-            crate::session_door::has_session_marker,
+        tilo_paths::login::is_tilo_login(),
+        crate::session_door::agent_socket_path(
+            tilo_paths::login::login_runtime_dir().map(Into::into),
         ),
-        crate::session_door::agent_socket_path(runtime_dir.map(Into::into)),
         Path::exists,
     )?;
     let stream = match route {
