@@ -354,10 +354,12 @@ pub struct ReplayBuild {
     selected: Option<File>,
     shell_selected: bool,
     skip: Option<ResumeSkip>,
-    /// The retained frames listed to pin when the capture is prepared
-    /// (`capture.manifest`), and the lease that keeps them in place until
-    /// then ([`CaptureLeases`]). A final cut pins what it lists at once.
-    listed: Option<(File, CaptureLease)>,
+    /// The frames listed to pin when the capture is prepared
+    /// (`capture.manifest`): the retained frames, with the lease that keeps
+    /// them in place until then ([`CaptureLeases`]), or a final cut's held
+    /// commits, which nothing changes once the cut is taken. The device's
+    /// own queue is pinned at once.
+    listed: Option<(File, Option<CaptureLease>)>,
 }
 /// Retained frames a resuming device already holds, by
 /// [`super::resume::frame_digest`]; a replay for it leaves them out.
@@ -397,7 +399,7 @@ struct Link {
     listed: File,
     /// `continuity.manifest`, which a pinned frame's receipt joins.
     continuity: File,
-    _lease: CaptureLease,
+    _lease: Option<CaptureLease>,
 }
 /// A captured replay: pinned retained frames, ready to prepare and read.
 pub struct ReplaySnapshot {
@@ -693,14 +695,10 @@ impl WorkspaceStore {
             next_pin: 0,
             continuity: Some(File::create(root.join("continuity.manifest"))?),
             skip: None,
-            listed: if pending_only {
-                None
-            } else {
-                Some((
-                    File::create(root.join("capture.manifest"))?,
-                    self.lease_capture(),
-                ))
-            },
+            listed: Some((
+                File::create(root.join("capture.manifest"))?,
+                (!pending_only).then(|| self.lease_capture()),
+            )),
         })
     }
     /// Invoke under one owner operation until Done; later mutations must not
@@ -930,10 +928,12 @@ impl WorkspaceStore {
             if let Some((source, key)) = selected {
                 let pin = build.next_pin;
                 increment(&mut build.next_pin)?;
-                if build.phase == 2
+                // Retained frames, and a final cut's held commits, are pinned
+                // when the capture is prepared, off the owner.
+                let held = build.phase == 3 && build.held.is_some() && !build.held_listed;
+                if (build.phase == 2 || held)
                     && let Some((listed, _)) = build.listed.as_mut()
                 {
-                    // Pinned when the capture is prepared, off the owner.
                     write_meta(
                         listed,
                         &Meta {
@@ -944,7 +944,7 @@ impl WorkspaceStore {
                                 .into(),
                             pin,
                             len: 0,
-                            pending: false,
+                            pending: held,
                         },
                     )?;
                     continue;
