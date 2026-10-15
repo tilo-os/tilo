@@ -334,15 +334,29 @@ fn history_path() -> Option<std::path::PathBuf> {
 
 /// `key`'s per-workspace map from the history file at `path`. A missing or
 /// malformed file reads as empty.
+#[cfg(test)]
 fn load_history_map_at<T: serde::de::DeserializeOwned>(
     path: Option<&std::path::Path>,
     key: &str,
 ) -> HashMap<u64, T> {
-    let doc: serde_json::Map<String, serde_json::Value> = path
-        .and_then(|path| std::fs::read(path).ok())
+    let doc = path.map(read_history_doc).unwrap_or_default();
+    history_map_from(doc.get(key))
+}
+
+/// Every map in the history file at `path`. A missing or malformed file
+/// reads as empty.
+fn read_history_doc(path: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read(path)
+        .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
-    doc.get(key)
+        .unwrap_or_default()
+}
+
+/// The per-workspace map one key of the history file holds.
+fn history_map_from<T: serde::de::DeserializeOwned>(
+    value: Option<&serde_json::Value>,
+) -> HashMap<u64, T> {
+    value
         .and_then(|value| value.as_object())
         .into_iter()
         .flat_map(|values| values.iter())
@@ -353,6 +367,55 @@ fn load_history_map_at<T: serde::de::DeserializeOwned>(
             ))
         })
         .collect()
+}
+
+/// What this process knows each history file holds: the file as read once,
+/// overlaid with every map saved since. This process is the file's only
+/// writer, so the newest map per key is the one saved last here, whether or
+/// not the writer thread has reached the disk with it yet.
+#[derive(Default)]
+struct KnownHistory {
+    /// Whether the file itself was read into `maps`.
+    read: bool,
+    maps: serde_json::Map<String, serde_json::Value>,
+}
+
+static KNOWN_HISTORY: std::sync::Mutex<Option<HashMap<std::path::PathBuf, KnownHistory>>> =
+    std::sync::Mutex::new(None);
+
+fn with_known_history<R>(path: &std::path::Path, body: impl FnOnce(&mut KnownHistory) -> R) -> R {
+    let mut known = KNOWN_HISTORY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    body(
+        known
+            .get_or_insert_with(HashMap::new)
+            .entry(path.to_path_buf())
+            .or_default(),
+    )
+}
+
+/// `key`'s map as this process last saved it, else as the history file at
+/// `path` holds it. Never waits for the writer thread: a save still on its
+/// way to disk is served from memory, and the file is read at most once.
+fn load_known_history_map<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    key: &str,
+) -> HashMap<u64, T> {
+    if let Some(found) = with_known_history(path, |known| {
+        (known.read || known.maps.contains_key(key)).then(|| history_map_from(known.maps.get(key)))
+    }) {
+        return found;
+    }
+    // Read outside the lock; a map saved meanwhile is newer than the file's.
+    let file = read_history_doc(path);
+    with_known_history(path, |known| {
+        for (name, values) in file {
+            known.maps.entry(name).or_insert(values);
+        }
+        known.read = true;
+        history_map_from(known.maps.get(key))
+    })
 }
 
 /// Replace `key`'s map in the history file at `path`, keeping its other maps:
@@ -402,10 +465,13 @@ fn write_history_maps_at<'a>(
     tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
 }
 
+/// `key`'s map in the device's history file. The palette asks for one on
+/// every query, often right after a workspace switch saved the others, so
+/// this never waits for that save to reach the disk.
 fn load_history_map<T: serde::de::DeserializeOwned>(key: &str) -> HashMap<u64, T> {
-    // A save still on its way to disk is part of what the file holds.
-    settle_history_writes();
-    load_history_map_at(history_path().as_deref(), key)
+    history_path()
+        .map(|path| load_known_history_map(&path, key))
+        .unwrap_or_default()
 }
 
 /// Hand `key`'s map to the history writer. Leaving a workspace saves both
@@ -423,6 +489,9 @@ fn save_history_map<T: serde::Serialize>(key: &'static str, values: &HashMap<u64
 /// Queue `values` as `key`'s map in the history file at `path`; returns at
 /// once unless the writer thread could not start.
 fn queue_history_save(path: std::path::PathBuf, key: &'static str, values: serde_json::Value) {
+    with_known_history(&path, |known| {
+        known.maps.insert(key.to_owned(), values.clone());
+    });
     let request = HistoryWrite::Save { path, key, values };
     let unsent = match history_writer() {
         Some(writer) => writer.send(request).err().map(|error| error.0),
@@ -478,6 +547,8 @@ fn history_writer() -> Option<&'static mpsc::Sender<HistoryWrite>> {
 /// Wait until every history save made so far is on disk. Free while nothing
 /// was ever saved.
 fn settle_history_writes() {
+    #[cfg(test)]
+    SETTLES_ON_THIS_THREAD.with(|settles| settles.set(settles.get().saturating_add(1)));
     let Some(Some(writer)) = HISTORY_WRITER.get() else {
         return;
     };
@@ -485,6 +556,12 @@ fn settle_history_writes() {
     if writer.send(HistoryWrite::Settle(done)).is_ok() {
         let _ = wait.recv();
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How often this thread waited for the history writer.
+    static SETTLES_ON_THIS_THREAD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// How long the history writer waits for another save before writing: a
@@ -557,12 +634,17 @@ impl HistoryBatch {
 
 /// Palette actions use only this device's explicit choices for the active room.
 pub(crate) fn morning_source_actions(workspace: &Workspace) -> Vec<(String, String)> {
+    morning_source_actions_from(workspace, &load_history_map("morning_sources"))
+}
+
+fn morning_source_actions_from(
+    workspace: &Workspace,
+    choices: &HashMap<u64, tilo_desktop::activity::morning::MorningPreferences>,
+) -> Vec<(String, String)> {
     use crate::shell::i18n::t;
     use tilo_desktop::activity::morning::{
         MORNING_DRAFT, MORNING_NEXT, MORNING_OPEN, MORNING_REFRESH, MORNING_REMOVE,
-        MorningPreferences,
     };
-    let choices: HashMap<u64, MorningPreferences> = load_history_map("morning_sources");
     choices
         .get(&workspace.id.raw())
         .map_or_else(Vec::new, |preferences| {
@@ -1087,6 +1169,83 @@ mod tests {
             std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
             0o700
         );
+    }
+
+    /// The palette lists the morning-source actions on every query, often
+    /// right after leaving a workspace handed its frontiers and departures to
+    /// the history writer. The query is served what this process saved and
+    /// what the file held, and never waits for the writer's synced write.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_palette_after_a_workspace_switch_never_waits_for_the_history_writer() {
+        use tilo_desktop::activity::morning::{MorningPreferences, MorningSource};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state/tilo/activity-history.json");
+        let tree = WorkspaceTree::bootstrap_demo();
+        let workspace = tree.desktop.active_workspace().expect("workspace").clone();
+        let preferences = HashMap::from([(
+            workspace.id.raw(),
+            MorningPreferences {
+                room: workspace.room.to_string(),
+                sources: vec![MorningSource {
+                    app: "so.tilo.weather".into(),
+                    resource: "weather.location:fixture".into(),
+                }],
+            },
+        )]);
+        save_history_map_at(&path, "morning_sources", &preferences).expect("saved");
+        // Started here, the writer does not inherit the guard's filter.
+        let _ = history_writer();
+        let (actions, departures, settles) =
+            crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+                // Leaving a workspace hands both maps to the writer.
+                queue_history_save(
+                    path.clone(),
+                    "seen_frontiers",
+                    history_map_value(&HashMap::from([(9_u64, WorkspaceSeenFrontier::default())])),
+                );
+                queue_history_save(
+                    path.clone(),
+                    "departures",
+                    history_map_value(&HashMap::from([(
+                        7_u64,
+                        WorkspaceDeparture {
+                            departed_at_secs: 1_700_000_000,
+                            frontier: WorkspaceSeenFrontier::default(),
+                        },
+                    )])),
+                );
+                // The palette's next query.
+                let choices = load_known_history_map(&path, "morning_sources");
+                let actions = morning_source_actions_from(&workspace, &choices);
+                let departures: HashMap<u64, WorkspaceDeparture> =
+                    load_known_history_map(&path, "departures");
+                (
+                    actions,
+                    departures,
+                    SETTLES_ON_THIS_THREAD.with(std::cell::Cell::get),
+                )
+            });
+        assert_eq!(settles, 0, "a palette query waited for the history writer");
+        assert_eq!(
+            actions.len(),
+            5,
+            "the morning source the file held is offered"
+        );
+        assert_eq!(
+            departures
+                .get(&7)
+                .map(|departure| departure.departed_at_secs),
+            Some(1_700_000_000),
+            "a save still on its way to disk is what a load returns"
+        );
+        settle_history_writes();
+        let on_disk: HashMap<u64, WorkspaceDeparture> =
+            load_history_map_at(Some(&path), "departures");
+        assert!(on_disk.contains_key(&7), "the save still reaches the disk");
+        let kept: HashMap<u64, MorningPreferences> =
+            load_history_map_at(Some(&path), "morning_sources");
+        assert_eq!(kept, preferences, "the writer keeps the file's other maps");
     }
 
     #[test]
