@@ -269,6 +269,21 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
     let state = rooms.room(&room).await.unwrap();
     let due = state.lock().await.peer().sealed_records_to_compact();
     assert!(due.is_empty(), "the history was compacted: {due:?}");
+    // Members hold every write it covers: the compaction stays with the
+    // governor's copy and is never pushed to them.
+    let published = state
+        .lock()
+        .await
+        .record
+        .outgoing
+        .iter()
+        .filter_map(|publication| postcard::from_bytes::<NeighbourMsg>(&publication.bytes).ok())
+        .filter(|message| {
+            matches!(message, NeighbourMsg::AppDocument { envelope, .. }
+                if envelope.kind == collab_types::OpKind::Compaction)
+        })
+        .count();
+    assert_eq!(published, 0, "a compaction is not published to members");
     drop((state, rooms));
     relay.shutdown().await;
 }
