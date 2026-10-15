@@ -485,7 +485,7 @@ impl WorkspaceStore {
     pub fn save_membership(&self, devices: &[[u8; 32]]) -> Result<(), StoreError> {
         if let Some(mut access) = self.load_governed_access()? {
             access.member_devices = devices.to_vec();
-            return self.save_governed_access(&access);
+            return self.save_governed_access(&access).map(drop);
         }
         let encoded: Vec<_> = devices.iter().map(hex::encode).collect();
         let bytes = serde_json::to_vec_pretty(&encoded)
@@ -534,7 +534,7 @@ impl WorkspaceStore {
     pub(crate) fn save_governed_access(
         &self,
         access: &GovernedAccessRecord,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Vec<u8>, StoreError> {
         let encoded = GovernedAccessFile {
             version: 1,
             member_devices: access.member_devices.iter().map(hex::encode).collect(),
@@ -543,7 +543,7 @@ impl WorkspaceStore {
         let bytes = serde_json::to_vec_pretty(&encoded)
             .map_err(|error| StoreError::Json(error.to_string()))?;
         atomic_write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
-        Ok(())
+        Ok(bytes)
     }
 
     /// Claim a compute job identifier durably before routing it. Returns the

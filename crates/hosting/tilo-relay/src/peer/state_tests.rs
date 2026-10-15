@@ -2941,6 +2941,7 @@ async fn replay_boundary_cross_workspace_full_live_queue_fences_exact_session() 
                 source: None,
                 _budget: None,
                 live: session.live.clone(),
+                fanned: None,
             })
             .unwrap();
         let catchup = Arc::new(ReplayCatchup::new(
@@ -3039,6 +3040,7 @@ async fn replay_fenced_before_final_ready_never_writes_ready() {
                 source: None,
                 _budget: None,
                 live: live.clone(),
+                fanned: None,
             })
             .unwrap();
     }
