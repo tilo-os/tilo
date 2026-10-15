@@ -68,8 +68,9 @@ function titled(window, forward) {
   };
 }
 
-/** The entry this page is served under: `{base, home?, tickets?, about?}`;
- * `about` holds the web host's links for the desktop's About sheet. */
+/** The entry this page is served under: `{base, home?, tickets?, about?,
+ * embedder?}`; `about` holds the web host's links for the desktop's About
+ * sheet, `embedder` the origin of the site that embeds the page, if any. */
 export async function readEntry({mode, location, fetch = globalThis.fetch}) {
   const base = new URL(mode === 'app' ? '../' : './', location.href);
   base.search = '';
@@ -83,9 +84,21 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
   }
   const home = typeof config.home?.host?.origin === 'string' ? config.home : null;
   const about = aboutLinks(config.about);
+  const embedder = embedderOrigin(config.embedder);
   return {base: base.href, ...(home ? {home} : {}),
     ...(typeof config.tickets === 'string' ? {tickets: config.tickets} : {}),
-    ...(about ? {about} : {})};
+    ...(about ? {about} : {}), ...(embedder ? {embedder} : {})};
+}
+
+/** The embedding site's origin, when `value` is exactly an https origin. */
+function embedderOrigin(value) {
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.origin === value ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 /** `{parse, format}` over the runtime's Rust grammar under `entry`. */

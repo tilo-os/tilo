@@ -7001,6 +7001,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "staging-handoff-model",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -7166,6 +7167,7 @@ dependencies = [
  "os-actions",
  "serde",
  "serde_json",
+ "staging-handoff-model",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -15055,6 +15057,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "staging-handoff-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "workspace-hack",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16998,6 +17009,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-extension"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "reqwest 0.13.4",
+ "rustix 1.1.4",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "tilo-advisory-lock",
+ "tilo-net",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-feedback"
 version = "0.1.0"
 dependencies = [
@@ -17848,6 +17875,7 @@ name = "tilo-polkit-agent"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix 1.1.4",
  "tilo-copy-lint",
  "tokio",
  "tokio-util",

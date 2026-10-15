@@ -78,7 +78,9 @@ suites = ["tools/ci/test_runtime_dylib_lazy_link.py"]
 [[group]]
 name = "os"
 # os/scripts/oci-rechunk.py reads OCI images through tools/perf/image_size.py.
-inputs = ["os/", "tools/perf/image_size.py"]
+# test_boot_unit_ordering.py holds the extension activation unit's conditions
+# to the helper's own early return.
+inputs = ["os/", "tools/perf/image_size.py", "crates/system/extension-helper/src/machine.rs"]
 suites = [
   "os/dev/test-assemble-app-runtime.py",
   "os/dev/test-export-sdk-compiler.py",
@@ -357,6 +359,8 @@ name = "windows"
 inputs = [
   "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/windows/",
   "crates/session/shell/src/shell/windows_compat.rs",
+  # test_windows_compat_sysext.py: the helper that installs the image.
+  "crates/system/extension-helper/src/",
 ]
 suites = [
   "os/tests/windows_compat_stack.sh",
@@ -630,6 +634,13 @@ inputs = ["crates/browser/tilo-web-desktop/scripts/"]
 suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
 
 [[group]]
+name = "browser-auth-e2e"
+# dev/auth-e2e.mjs reuses the browser qualification's bundle check and
+# drives Chrome through tools/web/chrome.mjs.
+inputs = ["crates/hosting/tilo-room-service/dev/", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs"]
+suites = ["crates/hosting/tilo-room-service/dev/auth-e2e.test.mjs"]
+
+[[group]]
 name = "browser-benchmark-scripts"
 inputs = ["scripts/browser/"]
 suites = [
@@ -703,6 +714,27 @@ package = "tilo-esp-write"
 # its UKIs with the shipped command-line parser, against the built helper.
 inputs = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
 readers = ["crates/system/esp-write/tests/esp_write.rs"]
+
+[[cargo]]
+package = "tilo-extension"
+# The extension helper's tests copy the shipped catalogue into their fixture
+# root and check the units, polkit rule, NetworkManager hook, installer seed,
+# keys and image wiring that start it or that it trusts.
+inputs = [
+  "os/usr/share/tilo/system-extensions/sysext.d/*.json",
+  "os/etc/polkit-1/rules.d/49-tilo-extension.rules",
+  "os/usr/lib/systemd/system/tilo-extension@.service",
+  "os/usr/lib/systemd/system/tilo-extension-activate.service",
+  "os/usr/lib/systemd/system/tilo-extension-refresh.timer",
+  "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf",
+  "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension",
+  "os/usr/libexec/tilo-install",
+  "keys/extensions.pub",
+  "keys/cosign.pub",
+  "os/Containerfile",
+  "os/components.toml",
+]
+readers = ["crates/system/extension-helper/tests/support/mod.rs"]
 
 [[cargo]]
 package = "greeter"
