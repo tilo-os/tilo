@@ -948,8 +948,9 @@ impl TransformService {
         }
     }
 
-    /// Start one directed invocation. Returns the update to send now:
-    /// `Accepted` while it runs, or `Failed` when it cannot start.
+    /// Start one directed invocation. Returns the update to send now: a
+    /// failure when it cannot start, and nothing while it runs, since the
+    /// broker owns acceptance.
     pub fn start(
         &mut self,
         directed: Directed,
@@ -958,11 +959,13 @@ impl TransformService {
         argument: Option<&str>,
         actor: &str,
         context: Option<&ActionContext>,
-    ) -> InvocationUpdate {
+    ) -> Option<InvocationUpdate> {
         let Directed { id, invocation } = directed;
-        let failed = |error: Failure| InvocationUpdate::Failed {
-            invocation,
-            error: *error,
+        let failed = |error: Failure| {
+            Some(InvocationUpdate::Failed {
+                invocation,
+                error: *error,
+            })
         };
         if resource != RESOURCE_ID {
             return failed(failure(
@@ -1017,7 +1020,7 @@ impl TransformService {
             ));
         }
         self.running.insert(id, invocation);
-        InvocationUpdate::Accepted { invocation }
+        None
     }
 
     /// Cancel a running invocation. Returns the terminal update to send, or
@@ -1335,13 +1338,7 @@ mod tests {
             "ada",
             None,
         );
-        assert_eq!(
-            started,
-            InvocationUpdate::Accepted {
-                invocation: seven.invocation
-            },
-            "updates name the invocation the broker delivered"
-        );
+        assert_eq!(started, None, "the broker owns acceptance");
         let wrong = service.start(
             directed(8),
             "agent.transform:other",
@@ -1350,7 +1347,7 @@ mod tests {
             "ada",
             None,
         );
-        assert!(matches!(wrong, InvocationUpdate::Failed { .. }));
+        assert!(matches!(wrong, Some(InvocationUpdate::Failed { .. })));
         let mut done = Vec::new();
         let deadline = tilo_test_env::hang_deadline();
         while done.is_empty() && ui::time::now() < deadline {
