@@ -1992,7 +1992,7 @@ impl ShellNetwork {
         let pending_invitations_path = pending_invites_path(state_dir);
         let personal_continuity_path = personal_continuity_path(state_dir);
         let app_continuations_permitted =
-            crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
                 .permits(crate::shell::continuity_policy::ContinuityCapability::AppContinuations);
         let personal_continuity_store = KnownContents::default();
         let persisted_continuity = if app_continuations_permitted {
@@ -4689,14 +4689,14 @@ impl ShellNetwork {
 
     #[allow(
         clippy::unused_self,
-        reason = "tests inject a per-network policy snapshot while production loads the device-local store"
+        reason = "tests inject a per-network policy snapshot while production reads the session's followed device-local policy"
     )]
     fn continuity_policy(&self) -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
         #[cfg(test)]
         if let Some(policy) = self.continuity_policy_override {
             return policy;
         }
-        crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+        crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
     }
 
     fn permits_continuity(

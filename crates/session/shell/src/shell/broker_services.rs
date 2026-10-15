@@ -1677,7 +1677,8 @@ impl ContinuationServices for NativeContinuations {
         }) = ui::collaboration::handoff::HandoffReport::decode(&message)
         {
             use super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-            if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::AppContinuations) {
+            if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::AppContinuations)
+            {
                 return Err("app continuation permission is disabled".into());
             }
             return super::personal_continuity_registry::global_registry()

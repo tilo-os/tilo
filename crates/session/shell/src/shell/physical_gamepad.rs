@@ -253,7 +253,7 @@ pub fn start_physical_gamepad_forwarding(
     target: &DeviceId,
     binding: PhysicalGamepadBinding,
 ) -> Result<u64, String> {
-    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::TypedGamepad) {
+    if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::TypedGamepad) {
         return Err(crate::shell::i18n::t("continuity-disabled-gamepad"));
     }
     let local = network
