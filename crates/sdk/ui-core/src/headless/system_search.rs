@@ -254,6 +254,7 @@ impl FrameHarness {
     /// Replace the coherent admitted host snapshot. Revocation updates open
     /// results immediately and invalidates undrained selections from older data.
     pub fn replace_global_search_data(&mut self, data: GlobalSearchSourceData) {
+        self.invalidate_local();
         self.system_search.data = data;
         self.system_search.rows.clear();
         self.system_search.pending = None;
@@ -283,6 +284,7 @@ impl FrameHarness {
         }
     }
     pub fn open_global_search_all(&mut self, query: &str) -> Result<(), String> {
+        self.invalidate_local();
         self.global_search_guard()?;
         if !system::query_input_is_bounded(query) {
             return Err("Search query is too long".into());
@@ -311,11 +313,13 @@ impl FrameHarness {
         Ok(())
     }
     pub fn take_global_search_intent(&mut self) -> Option<GlobalSearchIntent> {
+        self.invalidate_local();
         self.system_search.pending.take()
     }
     /// Re-resolve an inert selected address through the existing argument,
     /// confirmation and caller/local-View admission path.
     pub fn handoff_caller_action(&mut self, address: &ActionAddress) -> Result<(), String> {
+        self.invalidate_local();
         self.global_search_guard()?;
         if self.system_search.overlay.is_some() {
             return Err("Close search before handing off an action".into());

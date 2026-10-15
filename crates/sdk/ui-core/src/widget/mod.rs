@@ -1127,7 +1127,6 @@ pub fn note_resource_presentation_changed() {
 }
 
 /// How many times [`note_resource_presentation_changed`] ran on this thread.
-#[cfg(feature = "native")]
 pub(crate) fn resource_presentation_epoch() -> u64 {
     RESOURCE_PRESENTATION_EPOCH.with(std::cell::Cell::get)
 }
