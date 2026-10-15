@@ -446,6 +446,13 @@ impl EndpointEditor {
             if !editing && field.input.text() != label.unwrap_or("") {
                 field.input.set_text(label.unwrap_or(""));
             }
+            // This field is placed outside the retained layout tree. Give it
+            // the resolved theme role so its type follows whole-UI scaling,
+            // just like the measured field band and the suggestions do.
+            field
+                .input
+                .input_mut()
+                .set_content_size(Some(theme.text(ui::tokens::TextRole::Body).size));
             field.input.apply_layout_external(rect);
             field
                 .input
@@ -454,9 +461,9 @@ impl EndpointEditor {
 
         let swap = Rect::new(
             content.x1 - side,
-            (origin_rect.center().y + destination_rect.center().y - side) / 2.0,
+            destination_rect.y0,
             content.x1,
-            (origin_rect.center().y + destination_rect.center().y + side) / 2.0,
+            destination_rect.y1,
         );
         self.swap_rect = Some(swap);
         Button::paint(
