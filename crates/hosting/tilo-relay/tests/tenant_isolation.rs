@@ -29,6 +29,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     CatalogueQuery, InvokeArgument, InvokeRequest, ROOM_GOVERNANCE_PROVIDER, ReceiptStatus,
@@ -249,6 +250,25 @@ fn every_command(room: &RoomSummary, victim: [u8; 32], invite_id: [u8; 32]) -> V
     ]
 }
 
+/// The relay's answer to `command` from `admin`. A transport failure is
+/// neither a grant nor a refusal, so the exchange is tried again, a few
+/// times, before its error is the answer; a refusal or a grant is final.
+async fn administer(
+    admin: &RoomAdminClient,
+    relay: &Relay,
+    command: RoomCommand,
+) -> Result<RoomReply, RoomAdminError> {
+    for _ in 1..3 {
+        match admin.send(relay.node_addr(), command.clone()).await {
+            Err(RoomAdminError::Transport(_) | RoomAdminError::Timeout) => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            answer => return answer,
+        }
+    }
+    admin.send(relay.node_addr(), command).await
+}
+
 /// `admin` sends every command about `room`; each must be refused.
 async fn every_command_refused(
     who: &str,
@@ -260,7 +280,7 @@ async fn every_command_refused(
 ) {
     for command in every_command(room, victim, invite_id) {
         let name = format!("{command:?}");
-        let answer = admin.send(relay.node_addr(), command).await;
+        let answer = administer(admin, relay, command).await;
         assert!(
             matches!(answer, Err(RoomAdminError::Refused(_))),
             "{who} must be refused {name} in room {}: {answer:?}",
@@ -401,7 +421,7 @@ async fn governance_resources(
         .collect()
 }
 
-/// A hosted relay with two tenants' rooms: Acme, where Ann administers, and
+/// A hosted relay with two tenants' rooms: Acme, where Ann invites, and
 /// Globex, where Bob edits and an invitation for Carol waits.
 struct TwoTenants {
     state: tempfile::TempDir,
@@ -448,10 +468,21 @@ impl TwoTenants {
         let globex = rooms.create("Globex").await.unwrap();
         assert_ne!(acme.workspace_id, globex.workspace_id);
 
-        // Ann administers Acme: every governance action in her own room.
+        // Ann invites in Acme: the owner grants her the room's `invite`
+        // governance action, as an owner hands a member a part of running
+        // their room.
         admit(&relay, &host, &ann_laptop, &acme.room, MemberRole::Editor).await;
+        let who = hex::encode(ann.user_pk);
+        let grant = Grant::new(
+            format!("tenant-isolation:invite:{who}"),
+            Subject::Person(who),
+            roles::governance_action(&acme.room, governance::INVITE),
+            KindSet::ALL,
+            Answer::Allow,
+            Subject::Person(hex::encode(provider.user_pk)),
+        );
         rooms
-            .set_member_administrator(&acme.room, &host.cert, [0x11; 32], ann.user_pk)
+            .put_room_grants(&acme.room, &host.cert, [0x11; 32], vec![grant])
             .await
             .unwrap();
         admit(&relay, &host, &bob_phone, &globex.room, MemberRole::Editor).await;
@@ -483,32 +514,33 @@ impl TwoTenants {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_tenants_administrator_reaches_nothing_in_another_tenants_room() {
+async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
     let t = TwoTenants::start().await;
     let rooms = t.rooms();
     let before = t.globex_governance().await;
 
-    // Positive control: Ann administers her own room through the same door.
+    // Positive control: Ann governs her own room through the same door.
     let ann_admin = RoomAdminClient::new(
         device_endpoint(&t.ann_laptop).await,
         t.ann_laptop.cert.clone(),
     );
-    assert!(matches!(
-        ann_admin
-            .send(
-                t.relay.node_addr(),
-                RoomCommand::Pending {
-                    room: t.acme.room.clone()
-                }
-            )
-            .await,
-        Ok(RoomReply::Pending(_))
-    ));
+    let own = administer(
+        &ann_admin,
+        &t.relay,
+        RoomCommand::Pending {
+            room: t.acme.room.clone(),
+        },
+    )
+    .await;
+    assert!(
+        matches!(own, Ok(RoomReply::Pending(_))),
+        "Ann lists her own room's invitations: {own:?}"
+    );
 
     // Enumerate, administer, enter or record anything in Globex: refused,
     // and Globex's governance is exactly what it was.
     every_command_refused(
-        "Acme's administrator",
+        "Acme's inviter",
         &ann_admin,
         &t.relay,
         &t.globex,
@@ -877,7 +909,7 @@ async fn compute_control_refused(who: &str, t: &TwoTenants, device: &TestDevice)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tenants_member_gets_no_compute_control_and_no_job_content() {
     let t = TwoTenants::start().await;
-    compute_control_refused("Acme's administrator", &t, &t.ann_laptop).await;
+    compute_control_refused("Acme's inviter", &t, &t.ann_laptop).await;
     compute_control_refused("Globex's member", &t, &t.bob_phone).await;
     t.relay.shutdown().await;
 }
