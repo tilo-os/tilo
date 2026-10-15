@@ -15,12 +15,15 @@
 //!    but the socket and stdio;
 //! 2. reads the host's request (a size, a rate or a time: nothing the
 //!    room wrote);
-//! 3. starts `GStreamer` without forking a registry scanner, loads every
-//!    plugin a render can need, opens the GPU and draws one frame at the
-//!    requested size, so no code or shader is loaded later;
+//! 3. starts `GStreamer` on its own registry (brought up to date by
+//!    `GStreamer`'s scanner process, while starting another process is
+//!    still allowed), loads every plugin a render can need, opens the GPU
+//!    and draws one frame at the requested size, so no code or shader is
+//!    loaded later;
 //! 4. caps its descriptors and (on Linux) its address space, and confines
-//!    itself through `tilo-sandbox`: read-only access to the plugins, the
-//!    registry, the fonts and the job directory, connected socket pairs
+//!    itself through `tilo-sandbox`: read-only access to the plugins (the
+//!    host's `GST_PLUGIN_PATH` directories among them), the registry, the
+//!    fonts and the job directory, connected socket pairs
 //!    (`GStreamer`'s buses wake through them), and nothing else — no
 //!    writes, no network, no `exec`, no further GPU or driver service.
 //!
@@ -340,17 +343,27 @@ mod helper {
         Ok(())
     }
 
-    /// Read-only: the plugins and the libraries beside them, the registry,
-    /// the fonts, the job directory; and the socket pairs `GStreamer`'s
-    /// buses wake through. The GPU device, opened before confinement, keeps
-    /// working with no further grant: on macOS the Metal device and the
-    /// pipelines the warm-up compiled need no driver service afterwards.
+    /// Read-only: the plugins and the libraries beside them, the plugin
+    /// directories the host's `GST_PLUGIN_PATH` and `GST_PLUGIN_SYSTEM_PATH`
+    /// name (only absolute, existing directories: [`client::plugin_dirs`]),
+    /// the registry, the fonts, the job directory; and the socket pairs
+    /// `GStreamer`'s buses wake through. The GPU device, opened before
+    /// confinement, keeps working with no further grant: on macOS the Metal
+    /// device and the pipelines the warm-up compiled need no driver service
+    /// afterwards.
+    ///
+    /// [`client::plugin_dirs`]: super::client::plugin_dirs
     fn policy(job: &Path, plugins: &[PathBuf]) -> confine::Policy {
         let mut read_only: Vec<PathBuf> = vec![job.to_path_buf()];
         for dir in plugins {
             read_only.push(dir.clone());
             if let Some(lib) = dir.parent() {
                 read_only.push(lib.to_path_buf());
+            }
+        }
+        for key in super::client::PLUGIN_PATH_VARS {
+            if let Some(value) = std::env::var_os(key) {
+                read_only.extend(super::client::plugin_dirs(&value));
             }
         }
         read_only.extend(registry_file());
@@ -364,12 +377,14 @@ mod helper {
     }
 
     /// The registry cache `GStreamer` read at start-up: the file it was
-    /// told, else its default cache directory.
+    /// told (only ever a file, never a directory it names), else its
+    /// default cache directory.
     fn registry_file() -> Option<PathBuf> {
         if let Some(path) =
             std::env::var_os("GST_REGISTRY_1_0").or_else(|| std::env::var_os("GST_REGISTRY"))
         {
-            return Some(PathBuf::from(path));
+            let path = PathBuf::from(path);
+            return (path.is_absolute() && path.is_file()).then_some(path);
         }
         let cache = std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)

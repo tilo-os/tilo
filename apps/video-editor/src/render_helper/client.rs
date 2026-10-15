@@ -10,35 +10,40 @@ use std::time::{Duration, Instant};
 
 use super::proto::{FD_MARKER, FRAMING, PROTOCOL_VERSION, Reply, Request, SNAPSHOT, SOURCES};
 
-/// The variables a helper inherits: where `GStreamer` finds its plugins and
-/// registry, where fonts are, the locale and logging. Never the host's own
-/// (model API keys, state paths).
+/// The variables a helper inherits as they are: where fonts are, where
+/// `GStreamer`'s plugin scanner is, the locale and logging. Never the
+/// host's own (model API keys, state paths). Plugin search paths pass
+/// through [`plugin_dirs`] instead, and the registry is the helper's own
+/// ([`registry`]).
 const PASSED_ENV: &[&str] = &[
     "HOME",
     "LANG",
     "LC_ALL",
     "XDG_CACHE_HOME",
     "XDG_DATA_DIRS",
-    "GST_PLUGIN_PATH",
-    "GST_PLUGIN_PATH_1_0",
-    "GST_PLUGIN_SYSTEM_PATH",
-    "GST_PLUGIN_SYSTEM_PATH_1_0",
     "GST_PLUGIN_SCANNER",
-    "GST_REGISTRY",
-    "GST_REGISTRY_1_0",
     "GST_DEBUG",
     "RUST_LOG",
     "RUST_BACKTRACE",
 ];
 
-/// What every helper runs with: `GStreamer` reads its registry and forks no
-/// scanner (a confined helper can start no process), `ORC` interprets
-/// rather than generating code (a confined helper maps no new executable
-/// memory), and decode and encode stay in software, which is deterministic
-/// and reaches no media service.
+/// The variables naming where `GStreamer` looks for plugins besides its
+/// own directory (an encoder installed outside the system's packages, say).
+/// The helper is given them from the host's environment, and may read the
+/// directories they name once it is confined.
+pub const PLUGIN_PATH_VARS: &[&str] = &[
+    "GST_PLUGIN_PATH",
+    "GST_PLUGIN_PATH_1_0",
+    "GST_PLUGIN_SYSTEM_PATH",
+    "GST_PLUGIN_SYSTEM_PATH_1_0",
+];
+
+/// What every helper runs with: `ORC` interprets rather than generating
+/// code (a confined helper maps no new executable memory), and decode and
+/// encode stay in software, which is deterministic and reaches no media
+/// service. `GStreamer` may update its registry, through its scanner
+/// process, while it starts: that is before the helper confines itself.
 const FIXED_ENV: &[(&str, &str)] = &[
-    ("GST_REGISTRY_FORK", "no"),
-    ("GST_REGISTRY_UPDATE", "no"),
     ("ORC_CODE", "backup"),
     ("TILO_MEDIA_HWDEC", "off"),
     ("TILO_MEDIA_HWENC", "off"),
@@ -62,6 +67,50 @@ pub fn locate() -> Option<PathBuf> {
         .flatten()
         .map(|dir| dir.join(HELPER))
         .find(|candidate| candidate.is_file())
+}
+
+/// The directories of the plugin search path `value` a helper may be given
+/// and read: each entry that is an absolute path to an existing directory
+/// other than the root, canonical. The rest (a relative entry, a file, a
+/// missing path) is dropped, so a host's environment widens a confined
+/// helper's reads by whole plugin directories at most.
+#[must_use]
+pub fn plugin_dirs(value: &std::ffi::OsStr) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for entry in std::env::split_paths(value) {
+        if !entry.is_absolute() {
+            continue;
+        }
+        let Ok(dir) = entry.canonicalize() else {
+            continue;
+        };
+        if dir.is_dir() && dir.parent().is_some() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// The registry a helper keeps of `GStreamer`'s plugins: its own file in
+/// the user's cache, not `GStreamer`'s shared one, which every other
+/// program rewrites for its own plugin path (and so drops a plugin only
+/// this host's `GST_PLUGIN_PATH` names). `None` without a cache directory.
+fn registry() -> Option<PathBuf> {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_absolute())
+                .map(|home| home.join(".cache"))
+        })?;
+    let dir = cache.join("tilo");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join(format!(
+        "video-render-registry.{}.bin",
+        std::env::consts::ARCH
+    )))
 }
 
 /// A private directory a render's inputs are laid out in, removed when
@@ -259,6 +308,21 @@ impl Helper {
                 command.env(key, value);
             }
         }
+        for key in PLUGIN_PATH_VARS {
+            let dirs = std::env::var_os(key)
+                .map(|value| plugin_dirs(&value))
+                .unwrap_or_default();
+            // A path with nothing left in it is not passed: an empty
+            // system path would hide `GStreamer`'s own plugins.
+            if let Ok(value) = std::env::join_paths(dirs)
+                && !value.is_empty()
+            {
+                command.env(key, value);
+            }
+        }
+        if let Some(registry) = registry() {
+            command.env("GST_REGISTRY_1_0", registry);
+        }
         command.envs(FIXED_ENV.iter().copied());
         let child = command
             .spawn()
@@ -274,5 +338,35 @@ impl Drop for Helper {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plugin_dirs;
+
+    #[test]
+    fn a_plugin_path_keeps_only_absolute_existing_directories_other_than_the_root() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let plugins = dir.path().join("gstreamer-1.0");
+        std::fs::create_dir(&plugins).expect("the plugin directory");
+        let file = dir.path().join("libgstsomething.dylib");
+        std::fs::write(&file, b"").expect("a file");
+        let path = std::env::join_paths([
+            plugins.clone(),
+            "relative/gstreamer-1.0".into(),
+            file,
+            dir.path().join("missing"),
+            "/".into(),
+            plugins.join("."),
+        ])
+        .expect("a joinable path");
+        let canonical = plugins.canonicalize().expect("the plugin directory exists");
+        assert_eq!(plugin_dirs(&path), vec![canonical]);
+    }
+
+    #[test]
+    fn an_empty_plugin_path_names_no_directory() {
+        assert!(plugin_dirs(std::ffi::OsStr::new("")).is_empty());
     }
 }
