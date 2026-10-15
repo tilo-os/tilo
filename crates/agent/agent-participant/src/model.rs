@@ -58,6 +58,9 @@ pub struct Briefing {
     /// The room's records [`crate::search::SEARCH_ROOM`] searches
     /// ([`PlanContext::searchable`]).
     pub searchable: Vec<crate::search::SearchDoc>,
+    /// Whether a plan of no steps, with a reply saying so, is an answer
+    /// ([`PlanContext::may_plan_nothing`]).
+    pub may_plan_nothing: bool,
 }
 
 impl Briefing {
@@ -655,6 +658,7 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
         described,
         cache_key: Some(format!("tilo-agent-plan{room}")),
         searchable: context.searchable.clone(),
+        may_plan_nothing: context.may_plan_nothing,
     }
 }
 
@@ -830,6 +834,9 @@ impl Planner for ModelPlanner {
                 &mut read,
             )?,
         };
+        if let Some(refused) = planned_nothing(&answer, context) {
+            return Err(refused);
+        }
         let mut steps = Vec::with_capacity(answer.actions.len().saturating_add(1));
         let mut rest = answer.then.clone();
         for (id, arguments) in answer.actions.iter().zip(answer.arguments) {
@@ -1040,6 +1047,11 @@ fn record_words(app: &str) -> &'static [&'static str] {
         "notes" => &["note", "notebook"],
         // Not "image" or "picture": a document's image is not an artwork.
         "canvas" => &["canva", "artwork", "poster"],
+        // "slide" is the app's own name already, stemmed.
+        "slides" => &["deck", "slide", "presentation", "pptx"],
+        // One word each: "calendar entry" is named by "calendar", the
+        // app's own name; "entry" alone names too much else.
+        "calendar" => &["event"],
         _ => &[],
     }
 }
@@ -1413,6 +1425,24 @@ pub(crate) const PLANNER_INSTRUCTIONS: &str = "You drive Tilo apps only through 
     other documents, or to address you), and copy another document's contents only where the \
     request asks for them.";
 
+/// Why `answer`, a plan of no steps and no rest, is refused: no steps is an
+/// answer only where nothing left to do may be (a check of finished work,
+/// [`PlanContext::may_plan_nothing`]). A first plan that names nothing has
+/// not planned the request, whatever its reply says. `None` otherwise.
+fn planned_nothing(answer: &Answer, context: &PlanContext) -> Option<String> {
+    if !answer.actions.is_empty() || answer.then.is_some() || context.may_plan_nothing {
+        return None;
+    }
+    let reply = answer
+        .reply
+        .as_deref()
+        .map(|reply| format!("; {reply}"))
+        .unwrap_or_default();
+    Some(format!(
+        "nothing offered fits: the plan named nothing to do{reply}"
+    ))
+}
+
 /// What a chat-completions planner whose turn came back empty is asked for:
 /// the `plan` call's argument object as plain JSON text.
 const PLAN_AS_TEXT: &str = "Your answer carried no tool call that could be read. Answer now \
@@ -1471,15 +1501,34 @@ fn joined_then(mut input: serde_json::Value) -> serde_json::Value {
     input
 }
 
+/// A `plan` call's `input` read as the plan: one of no steps is an answer
+/// only when `briefing` allows it ([`Briefing::may_plan_nothing`]).
+///
+/// # Errors
+///
+/// Why the plan is refused, as [`tilo_agent::tools::read_plan`] says.
+pub(crate) fn read_planned(
+    input: &serde_json::Value,
+    revealed: &tilo_agent::tools::Revealed,
+    most_steps: Option<usize>,
+    briefing: &Briefing,
+) -> Result<Answer, String> {
+    if briefing.may_plan_nothing {
+        tilo_agent::tools::read_plan_allowing_none(input, revealed, most_steps)
+    } else {
+        tilo_agent::tools::read_plan(input, revealed, most_steps)
+    }
+}
+
 /// A chat-completions `plan` call's input read as the plan, or the refusal
 /// to send back to the model.
 fn read_chat_plan(
     input: serde_json::Value,
     revealed: &tilo_agent::tools::Revealed,
     most_steps: Option<usize>,
-    catalogue: &Catalogue,
+    (catalogue, briefing): (&Catalogue, &Briefing),
 ) -> Result<Answer, String> {
-    let answer = tilo_agent::tools::read_plan(&joined_then(input), revealed, most_steps)
+    let answer = read_planned(&joined_then(input), revealed, most_steps, briefing)
         .map_err(|error| tilo_agent::tools::plan_refused(&error))?;
     match carried_gap(&answer, catalogue) {
         None => Ok(answer),
@@ -1972,7 +2021,7 @@ impl OpenAiModel {
             let (mut seen, mut answered) = (String::new(), String::new());
             for call in &calls {
                 let result = if call.name == tilo_agent::tools::PLAN {
-                    match tilo_agent::tools::read_plan(&call.input, revealed, most_steps) {
+                    match read_planned(&call.input, revealed, most_steps, briefing) {
                         Ok(answer) => match carried_gap(&answer, catalogue) {
                             None => return Ok(answer),
                             Some(gap) => tilo_agent::tools::plan_refused(&gap),
@@ -2381,11 +2430,12 @@ impl PlanModel for OpenAiModel {
             if reply.calls.is_empty()
                 && let Some(input) = reply.text.as_deref().and_then(plan_in_text)
             {
-                let refused = match read_chat_plan(input, &revealed, most_steps, catalogue) {
-                    Ok(answer) => return Ok(answer),
-                    Err(refused) if no_call.in_text => format!("{refused}\n\n{PLAN_AS_TEXT}"),
-                    Err(refused) => refused,
-                };
+                let refused =
+                    match read_chat_plan(input, &revealed, most_steps, (catalogue, briefing)) {
+                        Ok(answer) => return Ok(answer),
+                        Err(refused) if no_call.in_text => format!("{refused}\n\n{PLAN_AS_TEXT}"),
+                        Err(refused) => refused,
+                    };
                 messages.push(reply.message);
                 messages.push(serde_json::json!({ "role": "user", "content": refused }));
                 continue;
@@ -2407,7 +2457,12 @@ impl PlanModel for OpenAiModel {
                 let result = if call.name == tilo_agent::tools::PLAN {
                     // A refused plan goes back to the model with the reason
                     // (and the shown ids it may have meant) for another try.
-                    match read_chat_plan(call.input.clone(), &revealed, most_steps, catalogue) {
+                    match read_chat_plan(
+                        call.input.clone(),
+                        &revealed,
+                        most_steps,
+                        (catalogue, briefing),
+                    ) {
                         Ok(answer) => return Ok(answer),
                         Err(refused) => refused,
                     }
@@ -2677,6 +2732,26 @@ mod tests {
             "so.tilo.canvas"
         ));
         assert!(!task_names_app("Proofread the document", "so.tilo.sheets"));
+        assert!(task_names_app(
+            "Fix the title of the partner deck",
+            "so.tilo.slides"
+        ));
+        assert!(task_names_app(
+            "Export the presentation as PPTX",
+            "so.tilo.slides"
+        ));
+        assert!(task_names_app(
+            "Move the kickoff events to Friday",
+            "so.tilo.calendar"
+        ));
+        assert!(task_names_app(
+            "Add a calendar entry for the review",
+            "so.tilo.calendar"
+        ));
+        assert!(!task_names_app_itself(
+            "Fix the title of the partner deck",
+            "so.tilo.slides"
+        ));
         assert!(!task_names_app_itself(
             "Use the winning headline from the campaign spreadsheet",
             "so.tilo.sheets"
@@ -3216,6 +3291,31 @@ mod tests {
         assert_eq!(steps[0].record.as_deref(), Some("s1"));
         assert_eq!(steps[0].action, StepAction::Open);
         assert_eq!(steps[1].action, StepAction::Continue("sum column B".into()));
+    }
+
+    /// A plan of no steps is the check's "all done", taken as no steps;
+    /// a first plan of none is refused, and so is one the model wrote
+    /// without a reply, through the same reading the model's calls get.
+    #[test]
+    fn no_steps_are_planned_only_where_nothing_left_is_an_answer() {
+        let mut context = context();
+        let mut planner = canned(&[], "", None);
+        let error = planner.plan("add a heading", &context).unwrap_err();
+        assert!(error.starts_with("nothing offered fits"), "{error}");
+        context.may_plan_nothing = true;
+        let steps = planner.plan("check the work", &context).unwrap();
+        assert!(steps.is_empty(), "{steps:?}");
+
+        let revealed = tilo_agent::tools::Revealed::new();
+        let done = serde_json::json!({"reply": "All done.", "steps": [], "why": "", "then": null});
+        let check = Briefing {
+            may_plan_nothing: true,
+            ..Briefing::default()
+        };
+        assert!(read_planned(&done, &revealed, None, &check).is_ok());
+        assert!(read_planned(&done, &revealed, None, &Briefing::default()).is_err());
+        let silent = serde_json::json!({"steps": [], "why": "", "then": null});
+        assert!(read_planned(&silent, &revealed, None, &check).is_err());
     }
 
     #[test]
