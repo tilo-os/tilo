@@ -113,14 +113,21 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
     // One pan across the strip and back first, as the browser's
     // qualification does: each window is drawn once, which settles what a
     // first frame on screen does once.
-    for dx in [-40.0, 40.0] {
-        for _ in 0..=(max / 40.0).ceil() as usize {
+    for (dx, end) in [(-120.0, max), (120.0, 0.0)] {
+        for _ in 0..200 {
+            if (pan_offset(&handle) - end).abs() < 0.5 {
+                break;
+            }
             wheel(&mut harness, dx);
             harness.poll_frame().unwrap();
         }
+        assert!(
+            (pan_offset(&handle) - end).abs() < 0.5,
+            "the first pan reaches {end}"
+        );
     }
 
-    let frames = 60;
+    let frames: usize = 60;
     let start = pan_offset(&handle);
     let ((), rows) = observe(|| {
         for index in 0..frames {
@@ -156,7 +163,7 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
         "the bound below is meaningful: {bound} bound widgets"
     );
     assert!(
-        records < frames * RECORDS_PER_WINDOW * WINDOWS,
+        records < frames.saturating_mul(RECORDS_PER_WINDOW * WINDOWS),
         "{records} record admissions over {frames} pan frames: the bracket sweep \
          opened records it found nothing in"
     );
@@ -165,10 +172,8 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
 /// How many widgets lie inside a hosted component.
 fn bound_widgets(node: &ui::headless::InspectionNode, inside: bool) -> usize {
     let inside = inside || node.widget == "BoundComponent";
-    usize::from(inside)
-        + node
-            .children
-            .iter()
-            .map(|child| bound_widgets(child, inside))
-            .sum::<usize>()
+    node.children
+        .iter()
+        .map(|child| bound_widgets(child, inside))
+        .fold(usize::from(inside), usize::saturating_add)
 }
