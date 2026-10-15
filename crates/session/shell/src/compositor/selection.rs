@@ -2736,6 +2736,8 @@ mod tests {
     /// finished mirroring. The take-over must follow the newer owner, not
     /// install the older, complete copy over it (a text copy replacing the
     /// image copied right after it, or a cleared clipboard coming back).
+    /// Linux only: it drives the Wayland compositor state.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_complete_copy_is_not_taken_over_once_its_owner_announced_another() {
         use smithay::reexports::calloop::EventLoop;

@@ -290,7 +290,7 @@ Do not reserve runners or ask another agent to allocate a slot. Each case's
 result and the exact source/workflow/builder identities appear in the run summary.
 
 Use operation `clippy` to meet CI's lint gate before pushing, including for
-crates that do not build on macOS (`shell`, `tilo-relay`, `launcher`). It runs
+the Linux-only code a Mac does not compile (`shell`, `tilo-relay`, `launcher`). It runs
 the source's own `tools/ci/clippy-check.sh -p <pkg>…` (all targets,
 `-D warnings`, the workspace lint table), on the runner label, builder image,
 environment and checkout path of CI's `clippy` job, so the two share compiler
@@ -305,6 +305,13 @@ jq -n --arg source "$(git rev-parse HEAD)" \
 ```
 
 The source commit must be pushed (any branch) so the runner can fetch it.
+
+On a Mac, `cargo check --locked -p shell --tests` and `-p tilo-relay --tests`
+compile locally. Code that needs Linux (the Wayland compositor state, `ush`,
+namespaces, netlink, `/proc`) and the tests that drive it sit behind
+`#[cfg(target_os = "linux")]`, so a passing Mac check is a quick first gate,
+not a replacement for the Linux run. A test that needs only portable code
+should stay ungated.
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 

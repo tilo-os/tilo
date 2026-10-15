@@ -14,7 +14,9 @@ mod receive_recovery;
 mod remote_capture;
 mod spatial_cleanup;
 mod spatial_protocol;
+// Dispatches into the compositor's Wayland seat, which exists only on Linux.
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 mod spatial_revocation_tests;
 mod spatial_withdrawal;
 mod window_views;
