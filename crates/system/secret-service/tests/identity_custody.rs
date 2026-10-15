@@ -597,7 +597,7 @@ fn custody_child() {
     let Some(role) = std::env::var_os(CHILD) else {
         return;
     };
-    match role.to_string_lossy().as_ref() {
+    match &*role.to_string_lossy() {
         // Non-dumpable without the device key: the store cannot examine it,
         // and it has nothing to prove with.
         "unproven-import" => {
@@ -631,11 +631,11 @@ fn custody_child() {
                 &legacy_record("D", 6),
             )
             .unwrap();
-            assert_launch_signs(&record, 6);
+            assert_stored_key_signs(&record, 6);
             let run = child_env(CHILD_RUN);
             std::fs::write(run.join("child-imported"), b"").unwrap();
             wait_for_file(&run.join("service-restarted"));
-            assert_launch_signs(&record, 6);
+            assert_stored_key_signs(&record, 6);
             assert!(!dumpable(), "the client turned dumpable again");
         }
         "serve" => serve_with_this_binary_as_portal_host(),
