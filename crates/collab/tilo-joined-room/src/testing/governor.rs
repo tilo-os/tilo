@@ -357,7 +357,9 @@ impl TestGovernor {
     pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
         let now = SystemTime::now();
         let mut candidate = self.peer.clone();
-        candidate.reconcile_media_governance(&self.governor_key, now)?;
+        candidate
+            .media_mut()
+            .reconcile_media_governance(&self.governor_key, now)?;
         let admitted_generation = candidate
             .admitted_room()
             .map(tilo_peer_state::durability::entries)

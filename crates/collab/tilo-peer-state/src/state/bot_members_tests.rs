@@ -244,7 +244,12 @@ fn the_owner_installs_a_bot_in_one_governed_change() {
     let (install, cert) = install_command(&governor, &text, 8, now);
     let command = Command::InstallBot(install);
     assert_eq!(
-        governor.apply_workspace_membership_command(&owner_device, &command, &authority, now),
+        governor.workspace_mut().apply_workspace_membership_command(
+            &owner_device,
+            &command,
+            &authority,
+            now
+        ),
         Ok(true)
     );
     let bots = governor.installations(now).unwrap();
@@ -296,6 +301,7 @@ fn install_refuses_a_delegation_for_another_installation_or_room() {
         let command = Command::InstallBot(install.clone());
         assert!(
             governor
+                .workspace_mut()
                 .apply_workspace_membership_command(&owner_device, &command, &authority, now)
                 .is_err()
         );
@@ -320,6 +326,7 @@ fn install_refuses_a_program_with_unused_rules() {
     let (install, _) = install_command(&governor, &text, 8, now);
     let command = Command::InstallBot(install);
     let refused = governor
+        .workspace_mut()
         .apply_workspace_membership_command(&owner_device, &command, &authority, now)
         .unwrap_err();
     assert!(refused.contains("none of its steps"), "{refused}");
@@ -333,6 +340,7 @@ fn install_refuses_a_program_that_does_not_match_its_hash() {
     install.installation.program = "b".repeat(64);
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(
                 &owner_device,
                 &Command::InstallBot(install),
@@ -351,6 +359,7 @@ fn an_editor_cannot_install_by_default() {
     let command = Command::InstallBot(install);
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(&editor_device, &command, &authority, now)
             .is_err()
     );
@@ -373,6 +382,7 @@ fn an_update_wider_than_the_old_grant_needs_install_bot() {
     let (install, _) = install_command(&governor, &narrow, 8, now);
     let command = Command::InstallBot(install);
     governor
+        .workspace_mut()
         .apply_workspace_membership_command(&editor_device, &command, &authority, now)
         .unwrap();
 
@@ -391,6 +401,7 @@ fn an_update_wider_than_the_old_grant_needs_install_bot() {
     let wide = program(vec![post_rule()]);
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(
                 &editor_device,
                 &update_command(&wide),
@@ -401,7 +412,7 @@ fn an_update_wider_than_the_old_grant_needs_install_bot() {
         "wider needs the privileged review"
     );
     assert_eq!(
-        governor.apply_workspace_membership_command(
+        governor.workspace_mut().apply_workspace_membership_command(
             &editor_device,
             &update_command(&narrow),
             &authority,
@@ -415,6 +426,7 @@ fn an_update_wider_than_the_old_grant_needs_install_bot() {
         .unwrap();
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(
                 &editor_device,
                 &update_command(&wide),
@@ -451,6 +463,7 @@ fn a_bot_is_bounded_by_its_installers_current_authority() {
     let (install, cert) = install_command(&governor, &text, 8, now);
     let command = Command::InstallBot(install);
     governor
+        .workspace_mut()
         .apply_workspace_membership_command(&editor_device, &command, &authority, now)
         .unwrap();
     let post = post_in(&governor);
@@ -484,6 +497,7 @@ fn renewing_replaces_the_delegation_and_moving_withdraws_the_old_device() {
     let (install, cert) = install_command(&governor, &text, 8, now);
     let command = Command::InstallBot(install);
     governor
+        .workspace_mut()
         .apply_workspace_membership_command(&owner_device, &command, &authority, now)
         .unwrap();
     let later = now.checked_add(Duration::from_secs(60)).unwrap();
@@ -499,12 +513,14 @@ fn renewing_replaces_the_delegation_and_moving_withdraws_the_old_device() {
     };
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(&owner_device, &renewal(&cert), &authority, later)
             .unwrap()
     );
     let (_, moved) = bot_device(&person(), 9);
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(&owner_device, &renewal(&moved), &authority, later)
             .unwrap()
     );
@@ -546,7 +562,8 @@ pub(crate) fn installed_bot(
         }),
     }));
     assert_eq!(
-        peer.apply_workspace_membership_command(caller, &command, governor, now),
+        peer.workspace_mut()
+            .apply_workspace_membership_command(caller, &command, governor, now),
         Ok(true)
     );
     (key, cert)
@@ -557,6 +574,7 @@ fn installed(now: SystemTime) -> (StatePeer, SigningKey, DeviceCert, DeviceCert)
     let text = program(vec![post_rule()]);
     let (install, cert) = install_command(&governor, &text, 8, now);
     governor
+        .workspace_mut()
         .apply_workspace_membership_command(
             &owner_device,
             &Command::InstallBot(install),
@@ -577,6 +595,7 @@ fn uninstall_is_final_and_keeps_the_row() {
     let (mut governor, authority, owner, cert) = installed(now);
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(
                 &owner,
                 &Command::UninstallBot { installation: id() },
@@ -600,7 +619,7 @@ fn uninstall_is_final_and_keeps_the_row() {
     let text = program(vec![post_rule()]);
     let (again, _) = install_command(&governor, &text, 9, now);
     assert_eq!(
-        governor.apply_workspace_membership_command(
+        governor.workspace_mut().apply_workspace_membership_command(
             &owner,
             &Command::InstallBot(again),
             &authority,
@@ -616,6 +635,7 @@ fn pausing_needs_no_privilege_and_only_flips_the_flag() {
     let (mut governor, authority, owner, _) = installed(now);
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(
                 &owner,
                 &Command::PauseBot { installation: id() },
@@ -626,7 +646,7 @@ fn pausing_needs_no_privilege_and_only_flips_the_flag() {
     );
     assert!(governor.installation(BOT, now).unwrap().installation.paused);
     assert_eq!(
-        governor.apply_workspace_membership_command(
+        governor.workspace_mut().apply_workspace_membership_command(
             &owner,
             &Command::PauseBot { installation: id() },
             &authority,
@@ -636,6 +656,7 @@ fn pausing_needs_no_privilege_and_only_flips_the_flag() {
     );
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(
                 &owner,
                 &Command::ResumeBot { installation: id() },
@@ -658,11 +679,13 @@ fn appearance_is_a_privileged_change() {
     };
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(&editor, &personas, &authority, now)
             .is_err()
     );
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(&owner, &personas, &authority, now)
             .unwrap()
     );
@@ -700,6 +723,7 @@ fn adopting_moves_the_bot_to_the_adopter_and_reissues_its_grants() {
     // An Editor may not adopt by default: adopt-bot is privileged governance.
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(&editor, &adoption, &authority, now)
             .is_err()
     );
@@ -719,6 +743,7 @@ fn adopting_moves_the_bot_to_the_adopter_and_reissues_its_grants() {
         .unwrap();
     assert!(
         governor
+            .workspace_mut()
             .apply_workspace_membership_command(&editor, &adoption, &authority, now)
             .unwrap()
     );

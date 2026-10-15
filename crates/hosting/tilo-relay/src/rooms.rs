@@ -508,8 +508,8 @@ fn prepare_governance(
     now: SystemTime,
 ) -> Result<(), String> {
     peer.reconcile_administrator_grants(key, now)?;
-    peer.reconcile_media_governance(key, now)?;
-    peer.validate_media_governance_for_publication()
+    peer.media_mut().reconcile_media_governance(key, now)?;
+    peer.media().validate_media_governance_for_publication()
 }
 
 /// Whether the room publishes `message` of a commit to its members. The

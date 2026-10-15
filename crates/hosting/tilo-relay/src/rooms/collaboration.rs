@@ -870,18 +870,16 @@ impl Rooms {
         // Validate retries against today's exact certificate, admission,
         // administration and governor custody through the same typed command.
         let key = self.inner.host.key.clone();
-        room.peer().clone().apply_workspace_membership_command(
-            administrator,
-            &command,
-            &key,
-            system_time(now),
-        )?;
+        room.peer()
+            .clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(administrator, &command, &key, system_time(now))?;
         self.administer(
             &mut room,
             request.request_id,
             request_digest(&("app.authorship.grant", &request))?,
             |peer| {
-                peer.apply_workspace_membership_command(
+                peer.workspace_mut().apply_workspace_membership_command(
                     administrator,
                     &command,
                     &key,
@@ -935,18 +933,16 @@ impl Rooms {
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let key = self.inner.host.key.clone();
-        room.peer().clone().apply_workspace_membership_command(
-            administrator,
-            &command,
-            &key,
-            system_time(now),
-        )?;
+        room.peer()
+            .clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(administrator, &command, &key, system_time(now))?;
         self.administer(
             &mut room,
             digest,
             digest,
             |peer| {
-                peer.apply_workspace_membership_command(
+                peer.workspace_mut().apply_workspace_membership_command(
                     administrator,
                     &command,
                     &key,
@@ -1000,7 +996,7 @@ impl Rooms {
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let mut candidate = room.peer().clone();
-        let changed = candidate.apply_member_effect_receipt(
+        let changed = candidate.workspace_mut().apply_member_effect_receipt(
             caller,
             invocation,
             redacted,

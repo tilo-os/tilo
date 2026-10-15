@@ -494,18 +494,21 @@ fn a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it() {
         .unwrap();
     assert!(
         member
+            .outbox()
             .lookup_retained_local_document(&write, author)
             .unwrap()
             .is_some()
     );
     assert!(
         !member
+            .outbox()
             .retained_local_document_retired(&write, author)
             .unwrap(),
         "only the governor's signed watermark retires it"
     );
     let later = now.checked_add(Duration::from_secs(600)).unwrap();
     let queue = member
+        .outbox_mut()
         .reconcile_local_outbox(std::slice::from_ref(&write), &b, later)
         .unwrap();
     assert_eq!(
@@ -515,6 +518,7 @@ fn a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it() {
     );
     assert!(
         member
+            .outbox()
             .reserve_local_recovery(std::slice::from_ref(&write), None, author)
             .unwrap()
             .entries()

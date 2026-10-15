@@ -77,6 +77,7 @@ impl Rooms {
         }
         governed
             .peer()
+            .workspace()
             .check_workspace_administration(governor.device_public_key, system_time(now))?;
         governed.peer().check_document_read(
             governor.device_public_key,
@@ -183,6 +184,7 @@ impl Rooms {
         }
         governed
             .peer()
+            .workspace()
             .check_workspace_administration(governor.device_public_key, system_time(now))?;
         let keys = governed
             .record_keys(app, record)
@@ -428,6 +430,7 @@ impl Rooms {
         }
         governed
             .peer()
+            .workspace()
             .check_workspace_administration(governor.device_public_key, system_time(now))?;
         if governed.peer().holds_document(app, record) {
             return Ok(false);

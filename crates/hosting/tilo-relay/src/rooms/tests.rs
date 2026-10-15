@@ -1139,6 +1139,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     let guard = current.lock().await;
     let binding = guard
         .peer()
+        .media()
         .resolve_media_binding("so.tilo.chat", "", &voice)
         .expect("the same native source resolves through production voice admission");
     assert_eq!(binding.channel_id, voice);
@@ -1457,7 +1458,12 @@ fn install_bot(
         device: Some(bot_device(id, peer.room(), seed)),
     }));
     assert_eq!(
-        peer.apply_workspace_membership_command(cert, &command, key, SystemTime::now()),
+        peer.workspace_mut().apply_workspace_membership_command(
+            cert,
+            &command,
+            key,
+            SystemTime::now()
+        ),
         Ok(true)
     );
 }

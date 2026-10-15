@@ -192,8 +192,11 @@ impl WorkspaceTaskExecution for Native {
             return Err("foreign task room".into());
         }
         self.owner.with_current(room(), |view| {
-            view.peer()
-                .check_task_execution_actor(agent, None, std::time::SystemTime::now())?;
+            view.peer().workspace().check_task_execution_actor(
+                agent,
+                None,
+                std::time::SystemTime::now(),
+            )?;
             tilo_peer_state::workspace_task::snapshot(
                 view.peer()
                     .admitted_room()
@@ -239,7 +242,9 @@ impl WorkspaceTaskExecution for Native {
         }
         self.owner.with_current(room(), |view| {
             let now = std::time::SystemTime::now();
-            view.peer().check_task_execution_actor(agent, None, now)?;
+            view.peer()
+                .workspace()
+                .check_task_execution_actor(agent, None, now)?;
             requirement.check(view.peer(), requested, agent, now)
         })
     }

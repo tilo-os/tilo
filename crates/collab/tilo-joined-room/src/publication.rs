@@ -279,6 +279,7 @@ fn allowed(
         let projection = decode_entries(&publication.projection)?;
         if view
             .peer
+            .outbox()
             .authorize_local_recovery_projection(
                 &originals,
                 None,
@@ -538,6 +539,7 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
         crate::checkpoint::binding(
             view.record.room,
             view.peer
+                .workspace()
                 .workspace_checkpoint_root()?
                 .ok_or("native checkpoint root disappeared")?,
         )
@@ -645,13 +647,15 @@ fn validate_exact(
     message: &NeighbourMsg,
     device: [u8; 32],
 ) -> Result<(), String> {
-    peer.lookup_retained_local_document(message, device)
+    peer.outbox()
+        .lookup_retained_local_document(message, device)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "native outgoing entry lacks exact committed admission".to_owned())
         .map(|_| ())
 }
 fn retired(peer: &StatePeer, message: &NeighbourMsg, device: [u8; 32]) -> Result<bool, String> {
-    peer.retained_local_document_retired(message, device)
+    peer.outbox()
+        .retained_local_document_retired(message, device)
 }
 pub(crate) fn decode_entries(entries: &[StoredOutgoing]) -> Result<Vec<NeighbourMsg>, String> {
     entries
@@ -707,7 +711,7 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
     }
     let originals = decode_entries(&publication.entries)?;
     if !publication.projection.is_empty() {
-        view.peer.validate_local_recovery_projection(
+        view.peer.outbox().validate_local_recovery_projection(
             &originals,
             None,
             &decode_entries(&publication.projection)?,
@@ -733,7 +737,7 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
         return Err("native governance checkpoint transport mismatch".into());
     }
     if let tilo_owner_commit::CommitTarget::NativeCheckpointRoot { root } = entry.binding.target {
-        if view.peer.workspace_checkpoint_root()? != Some(root)
+        if view.peer.workspace().workspace_checkpoint_root()? != Some(root)
             || entry.binding != crate::checkpoint::binding(view.record.room, root)
         {
             return Err("native checkpoint publication differs from signed root".into());
@@ -802,8 +806,11 @@ pub(crate) fn retire(view: &mut NativeCommittedView) -> Result<(), String> {
         .collect::<Vec<_>>();
     let owes_recovery = decode_entries(&remaining)
         .and_then(|originals| {
-            view.peer
-                .reserve_local_recovery(&originals, None, view.device().device_public_key)
+            view.peer.outbox().reserve_local_recovery(
+                &originals,
+                None,
+                view.device().device_public_key,
+            )
         })
         .is_ok_and(|reservation| reservation.entries() > 0);
     // A projection has no user receipt/exact index. Empty obligations prove its
@@ -813,7 +820,7 @@ pub(crate) fn retire(view: &mut NativeCommittedView) -> Result<(), String> {
         && !owes_recovery
         && decode_entries(&publication.projection)
             .and_then(|projection| {
-                view.peer.validate_local_recovery_projection(
+                view.peer.outbox().validate_local_recovery_projection(
                     &[],
                     None,
                     &projection,
@@ -904,6 +911,7 @@ impl NativeWorkspaceOwner {
         let old = decode_entries(&state(&candidate)?.projection)?;
         let replacement = candidate
             .peer
+            .outbox_mut()
             .reconcile_local_recovery_projection(&originals, None, &old, key, now)?;
         if replacement != old {
             let publication = candidate
@@ -938,7 +946,7 @@ impl NativeWorkspaceOwner {
     }
     /// Renew this device's sealed writes that expired in custody before the
     /// governor retired them, through `reseal`, the channels' key holder
-    /// (see [`StatePeer::renew_local_sealed`]). Each renewal replaces its
+    /// (see [`PeerOutboxMut::renew_local_sealed`](tilo_peer_state::PeerOutboxMut::renew_local_sealed)). Each renewal replaces its
     /// original in one durable commit and moves behind every other entry,
     /// so an author's writes still send in sequence order. A write `reseal`
     /// refuses stays exactly as it was.
@@ -967,6 +975,7 @@ impl NativeWorkspaceOwner {
                 postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
             let renewal = match candidate
                 .peer
+                .outbox_mut()
                 .renew_local_sealed(&original, reseal, key, now)
             {
                 Ok(Some(renewal)) => renewal,

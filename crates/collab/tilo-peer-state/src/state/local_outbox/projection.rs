@@ -4,6 +4,7 @@ use super::{
     LocalDocument, MAX_PUBLICATION_BYTES, MAX_PUBLICATIONS, MemberAuthority, NeighbourMsg, OpKind,
     Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle, publication_size, room,
 };
+use crate::state::facades::{PeerOutbox, PeerOutboxMut};
 
 /// A historical byte/count estimate, never signing or document authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,7 +99,9 @@ impl StatePeer {
             // A sealed write has no history anyone without its key could
             // project; its key holder renews it instead (`renew_local_sealed`).
             if local.mutation.is_none()
-                || self.retained_local_document_retired(original, selected)?
+                || self
+                    .outbox()
+                    .retained_local_document_retired(original, selected)?
             {
                 continue;
             }
@@ -157,22 +160,6 @@ impl StatePeer {
             }
         }
         Ok(routes)
-    }
-
-    /// Reserve capacity for recovering `originals` as the selected device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the originals are not authentic retained custody or exceed the
-    /// recovery budget.
-    pub fn reserve_local_recovery(
-        &self,
-        originals: &[NeighbourMsg],
-        legacy: Option<&StatePeer>,
-        selected: [u8; 32],
-    ) -> Result<LocalRecoveryReservation, String> {
-        let obligations = self.recovery_obligations(originals, legacy, selected)?;
-        self.recovery_reservation(&obligations, selected)
     }
 
     fn recovery_reservation(
@@ -357,23 +344,6 @@ impl StatePeer {
         Ok(())
     }
 
-    /// Check that `projection` exactly recovers `originals`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the projection adds, drops or alters a recovered publication.
-    pub fn validate_local_recovery_projection(
-        &self,
-        originals: &[NeighbourMsg],
-        legacy: Option<&StatePeer>,
-        projection: &[NeighbourMsg],
-        selected: [u8; 32],
-    ) -> Result<(), String> {
-        let obligations = self.recovery_obligations(originals, legacy, selected)?;
-        self.recovery_reservation(&obligations, selected)?;
-        self.validate_projection_history(&obligations, projection, selected)
-    }
-
     fn recovery_current_role(
         &self,
         route: &Route,
@@ -452,7 +422,44 @@ impl StatePeer {
         .map_err(err)?;
         Ok(channel)
     }
-
+}
+impl PeerOutbox<'_> {
+    /// Reserve capacity for recovering `originals` as the selected device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the originals are not authentic retained custody or exceed the
+    /// recovery budget.
+    pub fn reserve_local_recovery(
+        self,
+        originals: &[NeighbourMsg],
+        legacy: Option<&StatePeer>,
+        selected: [u8; 32],
+    ) -> Result<LocalRecoveryReservation, String> {
+        let obligations = self
+            .peer
+            .recovery_obligations(originals, legacy, selected)?;
+        self.peer.recovery_reservation(&obligations, selected)
+    }
+    /// Check that `projection` exactly recovers `originals`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the projection adds, drops or alters a recovered publication.
+    pub fn validate_local_recovery_projection(
+        self,
+        originals: &[NeighbourMsg],
+        legacy: Option<&StatePeer>,
+        projection: &[NeighbourMsg],
+        selected: [u8; 32],
+    ) -> Result<(), String> {
+        let obligations = self
+            .peer
+            .recovery_obligations(originals, legacy, selected)?;
+        self.peer.recovery_reservation(&obligations, selected)?;
+        self.peer
+            .validate_projection_history(&obligations, projection, selected)
+    }
     /// Check that the selected device may publish `projection` at `now`.
     ///
     /// # Errors
@@ -460,7 +467,7 @@ impl StatePeer {
     /// Returns an error if the projection is invalid or its author is not currently
     /// authorized.
     pub fn authorize_local_recovery_projection(
-        &self,
+        self,
         originals: &[NeighbourMsg],
         legacy: Option<&StatePeer>,
         projection: &[NeighbourMsg],
@@ -469,26 +476,30 @@ impl StatePeer {
     ) -> Result<(), String> {
         self.validate_local_recovery_projection(originals, legacy, projection, selected)?;
         for message in projection {
-            let local = self.historical_projection(message, selected)?;
+            let local = self.peer.historical_projection(message, selected)?;
             if !crate::outbox::fresh(message, now) {
                 return Err("recovery projection is not currently fresh".into());
             }
             let NeighbourMsg::AppDocument { envelope, .. } = message else {
                 return Err("recovery projection is not an app document".into());
             };
-            let role = self.recovery_current_role(&local.route, envelope, now)?;
-            self.recovery_validated_channel(&local.route, envelope, &role, now, true)?;
+            let role = self
+                .peer
+                .recovery_current_role(&local.route, envelope, now)?;
+            self.peer
+                .recovery_validated_channel(&local.route, envelope, &role, now, true)?;
         }
         Ok(())
     }
-
+}
+impl PeerOutboxMut<'_> {
     /// Sign the recovery projection's successors, returning them.
     ///
     /// # Errors
     ///
     /// Returns an error if the projection is invalid or cannot be signed.
     pub fn reconcile_local_recovery_projection(
-        &mut self,
+        self,
         originals: &[NeighbourMsg],
         legacy: Option<&StatePeer>,
         projection: &[NeighbourMsg],
@@ -496,10 +507,13 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
         let selected = key.verifying_key().to_bytes();
-        let obligations = self.recovery_obligations(originals, legacy, selected)?;
-        let reservation = self.recovery_reservation(&obligations, selected)?;
-        self.validate_projection_history(&obligations, projection, selected)?;
-        let mut candidate = self.clone();
+        let obligations = self
+            .peer
+            .recovery_obligations(originals, legacy, selected)?;
+        let reservation = self.peer.recovery_reservation(&obligations, selected)?;
+        self.peer
+            .validate_projection_history(&obligations, projection, selected)?;
+        let mut candidate = self.peer.clone();
         let mut replacement = Vec::new();
         for (route, history) in &obligations {
             let route_budget = reservation
@@ -585,7 +599,7 @@ impl StatePeer {
             return Err("recovery projection exceeded reserved representation".into());
         }
         candidate.validate_projection_history(&obligations, &replacement, selected)?;
-        *self = candidate;
+        *self.peer = candidate;
         Ok(replacement)
     }
 }
