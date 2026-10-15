@@ -1236,16 +1236,6 @@ pub(crate) fn surface_row_ptrs(
 ///
 /// # Panics
 /// In unit tests, panics if the isolated Files fixture cannot be created.
-// `tree_handle` is only ever read here (`.clone()`/`.read()`), never
-// moved, so `&WorkspaceTreeHandle` would be the tighter signature — but
-// its callers outside this module (`compositor::frame`) already hold
-// their own owned handle at the call site, so narrowing here is not this
-// pass's call to make.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "tree_handle is only ever borrowed here, but narrowing the signature would touch \
-              call sites in shell::compositor, outside this pass's scope"
-)]
 pub fn build_tilo_overlay_host_with_records(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,

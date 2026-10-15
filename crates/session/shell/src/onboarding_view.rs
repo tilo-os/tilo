@@ -2469,10 +2469,6 @@ impl OnboardingView {
         )))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the backup page keeps identity-creation errors and current or restored backup-verification feedback in one composition"
-    )]
     fn backup(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
             return Box::new(

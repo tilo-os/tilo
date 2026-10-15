@@ -336,10 +336,6 @@ impl StorageAuthority {
         Ok(report)
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the availability lock intentionally spans plan revalidation and GC handoff so a pin, receipt, or version cannot race destructive authorization"
-    )]
     async fn enqueue_canonical_eviction(
         &self,
         record_id: fs_protocol::FileRecordId,

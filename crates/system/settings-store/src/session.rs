@@ -548,10 +548,6 @@ impl SessionSettings {
     /// last looked. Readers call it through [`SettingsSource::load`] and
     /// [`SettingsSource::revision`], so a reader woken by the copy's file
     /// watch sees the write.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the state stays locked while the copy is, so one change is taken in and written at a time"
-    )]
     /// Take in what another process wrote to the copy. Readers do so
     /// before they read; a host that watches the copy calls this when it
     /// changes, so those waiting for a change hear of it at once.

@@ -2353,10 +2353,6 @@ impl WorkspaceSettingsOverlay {
     }
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "workspace-settings has at most a handful of rows"
-)]
 /// Glyph size and gap for a tab pill's leading icon.
 const TAB_ICON_PX: f64 = 15.0;
 const TAB_ICON_GAP: f64 = 7.0;

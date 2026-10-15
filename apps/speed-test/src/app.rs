@@ -1,7 +1,5 @@
 #![allow(
     clippy::arithmetic_side_effects,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
     clippy::unwrap_used,
     reason = "bounded app-local arithmetic; Taffy allocation is infallible for this leaf"
 )]

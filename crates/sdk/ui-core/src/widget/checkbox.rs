@@ -341,7 +341,6 @@ impl Widget for Checkbox {
 
     #[allow(
         clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         reason = "widget rectangles are finite renderer coordinates already laid out as f32"
     )]
     fn draw(

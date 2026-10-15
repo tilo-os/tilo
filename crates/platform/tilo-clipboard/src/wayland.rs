@@ -1,10 +1,6 @@
 //! `wl_data_device` + `zwp_primary_selection_device_v1` on the app's own
 //! Wayland connection — the native clipboard for a Wayland app; see
 //! the crate docs for why this, rather than `arboard`, serves Wayland.
-#![allow(
-    clippy::disallowed_methods,
-    reason = "native host runner: the Wayland clipboard owns its event thread"
-)]
 
 use std::sync::Arc;
 

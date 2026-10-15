@@ -503,14 +503,6 @@ pub struct TransclusionPreview {
     pub excerpt: String,
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each flag tracks an independent, orthogonal piece of transient \
-              widget state (focus, paint-dirty, taffy-structure-dirty, \
-              edit-in-flight, commit-pending, doc-structure-dirty); merging \
-              them into a bitflags/enum would not change behavior and this \
-              struct is private to the module"
-)]
 struct ImageAttachment {
     source: String,
     editing: bool,
@@ -7780,7 +7772,6 @@ impl Widget for BlockEditor {
     }
 
     #[allow(
-        clippy::too_many_lines,
         clippy::cast_possible_truncation,
         reason = "the five-pass widget contract builds the editor's layout nodes in one pass with finite pixel dimensions"
     )]
