@@ -12,6 +12,9 @@ type Floors = std::collections::HashMap<Ed25519PublicKey, u64>;
 /// epoch, with checkpoint retention.
 pub type SealCheckpoint<'a> =
     dyn FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a;
+/// A key holder sealing a write to a record under the channel's current
+/// epoch, with delta retention.
+pub type SealDelta<'a> = SealCheckpoint<'a>;
 
 impl StatePeer {
     /// Compact `record`'s sealed history as the key holder of its channel
@@ -55,33 +58,8 @@ impl StatePeer {
         if document.sealed.is_empty() {
             return Err("the record holds no sealed history to compact".into());
         }
-        let mut waiting = document
-            .sealed
-            .iter()
-            .map(|write| DocumentMutation::decode(&open(write)?).map_err(err))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut merged = document.doc.clone();
-        // A replica without the key admits sealed writes in arrival order,
-        // not causal order: merge until nothing more applies.
-        while !waiting.is_empty() {
-            let before = waiting.len();
-            let mut blocked = Vec::new();
-            for mutation in waiting {
-                match crate::document::merge_committed_with_status(&mut merged, &mutation)
-                    .map_err(|error| format!("{error:?}"))?
-                {
-                    crate::document::MergeOutcome::Changed(_) => {}
-                    crate::document::MergeOutcome::MissingDependencies => blocked.push(mutation),
-                }
-            }
-            if blocked.len() == before {
-                return Err("sealed history does not merge into a complete record".into());
-            }
-            waiting = blocked;
-        }
-        let snapshot = DocumentMutation::Snapshot(merged.save())
-            .encode()
-            .map_err(err)?;
+        let merged = merge_sealed(document, open)?;
+        let snapshot = DocumentMutation::Snapshot(merged).encode().map_err(err)?;
         let (metadata, ciphertext) = seal(&snapshot)?;
         if metadata.retention() != Some(ContentRetention::Checkpoint)
             || metadata.channel != collab_types::document_channel_id(app, &self.core.room, record)
@@ -130,7 +108,151 @@ impl StatePeer {
     }
 }
 
+/// `document`'s cleartext base with every write of its sealed history opened
+/// and merged over it, saved. A replica without the key admits sealed writes
+/// in arrival order, not causal order: they merge until nothing more applies.
+fn merge_sealed(
+    document: &super::Document,
+    open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    let mut waiting = document
+        .sealed
+        .iter()
+        .map(|write| DocumentMutation::decode(&open(write)?).map_err(err))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut merged = document.doc.clone();
+    while !waiting.is_empty() {
+        let before = waiting.len();
+        let mut blocked = Vec::new();
+        for mutation in waiting {
+            match crate::document::merge_committed_with_status(&mut merged, &mutation)
+                .map_err(|error| format!("{error:?}"))?
+            {
+                crate::document::MergeOutcome::Changed(_) => {}
+                crate::document::MergeOutcome::MissingDependencies => blocked.push(mutation),
+            }
+        }
+        if blocked.len() == before {
+            return Err("sealed history does not merge into a complete record".into());
+        }
+        waiting = blocked;
+    }
+    Ok(merged.save())
+}
+
 impl StatePeer {
+    /// `record` of `app` as its channel's key holder reads it: the cleartext
+    /// base with every sealed write `open` opens merged over it. A record
+    /// that is not encrypted reads as [`Self::document`]. `None` for a
+    /// record this state does not hold.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a sealed write does not open, decode or merge.
+    pub fn opened_document(
+        &self,
+        app: &str,
+        record: &str,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(document) = self.core.documents.get(&route) else {
+            return Ok(None);
+        };
+        if !document.encryption_required {
+            return Ok(self.document(app, record));
+        }
+        merge_sealed(document, open).map(Some)
+    }
+
+    /// Whether `record` of `app` is encrypted here: its writes are sealed,
+    /// and a write in the clear is refused as a downgrade.
+    #[must_use]
+    pub fn is_sealed_record(&self, app: &str, record: &str) -> bool {
+        self.sealed_route(&Route {
+            app: app.into(),
+            record: record.into(),
+        })
+    }
+
+    /// Sign `changes`, Automerge changes to the encrypted `record` of `app`,
+    /// as `key`'s own write, sealed by the channel's key holder with `seal`,
+    /// and admit it like any sealed write: it joins the record's sealed
+    /// history, and the next durable publication carries it as itself.
+    /// Members open it as they open each other's writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a record that is not encrypted (it is written in
+    /// the clear), when sealing fails or yields anything but a delta of the
+    /// record's channel, or when admission refuses the write; this peer is
+    /// unchanged then.
+    pub fn publish_sealed_incremental(
+        &mut self,
+        app: &str,
+        record: &str,
+        changes: Vec<u8>,
+        seal: &mut SealDelta<'_>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let document = self
+            .core
+            .documents
+            .get(&route)
+            .ok_or("sealed write to a record this state does not hold")?;
+        if !document.encryption_required {
+            return Err("the record is not encrypted: write it in the clear".into());
+        }
+        let plaintext = DocumentMutation::Incremental(changes)
+            .encode()
+            .map_err(err)?;
+        let (metadata, ciphertext) = seal(&plaintext)?;
+        if metadata.retention() != Some(ContentRetention::Delta)
+            || metadata.channel != collab_types::document_channel_id(app, &self.core.room, record)
+        {
+            return Err("a sealed write is a delta of the record's channel".into());
+        }
+        let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+        let seq = document
+            .channel
+            .last_seq_per_author
+            .get(&author)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or("sequence exhausted")?;
+        let mut op = SignedOp::new_unsigned_with_encryption(
+            ciphertext,
+            collab_types::document_artifact_id(app, &self.core.room, record),
+            author,
+            collab_types::document_attestation_id(app, &self.core.room, record),
+            OpKind::Change,
+            now,
+            seq,
+            metadata,
+        )
+        .with_surface(self.app_surfaces.0.as_ref().and_then(|of| of(app)));
+        collab_types::sign_op(&mut op, key).map_err(err)?;
+        let mut candidate = self.clone();
+        candidate.admit_new_local_document(app, record, op.clone(), now)?;
+        *self = candidate;
+        Ok(NeighbourMsg::AppDocument {
+            peer: peer_handle(author.as_bytes()),
+            app_id: app.into(),
+            cluster_id: self.core.room.clone(),
+            record_id: record.into(),
+            envelope: Box::new(op),
+        })
+    }
+
     /// Every encrypted record whose sealed history has used three quarters
     /// of its bound, as `(app, record)`: its key holder compacts it before
     /// new writes are refused.

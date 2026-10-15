@@ -8,7 +8,7 @@ pub(crate) fn governor() -> (SigningKey, DeviceCert) {
 }
 
 /// A relay device of the person's own, certified with `capabilities`.
-fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
+pub(crate) fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[1; 32]);
     let key = SigningKey::from_bytes(&[2; 32]);
     let mut cert = DeviceCert {
@@ -330,7 +330,12 @@ async fn assert_view_reader_refused(
     );
 }
 
-async fn admit_view_reader(rooms: &Rooms, room: &str, key: &SigningKey, member: &DeviceCert) {
+pub(crate) async fn admit_view_reader(
+    rooms: &Rooms,
+    room: &str,
+    key: &SigningKey,
+    member: &DeviceCert,
+) {
     let state = rooms.room(room).await.unwrap();
     let mut room = state.lock().await;
     let now = SystemTime::now();

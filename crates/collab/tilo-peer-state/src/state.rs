@@ -52,7 +52,7 @@ mod resources;
 mod sealed_compaction;
 mod sealed_history;
 pub use media_governance::VerifiedSecurityMetadataOnly;
-pub use sealed_compaction::SealCheckpoint;
+pub use sealed_compaction::{SealCheckpoint, SealDelta};
 
 #[expect(
     clippy::needless_pass_by_value,
