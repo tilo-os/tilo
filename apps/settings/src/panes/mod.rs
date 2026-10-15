@@ -20,6 +20,7 @@ pub mod about;
 pub mod accessibility;
 pub mod accounts;
 pub mod agent_models;
+pub(crate) mod agent_vertex;
 pub mod appearance;
 pub mod audio;
 pub mod bluetooth;
