@@ -901,7 +901,10 @@ jobs:
   # protocol and production encoder over a drawn window, since the runner has
   # neither a GPU nor a Wayland capture to give it. It encodes in software
   # (30 fps), Chrome decodes in software and the desktop underneath draws on
-  # SwiftShader at 960x540, as the browser job's does; the hardware numbers
+  # SwiftShader at 960x540, as the browser job's does. SwiftShader compiles
+  # the pipelines of the window's tile when the desktop first draws it, which
+  # blocked the page for about 25 s here, so the stream's first 30 s are a
+  # warm-up, judged but not timed (startup still counts it); the hardware numbers
   # (60 fps encode, hardware decode, a GPU desktop) are a hardware
   # qualification's (kpi-budgets.toml, "A native window on the browser
   # desktop"). An incorrect stream fails the job and records nothing.
@@ -968,7 +971,7 @@ jobs:
             --virtualization kvm --runner runner > perf/env.json
           node scripts/perf/native_stream_qualification.mjs "$STREAM_BUNDLE" --out perf/stream.json \
             --relay target/release/tilo-relay --source target/release/examples/legacy_stream_source \
-            --renderer swiftshader --viewport 960x540 --expect-revision "$(git rev-parse HEAD)" \
+            --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
             | tee perf/stream-summary.txt
           python3 tools/perf/adapters.py native-stream --env-json perf/env.json \
             perf/stream.json > perf/stream.jsonl

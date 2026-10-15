@@ -104,6 +104,19 @@ test('startup counts the first picture shown on the desktop, not one drawn while
   assert.equal(result.counts.firstPictureMs, 340);
 });
 
+test('the warm-up is judged but not timed', () => {
+  // The first 30 frames (1 s) are the warm-up: drawn late and with gaps.
+  const input = run(90, {drop: [3, 4, 5], mutate: draws => draws.map(draw => draw.index < 30 ? {...draw, wallUs: draw.wallUs + 2_000_000} : draw)});
+  const cut = analyse({...input, measureFromUs: input.sent[30].captureUs});
+  assert.equal(cut.samples.frame_latency_ms.length, 60);
+  assert.ok(cut.samples.frame_latency_ms.every(ms => ms === 40));
+  assert.equal(cut.counts.deliveredPercent, 100);
+  assert.equal(cut.samples.encode_ms.length, 60);
+  // A corrupt picture in the warm-up still fails the run.
+  const corrupt = analyse({...input, draws: [{...input.draws[1], index: null}, ...input.draws], measureFromUs: input.sent[30].captureUs});
+  assert.match(corrupt.correctness.failures.join(), /1 corrupt pictures/);
+});
+
 test('goals are judged against the summary, delivery from below', () => {
   const result = analyse(run(90, {lag: 150_000, drop: [3, 4]}));
   const summary = Object.fromEntries(Object.entries(result.samples).map(([name, values]) => [name, stats(values)]));
