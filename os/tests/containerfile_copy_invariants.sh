@@ -188,7 +188,11 @@ containerfile="$repo/os/Containerfile"
 # The firstboot file helper is now compiled: it arrives from the firstboot-files
 # component as /usr/libexec/tilo-firstboot-files, with the mode it had, instead
 # of from the context as tilo-firstboot-files.py.
-expected_contract=5e4ab2a505786cd3846457ed380e83fa6e9525a91e59aa2dc5e4751aae4d5e32
+# The board-successor verifier is now compiled: the user-identity component
+# installs the tilo-board-successor build output as
+# /usr/libexec/tilo-board-successor, with the mode the script had, instead of
+# the manifest's tilo-board-successor.py.
+expected_contract=02c279e3724424236bbf09ba9fd39472a4144ba2a87c2cb10503af4ee5bc71e3
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
