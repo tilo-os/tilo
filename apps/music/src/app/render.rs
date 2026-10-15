@@ -3708,12 +3708,11 @@ impl MusicApp {
         let downloads = matches!(self.view, View::Downloads);
         let shape = Self::track_table_shape(ctx, look, (left, right), table, downloads);
         let offset = table.queue_offset.unwrap_or(0);
-        let len = table.rows.len();
         let rows: Vec<_> = table
             .rows
             .iter()
             .enumerate()
-            .map(|(i, tk)| self.track_cell(tk, i, len, table, downloads))
+            .map(|(i, tk)| self.track_cell(tk, i, table, downloads))
             .collect();
         // A membership opened from search stays lifted on its row.
         let selected = table.playlist.and_then(|playlist| {
@@ -3772,20 +3771,10 @@ impl MusicApp {
         let action_w = super::track_table::action_side(theme);
         let actions = if downloads {
             Actions::Download
-        } else if table.playlist.is_some_and(|id| !id.starts_with("spotify:"))
-            || table.queue_offset.is_some()
-        {
-            Actions::Reorder {
-                playlist: table.playlist.is_some_and(|id| !id.starts_with("spotify:")),
-            }
         } else {
             Actions::Track
         };
-        let action_count = match actions {
-            Actions::Download => 1,
-            Actions::Track => 2,
-            Actions::Reorder { .. } => 5,
-        };
+        let action_count = actions.count();
         let title_style = theme.text(TextRole::Body).strong();
         let caption = theme.text(TextRole::Caption);
         let title_need = table
@@ -3839,11 +3828,10 @@ impl MusicApp {
         &self,
         tk: &TrackDisp,
         index: usize,
-        len: usize,
         table: &TrackTable<'_>,
         downloads: bool,
     ) -> super::track_table::TrackCell {
-        use super::track_table::{Offline, Place, Playback};
+        use super::track_table::{Offline, Playback};
         let current = if let Some(offset) = table.queue_offset {
             self.pb.queue_index == offset + index && self.pb.current.is_some()
         } else {
@@ -3890,7 +3878,6 @@ impl MusicApp {
             offline,
             offline_error: self.offline_errors.get(&tk.id).cloned(),
             local: self.is_local_file(&tk.id),
-            place: Place::of(index, len),
         }
     }
 
@@ -4028,7 +4015,6 @@ impl MusicApp {
         let slot = self.track_tables.get(index)?;
         let offset = slot.queue_offset.unwrap_or(0);
         let row = |i: usize| slot.table.rows().get(i);
-        let up = matches!(ask, RowEvent::MoveUp(_));
         match ask {
             RowEvent::Play(i) => Some(Action::Play {
                 queue: Arc::clone(&slot.queue),
@@ -4047,27 +4033,15 @@ impl MusicApp {
                 track: track.id.clone(),
                 keep: matches!(track.offline, Offline::Streamed | Offline::Failed),
             }),
-            RowEvent::MoveUp(i) | RowEvent::MoveDown(i) => {
-                let to = if up { i.saturating_sub(1) } else { i + 1 };
-                Some(match &slot.playlist {
-                    Some(playlist) => Action::MovePlaylistItem {
-                        playlist: playlist.clone(),
-                        from: i,
-                        to,
-                    },
-                    None => Action::MoveQueueItem {
-                        from: offset + i,
-                        to: offset + to,
-                    },
-                })
-            }
-            RowEvent::Remove(i) => match &slot.playlist {
-                Some(playlist) => row(i).map(|track| Action::RemoveFromPlaylist {
-                    playlist: playlist.clone(),
+            RowEvent::More(i) => row(i).map(|track| {
+                let rect = slot.table.row_rect(i).unwrap_or(Rect::ZERO);
+                self.menu_anchor_row = Some(rect);
+                Action::OpenTrackMenu {
                     track: track.id.clone(),
-                }),
-                None => Some(Action::RemoveFromQueue(offset + i)),
-            },
+                    in_playlist: slot.playlist.clone(),
+                    queue_index: slot.queue_offset.map(|o| o + i),
+                }
+            }),
         }
     }
 
@@ -4135,7 +4109,12 @@ impl MusicApp {
         // Reserve a readable text column, not three large covers. At high
         // UI scales the old cover-multiple breakpoint stacked a desktop hero
         // and pushed virtually its entire track list below the fold.
-        let side = MediaSize::Small.extent(theme).min(right - left);
+        let row_h = DataTableFace::new(&[], &[]).two_line().row_height(theme);
+        let hero_budget = (body.height() - 4.0 * row_h - 3.0 * look.gutter).max(3.0 * look.target);
+        let side = MediaSize::Small
+            .extent(theme)
+            .min(right - left)
+            .min(hero_budget);
         let wide = right - left >= side + look.gutter + MediaSize::Regular.extent(theme);
         let art = Rect::new(left, y, left + side, y + side);
         if matches!(header.kind, DetailKind::Artist { .. }) {
@@ -4207,9 +4186,7 @@ impl MusicApp {
         }
         ty += look.section;
 
-        // The page's actions, all labelled the same way (a label that names
-        // what happens, no icons): Play first (the one primary action), then
-        // Shuffle, then the page's own.
+        // Keep playback primary; playlist management lives behind More.
         let queue = header.queue;
         let mut buttons: Vec<(&str, ButtonRole, Action)> = vec![
             (
@@ -4227,7 +4204,6 @@ impl MusicApp {
             ),
         ];
         let id = header.id.to_string();
-        let spotify_menu_label = crate::i18n::t("music-spotify-playlist-actions");
         match header.kind {
             DetailKind::Album { saved } => buttons.push((
                 if saved {
@@ -4243,26 +4219,14 @@ impl MusicApp {
                 ButtonRole::Secondary,
                 Action::ToggleFollow(id),
             )),
-            DetailKind::Playlist { own: true } => {
-                buttons.push((
-                    "Rename",
-                    ButtonRole::Secondary,
-                    Action::BeginRenamePlaylist(id.clone()),
-                ));
-                buttons.push((
-                    "Set cover",
-                    ButtonRole::Secondary,
-                    Action::PickPlaylistCover(id.clone()),
-                ));
-                buttons.push((
-                    "Delete playlist",
-                    ButtonRole::Destructive,
-                    Action::DeletePlaylist(id),
-                ));
-            }
+            DetailKind::Playlist { own: true } => buttons.push((
+                "Playlist actions",
+                ButtonRole::Secondary,
+                Action::OpenPlaylistMenu(id),
+            )),
             DetailKind::Playlist { own: false } if id.starts_with("spotify:playlist:") => buttons
                 .push((
-                    &spotify_menu_label,
+                    "Playlist actions",
                     ButtonRole::Secondary,
                     Action::OpenSpotifyPlaylistMenu(id),
                 )),
@@ -4274,10 +4238,14 @@ impl MusicApp {
         let ty = self.page_part(ctx, (tx, right), ty, key, move |asked| {
             let mut row = ui::widget::Row::new().with_gap(gap);
             for (label, role, action) in buttons {
+                let id = format!("music.page.{label}");
+                let button = if label == "Playlist actions" {
+                    Button::icon_only(&id, Icon::MoreHorizontal, label)
+                } else {
+                    Button::new(&id, label).role(role)
+                };
                 row = row.push(Box::new(
-                    Button::new(&format!("music.page.{label}"), label)
-                        .role(role)
-                        .on_click(super::page_part::asking(asked, action)),
+                    button.on_click(super::page_part::asking(asked, action)),
                 ));
             }
             Box::new(row)

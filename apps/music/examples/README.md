@@ -35,4 +35,8 @@ return behavior and compact transport's More menu. History uses the one app
 header, not a second framework toolbar. The full-width transport leaves enough
 space for the song, while all spacing and breakpoints derive from theme metrics
 and text roles. Keyboard scrolling keeps its scroll indicator visible; pointer
-browsing lets the shared scrollbar fade normally.
+browsing lets the shared scrollbar fade normally. Playlist headers keep Play,
+Shuffle and a compact More menu; track rows keep Like and More, with reorder,
+remove and offline actions in the shared popup. The detail hero budgets space
+for four complete rows at the review size, and table viewports leave transport
+padding rather than painting a partial bottom row.
