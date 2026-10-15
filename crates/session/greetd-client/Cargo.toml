@@ -7,7 +7,7 @@ license.workspace = true
 description = "greetd IPC client: the authenticate-then-start exchange"
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # greetd's wire protocol. `sync-codec` pulls in the blocking
 # `SyncCodec` (`Request::write_to` / `Response::read_from` over
 # `std::io::{Read,Write}`) — no async runtime needed for a login box.

@@ -16,7 +16,7 @@ name = "tilo-env-tools"
 path = "src/main.rs"
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../../system/bounded-command" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }

@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "Dropbox accounts as a cloud-source provider: API v2 listings and cursor feed, long-poll, content_hash, revisions, upload sessions, ranged reads, share links and quota."
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 chrono = { workspace = true, features = ["std"] }
 cloud-source = { version = "0.1.0", path = "../cloud-source" }
 reqwest = { workspace = true, features = ["blocking"] }

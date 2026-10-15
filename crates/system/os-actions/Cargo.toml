@@ -16,7 +16,7 @@ path = "src/lib.rs"
 # crate docstring in `src/lib.rs` for the design intent.
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 uuid.workspace = true
 bounded-command = { path = "../bounded-command" }
 libc.workspace = true

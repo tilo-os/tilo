@@ -97,7 +97,7 @@ path = "src/relay_offers_cli.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }

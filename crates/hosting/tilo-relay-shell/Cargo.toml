@@ -28,7 +28,7 @@ test-support = [
 ]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Signed document envelopes the seam hands the core.
 collab-types = { path = "../../collab/collab-types" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }

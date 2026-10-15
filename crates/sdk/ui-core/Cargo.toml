@@ -96,7 +96,7 @@ priority-contacts = ["native", "dep:zbus", "zbus?/blocking-api"]
 portal = ["native", "tilo-host/portal"]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 mime_guess.workspace = true
 fnv.workspace = true
 # Host services: the clock, background work, clipboard, file choosers,
