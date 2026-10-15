@@ -550,14 +550,16 @@ Immediate-mode hosts use the same chrome through `modal_dialog::layout`,
 **Status has two homes.** What a person reads while working and expects to
 stay put (Ln/Col, a word count, unresolved conflicts) is persistent status in
 `chrome::status_bar`, which reserves its band (`status_bar::split`) so it
-never covers content. A change worth noticing once (a page turn, "Saved") is
+never covers content. A change worth noticing once (a page turn, a finished sync) is
 the transient `StatusBubble`: it shows on change, hides by itself and floats
 in its area's bottom-trailing corner. An error the person must act on is a
 `Banner` (persistent, in the flow) or a `Toast` (transient, with an icon close
-button). A document's save state is `SaveStatusSurface`: "Saving…" and
-"Saved" in the transient bubble, a failed save an error card with Try again
-that stays until the save succeeds; an app never pins a bubble open or paints
-its own save pill.
+button). A document's save state is `SaveStatusSurface`: autosave is the
+system's job, so "Saving…" and "Saved" never show (they stay in the
+accessibility status); a failed save is an error card with Try again that
+stays until the save succeeds, and that success is a one-time "Saved" in the
+transient bubble. An app never pokes or pins a save bubble or paints its own
+save pill.
 
 **Chrome over media uses the material on the media.** Video controls are a
 floating Panel over the picture; text drawn straight onto media sits on

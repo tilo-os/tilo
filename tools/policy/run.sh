@@ -91,6 +91,8 @@ run 'No new interpreter scripts in the OS image' \
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py
 run 'rustls is the only TLS stack' python3 tools/policy/check_tls_stack.py
 run 'No setup-specific references' python3 tools/policy/check_setup_neutral.py
+run 'Vendored crates carry licence and provenance' \
+  python3 tools/policy/check_vendor_provenance.py
 run 'At most eight parameters, no escape hatch' \
   python3 tools/policy/check_too_many_arguments.py
 

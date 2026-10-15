@@ -40,6 +40,8 @@ use std::path::PathBuf;
 
 pub mod client;
 pub mod install;
+#[cfg(feature = "service")]
+pub mod runtime_request;
 pub mod runtime_transaction;
 #[cfg(feature = "service")]
 pub mod service;

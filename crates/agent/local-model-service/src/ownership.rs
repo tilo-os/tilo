@@ -140,7 +140,7 @@ struct OrphanCustody {
 }
 
 fn private_directory(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    use std::os::unix::fs::DirBuilderExt;
     let directory = root.join("orphan-custody");
     match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
         Ok(()) => {}
@@ -148,11 +148,7 @@ fn private_directory(root: &std::path::Path) -> Result<std::path::PathBuf, Strin
         Err(error) => return Err(error.to_string()),
     }
     let metadata = std::fs::symlink_metadata(&directory).map_err(|error| error.to_string())?;
-    // SAFETY: geteuid reads this process's identity without modifying it.
-    if !metadata.is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-    {
+    if !metadata.is_dir() || !tilo_files::native::private::private_to_me(&metadata) {
         return Err("orphan custody directory is not private and owned".into());
     }
     Ok(directory)
@@ -212,7 +208,7 @@ pub fn recover_orphan<P: crate::ProcessSupervisor>(
     run_id: &str,
 ) -> Result<(), crate::ServiceError> {
     use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     let refuse = |message| crate::ServiceError::Backend(message);
     if !digest(run_id) {
         return Err(refuse("invalid orphan run identity".into()));
@@ -224,10 +220,8 @@ pub fn recover_orphan<P: crate::ProcessSupervisor>(
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&path)?;
     let metadata = file.metadata()?;
-    // SAFETY: geteuid observes this process's effective identity.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
+        || !tilo_files::native::private::private_to_me(&metadata)
         || metadata.len() > 65536
     {
         return Err(refuse(
@@ -275,7 +269,7 @@ pub fn recover_orphan<P: crate::ProcessSupervisor>(
 pub(crate) struct StateFileLock;
 impl StateFileLock {
     pub(crate) fn acquire(state: &std::path::Path) -> Result<advisory_lock::FileLock, String> {
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -285,11 +279,7 @@ impl StateFileLock {
             .open(state.with_extension("lock"))
             .map_err(|error| error.to_string())?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
-        // SAFETY: geteuid observes this process's effective identity.
-        if !metadata.is_file()
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.mode() & 0o077 != 0
-        {
+        if !metadata.is_file() || !tilo_files::native::private::private_to_me(&metadata) {
             return Err("local model state lock is not a private regular file".into());
         }
         let began = std::time::Instant::now();

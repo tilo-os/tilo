@@ -124,11 +124,19 @@ interface AppHost {
     # Explicit consent to the exact review. Revalidates signed declaration and
     # configured offer identity, then uses the shared bounded signed installer.
     # Disconnect/Back does not roll back or necessarily interrupt installation.
-    acquireOptionalRuntime @21 (reviewJson :Text, progress :RuntimeProgress) -> ();
+    acquireOptionalRuntime @23 (reviewJson :Text, progress :RuntimeProgress) -> ();
 
     # The catalogue the host last accepted from one enabled repository, read
     # without the network so a slow or unreachable repository still describes
     # what it listed. The stored snapshot is verified again against the pinned
     # owner key, the rollback checkpoint and its expiry; fails when none does.
-    lastVerifiedCatalogue @20 (registry :Text) -> (entries :Text);
+    lastVerifiedCatalogue @25 (registry :Text) -> (entries :Text);
+    # Resolve a precise runtime from enabled, pinned repositories, including retained versions.
+    runtimeOffer @24 (registry :Text, runtime :Text) -> (offer :Text);
+    # Optional-runtime inspection originally used @20, before catalogue lookup
+    # independently used it. Neither may dispatch through that ambiguous slot.
+    retiredInspectionCatalogueOrdinalCollision @20 () -> ();
+    # Two incompatible methods occupied @21: optional-runtime acquisition and
+    # runtime-offer lookup. Neither may dispatch through that ambiguous slot.
+    retiredRuntimeOrdinalCollision @21 () -> ();
 }

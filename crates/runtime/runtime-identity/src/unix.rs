@@ -47,7 +47,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
@@ -292,7 +292,7 @@ fn ensure_private_dir(dir: &std::path::Path) -> io::Result<()> {
     }
     #[cfg(unix)]
     {
-        if meta.uid() != unsafe { libc::geteuid() } {
+        if !tilo_files::native::private::owned_by_me(&meta) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity root is not owned by the current user",
@@ -321,7 +321,7 @@ impl IdentityLock {
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(dir.join(LOCK_FILE))?;
         let meta = file.metadata()?;
-        if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
+        if !meta.file_type().is_file() || !tilo_files::native::private::owned_by_me(&meta) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity lifecycle lock must be a private user-owned regular file",
@@ -360,8 +360,7 @@ fn read_private_selector(path: &std::path::Path) -> io::Result<String> {
         .open(path)?;
     let meta = file.metadata()?;
     if !meta.file_type().is_file()
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.permissions().mode() & 0o077 != 0
+        || !tilo_files::native::private::private_to_me(&meta)
         || meta.len() > 128
     {
         return Err(io::Error::new(
@@ -390,7 +389,7 @@ pub fn list_identities(dir: &std::path::Path) -> io::Result<Vec<IdentitySummary>
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
-    if !meta.file_type().is_dir() || meta.uid() != unsafe { libc::geteuid() } {
+    if !meta.file_type().is_dir() || !tilo_files::native::private::owned_by_me(&meta) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "identity root must be a real directory owned by the current user",
@@ -1886,7 +1885,7 @@ fn read_record_bytes(path: &std::path::Path) -> io::Result<Vec<u8>> {
         ));
     }
     #[cfg(unix)]
-    if meta.uid() != unsafe { libc::geteuid() } || meta.permissions().mode() & 0o077 != 0 {
+    if !tilo_files::native::private::private_to_me(&meta) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "identity record must be owned by the current user and mode 0600",

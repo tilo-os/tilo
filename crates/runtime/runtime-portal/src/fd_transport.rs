@@ -8,6 +8,10 @@ use rustix::net::{
     SendAncillaryMessage, SendFlags,
 };
 
+/// The most descriptors one bundle carries: a session's PTY master, its
+/// private lease and, when negotiated, its editor capability.
+const MAX_BUNDLE: usize = 3;
+
 /// Send a payload with one borrowed descriptor.
 ///
 /// # Errors
@@ -18,19 +22,20 @@ pub fn send_with_fd(sock: impl AsFd, payload: &[u8], fd: impl AsFd) -> io::Resul
 
 /// Send one payload with a bounded descriptor bundle, preserving its order.
 ///
-/// The second descriptor permits an explicitly negotiated editor capability;
-/// it is not accepted by the single-descriptor receive operation.
+/// The extra descriptors carry explicitly negotiated capabilities (a session
+/// lease, an editor socket); they are not accepted by the single-descriptor
+/// receive operation.
 ///
 /// # Errors
 /// Rejects empty payloads, empty or oversized bundles, and partial sends.
 pub fn send_with_fds(sock: impl AsFd, payload: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
-    if payload.is_empty() || fds.is_empty() || fds.len() > 2 {
+    if payload.is_empty() || fds.is_empty() || fds.len() > MAX_BUNDLE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "descriptor bundle needs a payload and one or two descriptors",
+            "descriptor bundle needs a payload and one to three descriptors",
         ));
     }
-    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_BUNDLE))];
     let mut control = SendAncillaryBuffer::new(&mut space);
     if !control.push(SendAncillaryMessage::ScmRights(fds)) {
         return Err(io::Error::other(
@@ -61,7 +66,7 @@ pub fn recv_with_fd(sock: impl AsFd) -> io::Result<(Vec<u8>, Option<OwnedFd>)> {
     recv_into(sock, &mut [0u8; 4096])
 }
 
-/// Receive an explicitly negotiated bundle of at most two owned descriptors.
+/// Receive an explicitly negotiated bundle of at most three owned descriptors.
 ///
 /// The caller must validate the message's declared roles and exact count before
 /// using any descriptor. Malformed/truncated messages close every received FD.
@@ -69,7 +74,7 @@ pub fn recv_with_fd(sock: impl AsFd) -> io::Result<(Vec<u8>, Option<OwnedFd>)> {
 /// # Errors
 /// Returns transport errors or rejects an oversized/truncated descriptor bundle.
 pub fn recv_with_fds(sock: impl AsFd) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
-    recv_bundle(sock, &mut [0u8; 4096], 2)
+    recv_bundle(sock, &mut [0u8; 4096], MAX_BUNDLE)
 }
 
 /// Receive bounded data, refusing and closing every ancillary descriptor.
@@ -194,10 +199,12 @@ mod tests {
 
     #[test]
     fn oversized_negotiated_bundle_closes_every_received_descriptor() {
+        // See `rejected_message_closes_descriptors`.
+        let _quiet = crate::no_spawns();
         let (sender, receiver) = UnixDatagram::pair().unwrap();
         let (mut reader, writer) = UnixStream::pair().unwrap();
         reader.set_nonblocking(true).unwrap();
-        send_many(&sender, b"invalid", &[writer.as_raw_fd(); 3]);
+        send_many(&sender, b"invalid", &[writer.as_raw_fd(); MAX_BUNDLE + 1]);
         drop(writer);
         assert!(recv_with_fds(&receiver).is_err());
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);
@@ -239,6 +246,9 @@ mod tests {
     }
 
     fn rejected_message_closes_descriptors(count: usize, bytes: usize) {
+        // No sibling test may have a child between its fork and its exec while
+        // this waits for the last copy of `writer` to close.
+        let _quiet = crate::no_spawns();
         let (a, b) = UnixDatagram::pair().unwrap();
         let (mut reader, writer) = UnixStream::pair().unwrap();
         reader.set_nonblocking(true).unwrap();

@@ -1392,6 +1392,7 @@ dependencies = [
  "hex",
  "host-info",
  "reqwest 0.13.4",
+ "ring",
  "runtime-dylib",
  "rusqlite",
  "rustix 1.1.4",
@@ -3539,6 +3540,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-clock",
  "tilo-connector",
  "tilo-net",
  "tilo-relay",
@@ -4201,6 +4203,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "serde_json",
+ "tilo-clock",
  "tokio",
  "tokio-websockets",
  "workspace-hack",
@@ -9375,6 +9378,7 @@ dependencies = [
  "hex",
  "image",
  "reqwest 0.13.4",
+ "rquickjs",
  "runtime-dylib",
  "rustypipe",
  "serde",
@@ -10799,6 +10803,7 @@ dependencies = [
  "tilo-rt",
  "tilo-test-env",
  "tracing",
+ "uuid",
  "workspace-hack",
  "zbus",
  "zeroize",
@@ -14177,6 +14182,7 @@ dependencies = [
 name = "settings"
 version = "0.1.0"
 dependencies = [
+ "accesskit_unix",
  "account-custody",
  "accounts",
  "agent-provider-config",
@@ -14241,7 +14247,6 @@ name = "settings-store"
 version = "0.1.0"
 dependencies = [
  "hex",
- "notify",
  "serde",
  "serde_json",
  "tempfile",
@@ -14565,6 +14570,7 @@ dependencies = [
  "tilo-runtime",
  "tilo-seal",
  "tilo-search",
+ "tilo-secret-service",
  "tilo-secret-vault",
  "tilo-secrets",
  "tilo-startup-metrics",
@@ -16519,7 +16525,6 @@ name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [
  "accounts",
- "chrono",
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -16681,6 +16686,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-clock",
  "tilo-files",
  "tilo-secrets",
  "tokio",
@@ -17147,6 +17153,7 @@ dependencies = [
 name = "tilo-files"
 version = "0.1.0"
 dependencies = [
+ "inotify",
  "js-sys",
  "libc",
  "notify",
@@ -18489,8 +18496,10 @@ dependencies = [
 name = "tilo-seal"
 version = "0.1.0"
 dependencies = [
+ "aes 0.9.3",
  "aes-gcm 0.10.3",
  "argon2",
+ "cbc",
  "chacha20poly1305 0.11.0",
  "getrandom 0.4.3",
  "hex",
@@ -18498,6 +18507,7 @@ dependencies = [
  "hpke-rs",
  "hpke-rs-crypto",
  "hpke-rs-rust-crypto",
+ "num-bigint 0.4.6",
  "sha2 0.11.0",
  "subtle",
  "thiserror 2.0.21",
@@ -18516,6 +18526,30 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-secret-service"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "futures-util",
+ "hex",
+ "libc",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-files",
+ "tilo-seal",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "workspace-hack",
+ "zbus",
+ "zeroize",
 ]
 
 [[package]]
@@ -22181,6 +22215,7 @@ dependencies = [
  "tilo-net",
  "tilo-paths",
  "tokio",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -22592,7 +22627,6 @@ dependencies = [
  "idna",
  "image",
  "indexmap",
- "inout 0.2.2",
  "ipnet",
  "itertools 0.13.0",
  "itertools 0.14.0",

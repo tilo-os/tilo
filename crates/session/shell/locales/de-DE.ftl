@@ -679,6 +679,21 @@ capability-host-shell = Die eigene Shell dieses Geräts öffnen, außerhalb jede
 capability-network-hosts = Netzwerkzugriff auf { $hosts }
 capability-network = Netzwerkzugriff
 
+# The session's agent door: a client in this login (an AI agent in a
+# terminal) asks to work in a workspace as an agent member.
+agent-door-client = { $client } ({ $program }, PID { $pid })
+agent-door-client-in-app = { $who } in { $app }
+agent-door-admission = In „{ $workspace }“ als Agent { $agent } arbeiten
+agent-door-param-agent = Der Agent, als der er zugelassen wird: ein vorhandenes Agent-Mitglied oder ein neues mit diesem Namen. Standard ist der vorgeschlagene Name.
+agent-door-param-preset = Die Vorlage eines neuen Agenten: Observer, Contributor, Operator oder Custom. Vorlagen geben für sich allein keinen Zugriff auf eine Oberfläche.
+agent-door-preset-invalid = Wähle Observer, Contributor, Operator oder Custom.
+agent-door-agent-invalid = Ein Agent braucht einen Namen mit höchstens 128 Zeichen.
+agent-door-workspace-gone = Der Arbeitsbereich, in dem dieser Client arbeiten wollte, existiert nicht mehr.
+agent-door-not-administrator = Du verwaltest diesen Arbeitsbereich nicht, daher wurde { $agent } nicht hinzugefügt.
+agent-door-no-workspace = Hier gibt es keinen Arbeitsbereich zum Arbeiten.
+agent-door-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantwortet hat.
+agent-door-declined = Die Person an diesem Desktop hat diese Verbindung abgelehnt.
+
 # Die Hilfe-Pille in der Bildschirmecke
 help-pill = Hilfe  F1 · Super+?
 
@@ -883,6 +898,8 @@ osd-pause = Pause
 osd-next-track = Nächster Titel
 osd-previous-track = Vorheriger Titel
 osd-stop = Stopp
+osd-percent = { $percent } %
+osd-off = Aus
 osd-muted = Stummgeschaltet
 osd-volume = Lautstärke { $percent } %
 osd-brightness = Helligkeit { $percent } %
@@ -920,7 +937,7 @@ notification-source-caption = { $app } · Von { $device }
 notification-app-host-apps = Host-Apps
 notification-app-power = Energie
 notification-remote-input-stopped = Fernsteuerung beendet
-notification-remote-input-stopped-sessions = Fernsteuerungs- und Freigabesitzungen wurden beendet.
+notification-remote-input-stopped-sessions = Alle mit diesem Computer verbundenen Personen wurden getrennt.
 notification-remote-input-stopped-shares = { $count ->
     [one] Die Fernsteuerung wurde entzogen und die Freigabe beendet.
    *[other] Die Fernsteuerung wurde { $count } Freigaben entzogen; die Freigabe wurde beendet.
@@ -974,6 +991,9 @@ launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Ve
 launch-error-sandbox-supervision = Die Dateiberechtigungen der App konnten nicht überwacht werden. Versuche es erneut.
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
 launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffne „Anwendungen“ und versuche es erneut.
+launch-failed-authority-changed = Die Dateiberechtigungen der App haben sich beim Start geändert. Öffne sie erneut.
+launch-failed-authority-timeout = Die Dateiberechtigungen der App waren nicht rechtzeitig bereit. Öffne sie erneut.
+launch-failed-previous-instance = Die vorherige Instanz der App wird noch geschlossen. Öffne sie gleich erneut.
 launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-missing-library = Der App fehlt eine Bibliothek auf diesem System, daher wurde sie beendet, bevor sie sich öffnete.
 launch-failed-runtime-mismatch = Diese App wurde für eine andere Tilo-Laufzeitumgebung gebaut. Aktualisiere sie oder installiere sie neu, um die passende Laufzeitumgebung zu erhalten.
@@ -1131,8 +1151,6 @@ search-scope-workspace = Arbeitsbereich
 search-scope-everywhere = Überall
 
 # Wo eine gestartete App geöffnet wird
-search-opens-beside = Öffnet sich ganz rechts
-search-opens-here = Öffnet sich hier als Tab
 
 # Suchquellen, wie die Aktionen der Sucheinstellungen sie nennen
 search-provider-now-playing = Aktuelle Wiedergabe
@@ -1168,7 +1186,6 @@ search-record-in-another-workspace = In einem anderen Arbeitsbereich
 search-files-no-app = Keine App auf diesem Desktop öffnet .{ $ext }-Dokumente.
 
 # Suche: Host-Apps
-search-host-app-open = { $app } öffnen
 search-host-app-subtitle = { $source } · nicht isolierte Host-App · { $id }
 
 # Suche: Aufträge und Ressourcen von App-Aktionen
@@ -2061,6 +2078,8 @@ capture-recording-audio-lost = Die Aufnahme läuft ohne Ton weiter
 capture-recording-audio-lost-body = { $path } · { $reason }
 capture-recent-audio-lost = Die Aufnahme der letzten Momente läuft ohne Ton weiter
 capture-failed = Aufnahme fehlgeschlagen
+settings-not-saved-title = Einstellung nicht gespeichert
+settings-not-saved-body = Tilo konnte eine Änderung an deinen Einstellungen nicht speichern, deshalb gilt wieder der vorherige Wert. Prüfe, ob auf dem Datenträger Platz frei ist, und versuche es dann erneut.
 idle-inhibit-unnamed-app = Eine App
 
 # Ein Bildschirmfoto an ein Gerät oder in die Dateien des Arbeitsbereichs senden
@@ -2428,6 +2447,40 @@ device-fabric-error-input-sequence-exhausted = Die Eingabesequenz ist ausgeschö
 
 device-fabric-error-input-cleanup-pending = Vorherige Eingaben werden noch freigegeben. Versuche es erneut.
 
+search-provider-system-settings = Systemeinstellungen
+search-badge-settings = Einstellungen
+setting-never = Nie
+setting-minutes = { $minutes ->
+        [one] 1 Minute
+       *[other] { $minutes } Minuten
+    }
+setting-on = An
+setting-off = Aus
+setting-mode-dark = Dunkel
+setting-mode-light = Hell
+setting-mode-automatic = Automatisch
+setting-mode-unset = Folgt dem Design
+setting-get = { $name }: { $value }
+setting-get-detail = Aktuellen Wert und erlaubte Werte lesen
+setting-current = Aktuell { $value }
+setting-set = { $name } ändern
+setting-toggle = { $name } umschalten
+setting-power-lock-after = Bildschirm sperren nach
+setting-power-lock-after-words = automatisch sperren sperrzeit inaktivität lock screen
+setting-power-blank-after = Bildschirm ausschalten nach
+setting-power-blank-after-words = abschalten dunkel inaktivität display blank
+setting-power-suspend-after = In Bereitschaft nach
+setting-power-suspend-after-words = standby ruhezustand energiesparen schlafen inaktivität suspend
+setting-power-auto-suspend = Bei Inaktivität in Bereitschaft gehen
+setting-power-auto-suspend-words = automatisch standby ruhezustand schlafen suspend
+setting-display-scale = Bildschirmskalierung
+setting-display-scale-words = skalierung zoom größe anzeige scale
+setting-display-refresh-rate = Bildwiederholrate
+setting-display-refresh-rate-words = hertz frequenz bildfrequenz anzeige refresh
+setting-keyboard-layout = Tastaturlayout
+setting-keyboard-layout-words = sprache belegung eingabequelle tastatur keyboard layout
+setting-appearance-mode = Erscheinungsbild
+setting-appearance-mode-words = dunkel hell nacht design theme modus
 display-remote-heading = Deine anderen Bildschirme
 display-remote-title = { $number } · { $name } · { $device }
 display-remote-row = { $status } · { $title }
@@ -2467,6 +2520,9 @@ activity-morning-command-refused = Anfrage abgelehnt
 activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
 
 activity-morning-next = Nächste ausgewählte Quelle
+search-host-app-open = { $app } öffnen
+search-opens-beside = Öffnet sich ganz rechts
+search-opens-here = Öffnet sich hier als Tab
 qs-network-details = WLAN-Netzwerke
 qs-bluetooth-details = Bluetooth-Geräte
 search-action-quick-settings-network-subtitle = Verfügbare WLAN-Netzwerke durchsuchen
@@ -2550,6 +2606,7 @@ agent-quick-stop-outcome-unknown = Warten auf die Bestätigung von Task Center, 
 ## Jede `search-kw-*`-Nachricht ist eine kommagetrennte Liste; die Desktop-Suche nutzt
 ## die Listen aller Sprachen, gleich welche Sprache der Desktop spricht.
 search-kind-settings-pages = Einstellungen
+search-settings-page-subtitle = Persönliche Einstellungen
 search-toggle-wifi-on = WLAN einschalten
 search-toggle-wifi-off = WLAN ausschalten
 search-toggle-wifi-subtitle = Das WLAN-Funkmodul dieses Geräts schalten
@@ -2665,9 +2722,15 @@ search-kw-settings-speakers = lautsprecher, stereo, raumklang, mehrraum, kalibri
 search-settings-page-displays = Bildschirme
 search-settings-page-displays-subtitle = Auflösung, Skalierung, Anordnung und Helligkeit
 search-kw-settings-displays = monitor, bildschirm, auflösung, skalierung, helligkeit, nachtlicht, blaulicht, anordnung, externer monitor, bildwiederholrate, drehen
-search-settings-page-mouse-keyboard = Maus & Tastatur
-search-settings-page-mouse-keyboard-subtitle = Tippen, Rechtschreibung, Eingabequellen und Zeigerverhalten
-search-kw-settings-mouse-keyboard = tastatur, tastaturlayout, tastaturbelegung, eingabequelle, eingabemethode, sprache, maus, zeiger, touchpad, scrollen, natürliches scrollen, tippen zum klicken, tastenwiederholung, tippen, rechtschreibung
+search-settings-page-keyboard = Tastatur
+search-settings-page-keyboard-subtitle = Tastaturbelegung, Tippen und Tastenoptionen
+search-kw-settings-keyboard = tastatur, tastaturlayout, tastaturbelegung, layout, eingabequelle, eingabemethode, sprache, tastenwiederholung, compose-taste, tippen
+search-settings-page-pointing = Maus & Touchpad
+search-settings-page-pointing-subtitle = Zeigergeschwindigkeit, Scrollen, Klicks und Zeichentabletts
+search-kw-settings-pointing = maus, zeiger, touchpad, scrollen, natürliches scrollen, tippen zum klicken, mauszeiger, zeichentablett, stift
+search-settings-page-spelling = Rechtschreibung & Wörterbuch
+search-settings-page-spelling-subtitle = Rechtschreibprüfung, Autokorrektur und eigene Wörter
+search-kw-settings-spelling = rechtschreibung, rechtschreibprüfung, autokorrektur, wörterbuch, wörter
 search-settings-page-keyboard-shortcuts = Tastenkürzel
 search-settings-page-keyboard-shortcuts-subtitle = System- und Arbeitsbereich-Tastenkürzel
 search-kw-settings-keyboard-shortcuts = tastenkürzel, tastenkombinationen, tastaturkürzel, kürzel, belegung, tastenbelegung

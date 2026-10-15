@@ -195,7 +195,7 @@ weaken it for convenience ([security.md](architecture/security.md)).
 | Rule | Enforced by |
 |---|---|
 | Interoperability with proprietary formats and protocols is clean-room: public specifications and black-box observation only. Nobody decompiles or disassembles proprietary binaries for Tilo. | Review |
-| Ported or vendored code keeps its licence and notices and records its upstream version or commit (`vendor/PATCHES.md`, a `PROVENANCE.md` beside the code). | Review |
+| Ported or vendored code keeps its licence and notices and records its upstream version or commit (`vendor/PATCHES.md`, a `PROVENANCE.md` beside the code). | Partly: [`check_vendor_provenance.py`](../tools/policy/check_vendor_provenance.py) requires a licence file and a `PROVENANCE.md` naming the `Cargo.toml` version in every `vendor/*` directory; that the licence is the upstream text, and code ported outside `vendor/`, are review |
 | No proprietary assets, trademarks or trade dress. | Review |
 | No in-house H.264, HEVC or ProRes codec without a patent decision. | Partly: [`check_media_stack.py`](../tools/policy/check_media_stack.py) bans the codec crates; a hand-written codec is review |
 
@@ -203,7 +203,5 @@ weaken it for convenience ([security.md](architecture/security.md)).
 
 Review-only rules above that look cheap to check, not yet done:
 
-- Vendored crates: require a licence file and a `PROVENANCE.md` with the upstream
-  version in every `vendor/*` directory.
 - Motion: a ratchet for literal animation durations, once the motion section is
   decided.

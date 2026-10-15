@@ -243,7 +243,7 @@ fn check_key(key: &str) -> Result<(), RecordError> {
 }
 
 fn now_ms() -> i64 {
-    i64::try_from(tilo_clock::unix_now()).map_or(i64::MAX, |s| s.saturating_mul(1000))
+    i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

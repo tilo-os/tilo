@@ -88,19 +88,26 @@ impl<T: 'static> EventLoop<T> {
 
         let connection = map_err!(Connection::connect_to_env(), WaylandError::Connection)?;
 
-        let (globals, mut event_queue) =
-            map_err!(globals::registry_queue_init(&connection), WaylandError::Global)?;
+        let (globals, mut event_queue) = map_err!(
+            globals::registry_queue_init(&connection),
+            WaylandError::Global
+        )?;
         let queue_handle = event_queue.handle();
 
-        let event_loop =
-            map_err!(calloop::EventLoop::<WinitState>::try_new(), WaylandError::Calloop)?;
+        let event_loop = map_err!(
+            calloop::EventLoop::<WinitState>::try_new(),
+            WaylandError::Calloop
+        )?;
 
         let mut winit_state = WinitState::new(&globals, &queue_handle, event_loop.handle())
             .map_err(|error| os_error!(error))?;
 
         // NOTE: do a roundtrip after binding the globals to prevent potential
         // races with the server.
-        map_err!(event_queue.roundtrip(&mut winit_state), WaylandError::Dispatch)?;
+        map_err!(
+            event_queue.roundtrip(&mut winit_state),
+            WaylandError::Dispatch
+        )?;
 
         // Register Wayland source.
         let wayland_source = WaylandSource::new(connection.clone(), event_queue);
@@ -117,7 +124,9 @@ impl<T: 'static> EventLoop<T> {
             });
 
         map_err!(
-            event_loop.handle().register_dispatcher(wayland_dispatcher.clone()),
+            event_loop
+                .handle()
+                .register_dispatcher(wayland_dispatcher.clone()),
             WaylandError::Calloop
         )?;
 
@@ -127,12 +136,15 @@ impl<T: 'static> EventLoop<T> {
         let (user_events_sender, user_events_channel) = calloop::channel::channel();
         let result = event_loop
             .handle()
-            .insert_source(user_events_channel, move |event, _, winit_state: &mut WinitState| {
-                if let calloop::channel::Event::Msg(msg) = event {
-                    winit_state.dispatched_events = true;
-                    pending_user_events_clone.borrow_mut().push(msg);
-                }
-            })
+            .insert_source(
+                user_events_channel,
+                move |event, _, winit_state: &mut WinitState| {
+                    if let calloop::channel::Event::Msg(msg) = event {
+                        winit_state.dispatched_events = true;
+                        pending_user_events_clone.borrow_mut().push(msg);
+                    }
+                },
+            )
             .map_err(|error| error.error);
         map_err!(result, WaylandError::Calloop)?;
 
@@ -145,10 +157,13 @@ impl<T: 'static> EventLoop<T> {
 
         let result = event_loop
             .handle()
-            .insert_source(event_loop_awakener_source, move |_, _, winit_state: &mut WinitState| {
-                // Mark that we have something to dispatch.
-                winit_state.dispatched_events = true;
-            })
+            .insert_source(
+                event_loop_awakener_source,
+                move |_, _, winit_state: &mut WinitState| {
+                    // Mark that we have something to dispatch.
+                    winit_state.dispatched_events = true;
+                },
+            )
             .map_err(|error| error.error);
         map_err!(result, WaylandError::Calloop)?;
 
@@ -190,13 +205,13 @@ impl<T: 'static> EventLoop<T> {
             match self.pump_events(None, &mut event_handler) {
                 PumpStatus::Exit(0) => {
                     break Ok(());
-                },
+                }
                 PumpStatus::Exit(code) => {
                     break Err(EventLoopError::ExitFailure(code));
-                },
+                }
                 _ => {
                     continue;
-                },
+                }
             }
         };
 
@@ -238,7 +253,7 @@ impl<T: 'static> EventLoop<T> {
                 let awakener = match &self.window_target.p {
                     PlatformActiveEventLoop::Wayland(window_target) => {
                         window_target.event_loop_awakener.clone()
-                    },
+                    }
                     #[cfg(x11_platform)]
                     PlatformActiveEventLoop::X(_) => unreachable!(),
                 };
@@ -270,7 +285,7 @@ impl<T: 'static> EventLoop<T> {
                     ControlFlow::Poll => Some(Duration::ZERO),
                     ControlFlow::WaitUntil(wait_deadline) => {
                         Some(wait_deadline.saturating_duration_since(start))
-                    },
+                    }
                 };
                 min_timeout(control_flow_timeout, timeout)
             };
@@ -303,14 +318,23 @@ impl<T: 'static> EventLoop<T> {
             // to be considered here
             let cause = match self.control_flow() {
                 ControlFlow::Poll => StartCause::Poll,
-                ControlFlow::Wait => StartCause::WaitCancelled { start, requested_resume: None },
+                ControlFlow::Wait => StartCause::WaitCancelled {
+                    start,
+                    requested_resume: None,
+                },
                 ControlFlow::WaitUntil(deadline) => {
                     if Instant::now() < deadline {
-                        StartCause::WaitCancelled { start, requested_resume: Some(deadline) }
+                        StartCause::WaitCancelled {
+                            start,
+                            requested_resume: Some(deadline),
+                        }
                     } else {
-                        StartCause::ResumeTimeReached { start, requested_resume: deadline }
+                        StartCause::ResumeTimeReached {
+                            start,
+                            requested_resume: deadline,
+                        }
                     }
-                },
+                }
             };
 
             // Reduce spurious wake-ups.
@@ -480,8 +504,13 @@ impl<T: 'static> EventLoop<T> {
                     return Some(WindowEvent::Destroyed);
                 }
 
-                let mut window =
-                    state.windows.get_mut().get_mut(window_id).unwrap().lock().unwrap();
+                let mut window = state
+                    .windows
+                    .get_mut()
+                    .get_mut(window_id)
+                    .unwrap()
+                    .lock()
+                    .unwrap();
 
                 if window.frame_callback_state() == FrameCallbackState::Requested {
                     return None;
@@ -489,8 +518,10 @@ impl<T: 'static> EventLoop<T> {
 
                 // Reset the frame callbacks state.
                 window.frame_callback_reset();
-                let mut redraw_requested =
-                    window_requests.get(window_id).unwrap().take_redraw_requested();
+                let mut redraw_requested = window_requests
+                    .get(window_id)
+                    .unwrap()
+                    .take_redraw_requested();
 
                 // Redraw the frame while at it.
                 redraw_requested |= window.refresh_frame();
@@ -500,7 +531,10 @@ impl<T: 'static> EventLoop<T> {
 
             if let Some(event) = event {
                 callback(
-                    Event::WindowEvent { window_id: crate::window::WindowId(*window_id), event },
+                    Event::WindowEvent {
+                        window_id: crate::window::WindowId(*window_id),
+                        event,
+                    },
                     &self.window_target,
                 );
             }
@@ -531,7 +565,7 @@ impl<T: 'static> EventLoop<T> {
                     }
 
                     refresh
-                },
+                }
                 None => false,
             });
         }
@@ -544,7 +578,7 @@ impl<T: 'static> EventLoop<T> {
             match &self.window_target.p {
                 PlatformActiveEventLoop::Wayland(window_target) => {
                     window_target.event_loop_awakener.ping();
-                },
+                }
                 #[cfg(x11_platform)]
                 PlatformActiveEventLoop::X(_) => unreachable!(),
             }
@@ -598,7 +632,9 @@ impl<T: 'static> EventLoop<T> {
         let mut wayland_source = self.wayland_dispatcher.as_source_mut();
         let event_queue = wayland_source.queue();
         event_queue.roundtrip(state).map_err(|error| {
-            os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(error))))
+            os_error!(OsError::WaylandError(Arc::new(WaylandError::Dispatch(
+                error
+            ))))
         })
     }
 
@@ -751,11 +787,18 @@ impl PumpEventNotifier {
 
         let (read, write) = match pipe::pipe_with(PipeFlags::CLOEXEC | PipeFlags::NONBLOCK) {
             Ok((read, write)) => (read, write),
-            Err(_) => return Self { control, handle: None, worker_waker: None },
+            Err(_) => {
+                return Self {
+                    control,
+                    handle: None,
+                    worker_waker: None,
+                }
+            }
         };
 
-        let handle =
-            std::thread::Builder::new().name(String::from("pump_events mon")).spawn(move || {
+        let handle = std::thread::Builder::new()
+            .name(String::from("pump_events mon"))
+            .spawn(move || {
                 let (lock, cvar) = &*control_thread;
                 'outer: loop {
                     let mut wait = lock.lock().unwrap();
@@ -795,7 +838,11 @@ impl PumpEventNotifier {
             warn!("failed to spawn pump_events wake-up thread: {err}");
         }
 
-        PumpEventNotifier { control, handle: handle.ok(), worker_waker: Some(write) }
+        PumpEventNotifier {
+            control,
+            handle: handle.ok(),
+            worker_waker: Some(write),
+        }
     }
 }
 

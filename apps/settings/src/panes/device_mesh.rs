@@ -15,7 +15,7 @@ use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
 use tilo_user_identity::RevocationReason;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Dropdown, TextInput, Toggle, Widget};
+use ui::widget::{Button, Dropdown, Text, TextInput, Toggle, Widget};
 
 use crate::continuity::{self, Capability, ContinuityPrivacy};
 use crate::effects::{SettingsEffect, effect};
@@ -25,8 +25,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    StatusTone, caption, card, card_with_action, cards, error_caption, rows, semantic_status_pill,
-    setting_row_described, value_row,
+    SettingsSection, StatusTone, card, card_with_action, cards, error_caption, note, row, rows,
+    semantic_status_pill, setting_row_described, value_row,
 };
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
@@ -1162,7 +1162,7 @@ impl DeviceMeshModel {
         let download_opened = t("mesh-download-opened");
         let mut continuation_rows = vec![
             value_row(&activity, &sync_auto),
-            caption(&t("mesh-activity-caption")),
+            note(&t("mesh-activity-caption")),
         ];
         if self.config.workspaces.is_empty() {
             continuation_rows.push(value_row(&files, &download_opened));
@@ -1196,12 +1196,12 @@ impl DeviceMeshModel {
             || self.load_status.starts_with("Not saved")
             || self.load_status.starts_with("Could not start pairing")
         {
-            continuation_rows.push(error_caption(&mesh_status_shown(&self.load_status)));
+            continuation_rows.push(row(error_caption(&mesh_status_shown(&self.load_status))));
         } else if self.load_status.starts_with("Saving")
             || self.load_status == "Saved"
             || self.load_status.starts_with("Waiting")
         {
-            continuation_rows.push(caption(&mesh_status_shown(&self.load_status)));
+            continuation_rows.push(note(&mesh_status_shown(&self.load_status)));
         }
 
         let this_device = t("mesh-this-device");
@@ -1232,7 +1232,7 @@ impl DeviceMeshModel {
             &workspaces,
             &self.config.workspaces.len().to_string(),
         ));
-        availability_rows.push(caption(&t(match self.config.device_role {
+        availability_rows.push(note(&t(match self.config.device_role {
             DeviceRole::Interactive => "mesh-role-hint-personal",
             DeviceRole::Hybrid => "mesh-role-hint-hybrid",
             DeviceRole::AlwaysOnServer if self.config.workspaces.is_empty() => {
@@ -1247,7 +1247,7 @@ impl DeviceMeshModel {
         })));
 
         let workspace_rows = if self.discovered_workspaces.is_empty() {
-            rows(vec![caption(&t("mesh-workspaces-empty"))])
+            rows(vec![note(&t("mesh-workspaces-empty"))])
         } else {
             rows(
                 self.discovered_workspaces
@@ -1323,11 +1323,11 @@ impl DeviceMeshModel {
                 DeviceMeshEffect::AddPersonalDevice,
             ),
         );
-        let mut personal_rows = vec![caption(&t("mesh-personal-caption"))];
+        let mut personal_rows = vec![note(&t("mesh-personal-caption"))];
         if self.pairing_target == PairingTarget::PersonalDevice
             && (pairing || self.pairing_candidate.is_some() || !self.load_status.is_empty())
         {
-            personal_rows.push(caption(&mesh_status_shown(&self.load_status)));
+            personal_rows.push(note(&mesh_status_shown(&self.load_status)));
         }
         let mut enrolled_device_rows = Vec::new();
         for device in &self.personal_devices {
@@ -1376,12 +1376,12 @@ impl DeviceMeshModel {
             ));
         }
         if let Some(error) = &self.personal_device_error {
-            enrolled_device_rows.push(caption(&t_args(
+            enrolled_device_rows.push(note(&t_args(
                 "mesh-device-list-err",
                 &[("error", error.as_str().into())],
             )));
         } else if enrolled_device_rows.is_empty() {
-            enrolled_device_rows.push(caption(&t("mesh-device-list-empty")));
+            enrolled_device_rows.push(note(&t("mesh-device-list-empty")));
         }
 
         let current_device = self
@@ -1454,21 +1454,24 @@ impl DeviceMeshModel {
                     ),
             );
         }
-        privacy_rows.push(caption(&t("mesh-privacy-stay")));
+        privacy_rows.push(note(&t("mesh-privacy-stay")));
 
         let current_target_label = t("mesh-current-target");
         let source_label = t("mesh-source");
         let mut provenance_rows = vec![
-            value_row(&current_target_label, target_name),
-            caption(&target_detail),
+            setting_row_described(
+                &current_target_label,
+                &target_detail,
+                Box::new(Text::new(target_name).numeric().dimmed()),
+            ),
             value_row(&source_label, &source_detail),
         ];
         if current_target.is_none() {
-            provenance_rows.push(caption(&t("mesh-no-active-until")));
+            provenance_rows.push(note(&t("mesh-no-active-until")));
         }
 
         let audit_rows = if self.continuity.audit.is_empty() {
-            vec![caption(&t("mesh-audit-empty"))]
+            vec![note(&t("mesh-audit-empty"))]
         } else {
             self.continuity
                 .audit
@@ -1479,15 +1482,15 @@ impl DeviceMeshModel {
                     let change = t("mesh-audit-change");
                     value_row(&change, &entry.summary())
                 })
-                .chain(std::iter::once(caption(&t("mesh-audit-caption"))))
+                .chain(std::iter::once(note(&t("mesh-audit-caption"))))
                 .collect()
         };
         let mut roaming_rows = self.roaming_provenance.as_ref().map_or_else(
-            || vec![caption(&t("mesh-roaming-empty"))],
+            || vec![note(&t("mesh-roaming-empty"))],
             |provenance| {
                 let summaries = provenance_summaries(provenance);
                 if summaries.is_empty() {
-                    vec![caption(&t("mesh-roaming-none"))]
+                    vec![note(&t("mesh-roaming-none"))]
                 } else {
                     summaries
                         .into_iter()
@@ -1497,16 +1500,16 @@ impl DeviceMeshModel {
             },
         );
         if let Some(status) = &self.roaming_provenance_status {
-            roaming_rows.push(caption(status));
+            roaming_rows.push(note(status));
         }
-        roaming_rows.push(caption(&t("mesh-roaming-caption")));
-        let mut home_server_rows = vec![caption(&t("mesh-home-caption"))];
+        roaming_rows.push(note(&t("mesh-roaming-caption")));
+        let mut home_server_rows = vec![note(&t("mesh-home-caption"))];
         if self.registered_home_peers > 0 {
             let paired = t("mesh-paired-homes");
             home_server_rows.push(value_row(&paired, &self.registered_home_peers.to_string()));
         }
         if pairing || self.load_status.starts_with("Home server") {
-            home_server_rows.push(caption(&mesh_status_shown(&self.load_status)));
+            home_server_rows.push(note(&mesh_status_shown(&self.load_status)));
         }
         let continue_title = t("mesh-continue-title");
         let privacy_title = t("mesh-privacy-title");
@@ -1518,7 +1521,7 @@ impl DeviceMeshModel {
         let availability_title = t("mesh-availability-title");
         let synced_title = t("mesh-synced-title");
         let home_nas = t("mesh-home-nas");
-        let mut sections = vec![
+        let mut sections: Vec<SettingsSection> = vec![
             card(&continue_title, rows(continuation_rows)),
             card(&privacy_title, rows(privacy_rows)),
             card(&route_title, rows(provenance_rows)),
@@ -1591,7 +1594,7 @@ impl DeviceMeshModel {
                     ),
                 ),
             ];
-            peer_rows.push(caption(&t("mesh-files-stay-desc")));
+            peer_rows.push(note(&t("mesh-files-stay-desc")));
             sections.push(card_with_action(&peer.label, remove, rows(peer_rows)));
         }
         if shows_advanced_services(self.config.device_role) {
@@ -1641,7 +1644,7 @@ impl DeviceMeshModel {
         service: &'static str,
         id: &str,
         on: bool,
-    ) -> crate::widgets::El {
+    ) -> crate::widgets::Item {
         self.cx
             .row(t(label))
             .described(t(description))

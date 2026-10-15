@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Button, ButtonRole, Column, Container, Decorator, Density, Element, Field, Form, FormSection,
@@ -68,6 +69,17 @@ pub(crate) enum SetupRequest {
 
 type Requests = Rc<RefCell<Vec<SetupRequest>>>;
 
+/// What the address has told the sheet about its provider.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ProviderStatus {
+    #[default]
+    Idle,
+    /// The servers are being looked up.
+    Finding,
+    /// The provider found for the address.
+    Found { name: String },
+}
+
 /// What the sheet shows. Clones share the same values.
 #[derive(Clone)]
 pub(crate) struct SetupFields {
@@ -84,6 +96,10 @@ pub(crate) struct SetupFields {
     /// The fields the last save found incomplete, keyed like
     /// [`AccountConfig::validate`].
     field_errors: LocalState<Vec<(&'static str, String)>>,
+    /// Whether the server rows are shown. The servers are found from the
+    /// address, so they stay out of the way until they need attention.
+    advanced: LocalState<bool>,
+    provider_status: LocalState<ProviderStatus>,
 }
 
 impl SetupFields {
@@ -112,6 +128,28 @@ impl SetupFields {
             ),
             error: LocalState::new(None),
             field_errors: LocalState::new(Vec::new()),
+            advanced: LocalState::new(false),
+            provider_status: LocalState::new(ProviderStatus::Idle),
+        }
+    }
+
+    pub(crate) fn provider_status(&self) -> ProviderStatus {
+        self.provider_status.with(Clone::clone)
+    }
+
+    pub(crate) fn set_provider_status(&self, status: ProviderStatus) {
+        if self.provider_status.with(|current| *current != status) {
+            self.provider_status.set(status);
+        }
+    }
+
+    pub(crate) fn advanced(&self) -> bool {
+        self.advanced.with(|open| *open)
+    }
+
+    pub(crate) fn set_advanced(&self, open: bool) {
+        if self.advanced() != open {
+            self.advanced.set(open);
         }
     }
 
@@ -172,6 +210,10 @@ impl SetupFields {
     }
 
     pub(crate) fn set_error(&self, error: Option<String>) {
+        // A failure is where the servers may need correcting by hand.
+        if error.is_some() {
+            self.set_advanced(true);
+        }
         if self.error.with(|current| *current != error) {
             self.error.set(error);
         }
@@ -182,6 +224,11 @@ impl SetupFields {
     }
 
     pub(crate) fn set_field_errors(&self, errors: Vec<(&'static str, String)>) {
+        if errors.iter().any(|(key, _)| {
+            key.starts_with("imap") || key.starts_with("smtp") || *key == "username"
+        }) {
+            self.set_advanced(true);
+        }
         if self.field_errors.with(|current| *current != errors) {
             self.field_errors.set(errors);
         }
@@ -251,6 +298,8 @@ struct Shape {
     provider: Option<OAuthProvider>,
     error: Option<String>,
     field_errors: Vec<(&'static str, String)>,
+    advanced: bool,
+    provider_status: ProviderStatus,
 }
 
 impl Shape {
@@ -260,6 +309,8 @@ impl Shape {
             provider: fields.provider(),
             error: fields.error(),
             field_errors: fields.field_errors(),
+            advanced: fields.advanced(),
+            provider_status: fields.provider_status(),
         }
     }
 
@@ -343,20 +394,18 @@ fn browser_sign_in(fields: &SetupFields, requests: &Requests) -> Element {
         .role(ButtonRole::Secondary)
         .on_effect(move || requests.borrow_mut().push(SetupRequest::SignIn));
     let available = fields.provider().is_some_and(OAuthProvider::is_configured);
-    let note = crate::i18n::t(if available {
-        "mail-setup-oauth-note-available"
-    } else {
-        "mail-setup-oauth-note-unavailable"
-    });
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(Row::new().push(Box::new(button))))
-            .push(Box::new(
-                Text::new(&note).with_role(TextRole::Caption).dimmed(),
-            )),
-    )
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(Row::new().push(Box::new(button))));
+    if !available {
+        column = column.push(Box::new(
+            Text::new(&crate::i18n::t("mail-setup-oauth-note-unavailable"))
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        ));
+    }
+    Box::new(column)
 }
 
 /// A server's host, port and TLS switch on one row. Changing TLS moves the
@@ -396,30 +445,78 @@ fn server_row(fields: &SetupFields, server: Server) -> Element {
     )
 }
 
-/// What Save does, or why it failed.
-fn status_line(shape: &Shape) -> Element {
-    match &shape.error {
-        Some(message) => Box::new(
-            Text::new(message)
-                .with_role(TextRole::Caption)
-                .tone(Tone::Danger)
-                .with_live(ui::a11y::Politeness::Polite),
-        ),
-        None => Box::new(
-            Text::new(&crate::i18n::t("mail-setup-hint-verified"))
-                .with_role(TextRole::Caption)
-                .dimmed(),
-        ),
-    }
+/// Why the last save, sign-in or lookup failed; nothing while all is well.
+fn status_line(message: &str) -> Element {
+    Box::new(
+        Text::new(message)
+            .with_role(TextRole::Caption)
+            .tone(Tone::Danger)
+            .with_live(ui::a11y::Politeness::Polite),
+    )
+}
+
+/// The address with, under it, what it has told the sheet: the provider
+/// found, or that its servers are being looked up.
+fn address_input(fields: &SetupFields, status: &ProviderStatus) -> Element {
+    let address =
+        input(fields, EMAIL).with_accessible_name(crate::i18n::t("mail-setup-label-email"));
+    let note = match status {
+        ProviderStatus::Idle => return Box::new(address),
+        ProviderStatus::Finding => crate::i18n::t("mail-setup-finding-provider"),
+        ProviderStatus::Found { name } => name.clone(),
+    };
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(address))
+            .push(Box::new(
+                Text::new(&note).with_role(TextRole::Caption).dimmed(),
+            )),
+    )
+}
+
+/// The switch that shows or hides the server rows.
+fn advanced_switch(fields: &SetupFields, open: bool) -> Element {
+    let fields = fields.clone();
+    Box::new(
+        Row::new().push(Box::new(
+            Button::new(
+                "mail.setup:advanced",
+                &crate::i18n::t("mail-setup-advanced"),
+            )
+            .role(ButtonRole::Plain)
+            .with_icon(if open {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            })
+            .on_effect(move || fields.set_advanced(!fields.advanced())),
+        )),
+    )
 }
 
 fn form(fields: &SetupFields, requests: &Requests, editing: bool, shape: &Shape) -> Element {
     let label = crate::i18n::t;
-    let mut account = FormSection::untitled()
-        .field(with_error(
-            Field::new(label("mail-setup-label-email"), input(fields, EMAIL)),
-            shape.error_for(&["email"]),
-        ))
+    // What a person gives: the address and how to sign in. The servers are
+    // found from the address.
+    let email = Field::custom(
+        label("mail-setup-label-email"),
+        address_input(fields, &shape.provider_status),
+    );
+    let mut account = FormSection::untitled().field(with_error(email, shape.error_for(&["email"])));
+    account = match shape.auth {
+        AuthMethod::Password => account.field(Field::new(
+            label("mail-setup-label-password"),
+            input(fields, PASSWORD),
+        )),
+        AuthMethod::OAuth => account.field(Field::custom(
+            label("mail-setup-label-account"),
+            browser_sign_in(fields, requests),
+        )),
+    };
+    account = account.control_row(advanced_switch(fields, shape.advanced));
+    let servers = FormSection::untitled()
         .field(Field::new(
             label("mail-setup-label-display-name"),
             input(fields, DISPLAY_NAME),
@@ -431,18 +528,7 @@ fn form(fields: &SetupFields, requests: &Requests, editing: bool, shape: &Shape)
         .field(Field::new(
             label("mail-setup-label-sign-in"),
             sign_in_choice(fields),
-        ));
-    account = match shape.auth {
-        AuthMethod::Password => account.field(Field::new(
-            label("mail-setup-label-password"),
-            input(fields, PASSWORD),
-        )),
-        AuthMethod::OAuth => account.field(Field::custom(
-            label("mail-setup-auth-oauth"),
-            browser_sign_in(fields, requests),
-        )),
-    };
-    let servers = FormSection::untitled()
+        ))
         .field(with_error(
             Field::custom(
                 label("mail-setup-label-imap-host"),
@@ -456,12 +542,16 @@ fn form(fields: &SetupFields, requests: &Requests, editing: bool, shape: &Shape)
                 server_row(fields, Server::Outgoing),
             ),
             shape.error_for(&["smtp_host", "smtp_port"]),
-        ))
-        .control_row(status_line(shape));
+        ));
     let mut form = Form::new()
         .with_density(Some(Density::Compact))
-        .section(account)
-        .section(servers);
+        .section(account);
+    if shape.advanced {
+        form = form.section(servers);
+    }
+    if let Some(message) = &shape.error {
+        form = form.section(FormSection::untitled().control_row(status_line(message)));
+    }
     if editing {
         let requests = Rc::clone(requests);
         form = form.section(
@@ -596,6 +686,8 @@ impl SetupSheet {
     /// The sheet for `cfg`, open. `editing` shows the way to remove it.
     pub(crate) fn open(cfg: &AccountConfig, editing: bool, max_width: f64) -> Self {
         let fields = SetupFields::of(cfg);
+        // Changing an account starts from the servers it has.
+        fields.set_advanced(editing);
         let requests = Requests::default();
         let save = Rc::clone(&requests);
         let cancel = Rc::clone(&requests);

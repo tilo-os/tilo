@@ -1,6 +1,7 @@
 use super::*;
 use std::io::Write as _;
 use std::os::unix::process::CommandExt as _;
+use std::time::Duration;
 
 const CHILD: &str = "TILO_EXECUTING_PEER_TEST_FD";
 const TEST: &str = "process_binding::linux::tests::executing_peer_child";
@@ -79,7 +80,10 @@ fn producer_packets_require_the_original_task_and_no_extra_rights() {
             Ok(())
         });
     }
-    let mut other = command.spawn().unwrap();
+    let mut other = {
+        let _spawning = crate::spawning();
+        command.spawn().unwrap()
+    };
     assert!(peer.receive_packet(&host, &mut bytes).is_err());
     assert!(other.wait().unwrap().success());
 }
@@ -108,6 +112,7 @@ fn child(socket: &UnixStream, proof: Option<&UnixStream>) -> std::process::Child
             Ok(())
         });
     }
+    let _spawning = crate::spawning();
     command.spawn().expect("real child")
 }
 #[test]
@@ -165,9 +170,12 @@ fn executing_peer_pins_child_not_socket_launcher_and_rejects_reused_launch_start
         peer.matches_transferred_pidfd(peer.pidfd()).is_err(),
         "stopped same-task descriptor is not current authority"
     );
-    let mut restarted = std::process::Command::new("/bin/true")
-        .spawn()
-        .expect("new process");
+    let mut restarted = {
+        let _spawning = crate::spawning();
+        std::process::Command::new("/bin/true")
+            .spawn()
+            .expect("new process")
+    };
     assert!(
         !peer.current(),
         "a new application process cannot revive an old kernel handle"

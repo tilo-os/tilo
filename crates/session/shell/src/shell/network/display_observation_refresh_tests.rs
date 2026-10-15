@@ -99,6 +99,9 @@ fn a_mode_only_observation_reaches_the_fabric_and_person_view_before_the_periodi
 }
 
 fn assert_person_refresh(refresh: u32) {
+    // The pump hands the person's view to the state writer rather than
+    // waiting for the disk on the compositor thread.
+    crate::shell::persist::wait_for_saves();
     let view = settings_store::person_displays::PersonDisplays::load().unwrap();
     assert_eq!(view.devices.len(), 1);
     assert!(view.devices.first().unwrap().local);
