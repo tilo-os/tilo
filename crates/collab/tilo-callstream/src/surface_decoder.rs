@@ -17,7 +17,7 @@ use media::realtime::{DecodeOutput, DecoderConfig, PictureWake, RealtimeDecoder,
 use media::{DecodedPicture, RealtimeError};
 use media::{FramePayload, PlanarFormat, StreamCodec};
 
-use crate::collab::colorimetry::{
+use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
 

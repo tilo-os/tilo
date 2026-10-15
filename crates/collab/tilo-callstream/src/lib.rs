@@ -10,6 +10,11 @@
 //! (per-subscriber framing + drop-oldest backpressure + sequence-gap
 //! detection, transport-decoupled) and [`throttle`] (damage-aware frame-rate
 //! cap).
+//!
+//! Behind features, the compositor's halves of the stack: `surface_decoder`
+//! (`surface-decoder`: every wire codec, RGBA or P010, with the sender's
+//! colorimetry — what a peer's shared surface decodes through) and
+//! `mp4_recording` (`recording`: the MP4/MOV muxer behind screen recordings).
 
 #![cfg_attr(
     test,
@@ -22,7 +27,11 @@
 
 pub mod decoder;
 pub mod encoder;
+#[cfg(feature = "recording")]
+pub mod mp4_recording;
 pub mod stream;
+#[cfg(feature = "surface-decoder")]
+pub mod surface_decoder;
 pub mod throttle;
 
 pub use decoder::{

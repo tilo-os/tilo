@@ -4745,11 +4745,10 @@ version = "0.1.0"
 dependencies = [
  "cosmic-text",
  "proptest",
- "shell",
+ "tilo-callstream",
  "tilo-media",
  "tracing",
  "tracing-subscriber",
- "workspace-hack",
 ]
 
 [[package]]
@@ -14347,7 +14346,6 @@ dependencies = [
  "getrandom 0.4.3",
  "greetd-client",
  "greeter",
- "gstreamer-app",
  "hex",
  "image",
  "iroh",
@@ -16455,7 +16453,11 @@ dependencies = [
 name = "tilo-callstream"
 version = "0.1.0"
 dependencies = [
+ "gstreamer-app",
+ "neighbour-wire",
+ "tempfile",
  "thiserror 2.0.21",
+ "tilo-callstream",
  "tilo-media",
  "tracing",
  "workspace-hack",
@@ -16996,6 +16998,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-extension"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "reqwest 0.13.4",
+ "rustix 1.1.4",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "tilo-advisory-lock",
+ "tilo-net",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-feedback"
 version = "0.1.0"
 dependencies = [
@@ -17264,6 +17282,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-files",
  "tilo-identity-ceremony",
+ "tilo-paths",
  "tilo-relay-protocol",
  "tilo-seal",
  "tilo-test-env",
@@ -18439,6 +18458,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-files",
+ "tilo-paths",
  "tilo-seal",
  "tilo-user-identity",
  "tokio",
