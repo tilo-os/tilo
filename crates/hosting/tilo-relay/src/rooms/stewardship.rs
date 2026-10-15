@@ -323,6 +323,12 @@ impl Stewardship {
         Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
     }
 
+    /// The members of `channel`'s group, when this room stewards it.
+    #[cfg(test)]
+    pub(super) fn members(&self, channel: ChannelId) -> Option<BTreeSet<Ed25519PublicKey>> {
+        self.stewards.get(&channel).map(ChannelSteward::members)
+    }
+
     fn steward<'a>(
         stewards: &'a mut HashMap<ChannelId, ChannelSteward>,
         dir: &std::path::Path,
