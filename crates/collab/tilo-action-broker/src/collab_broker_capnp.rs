@@ -14874,6 +14874,11 @@ pub mod tests {
     impl TestActionDirectory {
         fn contract(&self) -> tilo_actions::ActionContract {
             let mut contract = tilo_actions::ActionContract::view();
+            // Opening Atlas changes the invoking participant's view, not the
+            // publishing participant's private UI.
+            contract
+                .tags
+                .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
             contract.result = self.result.clone();
             if self.confirmation_required {
                 contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
@@ -15008,9 +15013,26 @@ pub mod tests {
         pub route: CrdtRoute,
         pub peer_id: u64,
         invocation_rx: tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
+        source_identity: Option<AdmittedJoinIdentity>,
     }
 
     impl LocalDirectoryFixture {
+        /// Install the source only after the production certificate, signature,
+        /// enrolled-device and current workspace admission checks succeed.
+        pub fn authenticate_source(&mut self, presentation: &[u8]) -> Result<CapRole, String> {
+            let source = verify_join_identity(
+                &self.route,
+                presentation,
+                self.state.membership.as_ref(),
+                self.state.trusted_devices.as_deref().map(Vec::as_slice),
+                self.state.services.native_certificates.as_deref(),
+            )?;
+            let role = source.role;
+            self.source_identity = Some(source);
+            self.reconnect_directory();
+            Ok(role)
+        }
+
         pub fn query_count(&self) -> usize {
             self.directory_state.borrow().query_count
         }
@@ -15023,7 +15045,12 @@ pub mod tests {
                 RegisteredActionDirectory {
                     registration: Rc::new(uuid::Uuid::new_v4()),
                     pagination: directory_pagination::DirectoryPagination::default(),
-                    publishing_person: Some("fixture-owner".into()),
+                    publishing_person: self.source_identity.as_ref().and_then(|source| {
+                        source
+                            .certificate
+                            .as_ref()
+                            .map(|certificate| principal_id_for_root(certificate.user_public_key))
+                    }),
                     app_id: self.route.app_id.clone(),
                     route: self.route.clone(),
                     directory: self.directory.clone(),
@@ -15046,21 +15073,23 @@ pub mod tests {
                 directories: Rc::clone(&self.directories),
                 channel_id: self.route.channel_key(),
                 peer_id: self.peer_id,
-                verified_identity: AdmittedJoinIdentity {
-                    host_scope: None,
-                    worker_registration: None,
-                    certificate: None,
-                    verified: VerifiedJoinIdentity {
-                        user_public_key: [0; 32],
-                        device_public_key: [0; 32],
-                        capped: false,
-                    },
-                    principal_id: "fixture-application".into(),
-                    display_handle: None,
-                    role: CapRole::Editor,
-                    agent_id: None,
-                    session_delegated: false,
-                },
+                verified_identity: self.source_identity.clone().unwrap_or_else(|| {
+                    AdmittedJoinIdentity {
+                        host_scope: None,
+                        worker_registration: None,
+                        certificate: None,
+                        verified: VerifiedJoinIdentity {
+                            user_public_key: [0; 32],
+                            device_public_key: [0; 32],
+                            capped: false,
+                        },
+                        principal_id: "fixture-application".into(),
+                        display_handle: None,
+                        role: CapRole::Editor,
+                        agent_id: None,
+                        session_delegated: false,
+                    }
+                }),
                 record_kind: None,
                 lease: None,
             })
@@ -15362,7 +15391,7 @@ pub mod tests {
             RegisteredActionDirectory {
                 registration: Rc::new(uuid::Uuid::new_v4()),
                 pagination: directory_pagination::DirectoryPagination::default(),
-                publishing_person: Some("fixture-owner".into()),
+                publishing_person: None,
                 app_id: route.app_id.clone(),
                 route: route.clone(),
                 directory: directory.clone(),
@@ -15396,6 +15425,7 @@ pub mod tests {
             route,
             peer_id,
             invocation_rx,
+            source_identity: None,
         }
     }
 

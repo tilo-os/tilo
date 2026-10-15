@@ -1398,10 +1398,7 @@ impl AccountsPane {
                 }
             } else if kind == AccountKind::GoogleDrive {
                 for view in self.dir.views_of(kind) {
-                    let title = self.linked_google_mail(&view).map_or_else(
-                        || kind_shown(kind),
-                        |mail| format!("{} · {}", kind_shown(kind), mail.summary),
-                    );
+                    let title = kind_shown(kind);
                     panel.push(card(&title, self.kind_body(kind, &[view])));
                 }
             } else if !self.dir.views_of(kind).is_empty() {
@@ -1503,18 +1500,6 @@ impl AccountsPane {
                     })
             })
             .cloned()
-            .map(|mut view| {
-                // The configured service identifies Gmail, not an email-domain
-                // guess or an inferred link to a separate Files account.
-                if self.dir.mail.accounts.iter().any(|mail| {
-                    mail.id == view.id
-                        && mail.config.auth == accounts::email::AuthMethod::OAuth
-                        && mail.config.imap_host == "imap.gmail.com"
-                }) {
-                    view.label = format!("{} · {}", t("accounts-google-mail-service"), view.label);
-                }
-                view
-            })
             .collect();
         (!views.is_empty()).then(|| card(&title, self.kind_body(AccountKind::Mail, &views)))
     }
@@ -1554,13 +1539,7 @@ impl AccountsPane {
                 .iter()
                 .flat_map(|view| {
                     let mut items = vec![self.account_row(view)];
-                    if let Some(mut mail) = self.linked_google_mail(view) {
-                        let service = t("accounts-google-mail-service");
-                        mail.label = if mail.label == mail.summary {
-                            service
-                        } else {
-                            format!("{service} · {}", mail.label)
-                        };
+                    if let Some(mail) = self.linked_google_mail(view) {
                         items.push(self.account_row(&mail));
                     }
                     items
@@ -1695,12 +1674,7 @@ impl AccountsPane {
         }
         marks.push(semantic_status_pill(&status, status_tone));
 
-        let mut details =
-            if view.kind == AccountKind::GoogleDrive && self.linked_google_mail(view).is_some() {
-                Vec::new()
-            } else {
-                vec![view.summary.clone()]
-            };
+        let mut details = vec![view.summary.clone()];
         let mut actions: Vec<Button> = self.files_button(view, &mut details).into_iter().collect();
         if !self.is_sample {
             details.push(sync_detail(runtime, import_only, granted_mail));
@@ -1725,13 +1699,30 @@ impl AccountsPane {
                 ));
             }
         }
-        let label = if view.kind == AccountKind::GoogleDrive {
-            let service = t("accounts-google-files-service");
-            if view.label != "Google" && view.label != AccountKind::GoogleDrive.label() {
-                format!("{service} · {}", view.label)
-            } else {
-                service
+        // Keep the service name on the primary line and the account identity
+        // on a secondary line, rather than joining metadata into the label.
+        // The configured service identifies Gmail, never an email-domain guess.
+        let service = if view.kind == AccountKind::GoogleDrive {
+            Some(t("accounts-google-files-service"))
+        } else if view.kind == AccountKind::Mail
+            && self.dir.mail.accounts.iter().any(|mail| {
+                mail.id == view.id
+                    && mail.config.auth == accounts::email::AuthMethod::OAuth
+                    && mail.config.imap_host == "imap.gmail.com"
+            })
+        {
+            Some(t("accounts-google-mail-service"))
+        } else {
+            None
+        };
+        let label = if let Some(service) = service {
+            if view.label != view.summary
+                && view.label != "Google"
+                && view.label != AccountKind::GoogleDrive.label()
+            {
+                details.insert(0, view.label.clone());
             }
+            service
         } else {
             view.label.clone()
         };

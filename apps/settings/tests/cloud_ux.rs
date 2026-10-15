@@ -125,8 +125,8 @@ fn assert_frame<A: ui::framework::ResourceApp>(
         );
     } else if name == "google-mail-only" {
         assert!(inspection.contains("ada@example.org"));
-        assert!(inspection.contains("Mail · Gmail"));
-        assert!(!inspection.contains("Files · Google Drive"));
+        assert!(inspection.contains("Gmail"));
+        assert!(!inspection.contains("Google Drive files"));
         assert!(!inspection.contains("No Email accounts yet"));
         assert!(!inspection.contains("No Google accounts yet"));
         assert!(
@@ -178,7 +178,15 @@ fn assert_connected_frame<A: ui::framework::ResourceApp>(
             "empty provider omitted: {empty}"
         );
     }
-    assert!(inspection.find("Google · ada@example.org") < inspection.find("Add account"));
+    assert!(
+        matches!(
+            (inspection.find("Google"), inspection.find("Add account")),
+            (Some(google), Some(add)) if google < add
+        ),
+        "Google provider is shown before the provider chooser"
+    );
+    assert!(inspection.contains("Google Drive files"));
+    assert!(inspection.contains("Gmail"));
     assert!(
         inspection.find("Add account") < inspection.find("Import Thunderbird account settings")
     );
@@ -198,7 +206,7 @@ fn assert_connected_frame<A: ui::framework::ResourceApp>(
     assert_eq!(
         nodes
             .iter()
-            .filter(|(_, node)| node.label() == Some("Google · ada@example.org"))
+            .filter(|(_, node)| node.label() == Some("Google"))
             .count(),
         1,
         "one Google provider card"
@@ -611,7 +619,7 @@ fn assert_mail_remaining(store: &accounts::AccountStore, inspection: &str) {
         Some("ada@example.org")
     );
     assert!(inspection.contains("ada@example.org"));
-    assert!(!inspection.contains("Files · Google Drive"));
+    assert!(!inspection.contains("Google Drive files"));
 }
 
 #[test]
