@@ -259,10 +259,15 @@ fn app_from_payload(
 }
 // Real layout/measurement without a mutable document sync: restoration must be clean
 // before a host has permission to mount it or deliver events.
-fn layout(app: &mut notes::NotesApp, width: f32, height: f32) {
+fn layout(
+    app: &mut notes::NotesApp,
+    width: f32,
+    height: f32,
+) -> (taffy::TaffyTree<()>, taffy::NodeId) {
     use ui::Widget;
     let mut renderer = renderer();
     let theme = ui::Theme::dark();
+    let mut laid_out = None;
     for _ in 0..5 {
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = std::collections::HashMap::new();
@@ -291,10 +296,85 @@ fn layout(app: &mut notes::NotesApp, width: f32, height: f32) {
         )
         .unwrap();
         app.apply_layout(&tree, node, vello::kurbo::Point::ORIGIN);
+        laid_out = Some((tree, node));
         if !app.take_structure_dirty() {
             break;
         }
     }
+    laid_out.expect("at least one layout pass produces a tree")
+}
+
+#[test]
+fn first_note_pointer_activation_needs_layout_but_no_paint() {
+    use ui::Widget;
+    use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+
+    ui::i18n::I18nManager::init("en-US");
+    let mut host = ui::framework::testing::TestApp::<notes::NotesShell>::new().unwrap();
+    let mut doc = host.peer_document();
+    let app = host.surface_mut::<notes::NotesApp>();
+    // Discard any geometry the host's initial frame painted. From here through
+    // pointer activation only projection, layout and event delivery run.
+    app.main_panel_mut().clear();
+    assert!(read::list_pages(&doc).is_empty());
+    let _ = layout(app, 1000.0, 500.0);
+    let first_center = app
+        .main_panel_mut()
+        .empty_action_center_for_test()
+        .expect("initial layout exposes the first-note action before painting");
+    let (tree, node) = layout(app, 1200.0, 700.0);
+    let center = app
+        .main_panel_mut()
+        .empty_action_center_for_test()
+        .expect("resizing preserves the unpainted first-note action");
+    assert_ne!(
+        center, first_center,
+        "layout updates the hit target on resize"
+    );
+    let mut focus = None;
+    for event in [
+        cursor_moved(center.x, center.y),
+        mouse_press(),
+        mouse_release(),
+    ] {
+        let mut handled = false;
+        app.handle_event(
+            &event,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &ui::winit::event::Modifiers::default(),
+                state: ui::widget::Edits::lend(&mut doc),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
+        );
+        if matches!(
+            event,
+            ui::winit::event::WindowEvent::MouseInput {
+                state: ui::winit::event::ElementState::Pressed,
+                ..
+            }
+        ) {
+            assert!(handled, "the layout-only action consumes its pointer press");
+        }
+    }
+    app.sync(&doc, &automerge::ROOT);
+    assert_eq!(
+        read::list_pages(&doc).len(),
+        1,
+        "one click creates exactly one note"
+    );
+    assert_eq!(app.workspace_pages_for_test().len(), 1);
+    assert!(app.selected_for_test().is_some());
+    layout(app, 1200.0, 700.0);
+    assert!(
+        app.main_panel_mut()
+            .empty_action_center_for_test()
+            .is_none()
+    );
 }
 
 #[test]

@@ -63,6 +63,14 @@ use crate::model::PageId;
 use crate::note_header::NoteHeader;
 use crate::num;
 
+fn empty_content() -> EmptyStateContent<'static> {
+    EmptyStateContent {
+        icon: Some(Icon::FileText),
+        action_label: Some("New note"),
+        ..EmptyStateContent::new("Start your first note")
+    }
+}
+
 /// The note header's geometry in the theme the tree was built with. The note
 /// title is the page's `LargeTitle`: an editable heading pinned above the
 /// body, so there is a single clear heading per page. Every measure is a
@@ -1319,7 +1327,7 @@ impl MainPanel {
         self.title_label.is_editing()
     }
 
-    /// Test hook: centre of the first-note call to action after a draw pass.
+    /// Test hook: centre of the first-note call to action after a layout pass.
     #[doc(hidden)]
     pub fn empty_action_center_for_test(&self) -> Option<Point> {
         (self.empty_action_rect.width() > 0.0).then(|| self.empty_action_rect.center())
@@ -1528,6 +1536,16 @@ impl Widget for MainPanel {
             self.dirty = true;
         }
         self.rect = new_rect;
+        // Input can arrive before the first paint, including after a resize.
+        self.empty_action_rect = if self.page_id.is_none() {
+            ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
+                EmptyState::layout(text, &self.layout_theme, self.rect, &empty_content())
+                    .action
+                    .unwrap_or(Rect::ZERO)
+            })
+        } else {
+            Rect::ZERO
+        };
         // A title that does not fit its line steps down one role instead of
         // eliding, so a phone at 200% text still reads the whole name. This
         // is responsive type, not cancellation of the text scale.
@@ -1837,17 +1855,12 @@ impl Widget for MainPanel {
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
             // invite the first note rather than look broken.
-            self.empty_action_rect = EmptyState::paint(
+            EmptyState::paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
-                &EmptyStateContent {
-                    icon: Some(Icon::FileText),
-                    action_label: Some("New note"),
-                    ..EmptyStateContent::new("Start your first note")
-                },
+                &empty_content(),
                 self.last_pointer,
-            )
-            .unwrap_or(Rect::ZERO);
+            );
             if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
                 ui::widget::paint_focus_ring(
                     scene,
