@@ -2036,7 +2036,7 @@ impl DeviceFabricRuntime {
             }
         }
         if newly_disabled(ContinuityCapability::FileTransfer) {
-            tear_down_nearby_transfers(network);
+            tear_down_nearby_transfers();
         }
         if newly_disabled(ContinuityCapability::Media) {
             with_fabric_clock(|core| core.set_enabled(false, Instant::now()));
@@ -8322,14 +8322,14 @@ fn tear_down_spatial_input(network: &ShellNetwork) {
     spatial_withdrawal::flush(network);
 }
 
-fn tear_down_nearby_transfers(network: &ShellNetwork) {
+fn tear_down_nearby_transfers() {
     if let Ok(mut admission) = nearby_staging_admission().lock() {
         admission.invalidate();
     }
     // Media handoffs share the lane but answer to the Media switch. Which
     // staged objects are media is the store's to say, so the rest of the
-    // teardown runs once its thread has looked.
-    let _ = nearby_store_worker::on_store_thread(network, || {
+    // teardown runs at the loop's next pump once its thread has looked.
+    let _ = nearby_store_worker::on_store_thread_unhurried(|| {
         let media_outgoing = with_nearby_transfer_store(|store| {
             Ok(store
                 .outbox()
