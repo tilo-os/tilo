@@ -36,14 +36,6 @@ fn titles(list: &Replica<Checklist>) -> Vec<String> {
     titles
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
-}
-
 /// Items have stable ids, so two people adding at once keep both items.
 #[test]
 fn concurrent_adds_keep_both_items() {
@@ -112,7 +104,7 @@ fn history_is_attributed() {
     let versions = ada.versions();
     let by = |author: &[u8], did: &dyn Fn(&Did) -> bool| {
         versions.iter().any(|version| {
-            version.actor == hex(author)
+            version.actor == hex::encode(author)
                 && version
                     .context
                     .as_ref()

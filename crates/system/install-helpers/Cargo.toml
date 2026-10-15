@@ -45,6 +45,7 @@ path = "examples/staging-handoff-fixture.rs"
 [dependencies]
 # Strict base64 of SSH public keys, as base64.b64decode(validate=True).
 base64.workspace = true
+hex.workspace = true
 # No-follow opens of the copied handoff files and the effective user, without
 # FFI.
 rustix = { workspace = true, features = ["fs", "process", "std"] }

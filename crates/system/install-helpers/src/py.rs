@@ -272,18 +272,7 @@ pub fn equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest as _;
-    hex(&sha2::Sha256::digest(bytes))
-}
-
-/// Lowercase hex.
-#[must_use]
-pub fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut text = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        let _ = write!(text, "{byte:02x}");
-    }
-    text
+    hex::encode(sha2::Sha256::digest(bytes))
 }
 
 #[cfg(test)]
