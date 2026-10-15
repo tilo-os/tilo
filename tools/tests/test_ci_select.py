@@ -993,7 +993,7 @@ class SelectorTests(unittest.TestCase):
             self.setUp()
             policy = (REPO_ROOT / "tools/policy/run.sh").read_text()
             self.assertIn(
-                "run 'Builder candidate workflow tests' python3 "
+                "run_tests 'Builder candidate workflow tests' python3 "
                 "os/tests/test_builder_candidate_workflow.py",
                 policy,
             )
