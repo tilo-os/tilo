@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
 use zbus::zvariant::{OwnedValue, Value};
@@ -15,6 +15,7 @@ use super::{
     AuthRequest, Outcome, PromptAnswer, PromptView, Prompter, StockNotice, authenticate,
     initial_identity,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Where the agent object lives on the system bus.
 pub const AGENT_PATH: &str = "/org/tilo/PolicyKit1/AuthenticationAgent";
@@ -211,8 +212,7 @@ impl AuthenticationAgent {
         };
         let token = CancellationToken::new();
         self.live
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .insert(cookie.clone(), token.clone());
         let prompter = SheetPrompter::new(Arc::clone(&self.sheets), &cookie);
         let first = initial_identity(&request.identities, session_user().as_deref());
@@ -222,10 +222,7 @@ impl AuthenticationAgent {
             () = token.cancelled() => Outcome::Cancelled,
         };
         self.sheets.cancel(prompter.handle());
-        self.live
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&cookie);
+        self.live.lock_recover().remove(&cookie);
         match outcome {
             Outcome::Authorized { identity } => {
                 // Workspace history is derived from collaborative documents
@@ -248,11 +245,7 @@ impl AuthenticationAgent {
     /// polkit withdrew the request (the requester went away, or another
     /// agent answered).
     async fn cancel_authentication(&self, cookie: String) {
-        let token = self
-            .live
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&cookie);
+        let token = self.live.lock_recover().remove(&cookie);
         if let Some(token) = token {
             token.cancel();
         }

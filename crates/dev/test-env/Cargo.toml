@@ -12,6 +12,7 @@ description = "Serialised, self-restoring process environment, XDG fixtures and 
 # production dependency table.
 
 [dependencies]
+tilo-lock = { path = "../../platform/tilo-lock" }
 tempfile.workspace = true
 
 [lints]

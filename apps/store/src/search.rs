@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use ui::tilo_resource::SearchEntry;
 
 use crate::StoreItem;
+use ui::lock::{MutexRecover as _, RwLockRecover as _};
 
 #[derive(Default)]
 struct DirectoryState {
@@ -44,20 +45,14 @@ impl StoreDirectory {
     /// Build a complete replacement without the read lock, then publish it,
     /// all under the writer lock so publications follow worker order.
     fn rebuild_serialized(&self, items: &[StoreItem], before_publish: impl FnOnce()) {
-        let writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let writer = self.writer.lock_recover();
         self.rebuild_with_writer(items, before_publish);
         drop(writer);
     }
 
     fn rebuild_with_writer(&self, items: &[StoreItem], before_publish: impl FnOnce()) {
         let revision = catalogue_revision(items);
-        let state = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.read_recover();
         if state.revision == Some(revision) {
             return;
         }
@@ -70,10 +65,7 @@ impl StoreDirectory {
                 // A catalogue naming one app twice is malformed: withdraw the
                 // directory rather than let agents act on either row.
                 tracing::error!(app = %item.id, "withdrawing Store directory: an app is listed twice");
-                *self
-                    .state
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = DirectoryState::default();
+                *self.state.write_recover() = DirectoryState::default();
                 return;
             }
             entries.push(app_entry(item));
@@ -81,10 +73,7 @@ impl StoreDirectory {
 
         before_publish();
 
-        let mut state = self
-            .state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.write_recover();
         state.revision = Some(revision);
         state.entries = Arc::new(entries);
         state.apps = apps;
@@ -92,24 +81,13 @@ impl StoreDirectory {
 
     /// Every app of the catalogue as a search entry.
     pub fn entries(&self) -> Vec<SearchEntry> {
-        let entries = Arc::clone(
-            &self
-                .state
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entries,
-        );
+        let entries = Arc::clone(&self.state.read_recover().entries);
         entries.as_ref().clone()
     }
 
     /// The catalogue app `id`, as the directory holds it now.
     pub fn app(&self, id: &str) -> Option<StoreItem> {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .apps
-            .get(id)
-            .cloned()
+        self.state.read_recover().apps.get(id).cloned()
     }
 }
 

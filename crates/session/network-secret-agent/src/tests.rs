@@ -3,7 +3,7 @@
 //! the sheet the compositor draws, in the shell's words.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use zbus::zvariant::{ObjectPath, Value};
@@ -16,6 +16,7 @@ use super::testing::{
     request_for, string_of, vpn_connection, wifi_psk_connection,
 };
 use super::*;
+use tilo_lock::MutexRecover as _;
 
 /// Sheets that answer from a script, in order; with the script spent a
 /// sheet stays up until it is taken down.
@@ -35,17 +36,11 @@ impl ScriptedSheets {
     }
 
     fn asked(&self) -> Vec<(String, SecretRequest)> {
-        self.asked
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.asked.lock_recover().clone()
     }
 
     fn cancelled(&self) -> Vec<String> {
-        self.cancelled
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.cancelled.lock_recover().clone()
     }
 
     /// The first `count` sheets asked for, once they have been.
@@ -72,14 +67,9 @@ impl ScriptedSheets {
 impl Sheets for ScriptedSheets {
     fn ask(&self, handle: &str, request: &SecretRequest) -> SheetReply {
         self.asked
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .push((handle.to_owned(), request.clone()));
-        let next = self
-            .answers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop_front();
+        let next = self.answers.lock_recover().pop_front();
         match next {
             Some(answer) => Box::pin(async move { answer }),
             None => Box::pin(std::future::pending()),
@@ -87,10 +77,7 @@ impl Sheets for ScriptedSheets {
     }
 
     fn cancel(&self, handle: &str) {
-        self.cancelled
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(handle.to_owned());
+        self.cancelled.lock_recover().push(handle.to_owned());
     }
 }
 
@@ -122,10 +109,7 @@ async fn a_wifi_password_is_asked_in_the_sheet_and_returned_only_to_networkmanag
     )
     .await;
     assert_eq!(
-        link.registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_slice(),
+        link.registered.lock_recover().as_slice(),
         &[(AGENT_IDENTIFIER.to_string(), CAPABILITY_VPN_HINTS)],
         "registered once, under the stable identifier"
     );
@@ -584,8 +568,7 @@ struct FakeRoaming {
 impl RoamingWifi for FakeRoaming {
     fn password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {
         self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .find(|(name, mode, _)| name == ssid && *mode == security)
             .map(|(_, _, password)| password.clone())
@@ -598,8 +581,7 @@ impl RoamingWifi for FakeRoaming {
         password: &str,
     ) -> Result<(), String> {
         self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .push((ssid.into(), security, password.into()));
         Ok(())
     }
@@ -643,10 +625,7 @@ fn the_vault_keeps_secrets_sealed_and_wpa_passphrases_roam() {
     psk.insert("psk", "correct horse");
     vault.keep(&wifi, &psk).expect("shared");
     assert_eq!(
-        fake.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_slice(),
+        fake.shared.lock_recover().as_slice(),
         &[(
             "Home Net".to_string(),
             os_actions::WifiSecurity::Wpa2,

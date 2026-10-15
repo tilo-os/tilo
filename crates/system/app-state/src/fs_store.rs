@@ -33,6 +33,7 @@ use crate::{
     claim_marker, ensure_state_dir, io_err, open_directory, same_file, sync_directory_ancestors,
     validate_absolute_directory, validate_package_id, validate_record_key,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Directory below the profile root holding every instance's local view.
 pub const INSTANCE_VIEWS_DIR: &str = "instance-views";
@@ -228,7 +229,7 @@ fn target_in(root: &Path, key: &StorageKey) -> Result<Target, SeamError> {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 /// A writer-identity sidecar's bytes; an empty or malformed one is unreadable.

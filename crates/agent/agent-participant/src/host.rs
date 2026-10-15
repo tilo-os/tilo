@@ -21,7 +21,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -35,6 +35,7 @@ use crate::control::{
 };
 use crate::model::ModelChoice;
 use crate::participant::{AgentParticipant, ParticipantConfig};
+use tilo_lock::MutexRecover as _;
 
 /// The file under the state directory.
 const STATE_FILE: &str = "agents.json";
@@ -235,13 +236,7 @@ impl AgentHost {
         if let Some(ticker) = self.ticker.take() {
             let _ = ticker.join();
         }
-        let threads = std::mem::take(
-            &mut *self
-                .shared
-                .threads
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        );
+        let threads = std::mem::take(&mut *self.shared.threads.lock_recover());
         for (_, control) in &threads {
             control.wake();
         }
@@ -276,10 +271,7 @@ fn spawn_agent(
         .name(name)
         .spawn(move || run_agent(&thread_shared, endpoint, room, identity, &thread_control))
         .map_err(|error| error.to_string())?;
-    let mut threads = shared
-        .threads
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut threads = shared.threads.lock_recover();
     threads.retain(|(thread, _)| !thread.is_finished());
     threads.push((handle, control));
     drop(threads);
@@ -351,7 +343,7 @@ fn persist(supervisor: &AgentSupervisor, file: &Path, written: &Mutex<String>) {
     let Ok(text) = serde_json::to_string_pretty(&supervisor.snapshot()) else {
         return;
     };
-    let mut last = written.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut last = written.lock_recover();
     if *last == text {
         return;
     }

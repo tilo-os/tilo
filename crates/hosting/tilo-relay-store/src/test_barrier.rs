@@ -12,6 +12,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError},
 };
+use tilo_lock::MutexRecover as _;
 type Key = (PathBuf, &'static str);
 struct Gate {
     released: Mutex<bool>,
@@ -20,7 +21,7 @@ struct Gate {
 }
 /// A panicking test must not wedge every later one on a poisoned registry.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.lock_recover()
 }
 fn gates() -> &'static Mutex<HashMap<Key, Arc<Gate>>> {
     static GATES: OnceLock<Mutex<HashMap<Key, Arc<Gate>>>> = OnceLock::new();

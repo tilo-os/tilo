@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use jni::objects::{GlobalRef, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
@@ -14,6 +14,7 @@ use jni::{JNIEnv, NativeMethod};
 
 use crate::location::LocationOutcome;
 use crate::wake::Reply;
+use tilo_lock::MutexRecover as _;
 
 pub(super) const RESULTS: &str = "so.tilo.android.TiloActivityResults";
 pub(super) const DOCUMENTS: &str = "so.tilo.android.TiloDocuments";
@@ -85,7 +86,7 @@ fn natives(class: &str) -> Vec<NativeMethod> {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 /// Callbacks waiting for Java, keyed by the token Java hands back.

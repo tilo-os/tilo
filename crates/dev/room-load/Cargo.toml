@@ -13,6 +13,7 @@ name = "tilo-room-load"
 path = "src/main.rs"
 
 [dependencies]
+tilo-lock = { path = "../../platform/tilo-lock" }
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }

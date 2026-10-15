@@ -17,6 +17,7 @@ use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+use tilo_lock::MutexRecover as _;
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
@@ -229,12 +230,7 @@ impl Shared {
 
     /// The applications whose components woke the mount since the last call.
     pub fn take_wakers(&self) -> Vec<&'static str> {
-        std::mem::take(
-            &mut *self
-                .wakers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        std::mem::take(&mut *self.wakers.lock_recover())
     }
 
     /// The page behind a painted window, created on first use.
@@ -595,9 +591,7 @@ impl Tiles {
         component
             .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
                 woken.store(true, Ordering::Release);
-                let mut wakers = wakers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut wakers = wakers.lock_recover();
                 if !wakers.contains(&app_id) {
                     wakers.push(app_id);
                 }

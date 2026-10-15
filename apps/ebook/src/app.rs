@@ -88,6 +88,7 @@ use crate::reader_theme::ReaderPalette;
 use crate::reading_settings::{Appearance, ReadingSettings, ReadingSettingsAction};
 use crate::resource::{Ebook, HiPiece, Passage, books};
 use crate::shelf_controls::{ShelfControlAction, ShelfControls};
+use ui::lock::MutexRecover as _;
 
 /// Whether a parsed book should replace the reader's current content or only
 /// join a watched shelf. The worker carries this presentation intent but never
@@ -202,9 +203,7 @@ impl ImportWorker {
             loop {
                 let request = {
                     let (lock, wake) = &*worker_mailbox;
-                    let mut state = lock
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut state = lock.lock_recover();
                     while state.pending.is_none() && !state.closed {
                         state = wake
                             .wait(state)
@@ -263,9 +262,7 @@ impl ImportWorker {
 
     fn request(&self, request: ImportRequest) -> Result<(), String> {
         let (lock, wake) = &*self.mailbox;
-        let mut state = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock.lock_recover();
         if state.closed {
             return Err("the book importer stopped".into());
         }
@@ -282,9 +279,7 @@ impl ImportWorker {
     /// Stop the worker: it takes no more imports and drops a waiting one.
     fn close(&self) {
         let (lock, wake) = &*self.mailbox;
-        let mut state = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock.lock_recover();
         state.closed = true;
         state.pending = None;
         drop(state);

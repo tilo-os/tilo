@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
 pub struct Stats {
@@ -36,9 +37,7 @@ pub struct Stats {
 const CHAT_WINDOW_MS: u64 = 5000;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 /// The `q` quantile of `values` (nearest rank).

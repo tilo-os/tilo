@@ -14,13 +14,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use desktop_entry::icon_theme::{self, IconFile, IconFormat, IconLookup};
 use ui::icons::{AppImage, AppImageSource};
 use vello::peniko::{Blob, ImageData};
 
 use crate::shell::host_apps::{self};
+use tilo_lock::MutexRecover as _;
 
 /// Icon files larger than this are not read: an icon is kilobytes, and a
 /// hostile or broken theme must not make the compositor parse megabytes.
@@ -142,17 +143,11 @@ fn raster_cache() -> &'static Mutex<HashMap<RasterKey, Option<ImageData>>> {
 
 fn cached_image(file: &IconFile, device_px: u32) -> Option<ImageData> {
     let key = (file.path.clone(), device_px);
-    if let Some(hit) = raster_cache()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&key)
-    {
+    if let Some(hit) = raster_cache().lock_recover().get(&key) {
         return hit.clone();
     }
     let image = rasterize(file, device_px).map(|raster| raster.image_data());
-    let mut cache = raster_cache()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut cache = raster_cache().lock_recover();
     if cache.len() >= RASTER_CACHE_LIMIT {
         cache.clear();
     }
@@ -212,7 +207,7 @@ fn memoised_name(key: String, resolve: impl FnOnce() -> Option<String>) -> Optio
     });
     let generation = host_apps::host_apps_generation();
     {
-        let mut guard = memo.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut guard = memo.lock_recover();
         if guard.generation != generation {
             guard.generation = generation;
             guard.names.clear();
@@ -223,10 +218,7 @@ fn memoised_name(key: String, resolve: impl FnOnce() -> Option<String>) -> Optio
     }
     // Resolved outside the lock: it scans the application directories.
     let name = resolve();
-    memo.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .names
-        .insert(key, name.clone());
+    memo.lock_recover().names.insert(key, name.clone());
     name
 }
 

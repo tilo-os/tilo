@@ -61,6 +61,7 @@ use tilo_user_identity::CertificationRequest;
 
 use crate::daemon::{Relay, RelayError};
 use sessions::{SessionError, Sessions};
+use tilo_lock::RwLockRecover as _;
 
 /// Configuration of the browser listener.
 #[derive(Clone, Debug)]
@@ -520,8 +521,7 @@ async fn maintain_legacy(
                 .relay
                 .identity
                 .revocations
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .read_recover()
                 .is_revoked(&device);
             let writable = match authority {
                 Some(authority) => match authority.rooms() {

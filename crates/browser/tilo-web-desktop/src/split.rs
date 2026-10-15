@@ -18,9 +18,10 @@
 use std::ffi::c_void;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 
+use tilo_lock::MutexRecover as _;
 use ui::application::ApplicationDefinition;
 
 /// How the page reports a module's load: `(data, loaded)`.
@@ -48,7 +49,7 @@ struct SlotState {
 
 impl Slot {
     fn state(&self) -> MutexGuard<'_, SlotState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 }
 

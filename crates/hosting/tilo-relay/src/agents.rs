@@ -47,6 +47,7 @@ use tilo_user_identity::{
 use crate::certification::CertificationProtocol;
 use crate::daemon::{Relay, RelayError, RelayIdentity};
 use crate::peer::AgentRegistry;
+use tilo_lock::RwLockRecover as _;
 
 /// How long an agent's approval request waits for an approver.
 const APPROVAL_WAIT_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -139,8 +140,7 @@ impl AgentHostLink for RelayAgentLink {
             .verify(&self.user_public_key, tilo_clock::unix_now_ns())
             .map_err(|error| error.to_string())?;
         self.agents
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .write_recover()
             .insert(delegation.device_public_key, Some(delegation.clone()));
         // A replacement may narrow an earlier delegation's rooms.
         crate::authority_epoch::bump();
@@ -153,10 +153,7 @@ impl AgentHostLink for RelayAgentLink {
     }
 
     fn withdraw(&self, device_public_key: [u8; 32]) {
-        self.agents
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(device_public_key, None);
+        self.agents.write_recover().insert(device_public_key, None);
         crate::authority_epoch::bump();
         // Governed rooms take it off their channels and refuse its writes.
         self.reconcile_rooms(device_public_key, None);

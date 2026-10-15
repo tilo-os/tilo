@@ -23,6 +23,7 @@ use crate::notifications::{
     CenterLayout, CenterMetrics, CenterOutcome, HistoryActivation, Notification,
     NotificationCenter, NotificationHost, NotificationLog, NotificationSeverity, NotificationStack,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Width of the centre panel, and its inset from the surface's edges.
 const PANEL_WIDTH: f64 = 360.0;
@@ -340,10 +341,7 @@ impl AppNotifier {
     }
 
     fn push(&self, request: AppRequest) {
-        self.queue
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((request, 0));
+        self.queue.lock_recover().push((request, 0));
         (self.wake)();
     }
 }
@@ -406,12 +404,7 @@ impl AppInbox {
         notifications: &DesktopNotifications,
         app_of: AppOf<'_>,
     ) -> bool {
-        let requests = std::mem::take(
-            &mut *self
-                .queue
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let requests = std::mem::take(&mut *self.queue.lock_recover());
         let mut changed = false;
         let mut passed = Vec::new();
         for (request, passes) in requests {
@@ -464,10 +457,7 @@ impl AppInbox {
             }
         }
         if !passed.is_empty() {
-            self.queue
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend(passed);
+            self.queue.lock_recover().extend(passed);
         }
         changed
     }

@@ -38,6 +38,7 @@ use crate::widgets::{
     Item, SettingsSection, StatusTone, card, card_with_action, field_row, note, row, rows,
     semantic_status_pill, value_row,
 };
+use ui::lock::MutexRecover as _;
 
 /// The person's agent providers, as their settings hold them: the hosted
 /// ones roam with the person, those on this device or its network stay.
@@ -360,9 +361,7 @@ pub(crate) fn answer(
             drop(model);
             Ok(cx.thread(
                 move |_| {
-                    let mut typed = buffer
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut typed = buffer.lock_recover();
                     let value = key.unwrap_or_else(|| std::mem::take(&mut *typed));
                     typed.zeroize();
                     drop(typed);
@@ -1014,8 +1013,7 @@ impl AgentModelsModel {
                     (max_output_tokens, runtime_context_tokens, plan_timeout_ms),
                 )?;
                 self.limit_field_buffers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .remove(&(provider, model));
             }
             AgentModelsEffect::AddProvider { protocol: slug } => {
@@ -1488,10 +1486,7 @@ impl AgentModelsModel {
     }
 
     fn key_buffer(&self, profile_id: &str) -> Arc<Mutex<String>> {
-        let mut buffers = self
-            .provider_key_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buffers = self.provider_key_buffers.lock_recover();
         buffers
             .entry(profile_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(String::new())))
@@ -1499,10 +1494,7 @@ impl AgentModelsModel {
     }
 
     fn field_buffers(&self, profile: &ProviderProfile) -> HostedFieldBuffers {
-        let mut buffers = self
-            .provider_field_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buffers = self.provider_field_buffers.lock_recover();
         buffers
             .entry(profile.id.clone())
             .or_insert_with(|| HostedFieldBuffers {
@@ -1798,10 +1790,7 @@ impl AgentModelsModel {
         selected: &ModelDescriptor,
     ) -> LimitFieldBuffers {
         let key = (profile.id.clone(), selected.id.clone());
-        let mut buffers = self
-            .limit_field_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buffers = self.limit_field_buffers.lock_recover();
         let fields = buffers
             .entry(key)
             .or_insert_with(|| LimitFieldBuffers {

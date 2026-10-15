@@ -11,6 +11,7 @@ use crate::peer::WorkspaceRegistry;
 use crate::room_access::AdmissionMode;
 use crate::store::{GovernedAccessRecord, StoreError, WorkspaceStore};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
+use tilo_lock::MutexRecover as _;
 
 const AUTHORIZATION_CAPACITY: usize = 64;
 const AUTHORIZATION_WORKERS: usize = 8;
@@ -502,9 +503,7 @@ pub(crate) async fn get_or_initialize(
         if let Some(workspace) = map.get(&workspace_id) {
             return Ok(workspace.clone());
         }
-        let mut pending = reservations()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pending = reservations().lock_recover();
         if let Some(opening) = pending.get(&key) {
             opening.clone()
         } else {
@@ -528,10 +527,7 @@ pub(crate) async fn get_or_initialize(
                 let opened =
                     opened.map(|workspace| map.entry(workspace_id).or_insert(workspace).clone());
                 sender.send_replace(Some(opened));
-                reservations()
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&key);
+                reservations().lock_recover().remove(&key);
             });
             receiver
         }

@@ -318,6 +318,7 @@ impl CpuLayout {
 
 #[cfg(any(test, target_os = "linux"))]
 use crate::shell::hdr_surface::half_to_f32;
+use tilo_lock::MutexRecover as _;
 
 /// Append one row of a 10-bit or half-float buffer to `texels` as the
 /// matching [`crate::shell::hdr_surface::HdrTexelFormat`]: 10-bit words with
@@ -1572,10 +1573,7 @@ fn signal_capture_barrier(barrier: &Barrier) {
 
 #[cfg(target_os = "linux")]
 fn mark_capture_complete(client: Client, completed: &Mutex<HashMap<ClientId, Client>>) {
-    completed
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(client.id(), client);
+    completed.lock_recover().insert(client.id(), client);
 }
 
 #[cfg(target_os = "linux")]
@@ -1594,11 +1592,7 @@ fn complete_capture(
 ) {
     signal_capture_barrier(barrier);
     mark_capture_complete(client, completed);
-    if let Some(ping) = ping
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-    {
+    if let Some(ping) = ping.lock_recover().as_ref() {
         ping.ping();
     }
 }
@@ -1625,16 +1619,10 @@ impl AsyncDmabufCapture {
                 let mut scratch = HashMap::<SurfaceId, Vec<u8>>::new();
                 while wakes.recv().is_ok() {
                     loop {
-                        let job = worker_pending
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .pop();
+                        let job = worker_pending.lock_recover().pop();
                         let Some(job) = job else { break };
                         let rgba = scratch.entry(job.surface).or_default();
-                        let recycled = worker_recycled
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .remove(&job.surface);
+                        let recycled = worker_recycled.lock_recover().remove(&job.surface);
                         // Still drawn somewhere: whoever holds it frees it.
                         if rgba.capacity() == 0
                             && let Some(mut previous) =
@@ -1674,11 +1662,7 @@ impl AsyncDmabufCapture {
     /// A job whose buffer is still being rendered: it runs once
     /// [`dmabuf_fence_signalled`] says the client's GPU is done with it.
     fn park(&self, job: DmabufJob) {
-        let replaced = self
-            .awaiting_fence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(job.surface, job);
+        let replaced = self.awaiting_fence.lock_recover().push(job.surface, job);
         if let Some(replaced) = replaced {
             // As in `enqueue`: only the newest commit can become visible, and
             // the older one never read its buffer.
@@ -1690,10 +1674,7 @@ impl AsyncDmabufCapture {
     /// newest. `readable` is `false` when its fence could not be watched.
     fn unpark(&self, surface: SurfaceId, token: u64, readable: bool) {
         let job = {
-            let mut awaiting = self
-                .awaiting_fence
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut awaiting = self.awaiting_fence.lock_recover();
             if awaiting
                 .jobs
                 .get(&surface)
@@ -1713,19 +1694,11 @@ impl AsyncDmabufCapture {
     fn enqueue(&self, job: DmabufJob) {
         // Tokens grow with every commit, so a job still waiting for its fence
         // belongs to an older commit of this surface.
-        let parked = self
-            .awaiting_fence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(job.surface);
+        let parked = self.awaiting_fence.lock_recover().remove(job.surface);
         if let Some(parked) = parked {
             release_superseded(parked, &self.completed);
         }
-        let replaced = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(job.surface, job);
+        let replaced = self.pending.lock_recover().push(job.surface, job);
         if let Some(replaced) = replaced {
             // The newer commit is the only pending frame that can become
             // visible. Release the superseded transaction deliberately; a
@@ -1738,47 +1711,28 @@ impl AsyncDmabufCapture {
     }
 
     fn drain_completed(&self) -> Vec<Client> {
-        std::mem::take(
-            &mut *self
-                .completed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
-        .into_values()
-        .collect()
+        std::mem::take(&mut *self.completed.lock_recover())
+            .into_values()
+            .collect()
     }
 
     fn recycle_pixels(&self, surface: SurfaceId, rgba: Arc<Vec<u8>>) {
         if rgba.capacity() == 0 {
             return;
         }
-        self.recycled
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(surface, rgba);
+        self.recycled.lock_recover().insert(surface, rgba);
     }
 
     fn forget_surface(&self, surface: SurfaceId) {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(surface);
+        let pending = self.pending.lock_recover().remove(surface);
         if let Some(pending) = pending {
             release_superseded(pending, &self.completed);
         }
-        let parked = self
-            .awaiting_fence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(surface);
+        let parked = self.awaiting_fence.lock_recover().remove(surface);
         if let Some(parked) = parked {
             release_superseded(parked, &self.completed);
         }
-        self.recycled
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&surface);
+        self.recycled.lock_recover().remove(&surface);
     }
 }
 
@@ -1849,11 +1803,7 @@ impl AsyncShmCapture {
                     while let Some(job) = worker.next_job() {
                         worker.run(job);
                         SHM_FRAMES_PUBLISHED.store(true, std::sync::atomic::Ordering::Release);
-                        if let Some(ping) = worker_completion_ping
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .as_ref()
-                        {
+                        if let Some(ping) = worker_completion_ping.lock_recover().as_ref() {
                             ping.ping();
                         }
                     }
@@ -1871,10 +1821,7 @@ impl AsyncShmCapture {
     }
 
     fn enqueue(&self, mut job: ShmJob) {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pending = self.pending.lock_recover();
         let moot = pending
             .remove(job.surface)
             .map_or_else(Vec::new, |older| job.absorb(older));
@@ -1894,8 +1841,7 @@ impl AsyncShmCapture {
     /// Bytes `surface` has queued and the worker has not taken yet.
     fn queued_bytes(&self, surface: SurfaceId) -> usize {
         self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .jobs
             .get(&surface)
             .map_or(0, ShmJob::copied_bytes)
@@ -1905,10 +1851,7 @@ impl AsyncShmCapture {
     /// holding `needed` bytes, the largest when the size is unknown, or a
     /// fresh one when none fits.
     fn take_scratch(&self, needed: Option<usize>) -> Vec<u8> {
-        let mut scratch = self
-            .scratch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut scratch = self.scratch.lock_recover();
         let chosen = match needed {
             Some(needed) => scratch
                 .iter()
@@ -1928,16 +1871,8 @@ impl AsyncShmCapture {
     }
 
     fn forget_surface(&self, surface: SurfaceId) {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(surface);
-        let built = self
-            .surfaces
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&surface);
+        let pending = self.pending.lock_recover().remove(surface);
+        let built = self.surfaces.lock_recover().remove(&surface);
         drop(built);
         if let Some(job) = pending {
             recycle_shm_scratch(&self.scratch, job.patches);
@@ -1960,16 +1895,11 @@ struct ShmWorker<'a> {
 #[cfg(target_os = "linux")]
 impl ShmWorker<'_> {
     fn next_job(&self) -> Option<ShmJob> {
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop()
+        self.pending.lock_recover().pop()
     }
 
     fn surfaces(&self) -> std::sync::MutexGuard<'_, HashMap<SurfaceId, ShmSurface>> {
-        self.surfaces
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.surfaces.lock_recover()
     }
 
     /// Build one job's frame and publish it, or record why not.
@@ -2060,10 +1990,7 @@ impl ShmWorker<'_> {
         if unanchored.is_empty() {
             return;
         }
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pending = self.pending.lock_recover();
         let idle: Vec<SurfaceId> = unanchored
             .into_iter()
             .filter(|id| !pending.jobs.contains_key(id))
@@ -2188,9 +2115,7 @@ fn recycle_shm_scratch(scratch: &Mutex<Vec<Vec<u8>>>, patches: Vec<ShmPatch>) {
         return;
     }
     let mut dropped = Vec::new();
-    let mut kept = scratch
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut kept = scratch.lock_recover();
     for patch in patches {
         let bytes = patch.frame.into_bytes();
         if bytes.capacity() == 0 {
@@ -2266,9 +2191,7 @@ pub fn install_completion_ping(ping: &smithay::reexports::calloop::ping::Ping) {
     .into_iter()
     .flatten()
     {
-        *slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ping.clone());
+        *slot.lock_recover() = Some(ping.clone());
     }
 }
 
@@ -2338,22 +2261,11 @@ static BUFFER_HOLDS: std::sync::LazyLock<Mutex<BufferHolds<WlBuffer>>> =
 /// the GPU finished reading it ([`crate::shell::gpu_frames::BufferLease`]).
 #[cfg(target_os = "linux")]
 pub fn hold_buffer(buffer: WlBuffer, frame: &crate::shell::gpu_frames::GpuFrame) {
-    BUFFER_HOLDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .hold(buffer.clone());
+    BUFFER_HOLDS.lock_recover().hold(buffer.clone());
     frame.hold(crate::shell::gpu_frames::BufferLease::new(move || {
-        BUFFER_HOLDS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .returned
-            .push(buffer);
+        BUFFER_HOLDS.lock_recover().returned.push(buffer);
         if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get()
-            && let Some(ping) = worker
-                .completion_ping
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
+            && let Some(ping) = worker.completion_ping.lock_recover().as_ref()
         {
             ping.ping();
         }
@@ -2364,10 +2276,7 @@ pub fn hold_buffer(buffer: WlBuffer, frame: &crate::shell::gpu_frames::GpuFrame)
 /// its client.
 #[cfg(target_os = "linux")]
 pub fn give_back_released_buffers() {
-    let free = BUFFER_HOLDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .give_back();
+    let free = BUFFER_HOLDS.lock_recover().give_back();
     for buffer in free {
         // A buffer its client already destroyed takes no event.
         buffer.release();
@@ -2452,9 +2361,7 @@ fn share_dmabuf(
     match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface, opaque) {
         Ok(frame) => Some(frame),
         Err(reason) => {
-            let mut reported = REPORTED
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut reported = REPORTED.lock_recover();
             if !reported.contains(&reason) && reported.len() < 32 {
                 eprintln!(
                     "tilo compositor: client frame read back through the CPU, not shared on the GPU: {reason}"
@@ -2549,17 +2456,13 @@ impl ForeignFrameStore {
     #[cfg(target_os = "linux")]
     fn colorimetry(&self, id: SurfaceId) -> Option<crate::collab::colorimetry::Colorimetry> {
         self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .and_then(|entry| entry.colorimetry)
     }
 
     fn with_entry<R>(&self, id: SurfaceId, f: impl FnOnce(&mut ForeignEntry) -> R) -> R {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         f(guard.entry(id).or_insert_with(ForeignEntry::new))
     }
 
@@ -2572,10 +2475,7 @@ impl ForeignFrameStore {
     /// The shm capture worker finished the job queued as `generation`.
     #[cfg(target_os = "linux")]
     fn note_shm_done(&self, id: SurfaceId, generation: u64) {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         if let Some(entry) = guard.get_mut(&id) {
             entry.shm_done = entry.shm_done.max(generation);
         }
@@ -2585,20 +2485,14 @@ impl ForeignFrameStore {
     /// is still being captured, so its pixels are not yet what a screenshot
     /// shows. `client_index` is the high half of a [`SurfaceId`].
     pub fn capturing_for_client(&self, client_index: u32) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard
             .iter()
             .any(|(id, entry)| id.wrapping_shr(32) == u64::from(client_index) && entry.capturing())
     }
 
     pub fn capture_seq_for_token(&self, id: SurfaceId, token: u64) -> Option<u64> {
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         let entry = entries.get(&id)?;
         let result = (entry.activated_capture == Some(token) && entry.last_error.is_none())
             .then_some(entry.seq);
@@ -2614,10 +2508,7 @@ impl ForeignFrameStore {
     /// Observe completed pixels and an exact surface's pending capture under
     /// one lock. Pending capture is neither pixels nor presentation authority.
     pub fn presentation_capture_state(&self, id: SurfaceId) -> (Option<(u64, u64)>, bool) {
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         let Some(entry) = entries.get(&id) else {
             return (None, false);
         };
@@ -2629,36 +2520,21 @@ impl ForeignFrameStore {
     }
 
     pub fn begin_presentation_frame(&self, viewport: Rect) {
-        *self
-            .presentation_viewport
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(viewport);
-        self.painted_frames
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        *self.presentation_viewport.lock_recover() = Some(viewport);
+        self.painted_frames.lock_recover().clear();
     }
 
     pub fn take_painted_frames(&self) -> HashMap<SurfaceId, u64> {
-        std::mem::take(
-            &mut *self
-                .painted_frames
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        std::mem::take(&mut *self.painted_frames.lock_recover())
     }
 
     fn note_painted_frame(&self, id: SurfaceId, seq: u64, bounds: Rect) {
         let visible = self
             .presentation_viewport
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .is_some_and(|viewport| bounds.intersect(viewport).area() > 0.0);
         if visible && !crate::shell::capture_protection::painting_for_capture() {
-            self.painted_frames
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(id, seq);
+            self.painted_frames.lock_recover().insert(id, seq);
         }
     }
 
@@ -2973,10 +2849,7 @@ impl ForeignFrameStore {
     /// or its frame is gone.
     #[cfg(target_os = "linux")]
     pub fn reset_shm_base(&self, id: SurfaceId) {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         if let Some(entry) = guard.get_mut(&id) {
             entry.forget_shm_base();
         }
@@ -2992,10 +2865,7 @@ impl ForeignFrameStore {
     /// Those of `ids` whose next SHM commit cannot be laid over their last.
     #[cfg(target_os = "linux")]
     fn without_shm_base(&self, ids: &[SurfaceId]) -> Vec<SurfaceId> {
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         let unanchored = ids
             .iter()
             .copied()
@@ -3014,10 +2884,7 @@ impl ForeignFrameStore {
         rgba: &mut Vec<u8>,
         hdr: Option<crate::shell::hdr_surface::HdrPlane>,
     ) -> bool {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let Some(entry) = guard.get_mut(&id) else {
             return false;
         };
@@ -3047,10 +2914,7 @@ impl ForeignFrameStore {
         token: u64,
         frame: Arc<crate::shell::gpu_frames::GpuFrame>,
     ) -> bool {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let Some(entry) = guard.get_mut(&id) else {
             return false;
         };
@@ -3077,10 +2941,7 @@ impl ForeignFrameStore {
         id: SurfaceId,
         expected_token: u64,
     ) -> Option<CaptureOutcome> {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let entry = guard.get_mut(&id)?;
         let token = entry.capture_tokens.front().copied()?;
         if token != expected_token {
@@ -3237,10 +3098,7 @@ impl ForeignFrameStore {
         size: (u32, u32),
         gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
     ) -> bool {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let Some(entry) = shm_job_entry(&mut guard, job) else {
             return false;
         };
@@ -3254,10 +3112,7 @@ impl ForeignFrameStore {
     /// job's surface went meanwhile.
     #[cfg(target_os = "linux")]
     fn note_shm_failure(&self, job: &ShmJob, reason: String) {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let released = shm_job_entry(&mut guard, job).map(|entry| entry.fail(reason));
         drop(guard);
         drop(released);
@@ -3274,10 +3129,7 @@ impl ForeignFrameStore {
         size: (u32, u32),
         generation: u64,
     ) -> bool {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let Some(entry) = guard.get_mut(&id) else {
             return false;
         };
@@ -3363,10 +3215,7 @@ impl ForeignFrameStore {
     /// windows it maps later too, so a new window is never briefly exposed.
     pub fn request_app_capture_protection(&self, connection: u64, app_id: &str, protected: bool) {
         let changed = {
-            let mut guard = self
-                .capture_protection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut guard = self.capture_protection.lock_recover();
             if protected {
                 guard.apps.insert(connection, app_id.to_string()).as_deref() != Some(app_id)
             } else {
@@ -3390,8 +3239,7 @@ impl ForeignFrameStore {
     pub fn release_capture_protection(&self, connection: u64) {
         let released = self
             .capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .apps
             .remove(&connection)
             .is_some();
@@ -3409,10 +3257,7 @@ impl ForeignFrameStore {
     /// one acquisition of the lock.
     pub fn set_surfaces_capture_protected(&self, surfaces: &[(SurfaceId, bool)]) {
         let changed = {
-            let mut guard = self
-                .capture_protection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut guard = self.capture_protection.lock_recover();
             surfaces.iter().fold(false, |changed, &(id, protected)| {
                 let flipped = if protected {
                     guard.surfaces.insert(id)
@@ -3444,10 +3289,7 @@ impl ForeignFrameStore {
     /// Whether a capture must draw surface `id`, owned by `app_id`, as a
     /// placeholder.
     pub fn is_capture_protected(&self, id: SurfaceId, app_id: &str) -> bool {
-        let guard = self
-            .capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.capture_protection.lock_recover();
         guard.surfaces.contains(&id)
             || guard.apps.values().any(|app| app == app_id)
             || crate::shell::capture_protection::holds_secrets(app_id)
@@ -3456,10 +3298,7 @@ impl ForeignFrameStore {
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
         self.set_surface_capture_protected(id, false);
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let forgotten = guard.remove(&id);
         drop(guard);
         if let Some(mut entry) = forgotten {
@@ -3470,10 +3309,7 @@ impl ForeignFrameStore {
             crate::shell::heap_trim::window_closed();
         }
         crate::shell::gpu_frames::forget_surface(id);
-        let mut children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut children = self.children.lock_recover();
         children.remove(&id);
         for tree in children.values_mut() {
             tree.retain(|child| child.surface != id);
@@ -3498,15 +3334,11 @@ impl ForeignFrameStore {
     pub fn surfaces_advanced(&self, seen: &mut HashMap<SurfaceId, u64>) -> Vec<SurfaceId> {
         let parents: HashMap<SurfaceId, SurfaceId> = self
             .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .flat_map(|(parent, children)| children.iter().map(|child| (child.surface, *parent)))
             .collect();
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         seen.retain(|id, _| entries.contains_key(id));
         let mut moved = Vec::new();
         for (id, entry) in &*entries {
@@ -3531,15 +3363,11 @@ impl ForeignFrameStore {
     fn surface_and_children_seq(&self, id: SurfaceId) -> u64 {
         let children = self
             .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .cloned()
             .unwrap_or_default();
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         let mut seq = guard.get(&id).map_or(0, |e| e.seq);
         for child in children {
             seq = seq.wrapping_add(guard.get(&child.surface).map_or(0, |entry| entry.seq));
@@ -3551,10 +3379,7 @@ impl ForeignFrameStore {
     /// for Wayland seat focus. Unlike [`Self::is_presented`], this does not
     /// wait for a captured frame to match the tab's configured size.
     pub fn is_mapped(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).is_some_and(|e| e.mapped)
     }
 
@@ -3567,12 +3392,7 @@ impl ForeignFrameStore {
         &self,
         id: SurfaceId,
     ) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_mut(&id)?
-            .unheld
-            .take()
+        self.entries.lock_recover().get_mut(&id)?.unheld.take()
     }
 
     /// Stop showing `frame` on `id`: its buffer could not be held, so it must
@@ -3599,8 +3419,7 @@ impl ForeignFrameStore {
     /// `root`'s subsurfaces, bottom to top.
     fn children_of(&self, root: SurfaceId) -> Vec<ChildFrame> {
         self.children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&root)
             .cloned()
             .unwrap_or_default()
@@ -3610,10 +3429,7 @@ impl ForeignFrameStore {
     /// flattened onto, and the window cut out of it. `None` without a frame.
     fn layout(&self, id: SurfaceId) -> Option<scale::FrameLayout> {
         let children = self.children_of(id);
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         let layout = layout_of(&guard, id, &children);
         drop(guard);
         layout
@@ -3630,10 +3446,7 @@ impl ForeignFrameStore {
     )]
     pub fn snapshot(&self, id: SurfaceId) -> Option<FrameSnapshot> {
         let children = self.children_of(id);
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         let e = guard.get(&id)?;
         let layout = layout_of(&guard, id, &children)?;
         let root_placed = e.buffer_placement()?;
@@ -3759,16 +3572,12 @@ impl ForeignFrameStore {
     ) -> Option<(ImageData, Option<Arc<crate::shell::hdr_surface::HdrPlane>>)> {
         let has_children = self
             .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .is_some_and(|children| !children.is_empty());
         if !has_children {
             let shared = {
-                let guard = self
-                    .entries
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let guard = self.entries.lock_recover();
                 guard.get(&id).and_then(|e| {
                     // A buffer that needs resampling is drawn from a snapshot.
                     let layout = layout_of(&guard, id, &[]).filter(|l| l.canvas.root_is_canvas)?;
@@ -3812,8 +3621,7 @@ impl ForeignFrameStore {
     pub fn crop_to_window(&self, id: SurfaceId, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
         let crop = self
             .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .and_then(|e| Some((e.geometry?, e.scale.density(width, height)?)))
             .and_then(|(geometry, density)| geometry.crop(width, height, density));
@@ -3847,10 +3655,7 @@ impl ForeignFrameStore {
     /// The box inside `tile` that `id`'s window is drawn into: the whole tile,
     /// or a centred box when the client's maximum size keeps it smaller.
     pub fn target_box(&self, id: SurfaceId, tile: Rect) -> Rect {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).map_or(tile, |e| e.target_box(tile))
     }
 
@@ -3898,23 +3703,12 @@ impl ForeignFrameStore {
     }
 
     pub fn set_children(&self, root: SurfaceId, children: Vec<ChildFrame>) {
-        self.children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(root, children);
+        self.children.lock_recover().insert(root, children);
     }
 
     pub fn child_at(&self, root: SurfaceId, x: f64, y: f64) -> Option<(SurfaceId, f64, f64)> {
-        let children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&root)
-            .cloned()?;
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let children = self.children.lock_recover().get(&root).cloned()?;
+        let entries = self.entries.lock_recover();
         // Both the point and a subsurface's extent are logical, whatever
         // density its buffer is drawn at.
         children.iter().rev().find_map(|child| {
@@ -3943,10 +3737,7 @@ impl ForeignFrameStore {
     /// `frame_size` describes the cropped image; this also preserves the raw
     /// allocation and the protocol sizes that determine that crop and fit.
     pub fn frame_geometry(&self, id: SurfaceId) -> Option<serde_json::Value> {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         let entry = guard.get(&id)?;
         let (width, height, configured_extent, min_size, max_size, geometry) = (
             entry.width,
@@ -3973,10 +3764,7 @@ impl ForeignFrameStore {
 
     /// Whether `id`'s window has been shown — the latched answer from [`Self::mark_presented`], read without changing it.
     pub fn is_presented(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).is_some_and(|e| e.presented)
     }
 
@@ -3985,10 +3773,7 @@ impl ForeignFrameStore {
     /// by [`ForeignSurfaceWidget::opening`] before painting the
     /// placeholder card; `presented` wins, so this goes false and stays false — a watched-away placeholder must not return.
     pub fn is_opening(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard
             .get(&id)
             .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
@@ -4024,8 +3809,7 @@ impl ForeignFrameStore {
     /// the entry on destruction; layout-only restored tabs remain placeholders.
     pub fn is_adopted(&self, id: SurfaceId) -> bool {
         self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .is_some_and(|entry| entry.adopted)
     }
@@ -4034,10 +3818,7 @@ impl ForeignFrameStore {
     /// `OPENING_CONFIGURE_GRACE` since adopted. Read only by
     /// [`flush_configures`], to decide when to configure anyway; no entry means not adopted, not waiting on anything.
     pub fn opening_wait_expired(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard
             .get(&id)
             .is_some_and(|e| e.first_seen.elapsed() >= OPENING_CONFIGURE_GRACE)
@@ -4045,10 +3826,7 @@ impl ForeignFrameStore {
 
     /// Reason the last capture failed, if any.
     pub fn last_error(&self, id: SurfaceId) -> Option<String> {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).and_then(|e| e.last_error.clone())
     }
 
@@ -4070,20 +3848,14 @@ impl ForeignFrameStore {
 
     /// Whether [`Self::pin_placement`] currently holds this surface.
     pub fn is_pinned(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).is_some_and(|e| e.pinned.is_some())
     }
 
     /// Where the surface is: a pinned rectangle, else the tab rectangle last
     /// published by [`Self::note_placement`].
     pub fn placement(&self, id: SurfaceId) -> Option<Rect> {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).and_then(|e| e.pinned.or(e.placement))
     }
 
@@ -4149,19 +3921,12 @@ impl ForeignFrameStore {
 
     /// Replace the sizes the person's other devices show streamed windows at.
     pub fn set_remote_extents(&self, extents: HashMap<SurfaceId, (i32, i32)>) {
-        *self
-            .remote_extents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = extents;
+        *self.remote_extents.lock_recover() = extents;
     }
 
     /// The size another device shows `id` at, if it is streamed to one.
     pub fn remote_extent(&self, id: SurfaceId) -> Option<(i32, i32)> {
-        self.remote_extents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&id)
-            .copied()
+        self.remote_extents.lock_recover().get(&id).copied()
     }
 
     /// [`Self::take_pending_configure`] for a window only other devices
@@ -6792,9 +6557,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_published_shm_frame_is_reported_to_the_loop() {
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(72);
         store().forget(id);
         let _ = take_published_shm_frames();
@@ -6840,8 +6603,7 @@ mod tests {
         let tracked = |id: SurfaceId| {
             frames
                 .entries
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .get(&id)
                 .map(|entry| entry.rgba.len())
         };
@@ -6976,9 +6738,7 @@ mod tests {
         fn stored(id: SurfaceId) -> *const u8 {
             store().with_entry(id, |entry| entry.rgba.as_ptr())
         }
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(587);
         store().forget(id);
         // A 3×2 frame; wire bytes are [B, G, R, A].
@@ -7093,9 +6853,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_damaged_shm_commit_after_a_dmabuf_frame_is_never_laid_over_the_old_shm_frame() {
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(589);
         store().forget(id);
         let red = [0, 0, 255, 255].repeat(6);
@@ -7141,9 +6899,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn damage_after_an_unmap_or_failure_is_dropped_not_zero_filled() {
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(590);
         for reset in [(|id| store().clear_frame(id)) as fn(SurfaceId), |id| {
             store().note_failure(id, "test failure".into());
@@ -7175,9 +6931,7 @@ mod tests {
         let Ok(worker) = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn) else {
             panic!("the SHM capture worker must start");
         };
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(591);
         store().forget(id);
         store()
@@ -7207,9 +6961,7 @@ mod tests {
         let Ok(worker) = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn) else {
             panic!("the SHM capture worker must start");
         };
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(592);
         store().forget(id);
         store()
@@ -7246,9 +6998,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn damage_against_a_buffer_of_another_format_is_dropped() {
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(593);
         store().forget(id);
         store()

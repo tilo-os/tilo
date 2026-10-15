@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use super::providers::MountSpec;
+use tilo_lock::MutexRecover as _;
 
 /// Printed by a mount once the filesystem is serving.
 pub const READY_LINE: &str = "TILO_CLOUD_MOUNT_READY_V1";
@@ -213,9 +214,7 @@ impl PipeCredential {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     pub fn update(&self, credential: Credential) {

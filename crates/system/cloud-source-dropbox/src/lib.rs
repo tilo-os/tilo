@@ -36,7 +36,7 @@
 
 use std::io::{self, Read};
 use std::ops::Range;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use cloud_source::{
@@ -58,6 +58,7 @@ pub use api::Endpoints;
 
 use api::{Api, Failure};
 use metadata::{Entry, Kind, Paths, is_within, parent_path};
+use tilo_lock::MutexRecover as _;
 
 /// Default bytes per upload-session chunk: a multiple of the 4 MiB hash
 /// block, so a resumed session can keep verifying the whole file.
@@ -119,7 +120,7 @@ pub struct DropboxSource {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 /// A Dropbox id (`id:…`); anything else cannot name an item.

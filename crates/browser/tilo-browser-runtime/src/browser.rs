@@ -7,7 +7,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use js_sys::{Function, Reflect, Uint8Array};
 use ui::application::{
@@ -27,6 +27,7 @@ use winit::window::{Window, WindowId};
 use tilo_desktop::feedback::PrivateFeedback;
 
 use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
+use tilo_lock::MutexRecover as _;
 
 thread_local! {
     static FEEDBACK_STARTUPS: RefCell<HashMap<u32, tilo_desktop::feedback::transport::Startup>> =
@@ -197,14 +198,11 @@ struct SharedGpu {
 
 impl SharedGpu {
     fn failure(&self) -> Option<String> {
-        self.failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.failure.lock_recover().clone()
     }
 
     fn detach(&self, id: u64) -> bool {
-        let mut mounts = self.mounts.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut mounts = self.mounts.lock_recover();
         mounts.retain(|&m| m != id);
         mounts.is_empty()
     }
@@ -1692,7 +1690,7 @@ async fn shared_gpu(
     let failure = Arc::new(Mutex::new(None));
     let mounts: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
     let wake = move |p: &EventLoopProxy<u64>, mounts: &Mutex<Vec<u64>>| {
-        for &id in mounts.lock().unwrap_or_else(PoisonError::into_inner).iter() {
+        for &id in mounts.lock_recover().iter() {
             let _ = p.send_event(id);
         }
     };
@@ -1700,15 +1698,14 @@ async fn shared_gpu(
     handle
         .device
         .set_device_lost_callback(move |reason, message| {
-            *lost.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(
+            *lost.lock_recover() = Some(format!(
                 "WebGPU device lost: {reason:?}: {message}; call recover"
             ));
             wake(&lost_proxy, &lost_mounts);
         });
     let (uncaptured, error_mounts) = (Arc::clone(&failure), Arc::clone(&mounts));
     handle.device.on_uncaptured_error(Arc::new(move |e| {
-        *uncaptured.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(format!("WebGPU error: {e}; call recover"));
+        *uncaptured.lock_recover() = Some(format!("WebGPU error: {e}; call recover"));
         wake(&p, &error_mounts);
     }));
     let shared = Rc::new(RefCell::new(SharedGpu {
@@ -1766,8 +1763,7 @@ async fn set_up_gpu(setup: GpuSetup) {
             Ok((shared, surface)) => {
                 if let Ok(s) = shared.try_borrow() {
                     s.mounts
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
+                        .lock_recover()
                         .push(id);
                 }
                 emit(

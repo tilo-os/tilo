@@ -72,6 +72,7 @@ use crate::device_status::DeviceStatus;
 use crate::i18n::{t, t_args};
 use crate::local_users::{LoginUser, discover_login_users, remember_user, remembered_user};
 use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AuthMethod {
@@ -677,10 +678,7 @@ impl Default for GreeterApp {
 
 impl Drop for GreeterApp {
     fn drop(&mut self) {
-        self.password_buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .zeroize();
+        self.password_buffer.lock_recover().zeroize();
     }
 }
 
@@ -929,10 +927,7 @@ impl GreeterApp {
     /// The live path never calls this, and even shots keep the value out of the
     /// Automerge document used to drive the rest of the frame.
     pub fn seed_shot_password(&mut self, password: &str) {
-        let mut value = self
-            .password_buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut value = self.password_buffer.lock_recover();
         value.zeroize();
         value.push_str(password);
     }
@@ -1199,10 +1194,7 @@ impl GreeterApp {
             ));
         }
         let password_input = {
-            let value = self
-                .password_buffer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let value = self.password_buffer.lock_recover();
             TextInput::local()
                 .with_initial_value(&value)
                 .with_id("greeter.password")
@@ -1640,10 +1632,7 @@ impl GreeterApp {
     }
 
     fn take_auth_secret(&self, method: AuthMethod) -> Result<Zeroizing<String>, &'static str> {
-        let mut stored = self
-            .password_buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut stored = self.password_buffer.lock_recover();
         let mut password = Zeroizing::new(std::mem::take(&mut *stored));
         drop(stored);
         match method {
@@ -1725,12 +1714,8 @@ impl GreeterApp {
             if let Some(challenge) = self.auth_session.as_ref().and_then(AuthSession::challenge)
                 && let Some(session) = &self.auth_session
             {
-                let secret = Zeroizing::new(std::mem::take(
-                    &mut *self
-                        .password_buffer
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                ));
+                let secret =
+                    Zeroizing::new(std::mem::take(&mut *self.password_buffer.lock_recover()));
                 if session.respond(challenge.id, secret).is_err() {
                     self.set_hint("greeter-error-unavailable");
                 }
@@ -1883,10 +1868,7 @@ impl GreeterApp {
     /// Empty the process-local passcode buffer. Rebuilding the form drops and
     /// zeroizes the old input widget, so the next field starts genuinely blank.
     fn clear_password(&self) {
-        self.password_buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .zeroize();
+        self.password_buffer.lock_recover().zeroize();
     }
 
     /// Surface a correctable note about the form itself. Distinct from a
@@ -2882,10 +2864,7 @@ mod tests {
 
     /// Seed the process-local passcode buffer without touching the document.
     fn seed_password(app: &GreeterApp, pw: &str) {
-        let mut value = app
-            .password_buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut value = app.password_buffer.lock_recover();
         value.zeroize();
         value.push_str(pw);
     }

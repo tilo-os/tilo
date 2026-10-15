@@ -8,6 +8,7 @@
 
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_lock::MutexRecover as _;
 
 #[cfg(target_os = "linux")]
 mod linux_header;
@@ -4975,18 +4976,12 @@ static ABNORMAL_STOP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(N
 /// process then exits non-zero instead of looking like a deliberate quit.
 fn stop_abnormally(event_loop: &ActiveEventLoop, reason: String) {
     tracing::error!(%reason, "{}", super::WINDOW_LOST);
-    ABNORMAL_STOP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get_or_insert(reason);
+    ABNORMAL_STOP.lock_recover().get_or_insert(reason);
     event_loop.exit();
 }
 
 fn take_abnormal_stop() -> Option<String> {
-    ABNORMAL_STOP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
+    ABNORMAL_STOP.lock_recover().take()
 }
 
 #[allow(

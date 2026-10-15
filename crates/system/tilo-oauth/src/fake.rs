@@ -18,11 +18,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use test_http::{Reply, Request, Responder};
 
 use crate::{Provider, Revocation};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
 struct State {
@@ -51,7 +52,7 @@ pub struct FakeAuthorizationServer {
 }
 
 fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
-    state.lock().unwrap_or_else(PoisonError::into_inner)
+    state.lock_recover()
 }
 
 fn query_of(target: &str) -> BTreeMap<String, String> {

@@ -34,6 +34,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use tilo_clock::{Duration, Instant};
 
 use crate::wake::WakeHandle;
+use tilo_lock::MutexRecover as _;
 
 /// One unit of background work.
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
@@ -233,7 +234,7 @@ impl Executor for PageExecutor {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 fn run_job(name: &'static str, job: Job) {

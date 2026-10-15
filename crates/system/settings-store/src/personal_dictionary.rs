@@ -10,9 +10,10 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use tilo_lock::MutexRecover as _;
 use unicode_normalization::UnicodeNormalization;
 
 pub mod host;
@@ -227,11 +228,7 @@ pub struct Service(Arc<Inner>);
 impl Drop for Service {
     fn drop(&mut self) {
         // Consumers must not keep account authority alive after its host exits.
-        self.0
-            .binding
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .owner = None;
+        self.0.binding.lock_recover().owner = None;
         self.0.changes.ring();
     }
 }
@@ -268,11 +265,7 @@ impl Service {
     /// Called by the host after authenticating/switching the local account.
     /// `None` revokes access (logout, unverified identity, public demo).
     pub fn bind(&self, owner: Option<[u8; 32]>) -> Option<Reader> {
-        let mut binding = self
-            .0
-            .binding
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut binding = self.0.binding.lock_recover();
         let Some(epoch) = binding.epoch.checked_add(1) else {
             binding.owner = None;
             return None;
@@ -290,20 +283,12 @@ impl Service {
 
     /// The currently authenticated host binding; never inferred from an app.
     pub fn owner(&self) -> Option<[u8; 32]> {
-        self.0
-            .binding
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .owner
+        self.0.binding.lock_recover().owner
     }
 
     /// Issue a reader for the current binding without changing its epoch.
     pub fn reader(&self) -> Option<Reader> {
-        let binding = self
-            .0
-            .binding
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let binding = self.0.binding.lock_recover();
         let reader = binding.owner.map(|_| Reader {
             inner: Arc::clone(&self.0),
             epoch: binding.epoch,
@@ -314,11 +299,7 @@ impl Service {
 
     /// Issue a reader only when the expected account is the live binding.
     pub(crate) fn reader_for(&self, owner: [u8; 32]) -> Option<Reader> {
-        let binding = self
-            .0
-            .binding
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let binding = self.0.binding.lock_recover();
         (binding.owner == Some(owner)).then(|| Reader {
             inner: Arc::clone(&self.0),
             epoch: binding.epoch,
@@ -388,11 +369,7 @@ impl Service {
         if !Arc::ptr_eq(&self.0, &reader.inner) {
             return Err(denied());
         }
-        let binding = reader
-            .inner
-            .binding
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let binding = reader.inner.binding.lock_recover();
         let owner = reader.owner(&binding)?;
         let path = self.0.path(owner);
         create_private_directory(&self.0.root)?;
@@ -448,11 +425,7 @@ impl Reader {
 
 impl Vocabulary for Reader {
     fn snapshot(&self) -> io::Result<Snapshot> {
-        let binding = self
-            .inner
-            .binding
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let binding = self.inner.binding.lock_recover();
         let owner = self.owner(&binding)?;
         // Atomic replacement means readers see one whole committed document.
         // Always reload; a mtime-only cache misses rapid edits and removals.

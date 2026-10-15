@@ -38,6 +38,7 @@ use agent_provider_config::{
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use std::future::Future;
+use tilo_lock::MutexRecover as _;
 use tokio::io::AsyncReadExt as _;
 use tokio::sync::Semaphore;
 use zeroize::{Zeroize, Zeroizing};
@@ -960,9 +961,7 @@ static VAULT_WRITES: Mutex<()> = Mutex::new(());
 fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
     let profile = credential_profile(profile_id)?;
     let (reference, authorization) = credential_binding(&profile)?;
-    let _serial = VAULT_WRITES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = VAULT_WRITES.lock_recover();
     let mut key = Zeroizing::new(api_key);
     if key.trim().is_empty() || key.len() > 16 * 1024 {
         return Err("API key is empty or too large".into());
@@ -980,9 +979,7 @@ fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
 fn remove_key(profile_id: &str) -> Result<(), String> {
     let profile = credential_profile(profile_id)?;
     let (reference, authorization) = credential_binding(&profile)?;
-    let _serial = VAULT_WRITES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = VAULT_WRITES.lock_recover();
     let result = ServiceCredentials::open()
         .remove(&reference, &authorization)
         .map(|_| ())
@@ -1195,9 +1192,7 @@ impl ProfileCache {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, CacheState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// The profile and key for `(profile id, model id)`: the kept ones while

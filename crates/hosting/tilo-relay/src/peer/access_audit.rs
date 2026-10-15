@@ -25,6 +25,7 @@ use tokio::time::Instant;
 
 use super::AgentRegistry;
 use crate::auth::AuthenticatedPeer;
+use tilo_lock::RwLockRecover as _;
 
 /// Audit cadence while a subscribed room's membership file is not watched:
 /// reading the disk is then the only way an external edit is seen, so it is
@@ -91,8 +92,7 @@ impl AccessAudit {
             },
         );
         let delegation_expiry = agents
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_recover()
             .get(&peer.device_public_key)
             .and_then(|delegation| delegation.as_ref().map(|live| live.expires_at_ns));
         // Only a future expiry is a deadline. One already past was judged by

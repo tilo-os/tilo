@@ -8,9 +8,10 @@
 //! reads and writes `settings.json`.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use serde_json::{Map, Value};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// Receipt of a storage operation performed under its canonical lock.
 #[derive(Debug)]
@@ -283,10 +284,7 @@ impl ChangeSignal {
     /// Call `listener` after every change for as long as the caller keeps
     /// it.
     pub fn listen(&self, listener: &Arc<Listener>) {
-        let mut listeners = self
-            .listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut listeners = self.listeners.lock_recover();
         listeners.retain(|known| known.strong_count() > 0);
         listeners.push(Arc::downgrade(listener));
     }
@@ -295,8 +293,7 @@ impl ChangeSignal {
     pub fn ring(&self) {
         let listeners: Vec<Arc<Listener>> = self
             .listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .filter_map(std::sync::Weak::upgrade)
             .collect();
@@ -385,15 +382,12 @@ pub fn take_deferred_failures() -> Vec<DeferredFailure> {
 /// Make `source` the settings document of this process, or restore the
 /// local file with `None`.
 pub fn install_source(source: Option<Arc<dyn SettingsSource>>) {
-    *SOURCE.write().unwrap_or_else(PoisonError::into_inner) = source;
+    *SOURCE.write_recover() = source;
 }
 
 /// The installed source, if the host provides the document.
 pub fn installed_source() -> Option<Arc<dyn SettingsSource>> {
-    SOURCE
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+    SOURCE.read_recover().clone()
 }
 
 /// Merge `values` into section `name` of `doc`, keeping every other section
@@ -442,10 +436,7 @@ impl HostDocument {
 
 impl SettingsSource for HostDocument {
     fn load(&self) -> Map<String, Value> {
-        self.doc
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.doc.lock_recover().clone()
     }
 
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
@@ -461,7 +452,7 @@ impl SettingsSource for HostDocument {
         _origin: &ChangeOrigin,
         change: &mut SectionChange<'_>,
     ) -> std::io::Result<()> {
-        let mut doc = self.doc.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut doc = self.doc.lock_recover();
         let current = match doc.get(name) {
             Some(Value::Object(section)) => section.clone(),
             _ => Map::new(),
@@ -478,7 +469,7 @@ impl SettingsSource for HostDocument {
     }
 
     fn compare_display_update(&self, update: DisplayUpdate) -> std::io::Result<ConditionalUpdate> {
-        let mut doc = self.doc.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut doc = self.doc.lock_recover();
         if !update.matches(&doc) {
             return Ok(ConditionalUpdate::Superseded);
         }

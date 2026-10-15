@@ -38,6 +38,7 @@ use crate::certify::{
 };
 use crate::frame::{read_frame, read_frame_or_eof, write_frame};
 use crate::handshake::{EndpointTrust, LiveIdentity};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_relay_protocol::delegation::{DelegateProposal, Delegation};
 
 /// How long a final answer may wait for the requester to read it.
@@ -110,23 +111,15 @@ impl CertificationProtocol {
     }
 
     fn revocations(&self) -> RevocationList {
-        self.identity
-            .revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.identity.revocations.read_recover().clone()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], Pending>> {
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.pending.lock_recover()
     }
 
     fn asked(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], Asked>> {
-        self.confirmations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.confirmations.lock_recover()
     }
 
     /// Put `question` to the person's approving devices and wait for the

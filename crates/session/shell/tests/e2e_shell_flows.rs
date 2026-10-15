@@ -54,6 +54,7 @@ use ui::synthetic_input::{
 use crate::support::host::{Layout, dispatch, dispatch_in, lay_out};
 use crate::support::offscreen::OffscreenRenderer;
 use crate::support::snapshot::{SnapshotAssertion, pinned_golden_path};
+use tilo_lock::MutexRecover as _;
 
 /// Where explicit golden-update candidates are written for review.
 fn goldens_dir() -> PathBuf {
@@ -214,9 +215,7 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn e2e_open_close_overview() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = TEST_LOCK.lock_recover();
     // bootstrap_demo already seeds 3 workspaces, so the Overview grid has
     // cards to paint without further appends.
     let tree = WorkspaceTree::bootstrap_demo();
@@ -323,9 +322,7 @@ fn e2e_open_close_overview() {
 #[test]
 #[ignore = "visual review: writes production overlay PNGs and needs an offscreen adapter"]
 fn e2e_launch_failure_notifications_visual_review() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = TEST_LOCK.lock_recover();
     let tree = WorkspaceTree::bootstrap_demo();
     let out_dir = screenshots_dir().join("launch-failure-review");
     std::fs::create_dir_all(&out_dir).expect("create launch notification review directory");
@@ -544,9 +541,7 @@ fn render_frame_to(
 
 #[test]
 fn e2e_tab_drag_reorder() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = TEST_LOCK.lock_recover();
     let (mut group, taffy, child, mut tr, theme) = setup_drag_reorder_group();
     let group_rect = group.get_rect();
     let content_rect = group
@@ -798,9 +793,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
     {
         // Phase `e2e_super_k_opens_search_palette_in_live_binary_path`.
         {
-            let _guard = TEST_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = TEST_LOCK.lock_recover();
             // Use the concrete-type sibling of what the live binary builds.
             let tree = WorkspaceTree::bootstrap_demo();
             let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
@@ -817,9 +810,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
 
         // Phase `e2e_escape_closes_search_palette`.
         {
-            let _guard = TEST_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = TEST_LOCK.lock_recover();
             let tree = WorkspaceTree::bootstrap_demo();
             let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
 
@@ -841,9 +832,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
 
         // Phase `e2e_ctrl_tab_cycles_tabs_without_opening_overview`.
         {
-            let _guard = TEST_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = TEST_LOCK.lock_recover();
             let tree = WorkspaceTree::bootstrap_demo();
             let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
             assert!(!chrome.borrow().overlays.overview);
@@ -874,9 +863,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
 
         // Phase `e2e_super_tab_toggles_overview_in_live_binary_path`.
         {
-            let _guard = TEST_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = TEST_LOCK.lock_recover();
             let tree = WorkspaceTree::bootstrap_demo();
             let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
             assert!(!chrome.borrow().overlays.overview);
@@ -894,9 +881,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
         // The overview finishes on the keyboard: arrows walk the room list, Enter
         // commits and closes.
         {
-            let _guard = TEST_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = TEST_LOCK.lock_recover();
             let tree = WorkspaceTree::bootstrap_demo();
             let started_on = tree.desktop.active;
             assert!(
@@ -938,9 +923,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
         // root/layout since the claim concerns a key the shell declines — the
         // event must actually reach the content.
         {
-            let _guard = TEST_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = TEST_LOCK.lock_recover();
             let tree = WorkspaceTree::bootstrap_demo();
             let mut h = Harness::new(&tree);
             assert!(
@@ -967,9 +950,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
     {
         // Phase `e2e_open_quick_settings`.
         {
-            let _guard = TEST_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = TEST_LOCK.lock_recover();
             let tree = WorkspaceTree::bootstrap_demo();
             let theme = Theme::dark();
 
@@ -1034,9 +1015,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
         // the fastest acquisition target. A hurried click at the literal top-right
         // pixel must therefore reach the same production root path as the pill.
         {
-            let _guard = TEST_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = TEST_LOCK.lock_recover();
             let tree = WorkspaceTree::bootstrap_demo();
             let mut h = Harness::new(&tree);
             assert!(!h.chrome.borrow().overlays.quick_settings);
@@ -1181,9 +1160,7 @@ fn assert_maximized_tile_golden(
 
 #[test]
 fn e2e_maximized_tile_floating_controls() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = TEST_LOCK.lock_recover();
     let (mut group, taffy, child, mut tr, theme) = setup_maximize_test_group();
 
     // Prime the bar — max_rect coordinates derive from the active pill's rect.

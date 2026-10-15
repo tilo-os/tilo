@@ -30,6 +30,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use tilo_lock::MutexRecover as _;
 
 /// Marks the legacy single-string invocation slot as carrying a canonical
 /// JSON argument object. The record-separator prefix cannot be produced by a
@@ -907,9 +908,7 @@ fn schema_pattern(pattern: &str) -> Result<regex_lite::Regex, regex_lite::Error>
     static COMPILED: std::sync::LazyLock<
         std::sync::Mutex<std::collections::HashMap<String, regex_lite::Regex>>,
     > = std::sync::LazyLock::new(std::sync::Mutex::default);
-    let mut compiled = COMPILED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut compiled = COMPILED.lock_recover();
     if let Some(expression) = compiled.get(pattern) {
         return Ok(expression.clone());
     }

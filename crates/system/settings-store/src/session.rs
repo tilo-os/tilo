@@ -25,8 +25,8 @@
 //! records' first values.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
 
 use serde_json::{Map, Value};
 
@@ -40,6 +40,7 @@ mod change_log;
 mod view;
 
 use change_log::LeafChange;
+use tilo_lock::MutexRecover as _;
 
 #[derive(Clone)]
 struct Committed {
@@ -362,16 +363,13 @@ impl SessionSettings {
     }
 
     fn publish_committed(&self, state: &State) {
-        let pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let pending = self.pending.lock_recover();
         self.revision.fetch_add(1, Ordering::AcqRel);
         let committed = std::sync::Arc::new(Committed {
             document: Self::visible_document(state, &pending),
             revision: self.revision.load(Ordering::Acquire),
         });
-        *self
-            .committed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = committed;
+        *self.committed.lock_recover() = committed;
         drop(pending);
         self.changes.ring();
     }
@@ -386,13 +384,8 @@ impl SessionSettings {
         origin: &ChangeOrigin,
         change: &mut SectionChange<'_>,
     ) {
-        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-        let current = std::sync::Arc::clone(
-            &self
-                .committed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        );
+        let mut pending = self.pending.lock_recover();
+        let current = std::sync::Arc::clone(&self.committed.lock_recover());
         let empty = Map::new();
         let section = current
             .document
@@ -417,22 +410,14 @@ impl SessionSettings {
             .revision
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1);
-        *self
-            .committed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) =
-            std::sync::Arc::new(Committed { document, revision });
+        *self.committed.lock_recover() = std::sync::Arc::new(Committed { document, revision });
         drop(pending);
         self.changes.ring();
     }
 
     /// Whether a write is accepted and not yet durable.
     pub(crate) fn has_pending(&self) -> bool {
-        !self
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_empty()
+        !self.pending.lock_recover().is_empty()
     }
 
     /// Make every deferred write durable. Waits for the copy's lock and the
@@ -441,7 +426,7 @@ impl SessionSettings {
         // A worker may already have taken the pending edits and still be
         // persisting them. Join that write before deciding there is no work,
         // so flush_pending returning proves the accepted edits are durable.
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         if !self.has_pending() {
             return;
         }
@@ -463,8 +448,7 @@ impl SessionSettings {
         if self.take_in_copy(state).is_err() {
             return;
         }
-        let edits =
-            std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner));
+        let edits = std::mem::take(&mut *self.pending.lock_recover());
         if edits.is_empty() {
             return;
         }
@@ -492,8 +476,7 @@ impl SessionSettings {
                 sections.join(", ")
             );
             self.deferred_failures
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+                .lock_recover()
                 .push(crate::DeferredFailure {
                     sections,
                     error: error.to_string(),
@@ -515,12 +498,9 @@ impl SessionSettings {
     /// telling readers only when that differs from what they were last shown
     /// (another process's write was taken in meanwhile).
     fn resync_committed(&self, state: &State) {
-        let pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let pending = self.pending.lock_recover();
         let document = Self::visible_document(state, &pending);
-        let mut committed = self
-            .committed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut committed = self.committed.lock_recover();
         if committed.document == document {
             return;
         }
@@ -536,12 +516,7 @@ impl SessionSettings {
 
     /// The deferred writes that failed, each once, oldest first.
     pub fn take_deferred_failures(&self) -> Vec<crate::DeferredFailure> {
-        std::mem::take(
-            &mut *self
-                .deferred_failures
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
+        std::mem::take(&mut *self.deferred_failures.lock_recover())
     }
 
     /// Take in a write another process made to the copy since this source
@@ -552,7 +527,7 @@ impl SessionSettings {
     /// before they read; a host that watches the copy calls this when it
     /// changes, so those waiting for a change hear of it at once.
     pub fn refresh(&self) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         if !copy_changed(&self.paths.copy, &state) {
             return;
         }
@@ -649,7 +624,7 @@ impl SessionSettings {
         origin: &ChangeOrigin,
         decide: &mut Decide<'_>,
     ) -> std::io::Result<ConditionalUpdate> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         let _lock = lock_copy(&self.paths.copy)?;
         self.take_in_copy(&mut state)?;
         // Writes the loop accepted come first, so this one is decided and
@@ -686,10 +661,7 @@ impl SessionSettings {
 impl SettingsSource for SessionSettings {
     fn load(&self) -> Map<String, Value> {
         self.refresh();
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .projection()
+        self.state.lock_recover().projection()
     }
 
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
@@ -746,7 +718,7 @@ impl SettingsSource for SessionSettings {
         &self,
         update: crate::DisplayUpdate,
     ) -> std::io::Result<ConditionalUpdate> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         let _lock = lock_copy(&self.paths.copy)?;
         self.take_in_copy(&mut state)?;
         self.apply_pending(&mut state);

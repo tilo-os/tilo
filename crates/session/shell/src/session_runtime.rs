@@ -10,8 +10,9 @@
 //! Peer sync keeps a separate runtime (see `ShellNetwork::spawn`), because it
 //! is torn down and rebuilt with the network and its tasks must end with it.
 
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
+use tilo_lock::MutexRecover as _;
 use tokio::runtime::Runtime;
 
 /// Two workers: the services here wait on the bus, they do not compute.
@@ -188,7 +189,7 @@ impl<T: Send + 'static> Registration<T> {
             match register.await {
                 Ok(handle) => {
                     registered(&handle);
-                    let mut slot = task_slot.lock().unwrap_or_else(PoisonError::into_inner);
+                    let mut slot = task_slot.lock_recover();
                     if matches!(*slot, Slot::Pending) {
                         *slot = Slot::Registered(handle);
                     }
@@ -205,19 +206,13 @@ impl<T: Send + 'static> Registration<T> {
 
     /// Whether the registration has completed and is being held.
     pub fn is_registered(&self) -> bool {
-        matches!(
-            *self.slot.lock().unwrap_or_else(PoisonError::into_inner),
-            Slot::Registered(_)
-        )
+        matches!(*self.slot.lock_recover(), Slot::Registered(_))
     }
 }
 
 impl<T> Drop for Registration<T> {
     fn drop(&mut self) {
-        let released = std::mem::replace(
-            &mut *self.slot.lock().unwrap_or_else(PoisonError::into_inner),
-            Slot::Released,
-        );
+        let released = std::mem::replace(&mut *self.slot.lock_recover(), Slot::Released);
         drop(released);
     }
 }
@@ -238,7 +233,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
         let wake: Wake = Arc::new(move || {
-            let _ = tx.lock().unwrap_or_else(PoisonError::into_inner).send(());
+            let _ = tx.lock_recover().send(());
         });
         (wake, rx)
     }

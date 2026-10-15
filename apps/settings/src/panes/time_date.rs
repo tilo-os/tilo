@@ -20,7 +20,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use ui::widget::TaffyTreeExt;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -42,6 +42,7 @@ use crate::widgets::{Item, block, card, error_row, note, rows, setting_row, valu
 use tilo_locale::Locale;
 use ui::clock::TimeStyle;
 use ui::i18n::ArgValue;
+use ui::lock::MutexRecover as _;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeZonePoint {
@@ -673,20 +674,11 @@ impl Default for SampleClock {
 
 impl Clock for SampleClock {
     fn status(&self) -> Result<os_actions::TimeSyncStatus, String> {
-        Ok(self
-            .status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone())
+        Ok(self.status.lock_recover().clone())
     }
 
     fn ntp(&self) -> Result<bool, String> {
-        Ok(self
-            .status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .ntp_enabled
-            .unwrap_or(true))
+        Ok(self.status.lock_recover().ntp_enabled.unwrap_or(true))
     }
 
     fn zones(&self) -> Result<Vec<String>, String> {
@@ -706,18 +698,12 @@ impl Clock for SampleClock {
     }
 
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
-        self.status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .ntp_enabled = Some(enabled);
+        self.status.lock_recover().ntp_enabled = Some(enabled);
         Ok(())
     }
 
     fn set_timezone(&self, timezone: &str) -> Result<(), String> {
-        self.status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .timezone = Some(timezone.to_owned());
+        self.status.lock_recover().timezone = Some(timezone.to_owned());
         Ok(())
     }
 }

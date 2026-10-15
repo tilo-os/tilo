@@ -66,8 +66,8 @@ pub use session::{run_peer, run_peer_until};
 use state::{
     FanoutStamp, LiveEnvelope, PreparedRecipients, SelectedPublication, SessionLease, SessionLives,
     StateCommit, authorized_state_source, captured_live_current, gated_checkpoint_channel,
-    handle_delta, handle_delta_prefix, live_audience, prepare_recipients, union_session_lives,
-    unpublished,
+    handle_delta, handle_delta_prefix, live_audience, prepare_recipients, steward_audience,
+    steward_only_delta, union_session_lives, unpublished,
 };
 pub(crate) use state::{Lag, StateDelivery, StateSession, StateSource};
 #[cfg(feature = "test-support")]
@@ -333,6 +333,7 @@ pub(crate) use tilo_relay_session::trace_native_publication;
 )]
 mod private_transport_tests {
     use super::*;
+    use tilo_lock::MutexRecover as _;
     use tilo_relay_shell::ShellAuthority as _;
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
@@ -953,11 +954,11 @@ mod private_transport_tests {
                     Err(mpsc::error::TryRecvError::Empty) => "open",
                     Err(mpsc::error::TryRecvError::Disconnected) => "closed",
                 };
-                let modes = batch_modes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let modes = batch_modes.lock_recover();
                 panic!(
                     "all-original prefix never reached the post-first-original barrier: selection_count={} batch_modes={modes:?} source_disconnect={source_disconnect} progress={:?}",
                     selection_count.load(std::sync::atomic::Ordering::SeqCst),
-                    progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+                    progress.lock_recover(),
                 );
             })
             .unwrap();
@@ -1252,9 +1253,7 @@ mod private_transport_tests {
         let owner = crate::persistence::handle(&workspace).await;
         let result = owner
             .submit_sequence_wait(1, raw.len(), move |state, _| async move {
-                let mut state = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut state = state.lock_recover();
                 let mut batch = new_checkpoint_batch(&mut state, vec![envelope], None)?;
                 loop {
                     match step_checkpoint_batch(&mut state, &mut batch)? {

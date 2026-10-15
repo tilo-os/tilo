@@ -7,6 +7,7 @@ use greetd_ipc::codec::SyncCodec;
 use greetd_ipc::{AuthMessageType, Request, Response};
 
 use crate::{AuthError, ExchangeIo, exchange, write_request};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default, PartialEq, Eq)]
 enum Phase {
@@ -38,10 +39,7 @@ impl ConversationControl {
     /// Returns a content-free refusal after session start has been sealed, or
     /// when its ordinary socket cannot carry the cancellation request.
     pub fn cancel(&self) -> Result<(), AuthError> {
-        let mut state = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.0.lock_recover();
         if state.phase != Phase::Authenticating {
             return Err(AuthError::Greetd(
                 "The authentication attempt is no longer cancellable".into(),
@@ -70,26 +68,17 @@ impl ConversationControl {
 
     /// Whether the caller has requested cancellation of this attempt.
     pub fn is_cancelled(&self) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .cancelled
+        self.0.lock_recover().cancelled
     }
 
     /// Actual attempt readiness, without inspecting any authentication value.
     pub fn can_cancel(&self) -> bool {
-        let state = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.0.lock_recover();
         state.phase == Phase::Authenticating && !state.cancelled
     }
 
     fn finish(&self) {
-        let mut state = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.0.lock_recover();
         state.phase = Phase::Finished;
         state.writer.take();
     }
@@ -107,11 +96,7 @@ impl ConversationExchange {
         let writer = reader
             .try_clone()
             .map_err(|_| AuthError::Transport("Could not prepare the login connection".into()))?;
-        control
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .writer = Some(writer);
+        control.0.lock_recover().writer = Some(writer);
         Ok(Self { reader, control })
     }
 
@@ -119,11 +104,7 @@ impl ConversationExchange {
         let response = Response::read_from(&mut self.reader).map_err(|_| {
             AuthError::Transport("Could not read the login service response".into())
         })?;
-        let mut state = self
-            .control
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.control.0.lock_recover();
         state.pending = state.pending.saturating_sub(1);
         drop(state);
         Ok(response)
@@ -132,11 +113,7 @@ impl ConversationExchange {
 
 impl ExchangeIo for ConversationExchange {
     fn send(&mut self, request: Request) -> Result<(), AuthError> {
-        let mut state = self
-            .control
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.control.0.lock_recover();
         if state.cancelled {
             drop(state);
             return self.check_cancelled();
@@ -167,12 +144,7 @@ impl ExchangeIo for ConversationExchange {
         // The original pending request and queued CancelSession each have a
         // response. Read both without treating either Success as authentication.
         loop {
-            let pending = self
-                .control
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .pending;
+            let pending = self.control.0.lock_recover().pending;
             if pending == 0 {
                 break;
             }
@@ -182,11 +154,7 @@ impl ExchangeIo for ConversationExchange {
     }
 
     fn prepare_start(&mut self) -> Result<(), AuthError> {
-        let mut state = self
-            .control
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.control.0.lock_recover();
         if state.cancelled {
             drop(state);
             return self.check_cancelled();
@@ -197,11 +165,7 @@ impl ExchangeIo for ConversationExchange {
     }
 
     fn terminal_failure(&mut self) -> Result<(), AuthError> {
-        let mut state = self
-            .control
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.control.0.lock_recover();
         if state.cancelled {
             drop(state);
             return self.check_cancelled();

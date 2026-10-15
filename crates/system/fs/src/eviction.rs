@@ -24,6 +24,7 @@ use crate::availability::{
 use crate::clock::unix_now_ms;
 use crate::{FileHistoryStore, Hydrator};
 use fs_protocol::{AvailabilityPolicy, Residency};
+use tilo_lock::MutexRecover as _;
 
 /// Bound catalog I/O so opening Settings does not serialize one backend
 /// status query per chunk across a large workspace.
@@ -69,16 +70,12 @@ impl EvictionCoordinator {
     ) -> anyhow::Result<EvictionPlan> {
         let records = self
             .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .records()
             .cloned()
             .collect::<Vec<_>>();
         let catalog = self.catalog_for_targets(&records, &[record_id]).await?;
-        let registry = self
-            .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let registry = self.registry.lock_recover();
         if registry.records().cloned().collect::<Vec<_>>() != records {
             anyhow::bail!("availability changed during eviction planning");
         }
@@ -100,16 +97,12 @@ impl EvictionCoordinator {
     ) -> anyhow::Result<HashMap<FileRecordId, Option<EvictionPlan>>> {
         let records = self
             .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .records()
             .cloned()
             .collect::<Vec<_>>();
         let catalog = self.catalog_for_targets(&records, targets).await?;
-        let registry = self
-            .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let registry = self.registry.lock_recover();
         if registry.records().cloned().collect::<Vec<_>>() != records {
             anyhow::bail!("availability changed during eviction planning");
         }
@@ -213,8 +206,7 @@ impl EvictionCoordinator {
     {
         let records = self
             .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .records()
             .cloned()
             .collect::<Vec<_>>();
@@ -245,9 +237,7 @@ impl EvictionCoordinator {
         let registry = Arc::clone(&self.registry);
         let queue = Arc::clone(&self.queue);
         tokio::task::spawn_blocking(move || {
-            let registry_guard = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let registry_guard = registry.lock_recover();
             if registry_guard.records().cloned().collect::<Vec<_>>() != records {
                 anyhow::bail!("availability changed during eviction planning");
             }
@@ -293,10 +283,7 @@ impl EvictionCoordinator {
         let EvictionRequestState::Completed { observed_at_ms } = observation.state else {
             return Ok(false);
         };
-        let mut registry = self
-            .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registry = self.registry.lock_recover();
         if request.record_id != record_id
             || registry.get(record_id).is_none_or(|record| {
                 record.current_version != Some(request.version_id)

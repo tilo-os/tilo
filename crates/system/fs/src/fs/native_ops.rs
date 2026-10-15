@@ -15,6 +15,7 @@ use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, document_code
 use crate::namespace::{
     ContentAuthority, LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease,
 };
+use tilo_lock::MutexRecover as _;
 
 /// One file or directory of the workspace tree as the record plane sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -528,10 +529,7 @@ impl QuickFS {
         {
             eprintln!("records are published one by one: {error}");
         }
-        *self
-            .deferred_deltas
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Vec::new());
+        *self.deferred_deltas.lock_recover() = Some(Vec::new());
         self.ns().begin_incremental_batch();
         let store = std::sync::Arc::clone(&self.hydrator.store);
         store.defer_sync();
@@ -575,8 +573,7 @@ impl QuickFS {
         drop(gate);
         let mut deltas = self
             .deferred_deltas
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .take()
             .unwrap_or_default();
         deltas.push(batch);
@@ -585,25 +582,14 @@ impl QuickFS {
         } else {
             // Not durable yet: the next changeset broadcasts these with its
             // own, once both are on disk.
-            *self
-                .deferred_deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-            self.held_deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend(deltas);
+            *self.deferred_deltas.lock_recover() = None;
+            self.held_deltas.lock_recover().extend(deltas);
         }
         value
     }
 
     fn broadcast_deltas(&self, deltas: Vec<Vec<u8>>) {
-        let held = std::mem::take(
-            &mut *self
-                .held_deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let held = std::mem::take(&mut *self.held_deltas.lock_recover());
         let any = !held.is_empty() || !deltas.is_empty();
         if any && self.enforcement.is_some() {
             self.refresh_acl_visible_record_index();

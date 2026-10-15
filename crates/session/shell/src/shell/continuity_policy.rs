@@ -7,6 +7,7 @@
 use serde_json::{Map, Value};
 
 use super::device_fabric::PersonalFabricAction;
+use tilo_lock::MutexRecover as _;
 
 pub use settings_store::continuity_privacy::ContinuityCapability;
 
@@ -251,11 +252,7 @@ impl FollowedPolicy {
     }
 
     fn follow(&self, settings: &settings_store::live::LiveSettings) {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(ContinuityPolicyCache::new(settings));
+        *self.0.lock_recover() = Some(ContinuityPolicyCache::new(settings));
     }
 
     /// The followed policy, or `unfollowed()` while nothing is followed.
@@ -265,8 +262,7 @@ impl FollowedPolicy {
     ) -> ContinuityPolicySnapshot {
         let followed = self
             .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .as_mut()
             .map(ContinuityPolicyCache::current);
         followed.unwrap_or_else(unfollowed)

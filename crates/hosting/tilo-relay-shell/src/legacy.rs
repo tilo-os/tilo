@@ -22,10 +22,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use neighbour_wire::NeighbourMsg;
+use tilo_lock::MutexRecover as _;
 use tilo_moq::live::LiveRelay;
 use tilo_relay_protocol::legacy_window as wire;
 use tilo_relay_protocol::web::live_room;
@@ -169,11 +170,11 @@ impl LegacyWindows {
     }
 
     fn rooms(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Room>> {
-        self.rooms.lock().unwrap_or_else(PoisonError::into_inner)
+        self.rooms.lock_recover()
     }
 
     fn codecs(&self) -> std::sync::MutexGuard<'_, Codecs> {
-        self.codecs.lock().unwrap_or_else(PoisonError::into_inner)
+        self.codecs.lock_recover()
     }
 
     /// The member whose browser session is `member` said its page decodes

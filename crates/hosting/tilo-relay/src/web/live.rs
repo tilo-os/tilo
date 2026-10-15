@@ -37,6 +37,7 @@ use tokio::sync::Notify;
 use crate::auth::AuthenticatedPeer;
 use crate::room_access::{self, RoomOperation};
 use crate::web::sessions::Sessions;
+use tilo_lock::MutexRecover as _;
 
 // The live relay (`tilo-moq`, which stays free of the host's wire crate) and
 // the host's canonical live codec must agree on every frame and rate limit.
@@ -157,10 +158,7 @@ impl LiveGrants {
             permitted: AtomicBool::new(true),
         });
         {
-            let mut grants = self
-                .grants
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut grants = self.grants.lock_recover();
             grants.retain(|_, grant| grant.expires > Instant::now());
             if grants.len() >= self.max_grants {
                 return None;
@@ -181,8 +179,7 @@ impl LiveGrants {
     /// is held.
     pub(crate) fn workspace_of(&self, room: &str) -> Option<u64> {
         self.grants
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .values()
             .find(|grant| grant.room == room)
             .map(|grant| grant.workspace_id)
@@ -192,8 +189,7 @@ impl LiveGrants {
     /// `None` for an agent's publisher.
     pub(crate) fn publisher_device(&self, room: &str, publisher: &str) -> Option<[u8; 32]> {
         self.grants
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .values()
             .find(|grant| grant.room == room && grant.publisher == publisher)
             .filter(|grant| grant.publisher == hex::encode(grant.device))
@@ -206,10 +202,7 @@ impl LiveGrants {
     pub(crate) fn viewers(&self) -> HashMap<u64, Vec<[u8; 32]>> {
         let now = Instant::now();
         let mut viewers = HashMap::<u64, Vec<[u8; 32]>>::new();
-        let grants = self
-            .grants
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let grants = self.grants.lock_recover();
         for grant in grants.values() {
             if grant.expires <= now || !grant.permitted.load(Ordering::Acquire) {
                 continue;
@@ -232,13 +225,7 @@ impl LiveGrants {
     /// its lock some hundred thousand times for it, and the room's own
     /// commits and replays queued behind each turn.
     pub(crate) async fn observe(&self, sessions: &Sessions) {
-        let grants: Vec<Arc<Grant>> = self
-            .grants
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .cloned()
-            .collect();
+        let grants: Vec<Arc<Grant>> = self.grants.lock_recover().values().cloned().collect();
         let open: HashMap<[u8; 32], AuthenticatedPeer> =
             sessions.open_devices().into_iter().collect();
         let mut rooms: BTreeMap<u64, Vec<(Arc<Grant>, &AuthenticatedPeer)>> = BTreeMap::new();
@@ -355,8 +342,7 @@ impl LiveAuthority for Authority {
         let grant = self
             .0
             .grants
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&token)
             .cloned()
             .ok_or(Denied)?;

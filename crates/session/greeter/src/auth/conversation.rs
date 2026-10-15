@@ -12,6 +12,7 @@ use crate::greetd_client::{
 };
 
 use super::{AuthUpdate, Failure};
+use tilo_lock::MutexRecover as _;
 
 /// A public challenge identity and its response kind; never the response.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,8 +46,7 @@ impl AuthSession {
             return None;
         }
         self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .as_ref()
             .map(|pending| pending.identity)
     }
@@ -58,8 +58,7 @@ impl AuthSession {
             return None;
         }
         self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .as_ref()
             .map(|pending| (pending.identity, pending.question.clone()))
     }
@@ -72,10 +71,7 @@ impl AuthSession {
         if response.len() > 4096 {
             return Err("The authentication response exceeds its limit");
         }
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pending = self.pending.lock_recover();
         if pending.as_ref().map(|pending| pending.identity.id) != Some(id)
             || self.conversation.is_cancelled()
         {
@@ -97,10 +93,7 @@ impl AuthSession {
         self.conversation
             .cancel()
             .map_err(|_| "The authentication attempt cannot be cancelled now")?;
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        self.pending.lock_recover().take();
         // Wake a worker waiting for a private response. If an answer already
         // occupies the one slot, the shared cancellation check rejects it.
         let _ = self.responses.try_send(Response::Cancel);
@@ -246,10 +239,7 @@ fn run_worker<F: Fn(AuthUpdate)>(
                 id,
                 secret: matches!(kind, AuthMessageType::Secret),
             };
-            *session
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(PendingChallenge {
+            *session.pending.lock_recover() = Some(PendingChallenge {
                 identity: challenge,
                 question: text.clone(),
             });
@@ -272,11 +262,7 @@ fn run_worker<F: Fn(AuthUpdate)>(
         },
         || update(AuthUpdate::Accepted),
     );
-    session
-        .pending
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take();
+    session.pending.lock_recover().take();
     if let Err(error) = result {
         let failure = Failure::from(&error);
         tracing::warn!(?failure, "sign-in did not start a session");

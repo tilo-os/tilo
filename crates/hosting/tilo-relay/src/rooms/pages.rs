@@ -26,6 +26,7 @@ use super::{
     IssuedInvitation, RemoveMemberRequest, Rooms, SetMemberRoleRequest, system_time,
 };
 use crate::host_authority::HostOperation;
+use tilo_lock::MutexRecover as _;
 
 /// How long a declined request still answers its device's status.
 const DECIDED_LIFETIME_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -485,10 +486,7 @@ impl Rooms {
     }
 
     fn page_joins(&self) -> std::sync::MutexGuard<'_, PageJoins> {
-        self.inner
-            .page_joins
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.page_joins.lock_recover()
     }
 
     /// The join requests waiting in `room`, for `device`: someone the room
@@ -834,11 +832,7 @@ impl Rooms {
     /// Queue `join` for `room`'s next admission pass. True when it is the
     /// first since the room last took them, so its sender starts the pass.
     fn queue_admission(&self, room: &str, join: QueuedAdmission) -> bool {
-        let mut queued = self
-            .inner
-            .queued_admissions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queued = self.inner.queued_admissions.lock_recover();
         let waiting = queued.entry(room.to_owned()).or_default();
         waiting.push(join);
         let first = waiting.len() == 1;
@@ -860,8 +854,7 @@ impl Rooms {
         let queued = self
             .inner
             .queued_admissions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .remove(room_id)
             .unwrap_or_default();
         let answers = match (&room, locked.as_mut()) {

@@ -24,6 +24,7 @@ use super::{
     WebViewEvent,
 };
 use serde_json::{Value, json};
+use tilo_lock::MutexRecover as _;
 
 const MAX_OWNED_NAVIGATIONS: usize = 32;
 
@@ -92,23 +93,16 @@ impl Shared {
     }
 
     fn cancel_navigation(&self, request_id: u32) {
-        let mut owners = self
-            .navigations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owners = self.navigations.lock_recover();
         owners.pending.remove(&request_id);
-        let mut events = self
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut events = self.events.lock_recover();
         events.retain(|event| !matches!(event, WebViewEvent::NavigationOutcome { request_id: id, .. } if *id == request_id));
     }
 
     fn fail_navigations(&self, message: &str) {
         let pending: Vec<_> = self
             .navigations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .pending
             .iter()
             .map(|(&id, uri)| (id, uri.clone()))
@@ -128,17 +122,11 @@ impl Shared {
         };
         // Reserve the queue slot before send; hold ownership through enqueue
         // so an admission cannot race a completing request's reservation.
-        let mut owners = self
-            .navigations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owners = self.navigations.lock_recover();
         if owners.pending.remove(request_id).is_none() {
             return;
         }
-        let mut events = self
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut events = self.events.lock_recover();
         if events.len() >= 512 {
             if let Some(index) = events.iter().position(|event| {
                 !matches!(
@@ -170,10 +158,7 @@ impl Shared {
             event,
             WebViewEvent::RendererTerminated | WebViewEvent::TabClosed | WebViewEvent::TabDetached
         ) {
-            self.text_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .unavailable();
+            self.text_input.lock_recover().unavailable();
         }
         // Renderer termination is visual: the host names each affected owner
         // explicitly. Its delayed generic event cannot invalidate a recovery
@@ -240,10 +225,7 @@ impl Shared {
     fn fail(&self, message: String) {
         if !self.stopping.load(Ordering::Acquire) && !self.failed.swap(true, Ordering::AcqRel) {
             self.fail_navigations(&message);
-            self.text_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .unavailable();
+            self.text_input.lock_recover().unavailable();
             let uri = self.uri.lock().map(|uri| uri.clone()).unwrap_or_default();
             self.event(WebViewEvent::LoadFailed {
                 uri,
@@ -405,11 +387,7 @@ impl Drop for Runtime {
         }
         let _ = self.tx.push(json!({"op":"shutdown"}));
         self.tx.close();
-        if let Some(supervisor) = self
-            .supervisor
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+        if let Some(supervisor) = self.supervisor.lock_recover().take()
             && supervisor.thread().id() != std::thread::current().id()
         {
             let _ = supervisor.join();
@@ -417,9 +395,7 @@ impl Drop for Runtime {
     }
 }
 fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEvent) {
-    let mut events = queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut events = queue.lock_recover();
     if let WebViewEvent::DownloadUpdated { id, .. } = &event {
         events.retain(
             |old| !matches!(old, WebViewEvent::DownloadUpdated { id: old_id, .. } if old_id == id),
@@ -435,8 +411,7 @@ fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEve
 
 fn fail_routes(routes: &Routes, message: &str) {
     let endpoints: Vec<_> = routes
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .values()
         .filter_map(Weak::upgrade)
         .collect();
@@ -649,9 +624,7 @@ fn spawn_frame_reader(
 }
 
 fn take_supervisor_child(slot: &Mutex<Option<std::process::Child>>) -> Option<std::process::Child> {
-    slot.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
+    slot.lock_recover().take()
 }
 
 fn supervise_child(
@@ -1006,10 +979,7 @@ impl ChromiumEngine {
             }
         };
         if wait_for_private_cleanup {
-            *runtime
-                .supervisor
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(supervisor);
+            *runtime.supervisor.lock_recover() = Some(supervisor);
         }
         cleanup_on_error.disarm();
         Ok(Arc::new(Self {
@@ -1134,12 +1104,7 @@ impl WebViewEngine for ChromiumEngine {
         // The old composition already retained the same Arc-backed pixels.
     }
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
-        self.shared
-            .open_tabs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain(..)
-            .collect()
+        self.shared.open_tabs.lock_recover().drain(..).collect()
     }
 
     fn supports_native_filtering(&self) -> bool {
@@ -1158,11 +1123,7 @@ impl WebViewEngine for ChromiumEngine {
                 return;
             }
             WebViewCommand::CancelScopedNavigation { request_id } => {
-                let _ordering = self
-                    .shared
-                    .navigation_commands
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _ordering = self.shared.navigation_commands.lock_recover();
                 self.shared.cancel_navigation(request_id);
                 let error = if super::navigation_request_id(request_id) {
                     self.tx.push(json!({"op":"cancel_navigation","tab":self.tab,"request_id":request_id})).err()
@@ -1296,11 +1257,7 @@ impl Drop for ChromiumEngine {
         // Reserve native capacity until OnBeforeClose acknowledges destruction.
         // A dead route cannot receive events, but still counts against the bound.
         let retire = {
-            let mut routes = self
-                .runtime
-                .routes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut routes = self.runtime.routes.lock_recover();
             if let Some(route) = routes.get_mut(&self.tab) {
                 *route = Weak::new();
                 true
@@ -1404,11 +1361,7 @@ fn route_native_event(
             shared.audio.stop();
         }
         if event_name == "text_input_result" {
-            shared
-                .text_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .reply(value);
+            shared.text_input.lock_recover().reply(value);
             shared.wake();
             return Ok(());
         }
@@ -1872,10 +1825,7 @@ impl CommandQueue {
         }
     }
     fn close(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .2 = true;
+        self.state.lock_recover().2 = true;
         self.ready.notify_all();
     }
 }

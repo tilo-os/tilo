@@ -22,6 +22,7 @@ default = []
 fixture-gen = ["dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-assets"]
 
 [dependencies]
+tilo-lock = { path = "../tilo-lock" }
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 thiserror.workspace = true

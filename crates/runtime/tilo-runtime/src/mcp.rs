@@ -13,6 +13,7 @@ use tilo_actions::remote::{
     ActionHost, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
     InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Host-configured per-session construction. It receives no client identity,
 /// label, requested room or execution UUID.
@@ -156,9 +157,7 @@ impl OpenFiles {
     fn files(
         &self,
     ) -> std::sync::MutexGuard<'_, std::collections::HashMap<std::path::PathBuf, u64>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0.lock_recover()
     }
 
     fn record(&self, path: &str, peer: u64) {
@@ -445,9 +444,7 @@ struct Running<'a> {
 
 impl InFlight {
     fn ids(&self) -> std::sync::MutexGuard<'_, InvocationLocks> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0.lock_recover()
     }
 
     /// Wait until no other call of the session runs `id`, then hold it.
@@ -590,9 +587,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         &self,
     ) -> std::sync::MutexGuard<'_, std::collections::HashMap<tilo_actions::InvocationId, String>>
     {
-        self.produced_by
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.produced_by.lock_recover()
     }
     /// Remember that `invocation` went to the instance of `app_id`.
     fn record_producer(&self, invocation: tilo_actions::InvocationId, app_id: Option<&str>) {
@@ -609,9 +604,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         &self,
     ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, tilo_actions::InvocationId>>
     {
-        self.shown
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.shown.lock_recover()
     }
     /// `hashes` split into those to send, now recorded as shown by
     /// `invocation`, and the earlier invocations that showed the rest.
@@ -740,9 +733,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self
     }
     fn handles(&self) -> std::sync::MutexGuard<'_, page::Handles> {
-        self.handles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.handles.lock_recover()
     }
     /// The resource id a caller named: a handle a compact page issued, or a
     /// full id.
@@ -1043,17 +1034,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
     /// The agent run this session's invocations are attributed to now.
     fn agent_run(&self) -> Option<tilo_actions::ActionGroup> {
-        self.run
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.run.lock_recover().clone()
     }
     /// The page detail this session answers with when a call names none.
     fn detail(&self) -> Detail {
-        *self
-            .detail
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.detail.lock_recover()
     }
     pub async fn handle(&self, request: Value) -> Option<Value> {
         let id = request.get("id").cloned();
@@ -1208,10 +1193,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Some(detail) = params.pointer(SURFACE_DETAIL) {
             let detail =
                 Detail::deserialize(detail).map_err(|_| "detail must be compact or full")?;
-            *self
-                .detail
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = detail;
+            *self.detail.lock_recover() = detail;
         }
         // Every connection is one agent run, so its edits are attributed to
         // it in history and undo, whatever transport it came over. A host
@@ -1233,10 +1215,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .take(64)
             .collect();
         let run = {
-            let mut run = self
-                .run
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut run = self.run.lock_recover();
             if run.is_none() || continued.is_some() {
                 let label = run.take().map_or(label, |run| run.label);
                 *run = Some(tilo_actions::ActionGroup {
@@ -1315,9 +1294,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok((page.revision, apps))
     }
     fn seen(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Option<String>>> {
-        self.seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.seen.lock_recover()
     }
     async fn apps(&self, args: ListArgs) -> Result<Value, String> {
         let (generation, apps) = self.instances().await?;

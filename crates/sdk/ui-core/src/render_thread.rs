@@ -48,6 +48,7 @@ use crate::offscreen::{
     damage_texture_geometric_needs_replacement, damage_texture_geometric_width_extent,
     damage_texture_height_extent, damage_texture_needs_replacement,
 };
+use tilo_lock::MutexRecover as _;
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::util::RenderSurface;
@@ -115,19 +116,14 @@ pub(crate) fn rasterizes_on_cpu(adapter: &vello::wgpu::AdapterInfo) -> bool {
 }
 
 fn note_surface_loss(reason: String) {
-    let mut slot = SURFACE_LOSS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut slot = SURFACE_LOSS.lock_recover();
     slot.get_or_insert(reason);
 }
 
 /// The reason recorded by the render worker when it lost its surface.
 #[cfg(feature = "native")]
 pub(crate) fn take_surface_loss() -> Option<String> {
-    SURFACE_LOSS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
+    SURFACE_LOSS.lock_recover().take()
 }
 
 #[cfg_attr(

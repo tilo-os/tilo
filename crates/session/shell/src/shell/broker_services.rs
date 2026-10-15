@@ -529,9 +529,7 @@ pub(super) fn with_session_blobs<T>(
 ) -> Result<T, runtime_fs::blobs::BlobError> {
     use runtime_fs::blobs::{BlobClient, BlobError};
 
-    let mut session = SESSION_BLOBS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut session = SESSION_BLOBS.lock_recover();
     let client = if let Some(client) = session.as_ref() {
         client.clone()
     } else {
@@ -544,9 +542,7 @@ pub(super) fn with_session_blobs<T>(
     let result = call(&client);
     if matches!(result, Err(BlobError::Disconnected(_))) {
         // Reconnect on the next call rather than keep a dead session.
-        *SESSION_BLOBS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *SESSION_BLOBS.lock_recover() = None;
     }
     result
 }
@@ -851,8 +847,7 @@ impl LauncherServices for NativeLauncher {
     fn begin_executing_binding_observation(&self, launcher_pid: u32) -> Option<u64> {
         super::launcher::LaunchSession::current()
             .launch_history
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .binding(
                 launcher_pid,
                 super::launcher::launch_history::Phase::BindingStarted,
@@ -875,8 +870,7 @@ impl LauncherServices for NativeLauncher {
         };
         super::launcher::LaunchSession::current()
             .launch_history
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .event(observation, phase);
     }
     fn applications(&self) -> Vec<LaunchableApplication> {
@@ -1939,6 +1933,7 @@ pub(crate) fn test_broker_with_membership(
 use capnp::capability::Promise;
 use runtime_collab::raw::workspace_control_handle;
 use std::rc::Rc;
+use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
 /// Speaker groups over the certified personal-device network.
 pub struct NativeSpeakers(pub Arc<super::network::ShellNetwork>);

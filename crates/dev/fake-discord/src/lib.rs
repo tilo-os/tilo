@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use tilo_lock::MutexRecover as _;
 use tokio::sync::mpsc;
 
 pub use rest::Recorded;
@@ -273,9 +274,7 @@ struct Shared {
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 }
 

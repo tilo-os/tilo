@@ -21,8 +21,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// Coarse global metrics for the daemon.
 #[derive(Default, Debug)]
@@ -153,15 +154,14 @@ impl Metrics {
             self.bytes_sent_live.fetch_add(bytes, Ordering::Relaxed);
         }
         {
-            let rooms = self.rooms.read().unwrap_or_else(PoisonError::into_inner);
+            let rooms = self.rooms.read_recover();
             if let Some(counters) = rooms.get(&room) {
                 counters.add(bytes, live);
                 return;
             }
         }
         self.rooms
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
+            .write_recover()
             .entry(room)
             .or_default()
             .add(bytes, live);
@@ -170,8 +170,7 @@ impl Metrics {
     /// Egress per relay room since start, for rooms that were sent anything.
     pub fn room_egress(&self) -> BTreeMap<u64, RoomEgress> {
         self.rooms
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
+            .read_recover()
             .iter()
             .map(|(room, counters)| {
                 (
@@ -188,8 +187,7 @@ impl Metrics {
     /// Egress of every peer session connected now.
     pub fn session_egress(&self) -> Vec<SessionEgress> {
         self.sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .values()
             .map(|session| SessionEgress {
                 device_public_key: session.device_public_key,
@@ -206,10 +204,7 @@ impl Metrics {
             bytes_sent: AtomicU64::new(0),
             writes: AtomicU64::new(0),
         });
-        self.sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, counters.clone());
+        self.sessions.lock_recover().insert(id, counters.clone());
         SessionLease {
             metrics: self.clone(),
             id,
@@ -235,13 +230,7 @@ impl Metrics {
                 .load(Ordering::Relaxed),
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
             bytes_sent_live: self.bytes_sent_live.load(Ordering::Relaxed),
-            sessions_open: u64::try_from(
-                self.sessions
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .len(),
-            )
-            .unwrap_or(u64::MAX),
+            sessions_open: u64::try_from(self.sessions.lock_recover().len()).unwrap_or(u64::MAX),
             rooms: self.room_egress(),
         }
     }
@@ -258,11 +247,7 @@ struct SessionLease {
 
 impl Drop for SessionLease {
     fn drop(&mut self) {
-        self.metrics
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.id);
+        self.metrics.sessions.lock_recover().remove(&self.id);
     }
 }
 

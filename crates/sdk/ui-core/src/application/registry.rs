@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::sync::Mutex;
 
 use super::ApplicationDefinition;
+use tilo_lock::MutexRecover as _;
 
 /// Loads a deferred application's code; `None` when it could not be loaded.
 pub type Loading = Pin<Box<dyn Future<Output = Option<&'static ApplicationDefinition>> + Send>>;
@@ -46,9 +47,7 @@ impl Entry {
 static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
 fn entries() -> std::sync::MutexGuard<'static, Vec<Entry>> {
-    REGISTRY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    REGISTRY.lock_recover()
 }
 
 /// Register `definition`. Returns `false` when an application with the same

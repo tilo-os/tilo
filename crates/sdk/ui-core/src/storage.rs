@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
+use tilo_lock::MutexRecover as _;
 
 pub use settings_store::ChangeOrigin;
 pub use tilo_files::{Dir, FsError};
@@ -321,9 +322,7 @@ static QUEUE: std::sync::Mutex<Queue> = std::sync::Mutex::new(Queue {
 static STORED: std::sync::Condvar = std::sync::Condvar::new();
 
 fn lock_queue() -> std::sync::MutexGuard<'static, Queue> {
-    QUEUE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    QUEUE.lock_recover()
 }
 
 fn wait(queue: std::sync::MutexGuard<'static, Queue>) -> std::sync::MutexGuard<'static, Queue> {

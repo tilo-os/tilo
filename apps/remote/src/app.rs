@@ -20,9 +20,9 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
-use std::sync::{Mutex, PoisonError};
 
 use iroh_base::{EndpointId, SecretKey};
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -56,6 +56,7 @@ use crate::view::{
     StatusModel,
 };
 use crate::vnc::{VncConfig, VncInput, VncSession};
+use ui::lock::MutexRecover as _;
 
 /// A live transport backing an open session. SSH is a `russh` PTY channel
 /// feeding the terminal grid; VNC is an RFB client
@@ -184,7 +185,7 @@ impl TiloSession {
 }
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 enum PendingResourceOperation {
