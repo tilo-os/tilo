@@ -111,7 +111,8 @@ def _cargo_tree_directories(
     optional and test-only crates into packages that a release binary does not
     link. ``cargo tree --edges normal`` matches ``cargo build -p`` / image
     Containerfiles, so path filters rebuild when the image's inputs change and
-    stay quiet for pure test-harness edges.
+    stay quiet for pure test-harness edges. Both Linux architectures are
+    named, so the graph doesn't depend on the machine resolving it.
     """
     output = subprocess.check_output(
         [
@@ -124,6 +125,10 @@ def _cargo_tree_directories(
             "--prefix",
             "none",
             "--locked",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--target",
+            "aarch64-unknown-linux-gnu",
         ],
         cwd=root,
         text=True,
