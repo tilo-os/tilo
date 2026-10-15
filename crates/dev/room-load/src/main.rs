@@ -101,6 +101,12 @@ pub struct HostArgs {
     /// people are watching.
     #[arg(long)]
     pub max_spectators: Option<usize>,
+    /// The room's governor holds the chat record guests write from the
+    /// start, as a persistent room seeds its chat: the guests' sealed
+    /// writes then reach the governor's copy, which follows, reads and
+    /// compacts them with the channel keys it stewards.
+    #[arg(long)]
+    pub seeded_chat: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -331,6 +337,9 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
     if let Some(max) = args.host.max_spectators {
         command.arg("--max-spectators").arg(max.to_string());
     }
+    if args.host.seeded_chat {
+        command.arg("--seeded-chat");
+    }
     if let Some(arenas) = args.malloc_arenas {
         command.env("MALLOC_ARENA_MAX", arenas.to_string());
     }
@@ -487,6 +496,7 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         "spectators": args.drive.spectators,
         "spectator_members": args.drive.spectator_members,
         "max_spectators": args.host.max_spectators,
+        "seeded_chat": args.host.seeded_chat,
         "host_threads": args.host_threads,
     });
     let host = serde_json::json!({

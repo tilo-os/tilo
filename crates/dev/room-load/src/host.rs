@@ -330,6 +330,27 @@ async fn create_room(owner: &HttpsLink, name: &str) -> anyhow::Result<StartedRoo
     })
 }
 
+/// Have `room`'s governor (`host`) write the chat record guests write, as a
+/// persistent room seeds its chat, so it holds the record from the start.
+async fn seed_chat(
+    rooms: &tilo_relay::rooms::Rooms,
+    room: &StartedRoom,
+    host: &DeviceCert,
+) -> anyhow::Result<()> {
+    rooms
+        .author_room_record(
+            &room.room,
+            host,
+            ("so.tilo.chat", crate::guest::CHAT_RECORD),
+            |doc| {
+                automerge::transaction::Transactable::put(doc, automerge::ROOT, "seeded", true)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("seed the chat: {error}"))
+}
+
 async fn serve_join(host: Arc<Host>, listener: tokio::net::TcpListener) {
     loop {
         let Ok((stream, _)) = listener.accept().await else {
@@ -455,6 +476,12 @@ pub async fn run(args: HostArgs) -> anyhow::Result<()> {
     } else {
         None
     };
+    if args.seeded_chat {
+        let rooms = relay.rooms().context("the relay governs rooms")?;
+        for room in desktops.iter().chain(&chat) {
+            seed_chat(rooms, room, &host_cert).await?;
+        }
+    }
     let join = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let started = Started {
         origin: origin.clone(),
