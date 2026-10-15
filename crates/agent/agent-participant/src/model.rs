@@ -25,8 +25,8 @@ use tilo_browser_peer::DocumentRoute;
 use tilo_model_gateway::openai::{self, Failure, Target as ApiTarget};
 
 use crate::planner::{
-    NoReads, PlanContext, Planner, Reads, Step, StepAction, observation_within, readable,
-    written_steps,
+    MESSAGE_APPS, NoReads, PlanContext, Planner, Reads, Step, StepAction, Wait, message_app,
+    observation_within, readable, written_steps,
 };
 
 /// What a model is told besides the operations list, built by
@@ -886,6 +886,12 @@ impl Planner for ModelPlanner {
                 None => return Err(format!("the model named {id:?}, which was not offered")),
             }
         }
+        if let Some(wait) = answer.wait {
+            // The wait ends this plan: what `then` left is planned with
+            // what arrived, so it rides with the wait.
+            steps.push(wait_step(wait, rest));
+            return Ok(steps);
+        }
         if let Some(rest) = rest {
             if replans >= MOST_REPLANS {
                 return Err(format!(
@@ -905,6 +911,31 @@ impl Planner for ModelPlanner {
             });
         }
         Ok(steps)
+    }
+}
+
+/// The step a plan's `wait_for` becomes: its place resolved to the app it
+/// names, its seconds within the bound, and `rest` (the plan's `then`)
+/// kept for the plan after it.
+fn wait_step(wait: tilo_agent::tools::Wait, rest: Option<String>) -> Step {
+    Step {
+        app: String::new(),
+        record: None,
+        action: StepAction::Wait(Wait {
+            apps: wait
+                .app
+                .as_deref()
+                .and_then(message_app)
+                .map(str::to_owned)
+                .into_iter()
+                .collect(),
+            contains: wait.contains,
+            within: std::time::Duration::from_secs(
+                wait.seconds.clamp(1, tilo_agent::tools::MOST_WAIT_SECONDS),
+            ),
+            rest,
+        }),
+        carries: false,
     }
 }
 
@@ -1413,6 +1444,8 @@ pub(crate) const PLANNER_INSTRUCTIONS: &str = "You drive Tilo apps only through 
     Where authority is missing, keep to what is approved and say in `reply` what needs sign-off. \
     Facts the request tells you to take from a document (a figure, a date, a duration) need no \
     sign-off: take them. \
+    When the request needs something someone has yet to send you (a login code, a reply) and no \
+    message shown holds it, plan the steps before it and set `wait_for`; never invent it. \
     Prefer the specific operations (append a paragraph, set cells, draw) over an app's generic \
     `apply` where one does the edit. Finish by calling `plan` exactly once. \
     Preserve every argument's declared JSON type. Never invent an operation id or parameter. \
@@ -1430,7 +1463,11 @@ pub(crate) const PLANNER_INSTRUCTIONS: &str = "You drive Tilo apps only through 
 /// [`PlanContext::may_plan_nothing`]). A first plan that names nothing has
 /// not planned the request, whatever its reply says. `None` otherwise.
 fn planned_nothing(answer: &Answer, context: &PlanContext) -> Option<String> {
-    if !answer.actions.is_empty() || answer.then.is_some() || context.may_plan_nothing {
+    if !answer.actions.is_empty()
+        || answer.then.is_some()
+        || answer.wait.is_some()
+        || context.may_plan_nothing
+    {
         return None;
     }
     let reply = answer
@@ -1513,11 +1550,62 @@ pub(crate) fn read_planned(
     most_steps: Option<usize>,
     briefing: &Briefing,
 ) -> Result<Answer, String> {
-    if briefing.may_plan_nothing {
+    let answer = if briefing.may_plan_nothing {
         tilo_agent::tools::read_plan_allowing_none(input, revealed, most_steps)
     } else {
         tilo_agent::tools::read_plan(input, revealed, most_steps)
+    }?;
+    if let Some(app) = answer.wait.as_ref().and_then(|wait| wait.app.as_deref())
+        && message_app(app).is_none()
+    {
+        return Err(format!(
+            "`wait_for.app` {app:?} is not one of {}; omit it to wait on all of them",
+            wait_apps()
+        ));
     }
+    Ok(answer)
+}
+
+/// The names `wait_for.app` takes: the last part of each of
+/// [`MESSAGE_APPS`].
+fn wait_apps() -> String {
+    MESSAGE_APPS
+        .iter()
+        .filter_map(|app| app.rsplit('.').next())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The `plan` tool's `wait_for` property: what a model sets when the request
+/// needs something someone else has yet to send.
+fn wait_for_definition() -> serde_json::Value {
+    serde_json::json!({
+        "type": ["object", "null"],
+        "description": "null unless the request needs something another person or agent has \
+            yet to send (a login code, a reply) that nothing shown holds. Then: wait for it after \
+            the steps; you are asked again with what arrived, or told nothing did.",
+        "properties": {
+            "app": {
+                "type": "string",
+                // Named in words, not an `enum`: the tools stay free of
+                // enums so no list ever varies their bytes.
+                "description": format!("Where it arrives: {}; omit for any.", wait_apps())
+            },
+            "contains": {
+                "type": "string",
+                "description": "Text it will hold (case-insensitive), e.g. \"code\"; omit for any \
+                    new message."
+            },
+            "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": tilo_agent::tools::MOST_WAIT_SECONDS,
+                "description": "The longest to wait."
+            }
+        },
+        "required": ["seconds"],
+        "additionalProperties": false
+    })
 }
 
 /// A chat-completions `plan` call's input read as the plan, or the refusal
@@ -1685,6 +1773,7 @@ pub(crate) fn planning_tools(
                         "description": "At most eight words to the person who asked."
                     }),
                 );
+                properties.insert(tilo_agent::tools::WAIT_FOR.into(), wait_for_definition());
                 // A rest planned again costs a whole model call: only for
                 // what cannot be planned until an app it needs is open.
                 properties.insert(
@@ -3235,6 +3324,7 @@ mod tests {
             why: why.to_owned(),
             then: then.map(str::to_owned),
             reply: None,
+            wait: None,
         })))
     }
 
@@ -3318,6 +3408,65 @@ mod tests {
         assert!(read_planned(&silent, &revealed, None, &check).is_err());
     }
 
+    /// A plan that waits for a message ends in a wait for it, carrying
+    /// what `then` left; a plan of only a wait is an answer, its seconds are
+    /// kept within the bound, and a place no message arrives is refused back
+    /// to the model.
+    #[test]
+    fn a_plan_that_waits_ends_in_a_wait_for_the_message() {
+        let context = context();
+        let edit = offer_id(&context, "notes.page#edit");
+        let mut planner = ModelPlanner::new(Box::new(Canned(Answer {
+            actions: vec![edit],
+            arguments: vec![serde_json::Map::new()],
+            then: Some("note the code".into()),
+            wait: Some(tilo_agent::tools::Wait {
+                app: Some("Messages".into()),
+                contains: Some("code".into()),
+                seconds: 600,
+            }),
+            ..Answer::default()
+        })));
+        let steps = planner.plan("note the login code", &context).unwrap();
+        let [edit, wait] = steps.as_slice() else {
+            panic!("the step, then the wait: {steps:?}");
+        };
+        assert!(matches!(edit.action, StepAction::Invoke { .. }));
+        assert_eq!(
+            wait.action,
+            StepAction::Wait(Wait {
+                apps: vec!["so.tilo.messages".into()],
+                contains: Some("code".into()),
+                within: std::time::Duration::from_secs(tilo_agent::tools::MOST_WAIT_SECONDS),
+                rest: Some("note the code".into()),
+            })
+        );
+
+        let revealed = tilo_agent::tools::Revealed::new();
+        let only = serde_json::json!({"steps": [], "then": null,
+            "wait_for": {"app": "chat", "seconds": 0}});
+        let answer = read_planned(&only, &revealed, None, &Briefing::default()).unwrap();
+        let read = answer.wait.unwrap();
+        assert_eq!((read.app.as_deref(), read.seconds), (Some("chat"), 1));
+        let elsewhere = serde_json::json!({"steps": [], "then": null,
+            "wait_for": {"app": "sms", "seconds": 30}});
+        let error = read_planned(&elsewhere, &revealed, None, &Briefing::default()).unwrap_err();
+        assert!(error.contains("mail, chat, messages"), "{error}");
+        let untimed = serde_json::json!({"steps": [], "then": null, "wait_for": {}});
+        assert!(read_planned(&untimed, &revealed, None, &Briefing::default()).is_err());
+        let tools = planning_tools(None, false, false);
+        let plan = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == tilo_agent::tools::PLAN)
+            .unwrap();
+        assert_eq!(
+            plan["input_schema"]["properties"]["wait_for"]["properties"]["app"]["description"],
+            "Where it arrives: mail, chat, messages; omit for any."
+        );
+    }
+
     #[test]
     fn nothing_fits_alone_is_refused_with_the_models_reason() {
         let none = tilo_agent::plan::NOTHING_FITS;
@@ -3385,6 +3534,7 @@ mod tests {
                 why: String::new(),
                 then: None,
                 reply: None,
+                wait: None,
             })
         }
     }

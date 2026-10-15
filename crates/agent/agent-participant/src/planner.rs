@@ -31,6 +31,45 @@ pub enum StepAction {
     /// Plan the rest of the task again from here, once the steps before
     /// have changed what is published (an app opened, say).
     Continue(String),
+    /// Hold the task until a message it needs arrives or the wait runs
+    /// out, then plan the rest again with what arrived.
+    Wait(Wait),
+}
+
+/// The apps whose records carry messages to an agent's team: a change
+/// another member makes to one while a task runs is news the task may have
+/// to follow (a correction, a decision, a code it waits for).
+pub const MESSAGE_APPS: &[&str] = &["so.tilo.mail", "so.tilo.chat", "so.tilo.messages"];
+
+/// The app of [`MESSAGE_APPS`] `name` stands for: its id, or its last part
+/// (`chat`), in any case.
+#[must_use]
+pub fn message_app(name: &str) -> Option<&'static str> {
+    let name = name.trim();
+    MESSAGE_APPS.iter().copied().find(|app| {
+        app.eq_ignore_ascii_case(name)
+            || app
+                .rsplit('.')
+                .next()
+                .is_some_and(|short| short.eq_ignore_ascii_case(name))
+    })
+}
+
+/// What a waiting task waits for: a change another member makes to a
+/// record that carries messages (a delivered SMS, a mail, a chat post).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Wait {
+    /// The apps whose records it waits on; empty for every app that carries
+    /// messages.
+    pub apps: Vec<String>,
+    /// Text the message holds, matched without regard to case; `None` for
+    /// any new message.
+    pub contains: Option<String>,
+    /// The longest it waits.
+    pub within: std::time::Duration,
+    /// What the plan left for after the wait (its `then`), if anything:
+    /// the request itself is shown beside the re-plan regardless.
+    pub rest: Option<String>,
 }
 
 /// One action to perform.
@@ -62,6 +101,7 @@ impl Step {
                 None => (format!("app.{}", self.app), "open".to_owned()),
             },
             StepAction::Continue(_) => (String::new(), "continue".to_owned()),
+            StepAction::Wait(_) => (String::new(), "wait".to_owned()),
         }
     }
 }

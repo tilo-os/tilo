@@ -76,7 +76,7 @@ impl Driveable for Agent<'_> {
                 .agent
                 .invoke(&self.route, address, arguments)
                 .map(|_| ()),
-            StepAction::Open | StepAction::Continue(_) => Ok(()),
+            StepAction::Open | StepAction::Continue(_) | StepAction::Wait(_) => Ok(()),
         }
     }
 }
@@ -1666,5 +1666,213 @@ async fn a_view_is_read_in_the_planning_conversation() {
     assert_eq!(bounds, [62.0, 0.0, 38.0, 50.0], "{band}");
 
     agent.close();
+    host.relay.shutdown().await;
+}
+
+const MESSAGES: &str = "so.tilo.messages";
+
+/// A planner that waits: a task's first plan is only a wait for a Messages
+/// message holding "code" (a second's wait when the task says "quickly");
+/// every plan is kept, and a re-plan plans nothing.
+struct WaitsForCode {
+    asked: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl tilo_agent_participant::Planner for WaitsForCode {
+    fn plan(
+        &mut self,
+        task: &str,
+        context: &tilo_agent_participant::PlanContext,
+    ) -> Result<Vec<tilo_agent_participant::Step>, String> {
+        self.asked.lock().unwrap().push(task.to_owned());
+        if context.request.is_some() {
+            return Ok(Vec::new());
+        }
+        let within = Duration::from_secs(if task.contains("quickly") { 1 } else { 60 });
+        Ok(vec![tilo_agent_participant::Step {
+            app: String::new(),
+            record: None,
+            action: StepAction::Wait(tilo_agent_participant::planner::Wait {
+                apps: vec![MESSAGES.into()],
+                contains: Some("code".into()),
+                within,
+                rest: Some("sign in with it".into()),
+            }),
+            carries: false,
+        }])
+    }
+}
+
+/// An agent whose task waits for a login code: it waits without planning
+/// or pumping in a loop, its presence says what it waits for, a Messages
+/// delivery from another agent without the code leaves it waiting, and the
+/// one with the code ends the wait — the task is planned again with that
+/// message and completes. A second task's wait that nothing answers runs
+/// out and is planned again saying nothing arrived.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_waits_for_a_code_another_agent_delivers_then_goes_on() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let now = tilo_clock::unix_now_ns();
+    let start = |id: &str, name: &str, planner: Box<dyn tilo_agent_participant::Planner>| {
+        let device = enrol(
+            &root,
+            &format!("Agent: {name}"),
+            CertificationPolicy::agent().ceiling,
+        );
+        let delegation = AgentDelegation::sign(
+            &root,
+            device.cert.device_public_key,
+            id,
+            name,
+            [0x0f, 0x4c, 0x5c],
+            AgentScope {
+                rooms: vec![ROOM.into()],
+                apps: vec![MESSAGES.into()],
+                may_confirm: false,
+            },
+            now,
+            now + 3_600_000_000_000,
+        )
+        .unwrap();
+        host.relay.register_agent(delegation.clone()).unwrap();
+        let control = AgentControl::new(delegation.clone());
+        let agent = AgentParticipant::start(
+            ParticipantConfig {
+                host: host.iroh(),
+                host_cert: host_device.cert.clone(),
+                room: ROOM.into(),
+                content: tilo_content::ContentStore::memory(),
+            },
+            AgentIdentity {
+                key: device.key.clone(),
+                cert: device.cert,
+                delegation,
+            },
+            control.clone(),
+            catalogue(),
+            planner,
+        )
+        .unwrap();
+        (agent, control)
+    };
+    let asked = std::sync::Arc::default();
+    let (mut waiter, waiter_control) = start(
+        "waiter",
+        "Waiter",
+        Box::new(WaitsForCode {
+            asked: std::sync::Arc::clone(&asked),
+        }),
+    );
+    let (mut courier, courier_control) = start("courier", "Courier", Box::new(DirectPlanner));
+    wait_for("both agents to be admitted", || {
+        waiter.pump();
+        courier.pump();
+        let admitted = waiter_control.status() == AgentStatus::Waiting
+            && courier_control.status() == AgentStatus::Waiting;
+        async move { admitted.then_some(()) }
+    })
+    .await;
+
+    let phone = courier.open(MESSAGES, None).unwrap();
+    let deliver = |courier: &mut AgentParticipant, body: &str| {
+        let arguments = serde_json::json!({
+            "from": "+1 555 0100", "body": body, "date": "2026-10-14T09:00:00Z",
+        });
+        courier
+            .invoke(
+                &phone,
+                &ActionAddress::new("tilo.messages", "deliver-message"),
+                arguments.as_object().unwrap(),
+            )
+            .unwrap();
+    };
+    deliver(&mut courier, "Your old code was 1111");
+    wait_for("the waiter to see the phone's record", || {
+        waiter.pump();
+        courier.pump();
+        let seen = waiter.known_records().contains(&phone);
+        async move { seen.then_some(()) }
+    })
+    .await;
+
+    let task = waiter_control
+        .message("Sign in to the bank with the code it texts you")
+        .unwrap();
+    let ended = |control: &AgentControl, id: &str| {
+        control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|info| info.id == id)
+            .filter(|info| !matches!(info.state, TaskState::Queued | TaskState::Running))
+    };
+    waiter.run_until(Some(Instant::now() + Duration::from_secs(30)), |_| {
+        waiter_control.activity().is_some()
+    });
+    assert_eq!(
+        waiter_control.activity().as_deref(),
+        Some("Waiting for a message in messages containing \"code\"")
+    );
+
+    // Waiting is sleeping: a second of it is a handful of pumps (presence
+    // keep-alives) and no plan.
+    let idle = waiter.run_until(Some(Instant::now() + Duration::from_secs(1)), |_| false);
+    assert!(idle.pumps < 20, "{idle:?}");
+    deliver(&mut courier, "See you at the museum on Saturday");
+    waiter.run_until(Some(Instant::now() + Duration::from_secs(2)), |_| false);
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        1,
+        "a message without the code is not it"
+    );
+    assert!(ended(&waiter_control, &task).is_none());
+
+    deliver(&mut courier, "Your bank code is 4821");
+    waiter.run_until(Some(Instant::now() + Duration::from_secs(30)), |_| {
+        ended(&waiter_control, &task).is_some()
+    });
+    let info = ended(&waiter_control, &task).expect("the task ended");
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    let replan = asked.lock().unwrap()[1].clone();
+    assert!(replan.contains("Your bank code is 4821"), "{replan}");
+    assert!(replan.contains("changed by Courier"), "{replan}");
+    assert!(replan.contains("Then: sign in with it"), "{replan}");
+    assert!(!replan.contains("1111"), "{replan}");
+    assert_eq!(waiter_control.activity(), None);
+
+    // Nothing answers this one: the wait runs out and the rest is planned
+    // again saying so.
+    let unanswered = waiter_control
+        .message("Sign in quickly with the code it texts you")
+        .unwrap();
+    waiter.run_until(Some(Instant::now() + Duration::from_secs(30)), |_| {
+        ended(&waiter_control, &unanswered).is_some()
+    });
+    let info = ended(&waiter_control, &unanswered).expect("the task ended");
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 4, "{asked:?}");
+    assert!(asked[3].contains("nothing arrived"), "{asked:?}");
+    let reply = waiter_control
+        .info()
+        .conversation
+        .last()
+        .unwrap()
+        .text
+        .clone();
+    assert!(reply.contains("Nothing it waited for arrived"), "{reply}");
+
+    courier.close();
+    waiter.close();
     host.relay.shutdown().await;
 }

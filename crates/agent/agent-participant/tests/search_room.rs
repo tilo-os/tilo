@@ -78,6 +78,7 @@ impl PlanModel for Searches {
             why: String::new(),
             then: Some("make the deck from it".into()),
             reply: None,
+            wait: None,
         })
     }
 }

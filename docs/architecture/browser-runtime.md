@@ -841,8 +841,13 @@ is the same one a page runs.
   joined replica writes nothing of its own.
   `replicas::only_the_creator_seeds_a_record` checks every web app.
 - **Tasks.** Each task is planned by a `Planner` into steps
-  (`StepAction`: invoke a published operation, open an app, or continue
-  planning once earlier steps changed what is published). The planner sees
+  (`StepAction`: invoke a published operation, open an app, continue
+  planning once earlier steps changed what is published, or wait for a
+  message another member sends — a model's `wait_for {app?, contains?,
+  seconds ≤ 120}` holds the task, without pumping or planning, until a
+  Mail, Chat or Messages record gains a line holding the text or the wait
+  runs out, then plans the rest with what arrived and who sent it; its
+  presence reads "Waiting for …" meanwhile). The planner sees
   only descriptors, and every step is re-checked against the delegation and
   the door.
   - `DirectPlanner` reads steps written as JSON (`{app, resource, action,

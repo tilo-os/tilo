@@ -305,6 +305,66 @@ pub struct Answer {
     /// The optional chat reply to the person who asked, bounded; the task's
     /// terminal message when present.
     pub reply: Option<String>,
+    /// What the plan waits for once its steps ran ([`WAIT_FOR`]): something
+    /// another person or agent sends, after which the request is planned
+    /// again with what arrived.
+    pub wait: Option<Wait>,
+}
+
+/// The optional `plan` property a planner that can wait offers: a model
+/// that needs what someone else will send (a login code, a reply) names it
+/// here instead of guessing or giving up.
+pub const WAIT_FOR: &str = "wait_for";
+
+/// The longest one [`WAIT_FOR`] waits, in seconds: a wait holds the task
+/// open, so it stays short and the model decides again after it.
+pub const MOST_WAIT_SECONDS: u64 = 120;
+
+/// The most characters of a [`Wait::contains`] kept: a code or a phrase,
+/// never a paragraph.
+const MOST_WAIT_TEXT_CHARS: usize = 200;
+
+/// A plan's [`WAIT_FOR`], read but not yet resolved to the planner's apps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wait {
+    /// Where the message arrives, as the model named it; `None` for any of
+    /// the places messages arrive.
+    pub app: Option<String>,
+    /// Text the message holds, matched without regard to case; `None` for
+    /// any message.
+    pub contains: Option<String>,
+    /// The longest it waits, within `1..=`[`MOST_WAIT_SECONDS`].
+    pub seconds: u64,
+}
+
+/// The plan's [`WAIT_FOR`], if it names one: null or absent is none.
+/// Seconds out of range are brought within it rather than refused, since
+/// the bound is the planner's to keep, not the model's to know exactly.
+fn read_wait(input: &Value) -> Result<Option<Wait>, String> {
+    let wait = match input.get(WAIT_FOR) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(wait)) => wait,
+        Some(_) => return Err(format!("`{WAIT_FOR}` is an object or null")),
+    };
+    let seconds = wait
+        .get("seconds")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("`{WAIT_FOR}` needs `seconds`, a whole number"))?
+        .clamp(1, MOST_WAIT_SECONDS);
+    let text = |key: &str| -> Result<Option<String>, String> {
+        match wait.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.trim())
+                .filter(|text| !text.is_empty())
+                .map(|text| text.chars().take(MOST_WAIT_TEXT_CHARS).collect())),
+            Some(_) => Err(format!("`{WAIT_FOR}.{key}` is a string")),
+        }
+    };
+    Ok(Some(Wait {
+        app: text("app")?,
+        contains: text("contains")?,
+        seconds,
+    }))
 }
 
 /// The `plan` tool's optional `reply` property, as the model is told it.
@@ -1759,7 +1819,9 @@ fn read_plan_as(
         .map(str::trim)
         .filter(|reply| !reply.is_empty())
         .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect());
-    if actions.is_empty() {
+    let wait = read_wait(input)?;
+    // A plan that only waits names no step: the wait is what it does.
+    if actions.is_empty() && wait.is_none() {
         if !allows_none {
             return Err("the plan named nothing to do".to_string());
         }
@@ -1804,6 +1866,7 @@ fn read_plan_as(
             .filter(|t| !t.is_empty())
             .map(str::to_owned),
         reply,
+        wait,
     })
 }
 
