@@ -10,6 +10,7 @@ use super::{
     mpsc, prepare_recipients, promote_checkpoint_input, publish_checkpoint_commit,
     publish_checkpoint_commit_fenced, trace_native_publication,
 };
+use tilo_lock::MutexRecover as _;
 
 pub(super) const RETENTION_PREFIX_FRAME_CAP: usize = 32;
 pub(super) const RETENTION_PREFIX_BYTE_CAP: usize = 64 * 1024 * 1024;
@@ -638,10 +639,7 @@ struct CheckpointProgressStep {
 #[cfg(test)]
 impl Drop for CheckpointProgressStep {
     fn drop(&mut self) {
-        let mut observed = self
-            .observed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut observed = self.observed.lock_recover();
         let entry = observed.completed.entry(self.phase.clone()).or_default();
         entry.0 = entry.0.saturating_add(1);
         entry.1 = entry.1.saturating_add(self.started.elapsed().as_micros());
@@ -810,8 +808,7 @@ pub(super) async fn enqueue_checkpoint_prefix(
                 let staging_state = state.clone();
                 let mut batch = crate::persistence::blocking(workers.clone(), move || {
                     let mut state = staging_state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        .lock_recover();
                     new_checkpoint_batch(&mut state, envelopes, Some(&staging_peer))
                 })
                 .await??;
@@ -821,8 +818,7 @@ pub(super) async fn enqueue_checkpoint_prefix(
                     let (next, result) =
                         Box::pin(crate::persistence::blocking(workers.clone(), move || {
                             let mut state = staging_state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                .lock_recover();
                             let result = step_checkpoint_batch(&mut state, &mut batch);
                             (batch, result)
                         }))
@@ -953,8 +949,7 @@ pub(super) async fn enqueue_checkpoint_prefix(
                         let (next, result) =
                             Box::pin(crate::persistence::blocking(workers.clone(), move || {
                                 let mut state = operation_state
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    .lock_recover();
                                 let result =
                                     SerialCheckpointCommit::new(&mut state, &mut batch, index);
                                 (batch, result)
@@ -967,8 +962,7 @@ pub(super) async fn enqueue_checkpoint_prefix(
                             let (next_batch, next_work, result) = Box::pin(
                                 crate::persistence::blocking(workers.clone(), move || {
                                     let mut state = operation_state
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                        .lock_recover();
                                     let result = work.step(&mut state, &mut batch);
                                     (batch, work, result)
                                 }),
@@ -1005,8 +999,7 @@ pub(super) async fn enqueue_checkpoint_prefix(
                         let (next, result) =
                             Box::pin(crate::persistence::blocking(workers.clone(), move || {
                                 let mut state = operation_state
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    .lock_recover();
                                 #[cfg(test)]
                                 let _progress = checkpoint_progress_phase(&batch, "promote".into());
                                 let result =
@@ -1042,8 +1035,7 @@ pub(super) async fn enqueue_checkpoint_prefix(
                         let blocking =
                             Box::pin(crate::persistence::blocking(workers.clone(), move || {
                                 let mut state = operation_state
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    .lock_recover();
                                 #[cfg(test)]
                                 let _progress = checkpoint_progress_phase(
                                     &batch,

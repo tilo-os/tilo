@@ -52,6 +52,7 @@ use crate::eviction::{
 };
 #[cfg(feature = "filesystem")]
 use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 pub mod area;
 #[cfg(test)]
@@ -509,10 +510,7 @@ impl ContentStore {
     /// costs one sync instead of one per file. Callers end the group before
     /// anything depending on the writes is made durable or announced.
     pub fn defer_sync(&self) {
-        let mut deferred = self
-            .deferred
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut deferred = self.deferred.lock_recover();
         deferred.0 = deferred.0.saturating_add(1);
     }
 
@@ -533,10 +531,7 @@ impl ContentStore {
     /// pending for the next sync.
     pub async fn end_deferred_sync(&self) -> Result<()> {
         let sync = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut deferred = self.deferred.lock_recover();
             deferred.0 = deferred.0.saturating_sub(1);
             let sync = deferred.0 == 0 && deferred.1;
             if sync {
@@ -549,10 +544,7 @@ impl ContentStore {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         if sync && let Err(error) = self.store().sync_db().await {
-            self.deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .1 = true;
+            self.deferred.lock_recover().1 = true;
             return Err(error.into());
         }
         Ok(())
@@ -870,10 +862,7 @@ impl ContentStore {
     /// group ([`Self::defer_sync`]), leave the one sync to the group's end.
     async fn sync_unless_deferred(&self) -> Result<()> {
         let deferred = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut deferred = self.deferred.lock_recover();
             if deferred.0 > 0 {
                 deferred.1 = true;
             }
@@ -1341,26 +1330,17 @@ struct GcGate {
 impl GcGate {
     /// Let the next sweeps collect everything outside `live`.
     fn authorize(&self, live: HashSet<Hash>) {
-        *self
-            .live
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
+        *self.live.write_recover() = Some(live);
         self.wake.notify_one();
     }
 
     /// Park the GC again once the sweep this live set was installed for is over.
     fn revoke(&self) {
-        *self
-            .live
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.live.write_recover() = None;
     }
 
     fn snapshot(&self) -> Option<HashSet<Hash>> {
-        self.live
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.live.read_recover().clone()
     }
 
     /// A GC configuration whose passes wait for [`Self::authorize`] and, when

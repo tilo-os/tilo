@@ -500,6 +500,7 @@ use crate::wayland::color_management::ColorManagerState;
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
 use smithay::backend::input::KeyState;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use tilo_lock::MutexRecover as _;
 use vello::kurbo::Rect;
 
 /// Stable identity from `apps/osk/tilo-app.toml`. It is necessary but never
@@ -3580,13 +3581,7 @@ impl State {
             let association = states
                 .data_map
                 .get::<ForeignCommitCaptures>()
-                .and_then(|commits| {
-                    commits
-                        .0
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .pop_front()
-                })
+                .and_then(|commits| commits.0.lock_recover().pop_front())
                 .unwrap_or(ForeignCommitCapture::NoBuffer);
             if matches!(
                 association,
@@ -4957,11 +4952,7 @@ impl State {
                 .data_map
                 .insert_if_missing_threadsafe(ForeignCommitCaptures::default);
             if let Some(commits) = states.data_map.get::<ForeignCommitCaptures>() {
-                commits
-                    .0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push_back(association);
+                commits.0.lock_recover().push_back(association);
             }
             if matches!(association, ForeignCommitCapture::Shm(_)) {
                 mark_shm_capture_base(states);

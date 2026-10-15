@@ -8,6 +8,7 @@ use super::{
     UnavailableReason, action_peer_admitted, current_action_peer, current_session, mpsc,
     unavailable_target, unix_now_ns,
 };
+use tilo_lock::RwLockRecover as _;
 
 /// Where an inbound [`Envelope::RemoteAction`] asked to go.
 pub(super) struct RemoteActionRoute {
@@ -141,8 +142,7 @@ fn serve_locally(
     })?;
     let agent = session
         .agents
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .read_recover()
         .get(&peer.device_public_key)
         .cloned();
     let caller = match agent {

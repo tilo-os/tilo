@@ -30,6 +30,7 @@ use tokio::io::AsyncBufReadExt as _;
 
 use crate::http::Plain;
 use crate::{HostArgs, Started, StartedRoom};
+use tilo_lock::MutexRecover as _;
 
 /// How long a pre-admission stays redeemable, as the service issues them.
 const PRE_ADMISSION_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -194,10 +195,7 @@ impl Host {
 
     async fn join(&self) -> anyhow::Result<serde_json::Value> {
         let (desktop, chat) = {
-            let mut seats = self
-                .seats
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut seats = self.seats.lock_recover();
             let index = seats.assign().context("no rooms")?;
             (
                 seats.desktops.get(index).cloned().context("room")?,

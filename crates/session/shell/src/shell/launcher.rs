@@ -1513,9 +1513,7 @@ static PENDING_CONTINUATION_RESUME: LazyLock<
 /// could break, so continuing with whatever the poisoned thread left
 /// behind is safer than aborting the whole session over it.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 struct PendingPlacement {
@@ -5249,6 +5247,7 @@ pub fn spawn_launch(
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+use tilo_lock::MutexRecover as _;
 
 #[cfg(test)]
 mod tests {

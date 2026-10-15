@@ -21,7 +21,7 @@
 
 use crate::time::{Duration, Instant};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
@@ -35,6 +35,7 @@ use crate::collaboration::{CollabEvent, CollabRequest};
 use crate::local_state::{LocalState, LocalStateWriter};
 use crate::wake::WakeHandle;
 use crate::widget::Collaborative;
+use tilo_lock::MutexRecover as _;
 
 type Served = (Arc<dyn ActionHost + Send + Sync>, Caller);
 
@@ -428,7 +429,7 @@ impl RemoteActions {
 }
 
 fn lock(inner: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
-    inner.lock().unwrap_or_else(PoisonError::into_inner)
+    inner.lock_recover()
 }
 
 /// Record `answer`, returning the request that continues it (the next

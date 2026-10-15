@@ -78,6 +78,7 @@ pub use tilo_relay_session::rooms::{
 };
 
 use crate::peer::WorkspaceRegistry;
+use tilo_lock::RwLockRecover as _;
 
 const RECORD_VERSION: u32 = 1;
 /// Governance publications kept after the last full checkpoint before the
@@ -656,8 +657,7 @@ pub(crate) struct RoomAuthority {
     rooms: std::sync::Weak<RoomsInner>,
     room: String,
     /// The device governing the room: this relay's own, which also stewards
-    /// the room's channels. Read by the steward-key decision only.
-    #[cfg(any(test, feature = "agents"))]
+    /// the room's channels. What only a steward reads goes to it alone.
     governor: [u8; 32],
 }
 
@@ -673,7 +673,6 @@ impl RoomAuthority {
     }
 
     /// The device governing the room, which stewards its channels.
-    #[cfg(any(test, feature = "agents"))]
     pub(crate) const fn governor(&self) -> &[u8; 32] {
         &self.governor
     }
@@ -1072,9 +1071,11 @@ impl Rooms {
         runtime.room_authority = Some(RoomAuthority {
             rooms: Arc::downgrade(&self.inner),
             room: room.room().to_owned(),
-            #[cfg(any(test, feature = "agents"))]
             governor: host.cert.device_public_key,
         });
+        // The relay stewards the room's channels: what only a steward reads
+        // is neither delivered to members nor replayed to them.
+        runtime.store.replay_without_steward_only();
         if runtime.governor_tap.is_none() {
             let (tap, notices) = tokio::sync::mpsc::channel(RECORD_NOTICES);
             runtime.governor_tap = Some(tap);
@@ -1527,12 +1528,7 @@ impl Rooms {
     }
 
     fn revocations(&self) -> RevocationList {
-        self.inner
-            .host
-            .revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.inner.host.revocations.read_recover().clone()
     }
 }
 

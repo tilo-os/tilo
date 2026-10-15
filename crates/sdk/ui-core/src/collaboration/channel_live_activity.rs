@@ -7,9 +7,10 @@
 //! controls the shell hands back, waking the app for each.
 
 use std::collections::VecDeque;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 use serde_json::Value;
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
 struct State {
@@ -28,7 +29,7 @@ static STATE: Mutex<State> = Mutex::new(State {
 });
 
 fn state() -> std::sync::MutexGuard<'static, State> {
-    STATE.lock().unwrap_or_else(PoisonError::into_inner)
+    STATE.lock_recover()
 }
 
 /// Show `activity`, a JSON object, as this app's live activity, or end it

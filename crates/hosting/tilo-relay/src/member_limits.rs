@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
+use tilo_lock::MutexRecover as _;
 
 pub use tilo_relay_protocol::config::MemberLimitsConfig;
 
@@ -106,10 +107,7 @@ impl MemberLimits {
         f: impl FnOnce(&mut (Bucket, Bucket)) -> R,
     ) -> R {
         let (changes, content) = (self.changes, self.content);
-        let mut people = self
-            .people
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut people = self.people.lock_recover();
         if people.len() >= KEPT && !people.contains_key(user) {
             // A full bucket remembers nothing a new one would not.
             people.retain(|_, (a, b)| !(a.full(changes, now) && b.full(content, now)));

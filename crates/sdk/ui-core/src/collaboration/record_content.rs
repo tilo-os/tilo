@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tilo_content::{
     Collected, ContentBackend, ContentError, ContentReader, ContentState, ContentStore, Stored,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Largest content one record references.
 pub const MAX_RECORD_CONTENT_BYTES: usize = 64 * 1024 * 1024;
@@ -71,10 +72,7 @@ type Lanes = Mutex<HashMap<(String, String), Arc<ContentLane>>>;
 
 fn lanes() -> std::sync::MutexGuard<'static, HashMap<(String, String), Arc<ContentLane>>> {
     static LANES: OnceLock<Lanes> = OnceLock::new();
-    LANES
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    LANES.get_or_init(Mutex::default).lock_recover()
 }
 
 impl ContentLane {

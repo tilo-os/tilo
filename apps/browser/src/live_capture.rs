@@ -16,6 +16,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
 use crate::BrowserWidget;
+use ui::lock::MutexRecover as _;
 
 /// The page a live capture opens unless `TILO_BROWSER_LIVE_URL` names one.
 const DEFAULT_LIVE_URL: &str = "https://example.org";
@@ -61,10 +62,7 @@ impl LiveProbe {
         })
     }
     pub(crate) fn state(&self) -> PageState {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.state.lock_recover().clone()
     }
 }
 impl WebViewEngine for LiveProbe {
@@ -97,10 +95,7 @@ impl WebViewEngine for LiveProbe {
     }
     fn drain_events(&self) -> Vec<WebViewEvent> {
         let events = self.inner.drain_events();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         for event in &events {
             match event {
                 WebViewEvent::UriChanged(uri) => {

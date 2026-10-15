@@ -37,6 +37,7 @@ pdf = ["dep:tilo-pdf"]
 video = ["dep:media", "media/decode"]
 
 [dependencies]
+tilo-lock = { path = "../../platform/tilo-lock" }
 # Crash-safe replacement of on-disk thumbnails.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Shared decode/downscale primitive; the workspace uses one `DynamicImage` type.

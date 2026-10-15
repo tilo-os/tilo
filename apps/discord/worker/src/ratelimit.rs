@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
+use tilo_lock::MutexRecover as _;
 use tilo_net::HeaderMap;
 use tokio::sync::OwnedMutexGuard;
 use tokio::time::Instant;
@@ -64,10 +65,7 @@ impl RateLimits {
             || route.to_owned(),
             |hash| format!("{hash}:{}", major(route)),
         );
-        let mut buckets = self
-            .buckets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buckets = self.buckets.lock_recover();
         Arc::clone(buckets.entry(key).or_default())
     }
 

@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::area::{AreaKey, Residency, hash_file};
 use crate::store::{FileArea, Retention};
+use tilo_lock::MutexRecover as _;
 
 /// The cache key of one remote revision of one item.
 type RevKey = AreaKey;
@@ -455,9 +456,7 @@ impl CloudVolume {
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.lock_recover()
     }
 
     pub fn source(&self) -> &Arc<dyn CloudSource> {
@@ -466,10 +465,7 @@ impl CloudVolume {
 
     fn report(&self, health: MountHealth) {
         let changed = {
-            let mut current = self
-                .health
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut current = self.health.lock_recover();
             let changed = *current != Some(health);
             *current = Some(health);
             changed
@@ -481,17 +477,11 @@ impl CloudVolume {
 
     /// The account's storage quota as of the last sync.
     pub fn quota(&self) -> Option<cloud_source::Quota> {
-        *self
-            .quota
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.quota.lock_recover()
     }
 
     pub fn health(&self) -> Option<MountHealth> {
-        *self
-            .health
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.health.lock_recover()
     }
 
     fn staged_path(&self, name: &str) -> PathBuf {
@@ -504,10 +494,7 @@ impl CloudVolume {
     /// write. Items and cursor go out together in one atomic write, so a
     /// crash never leaves a cursor newer than the items it covers.
     fn save_tree(&self) -> io::Result<()> {
-        let _saving = self
-            .saving
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _saving = self.saving.lock_recover();
         // Snapshot under the volume lock; serialise and write without it.
         let file = {
             let mut inner = self.inner();
@@ -541,10 +528,7 @@ impl CloudVolume {
 
     /// The content cache, until the volume shuts down.
     fn content(&self) -> Option<Arc<FileArea>> {
-        self.content
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.content.lock_recover().clone()
     }
 
     fn save_local(&self) -> io::Result<()> {
@@ -787,10 +771,7 @@ impl CloudVolume {
     // ---- reads ---------------------------------------------------------
 
     fn flight(&self, key: &RevKey) -> Arc<Mutex<()>> {
-        let mut flights = self
-            .flights
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut flights = self.flights.lock_recover();
         Arc::clone(flights.entry(*key).or_default())
     }
 
@@ -816,9 +797,7 @@ impl CloudVolume {
                 return Ok(path);
             }
             let flight = self.flight(&key);
-            let _guard = flight
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = flight.lock_recover();
             let missing = match files.residency(&key, size, &want) {
                 Residency::Complete(path) => return Ok(path),
                 Residency::Missing(missing) => missing,
@@ -1352,10 +1331,7 @@ impl CloudVolume {
     /// Send queued changes until the queue is empty or the server is
     /// unreachable. Returns how many were completed.
     pub fn upload_pending(&self) -> Result<usize, Error> {
-        let _serial = self
-            .uploading
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _serial = self.uploading.lock_recover();
         let mut done = 0_usize;
         loop {
             let Some(op) = self.inner().outbox.front().cloned() else {
@@ -1747,10 +1723,7 @@ impl CloudVolume {
         };
         if result.is_ok() && self.source.capabilities().quota {
             let quota = self.source.quota().ok();
-            *self
-                .quota
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = quota;
+            *self.quota.lock_recover() = quota;
         }
         match &result {
             Ok(_) => self.report(MountHealth::Healthy),
@@ -1860,10 +1833,7 @@ impl CloudVolume {
     /// Wake the uploader (a change was queued).
     pub fn kick(&self) {
         self.activity.fetch_add(1, Ordering::SeqCst);
-        let mut queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queued = self.queued.lock_recover();
         *queued = queued.wrapping_add(1);
         drop(queued);
         self.wake.notify_all();
@@ -1876,10 +1846,7 @@ impl CloudVolume {
         if self.idling.load(Ordering::SeqCst) {
             // Taken so the notification cannot fall between the sync loop's
             // check of `activity` and its wait.
-            let queued = self
-                .queued
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let queued = self.queued.lock_recover();
             drop(queued);
             self.wake.notify_all();
         }
@@ -1891,10 +1858,7 @@ impl CloudVolume {
     /// activity.
     fn wait_idle(&self, wait: Duration, seen: u64) -> bool {
         let start = Instant::now();
-        let mut queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queued = self.queued.lock_recover();
         self.idling.store(true, Ordering::SeqCst);
         let active = loop {
             let active = self.activity.load(Ordering::SeqCst) != seen;
@@ -1926,10 +1890,7 @@ impl CloudVolume {
     /// Wait up to `timeout` for a change queued after `seen` (or a stop);
     /// updates `seen`.
     fn wait_queued(&self, seen: &mut u64, timeout: Duration) {
-        let queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let queued = self.queued.lock_recover();
         let (queued, _) = self
             .wake
             .wait_timeout_while(queued, timeout, |current| {
@@ -1941,10 +1902,7 @@ impl CloudVolume {
 
     /// Wait up to `timeout`, until stopped or until a sync is asked for.
     fn wait_stop(&self, timeout: Duration) {
-        let queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let queued = self.queued.lock_recover();
         let _ = self
             .wake
             .wait_timeout_while(queued, timeout, |_| {
@@ -1955,10 +1913,7 @@ impl CloudVolume {
 
     /// Wait while paused (or until stopped).
     fn wait_resumed(&self) {
-        let queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let queued = self.queued.lock_recover();
         let _ = self
             .wake
             .wait_timeout_while(queued, Duration::from_secs(3600), |_| {
@@ -2067,10 +2022,7 @@ impl CloudVolume {
 
     fn upload_loop(&self) {
         let mut backoff = Duration::from_secs(2);
-        let mut seen = *self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut seen = *self.queued.lock_recover();
         while !self.stop.load(Ordering::SeqCst) {
             if self.is_paused() {
                 self.wait_resumed();
@@ -2098,10 +2050,7 @@ impl CloudVolume {
         let _ = self.save_tree();
         let _ = self.flush_content();
         // Dropping the last handle flushes and closes the cache.
-        self.content
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        self.content.lock_recover().take();
     }
 }
 

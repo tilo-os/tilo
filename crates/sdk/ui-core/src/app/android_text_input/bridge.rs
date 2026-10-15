@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock};
 
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jint};
@@ -19,6 +19,7 @@ use winit::window::ImePurpose;
 use super::{TextInputOp, named_key};
 use crate::app::{ImeWindowState, UserEvent};
 use crate::ime::ImeSurroundingText;
+use tilo_lock::MutexRecover as _;
 
 const CLASS: &str = "so.tilo.android.TiloTextInput";
 const MAX_DELETE: u32 = 4096;
@@ -35,7 +36,7 @@ static PENDING: Mutex<VecDeque<TextInputOp>> = Mutex::new(VecDeque::new());
 /// Connects the activity's `TiloTextInput` to this event loop. `false` when
 /// the activity has none, and winit's own keyboard toggle is all there is.
 pub(in crate::app) fn install(proxy: EventLoopProxy<UserEvent>) -> bool {
-    *PROXY.lock().unwrap_or_else(PoisonError::into_inner) = Some(proxy);
+    *PROXY.lock_recover() = Some(proxy);
     if JAVA.get().is_none() {
         match connect() {
             Ok(Some(java)) => {
@@ -61,7 +62,7 @@ pub(in crate::app) fn installed() -> bool {
 
 /// Every edit queued since the last drain, oldest first.
 pub(in crate::app) fn drain() -> Vec<TextInputOp> {
-    std::mem::take(&mut *PENDING.lock().unwrap_or_else(PoisonError::into_inner)).into()
+    std::mem::take(&mut *PENDING.lock_recover()).into()
 }
 
 /// Points the keyboard at the focused field, or dismisses it for `None`.
@@ -248,14 +249,14 @@ fn java_string(env: &mut JNIEnv<'_>, text: &JString<'_>) -> Option<String> {
 }
 
 fn push(op: TextInputOp) {
-    let mut pending = PENDING.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut pending = PENDING.lock_recover();
     let wake = pending.is_empty();
     pending.push_back(op);
     drop(pending);
     if !wake {
         return;
     }
-    let proxy = PROXY.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let proxy = PROXY.lock_recover().clone();
     if let Some(proxy) = proxy {
         let _ = proxy.send_event(UserEvent::PlatformTextInput);
     }

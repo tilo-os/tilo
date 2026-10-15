@@ -14,7 +14,7 @@
 //! [`WorkerStreamOpen::Legacy`]: tilo_relay_protocol::environment::WorkerStreamOpen::Legacy
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_relay_protocol::environment::{
@@ -30,6 +30,7 @@ use crate::environment_host::{
     EnvironmentStreamError, LaunchError, MemberArea, MemberContext, MemberQuota, read_message,
     write_message,
 };
+use tilo_lock::MutexRecover as _;
 
 /// How often a running launch's wall time is reported.
 pub const USAGE_REPORT_INTERVAL: Duration = Duration::from_secs(60);
@@ -90,10 +91,7 @@ impl LegacyWorker {
     }
 
     fn running(&self) -> std::sync::MutexGuard<'_, RunningLaunches> {
-        self.inner
-            .running
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.inner.running.lock_recover()
     }
 
     /// Launches running for `user`.

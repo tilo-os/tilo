@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{mpsc, watch};
 
 use crate::room_records::{HostCommit, Reservation, RoomRecords};
+use tilo_lock::MutexRecover as _;
 
 /// One change to admit: its position in the room's publication (none for a
 /// channel change, which is not republished), the commit, and its
@@ -72,9 +73,7 @@ struct Shared {
 
 impl Shared {
     fn progress(&self) -> std::sync::MutexGuard<'_, Progress> {
-        self.progress
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.progress.lock_recover()
     }
 }
 

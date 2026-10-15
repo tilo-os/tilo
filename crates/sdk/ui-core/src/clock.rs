@@ -11,7 +11,8 @@
 //!
 //! Clock types and epoch readings are `ui::time`'s.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
+use tilo_lock::MutexRecover as _;
 
 /// The local date and time every screenshot capture shows:
 /// 30 June 2026, 10:42.
@@ -80,7 +81,7 @@ impl TimeStyle {
         static CONFIGURED: Mutex<Option<(Option<settings_store::SettingsStamp>, TimeStyle)>> =
             Mutex::new(None);
         let stamp = settings_store::stamp();
-        let mut configured = CONFIGURED.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut configured = CONFIGURED.lock_recover();
         match *configured {
             Some((seen, style)) if seen == stamp => style,
             _ => {

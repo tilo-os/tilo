@@ -15,7 +15,7 @@
 //!   compositor's idle layer reads.
 
 use std::cell::OnceCell;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, PowerProfile};
 use ui::LocalState;
@@ -35,6 +35,7 @@ use crate::widgets::{
     Item, SettingsSection, block, card, error_caption, note, row, rows, untitled, value_row,
 };
 use ui::i18n::ArgValue;
+use ui::lock::MutexRecover as _;
 
 /// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
 const SUSPEND_OPTIONS: &[(&str, u32)] = &[
@@ -310,12 +311,7 @@ impl PowerControl for SamplePower {
             on_ac: false,
             full_capacity: Some(40_000_000),
             design_capacity: Some(50_000_000),
-            charge_limit: Some(
-                self.cap
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .current,
-            ),
+            charge_limit: Some(self.cap.lock_recover().current),
         }
     }
 
@@ -334,27 +330,22 @@ impl PowerControl for SamplePower {
         Result<Vec<PowerProfile>, String>,
     ) {
         (
-            Ok(*self.profile.lock().unwrap_or_else(PoisonError::into_inner)),
+            Ok(*self.profile.lock_recover()),
             Ok(PROFILES.iter().map(|(_, profile)| *profile).collect()),
         )
     }
 
     fn set_profile(&self, profile: PowerProfile) -> Result<(), String> {
-        *self.profile.lock().unwrap_or_else(PoisonError::into_inner) = profile;
+        *self.profile.lock_recover() = profile;
         Ok(())
     }
 
     fn charge_cap(&self) -> Option<ChargeCapCapability> {
-        Some(
-            self.cap
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone(),
-        )
+        Some(self.cap.lock_recover().clone())
     }
 
     fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
-        let mut cap = self.cap.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cap = self.cap.lock_recover();
         cap.current = percent;
         Ok(cap.clone())
     }

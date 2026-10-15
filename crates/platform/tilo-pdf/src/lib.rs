@@ -127,6 +127,7 @@ pub use proto::ProbeReport;
 pub use text::{SearchOptions, Selection, TextChar, TextLayer, TextMatch};
 
 use proto::OpenKind;
+use tilo_lock::MutexRecover as _;
 #[cfg(unix)]
 use tilo_sandbox::shm;
 
@@ -390,9 +391,7 @@ impl Engine {
     pub fn shared() -> Result<Self> {
         static SHARED: OnceLock<Mutex<Option<Engine>>> = OnceLock::new();
         let slot = SHARED.get_or_init(|| Mutex::new(None));
-        let mut guard = slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = slot.lock_recover();
         if let Some(engine) = guard.as_ref() {
             return Ok(engine.clone());
         }
@@ -472,9 +471,7 @@ impl Engine {
     #[cfg(unix)]
     fn local(&self) -> Option<std::sync::MutexGuard<'_, Local>> {
         match &self.inner.backend {
-            Backend::InProcess(m) => {
-                Some(m.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
-            }
+            Backend::InProcess(m) => Some(m.lock_recover()),
             _ => None,
         }
     }
@@ -488,9 +485,7 @@ impl Engine {
     )]
     fn portable_engine(&self) -> Option<std::sync::MutexGuard<'_, portable::Engine>> {
         match &self.inner.backend {
-            Backend::Portable(m) => {
-                Some(m.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
-            }
+            Backend::Portable(m) => Some(m.lock_recover()),
             #[cfg(unix)]
             _ => None,
         }
@@ -867,10 +862,7 @@ impl Document {
     /// text to analyse honestly.
     pub fn text(&self, page: usize) -> Result<Arc<TextLayer>> {
         {
-            let cache = self
-                .text_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cache = self.text_cache.lock_recover();
             if let Some(layer) = cache.layers.get(&page) {
                 return Ok(Arc::clone(layer));
             }
@@ -888,10 +880,7 @@ impl Document {
             TextLayer::from_raw_rotated(&raw, geometry.rotation, unrotated)
                 .ok_or_else(|| Error::Limit("the page has too much text".into()))?,
         );
-        let mut cache = self
-            .text_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = self.text_cache.lock_recover();
         if cache.layers.insert(page, Arc::clone(&layer)).is_none() {
             cache.order.push_back(page);
         }
@@ -1008,15 +997,10 @@ impl Drop for Document {
             Backend::Sandboxed(s) => s.close(self.id),
             #[cfg(unix)]
             Backend::InProcess(m) => {
-                m.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .0
-                    .close(self.id);
+                m.lock_recover().0.close(self.id);
             }
             Backend::Portable(m) => {
-                m.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .close(self.id);
+                m.lock_recover().close(self.id);
             }
         }
     }

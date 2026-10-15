@@ -19,6 +19,7 @@ use runtime_bundle::{
     VerifyOptions, build_bundle_with, enable_bundle_verity, verify_bundle_verity_with,
     verify_bundle_with, verity,
 };
+use tilo_lock::MutexRecover as _;
 use tilo_test_env::require_capability;
 
 /// The payload-read assertion measures the whole process's reads, so the
@@ -26,9 +27,7 @@ use tilo_test_env::require_capability;
 static READS: Mutex<()> = Mutex::new(());
 
 fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
-    READS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    READS.lock_recover()
 }
 
 const DYLIB: &str = "lib/libruntime_dylib.so";

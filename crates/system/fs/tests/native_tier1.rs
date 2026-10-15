@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
+use tilo_lock::MutexRecover as _;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
     persist::{write_device_cert, write_public_key, write_signing_key},
@@ -210,9 +211,7 @@ impl Daemon {
                 for line in BufReader::new(stream).lines() {
                     let Ok(line) = line else { break };
                     eprintln!("{name}: {line}");
-                    logs.lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(line.clone());
+                    logs.lock_recover().push(line.clone());
                     let _ = tx.send(line);
                 }
             });
@@ -232,10 +231,7 @@ impl Daemon {
             panic!(
                 "{} exited {status}; logs:\n{}",
                 self.name,
-                self.logs
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .join("\n")
+                self.logs.lock_recover().join("\n")
             );
         }
     }
@@ -256,10 +252,7 @@ impl Daemon {
                 panic!(
                     "{}: no line containing {expected:?}; logs:\n{}",
                     self.name,
-                    self.logs
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .join("\n")
+                    self.logs.lock_recover().join("\n")
                 );
             }
         }

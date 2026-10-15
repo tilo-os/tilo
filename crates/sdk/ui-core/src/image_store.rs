@@ -18,6 +18,7 @@ use crate::background::Background;
 use crate::time::Duration;
 use crate::wake::WakeHandle;
 
+use tilo_lock::MutexRecover as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill, ImageBrush, ImageData as PenikoImage};
@@ -183,10 +184,7 @@ impl Shared {
 
     /// Exact request identity, rather than its URL, owns pending custody.
     fn settle(&self, url: &str, request: &Arc<RequestIdentity>, slot: Slot) -> bool {
-        let mut cache = self
-            .slots
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = self.slots.lock_recover();
         if !cache.slots.get(url).is_some_and(
             |entry| matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, request)),
         ) {
@@ -409,11 +407,7 @@ impl Drop for HostImageLoader {
         // sweep below, or observes disconnection and settles its own identity.
         self.requests.take();
         let unfinished: Vec<_> = {
-            let slots = self
-                .shared
-                .slots
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let slots = self.shared.slots.lock_recover();
             slots
                 .slots
                 .iter()
@@ -448,9 +442,7 @@ struct NativeState {
 
 impl NativeLoader {
     fn state(&self) -> std::sync::MutexGuard<'_, NativeState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// Start a job for each queued request while a worker slot is free.
@@ -629,11 +621,7 @@ impl ImageStore {
                 }
             }
             Err(TrySendError::Full(_)) => {
-                let mut cache = self
-                    .shared
-                    .slots
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut cache = self.shared.slots.lock_recover();
                 if cache.slots.get(url).is_some_and(|entry| {
                     matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, &request))
                 }) {

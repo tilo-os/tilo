@@ -38,12 +38,13 @@
 //!   replica, read from beside it ([`ReplicaContent`]).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use fs::store::ContentStore;
 use thiserror::Error;
 
 use crate::compute::{ComputeContentStore, HeldContent};
+use tilo_lock::MutexRecover as _;
 
 /// Why a workspace file could not be bound as a job input.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -97,10 +98,7 @@ impl WorkspaceContent {
     /// [`BindError::Integrity`] when its bytes do not hash to `digest`.
     pub async fn bind_blob(&self, digest: [u8; 32]) -> Result<u64, BindError> {
         let bytes = read_blob(&self.store, digest).await?;
-        self.blobs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(digest);
+        self.blobs.lock_recover().insert(digest);
         Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
     }
 
@@ -120,14 +118,11 @@ impl WorkspaceContent {
     }
 
     fn blob_bound(&self, digest: [u8; 32]) -> bool {
-        self.blobs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(&digest)
+        self.blobs.lock_recover().contains(&digest)
     }
 
     fn bindings(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], [u8; 32]>> {
-        self.bound.lock().unwrap_or_else(PoisonError::into_inner)
+        self.bound.lock_recover()
     }
 
     /// Bind the file version `manifest` as a job input and return the

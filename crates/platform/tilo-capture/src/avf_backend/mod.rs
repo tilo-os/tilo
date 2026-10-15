@@ -21,7 +21,7 @@ pub(crate) use video::camera;
 pub(crate) use video::screen;
 
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchRetained};
@@ -40,6 +40,7 @@ use objc2_foundation::{
 };
 
 use crate::{CaptureError, CaptureState, Device, DeviceKind};
+use tilo_lock::MutexRecover as _;
 
 /// What the delegate does with each sample buffer.
 type OnSample = Box<dyn Fn(&CMSampleBuffer) + Send + Sync>;
@@ -103,7 +104,7 @@ impl<T> Default for Shared<T> {
 type Slot<T> = Arc<Mutex<Shared<T>>>;
 
 fn lock<T>(slot: &Mutex<T>) -> MutexGuard<'_, T> {
-    slot.lock().unwrap_or_else(PoisonError::into_inner)
+    slot.lock_recover()
 }
 
 /// A later state replaces an earlier one, except that [`CaptureState::Live`]

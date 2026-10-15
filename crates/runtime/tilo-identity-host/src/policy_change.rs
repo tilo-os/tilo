@@ -37,7 +37,8 @@
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use tilo_lock::MutexRecover as _;
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static WATCHES: Mutex<Vec<Weak<WatchState>>> = Mutex::new(Vec::new());
@@ -66,7 +67,7 @@ impl Watch {
             armed: AtomicBool::new(false),
             wake: Box::new(wake),
         });
-        let mut watches = WATCHES.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut watches = WATCHES.lock_recover();
         watches.retain(|watch| watch.strong_count() > 0);
         watches.push(Arc::downgrade(&state));
         drop(watches);
@@ -101,7 +102,7 @@ pub fn announce() {
     // `fetch_add` wraps; consumers only compare epochs for equality.
     EPOCH.fetch_add(1, Ordering::SeqCst);
     let due: Vec<Arc<WatchState>> = {
-        let watches = WATCHES.lock().unwrap_or_else(PoisonError::into_inner);
+        let watches = WATCHES.lock_recover();
         watches
             .iter()
             .filter_map(Weak::upgrade)
@@ -167,10 +168,7 @@ impl Clock {
     }
 
     fn wake_at(&self, unix_ns: u64) {
-        let mut deadlines = self
-            .deadlines
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut deadlines = self.deadlines.lock_recover();
         let earliest = deadlines.first().copied();
         if !deadlines.insert(unix_ns) {
             return;
@@ -188,10 +186,7 @@ impl Clock {
     /// passed, arm the next, and announce.
     fn fire(&self) {
         let now = tilo_clock::unix_now_ns();
-        let mut deadlines = self
-            .deadlines
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut deadlines = self.deadlines.lock_recover();
         let later = deadlines.split_off(&now.saturating_add(1));
         *deadlines = later;
         self.platform.arm(deadlines.first().copied());
@@ -231,8 +226,9 @@ mod platform {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Mutex, PoisonError};
+    use tilo_lock::MutexRecover as _;
 
     /// What a watched directory reports: writes, renames, creation and
     /// removal. Opening and reading are left out, so a check that reads the
@@ -364,7 +360,7 @@ mod platform {
                 return false;
             }
             let directories = super::identity_directories();
-            let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut watches = self.watches.lock_recover();
             let changed = self.changed.swap(false, Ordering::SeqCst);
             if !changed
                 && let Some((synced, true)) = &watches.synced
@@ -510,6 +506,7 @@ mod platform {
 
     use std::sync::{Condvar, Mutex, PoisonError};
     use std::time::Duration;
+    use tilo_lock::MutexRecover as _;
 
     pub(super) struct Clock {
         next: Mutex<Option<u64>>,
@@ -529,7 +526,7 @@ mod platform {
         }
 
         pub(super) fn arm(&self, at: Option<u64>) {
-            *self.next.lock().unwrap_or_else(PoisonError::into_inner) = at;
+            *self.next.lock_recover() = at;
             self.changed.notify_one();
         }
 
@@ -538,7 +535,7 @@ mod platform {
         }
 
         pub(super) fn run(&self, clock: &super::Clock) {
-            let mut next = self.next.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut next = self.next.lock_recover();
             loop {
                 match *next {
                     None => {
@@ -552,7 +549,7 @@ mod platform {
                         if now >= at {
                             drop(next);
                             clock.fire();
-                            next = self.next.lock().unwrap_or_else(PoisonError::into_inner);
+                            next = self.next.lock_recover();
                             continue;
                         }
                         let wait = Duration::from_nanos(at.saturating_sub(now))
@@ -579,10 +576,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let sender = Mutex::new(sender);
         let watch = Watch::new(move || {
-            let _ = sender
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .send(());
+            let _ = sender.lock_recover().send(());
         });
         (watch, receiver)
     }

@@ -25,6 +25,7 @@ use std::sync::OnceLock;
 use desktop_entry::{DesktopEntry, EntrySource};
 
 use crate::shell::launcher::{self, LaunchError};
+use tilo_lock::MutexRecover as _;
 
 /// A projection of [`DesktopEntry`] holding only what the shell needs,
 /// testable against a fixed list without real `.desktop` files.
@@ -88,20 +89,13 @@ fn require_host_execution() -> Result<(), LaunchError> {
 
 pub(crate) fn queue_launch(request: QueuedLaunch) -> Result<(), LaunchError> {
     require_host_execution()?;
-    queued_launches()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(request);
+    queued_launches().lock_recover().push(request);
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn drain_queued_launches() -> Vec<QueuedLaunch> {
-    std::mem::take(
-        &mut *queued_launches()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
+    std::mem::take(&mut *queued_launches().lock_recover())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

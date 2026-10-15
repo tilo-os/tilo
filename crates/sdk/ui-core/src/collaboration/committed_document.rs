@@ -5,6 +5,7 @@ use super::{
 };
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 use std::collections::BTreeMap;
+use tilo_lock::MutexRecover as _;
 #[derive(Clone, Default)]
 pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, Gate>>>,
@@ -83,30 +84,18 @@ impl Reads {
     /// How many readiness changes happened so far; pass it to
     /// [`Self::wait_progress`] after checking the state it guards.
     pub(super) fn progress(&self) -> u64 {
-        *self
-            .5
-            .changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.5.changes.lock_recover()
     }
     /// Wait until a readiness change after `seen`, or `bound` elapses.
     pub(super) fn wait_progress(&self, seen: u64, bound: Duration) {
-        let changes = self
-            .5
-            .changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let changes = self.5.changes.lock_recover();
         let _ = self
             .5
             .changed
             .wait_timeout_while(changes, bound, |changes| *changes == seen);
     }
     pub(super) fn progressed(&self) {
-        let mut changes = self
-            .5
-            .changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut changes = self.5.changes.lock_recover();
         *changes = changes.wrapping_add(1);
         drop(changes);
         self.5.changed.notify_all();

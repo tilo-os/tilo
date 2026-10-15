@@ -27,6 +27,7 @@ use tilo_user_identity::DeviceCert;
 use crate::auth::{self, AuthError, AuthenticatedPeer, HandshakeTrust};
 
 use super::Rooms;
+use tilo_lock::RwLockRecover as _;
 
 const MAX_CONCURRENT_EXCHANGES: usize = 64;
 
@@ -93,10 +94,7 @@ impl RoomAdminProtocol {
         remote: &[u8; 32],
     ) -> Result<AuthenticatedPeer, AuthError> {
         let host = &self.rooms.inner.host;
-        let revocations = host
-            .revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let revocations = host.revocations.read_recover();
         auth::authenticate_endpoint_bound(
             device,
             remote,

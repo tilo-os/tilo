@@ -23,6 +23,7 @@ use crate::shell::chrome_state::Chrome;
 use crate::shell::launcher::{self, InstalledApp, LaunchError};
 use crate::shell::state::{GroupId, StripId, TabId, TileContent, WorkspaceId, WorkspaceTree};
 use crate::shell::tab_binding::Placement;
+use tilo_lock::MutexRecover as _;
 
 /// What opening `path` would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -670,10 +671,7 @@ pub(crate) struct OpenDocument {
 fn lock_open_documents(
     session: &launcher::LaunchSession,
 ) -> std::sync::MutexGuard<'_, Vec<OpenDocument>> {
-    session
-        .open_documents
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    session.open_documents.lock_recover()
 }
 
 /// Focus needs all four coordinates — a subset leaves the user looking

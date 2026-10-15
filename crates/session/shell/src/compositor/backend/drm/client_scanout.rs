@@ -29,6 +29,7 @@ use super::scanout::Card;
 use crate::compositor::backend::OutputId;
 use crate::compositor::scanout_feedback::ScanoutPlane;
 use crate::shell::gpu_frames::GpuFrame;
+use tilo_lock::MutexRecover as _;
 
 /// Set to `0` to keep every frame composited: a hardware A/B switch and an
 /// escape hatch for a driver that misbehaves with client framebuffers.
@@ -198,19 +199,12 @@ pub struct ClientPlanes(Arc<Mutex<HashMap<OutputId, Arc<ScanoutPlane>>>>);
 impl ClientPlanes {
     /// What `output` offers, as last published.
     pub fn get(&self, output: OutputId) -> Option<Arc<ScanoutPlane>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&output)
-            .cloned()
+        self.0.lock_recover().get(&output).cloned()
     }
 
     /// `output` offers `plane` now; `None` withdraws its offer.
     pub fn publish(&self, output: OutputId, plane: Option<Arc<ScanoutPlane>>) {
-        let mut planes = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut planes = self.0.lock_recover();
         match plane {
             Some(plane) => {
                 planes.insert(output, plane);

@@ -943,3 +943,94 @@ fn unproved_coedit_wrapper_cannot_supply_replay_duplicate_coverage() {
     assert!(pending.exists());
     assert!(store.load_retained().unwrap().contains(&bytes));
 }
+
+/// A device's access request for a channel, framed as `author` retains it.
+fn access_request(author: &ed25519_dalek::SigningKey, timestamp: u64) -> ([u8; 32], Vec<u8>) {
+    let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
+        room: "room".into(),
+        request: Box::new(
+            collab_types::MlsAccessRequestV1::signed(
+                collab_types::ChannelId::new(),
+                vec![1],
+                1,
+                author,
+            )
+            .unwrap(),
+        ),
+        delivery: 0,
+    };
+    let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
+    let bytes = transport::encode(&Envelope::Delta {
+        workspace_id: 7,
+        author_device_public_key: author.verifying_key().to_bytes(),
+        authored_at_ns: timestamp,
+        signature: [0; 64],
+        delta: CoeditPayload::Checkpoint {
+            channel,
+            body: postcard::to_stdvec(&message).unwrap(),
+        }
+        .encode()
+        .unwrap(),
+    })
+    .unwrap();
+    (channel, bytes)
+}
+
+/// In a room its host governs (and so stewards), a capture leaves out what
+/// only the steward reads, from memory once it read a lineage, and still
+/// replays everything else; the requests stay retained. Elsewhere a capture
+/// replays them as before.
+#[test]
+fn a_governed_rooms_capture_leaves_out_what_only_its_steward_reads() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let member = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+    let (channel, request) = access_request(&member, 1);
+    store.retain_checkpoint(&channel, &request).unwrap();
+    store.retain_delta(&[9; 32], 2, &frame(1, 10, 2)).unwrap();
+    let mut whole = snapshot(&store);
+    assert_eq!(
+        prepare(&store, &mut whole).total_frames,
+        2,
+        "a room this host does not govern replays every request"
+    );
+
+    store.replay_without_steward_only();
+    let mut governed = snapshot(&store);
+    assert_eq!(prepare(&store, &mut governed).total_frames, 1);
+    let batch = store
+        .read_replay_batch(
+            &mut governed,
+            ReplayLimits::default(),
+            &ReplayBudget::new(1024 * 1024),
+        )
+        .unwrap();
+    assert!(
+        batch.frames.len() == 1
+            && matches!(
+                batch.frames.front(),
+                Some(Envelope::Delta {
+                    authored_at_ns: 2,
+                    ..
+                })
+            ),
+        "only the member's edit is replayed"
+    );
+    drop(batch);
+    assert!(
+        store.load_retained().unwrap().contains(&request),
+        "the request stays retained for the steward"
+    );
+
+    // Classified once: a capture decides the lineage from memory after that,
+    // without reading what it holds now.
+    let lineage = store.root().join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode(member.verifying_key().to_bytes()),
+        hex::encode(channel)
+    ));
+    let active = retained::current(&lineage).unwrap().unwrap();
+    fs::write(active.join("checkpoint.delta"), frame(3, 10, 3)).unwrap();
+    let mut remembered = snapshot(&store);
+    assert_eq!(prepare(&store, &mut remembered).total_frames, 1);
+}

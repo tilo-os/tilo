@@ -12,7 +12,7 @@
 //! never falls back to a fabricated terminal.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail};
@@ -24,6 +24,7 @@ use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 
 use crate::session::SessionStatus;
 use crate::vt::VtGrid;
+use ui::lock::MutexRecover as _;
 
 /// Keep the UI responsive under a stalled SSH transport without allowing a
 /// key-repeat storm or a hostile peer to accumulate unbounded process memory.
@@ -417,7 +418,7 @@ struct InputMessage {
 /// worker thread's earlier panic must not cascade into every later read
 /// of shared session state.
 fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+    m.lock_recover()
 }
 
 /// Fail-closed host-key verifier. It checks only a device-private database;

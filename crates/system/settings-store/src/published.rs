@@ -14,7 +14,8 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, RwLock};
+use tilo_lock::RwLockRecover as _;
 
 /// One value a process published to `path`, with a generation that moves
 /// every time it is published again.
@@ -34,8 +35,7 @@ impl<T> Published<T> {
 
     /// Record `value` as published to `path`.
     pub fn set(&self, path: &Path, value: T) {
-        *self.slot.write().unwrap_or_else(PoisonError::into_inner) =
-            Some((path.to_path_buf(), Arc::new(value)));
+        *self.slot.write_recover() = Some((path.to_path_buf(), Arc::new(value)));
         self.generation.fetch_add(1, Ordering::Release);
     }
 
@@ -43,8 +43,7 @@ impl<T> Published<T> {
     #[must_use]
     pub fn get(&self, path: &Path) -> Option<Arc<T>> {
         self.slot
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
+            .read_recover()
             .as_ref()
             .filter(|(published, _)| published == path)
             .map(|(_, value)| Arc::clone(value))

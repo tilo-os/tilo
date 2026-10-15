@@ -27,6 +27,7 @@ use collab_types::{CapOverride, Principal};
 
 use crate::acl::{AclHandle, IdentityKey, WorkspaceAcl};
 use crate::file_watch::{ReloadCadence, ReloadTrigger};
+use tilo_lock::MutexRecover as _;
 
 /// Identifies a version of the file (so an unchanged file costs one `stat`), including the inode since a rename-over-target producer can collide on length + mtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,10 +122,7 @@ impl CapabilityFile {
         let meta = match std::fs::metadata(&self.path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut seen = self
-                    .seen
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut seen = self.seen.lock_recover();
                 if seen.is_none() {
                     // Already observed missing and already denying.
                     return Refresh::Unchanged;
@@ -140,10 +138,7 @@ impl CapabilityFile {
 
         let stamp = Stamp::of(&meta);
         {
-            let seen = self
-                .seen
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let seen = self.seen.lock_recover();
             if *seen == Some(stamp) {
                 return Refresh::Unchanged;
             }
@@ -154,10 +149,7 @@ impl CapabilityFile {
                 let n = caps.len();
                 self.handle
                     .replace(build(self.identity, &caps, &self.principals));
-                *self
-                    .seen
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stamp);
+                *self.seen.lock_recover() = Some(stamp);
                 Refresh::Reloaded(n)
             }
             // Deliberately doesn't update `seen`, so the next tick retries rather than treating a half-written file as current.

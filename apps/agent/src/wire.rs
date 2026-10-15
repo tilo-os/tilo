@@ -14,6 +14,7 @@ use ui::collaboration::{
     CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager,
     DocumentPublicationError, RouteSpec,
 };
+use ui::lock::MutexRecover as _;
 
 /// One connection to the broker.
 pub struct Link {
@@ -65,10 +66,7 @@ impl Wake {
         let tx = std::sync::Mutex::new(tx);
         // A fresh scope has no destination yet, so binding cannot fail.
         let _ = scope.bind(move |_| {
-            let _ = tx
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .send(());
+            let _ = tx.lock_recover().send(());
         });
         let connected = {
             let _entered = scope.enter();

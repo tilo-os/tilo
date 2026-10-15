@@ -21,6 +21,7 @@ use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
 use tilo_desktop_model::{RoomId, Workspace};
+use tilo_lock::MutexRecover as _;
 
 /// The resource an app's device-signature request names. A signature is
 /// asked for one of the app's own actions, so a grant letting an app sign
@@ -128,18 +129,11 @@ struct ClientConnection {
 }
 impl Drop for ClientConnection {
     fn drop(&mut self) {
-        self.clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.id);
+        self.clients.lock_recover().remove(&self.id);
     }
 }
 fn close_clients(clients: &Mutex<HashMap<u64, UnixStream>>) {
-    for stream in clients
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .values()
-    {
+    for stream in clients.lock_recover().values() {
         let _ = stream.shutdown(Shutdown::Both);
     }
 }
@@ -183,7 +177,7 @@ pub fn spawn(
                         };
                         let Some(id) = next_client.checked_add(1) else { break; };
                         next_client = id;
-                        thread_clients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id, cancellation);
+                        thread_clients.lock_recover().insert(id, cancellation);
                         let connection = ClientConnection { id, clients: thread_clients.clone() };
                         workers.retain(|worker| !worker.is_finished());
                         match thread::Builder::new()

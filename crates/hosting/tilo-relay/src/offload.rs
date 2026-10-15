@@ -37,7 +37,7 @@
 //! launcher sandbox and reads nothing the job does not list.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::endpoint::Connection;
@@ -59,6 +59,7 @@ pub use crate::offload_placement::{
     ComputePlacement, PLACEMENT_TIMEOUT, Placed, PlacementAnswer, PlacementQuery, RelayPlacement,
 };
 pub use crate::offload_route::OffloadRoute;
+use tilo_lock::MutexRecover as _;
 
 /// How long past a job's own lifetime its requester waits for the result
 /// before it gives up on the worker and runs the action itself.
@@ -282,8 +283,7 @@ impl Offloader {
     pub fn wall_times(&self) -> Vec<WallTime> {
         let mut times: Vec<_> = self
             .wall_times
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .map(|((action, device), observed)| WallTime {
                 action: action.clone(),
@@ -443,16 +443,13 @@ impl Offloader {
 
     fn record(&self, offload: &Offload, device: DeviceKey, elapsed: Duration, input_bytes: u64) {
         let action = format!("{}:{}", offload.app, offload.entrypoint);
-        self.wall_times
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                (action, device),
-                Observed {
-                    elapsed,
-                    input_bytes,
-                },
-            );
+        self.wall_times.lock_recover().insert(
+            (action, device),
+            Observed {
+                elapsed,
+                input_bytes,
+            },
+        );
     }
 
     /// [`Self::remote`] over bound `inputs`, recorded and answered as an
@@ -526,8 +523,7 @@ impl Offloader {
     /// `input_bytes`; `None` before it has run it here.
     fn local_wall_ms(&self, action: &str, input_bytes: u64) -> Option<u64> {
         self.wall_times
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .get(&(action.to_owned(), self.device))
             .map(|observed| observed.scaled_ms(input_bytes))
     }

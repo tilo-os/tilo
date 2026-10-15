@@ -34,6 +34,7 @@ use crate::record_transaction::{
     RecordTransactionJournal, RecordTransactionJournalEntry, RecordTransactionJournalError,
     RecordTransactionParticipantBatch, RecordTransactionPhase,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Records one repository holds. The log itself has no practical limit
 /// (positions are `u64`); what bounds a device is the in-memory index,
@@ -1100,12 +1101,7 @@ impl RecordRepository {
     /// none until [`Self::restore_admission_fences`] seeds them.
     #[cfg(test)]
     pub(crate) fn clear_admission_fences(&self) {
-        for record in self
-            .records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values_mut()
-        {
+        for record in self.records.lock_recover().values_mut() {
             record.pending_restore = None;
         }
     }
@@ -1857,8 +1853,7 @@ impl RecordRepository {
     #[must_use]
     pub fn highest_sequence(&self, key: RecordRepositoryKey, actor: &FileActor) -> Option<u64> {
         self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&key)
             .and_then(|record| record.replica.highest_sequence_for(actor))
     }
@@ -1877,10 +1872,7 @@ impl RecordRepository {
         key: RecordRepositoryKey,
         envelope: &RecordEnvelopeV1,
     ) -> bool {
-        let records = self
-            .records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let records = self.records.lock_recover();
         let Some(record) = records.get(&key) else {
             return false;
         };
@@ -1919,10 +1911,7 @@ impl RecordRepository {
         if since == Some(current) {
             return (current, Vec::new());
         }
-        let records = self
-            .records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let records = self.records.lock_recover();
         // Writers move the generation under this lock: read again, so
         // every record written up to it is in the answer.
         let current = self
@@ -1956,8 +1945,7 @@ impl RecordRepository {
     /// Stable keys for one workspace's records.
     pub(crate) fn reconciliation_keys(&self, workspace_id: Uuid) -> Vec<RecordRepositoryKey> {
         self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .keys()
             .filter(|key| key.workspace_id == workspace_id)
             .copied()
@@ -1971,8 +1959,7 @@ impl RecordRepository {
         workspace_id: Uuid,
     ) -> Vec<fs_protocol::ContentRevisionV1> {
         self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .filter(|(key, _)| key.workspace_id == workspace_id)
             .filter_map(|(_, record)| record.replica.current_content_revision())
@@ -1986,8 +1973,7 @@ impl RecordRepository {
         key: RecordRepositoryKey,
     ) -> Option<RecordReconciliationBatch> {
         self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&key)
             .map(|record| RecordReconciliationBatch {
                 key,
@@ -2112,26 +2098,17 @@ impl RecordRepository {
 
     #[must_use]
     pub fn contains(&self, key: RecordRepositoryKey) -> bool {
-        self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&key)
+        self.records.lock_recover().contains_key(&key)
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
+        self.records.lock_recover().len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty()
+        self.records.lock_recover().is_empty()
     }
 }
 

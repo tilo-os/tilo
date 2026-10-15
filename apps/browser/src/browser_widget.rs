@@ -52,6 +52,7 @@ use crate::library::Bookmarks;
 use crate::omnibox;
 use crate::resource::{Browser, bookmark_resource_id, browser};
 use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPresentation};
+use ui::lock::MutexRecover as _;
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
 
@@ -3424,10 +3425,7 @@ impl BrowserWidget {
                 ((r.y1 - full.y0) / full.height()) as f32,
             ]
         });
-        *self
-            .content_rect
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = frac;
+        *self.content_rect.lock_recover() = frac;
     }
 }
 

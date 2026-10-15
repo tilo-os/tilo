@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use fs_content::RangeSet;
 use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 const ENTRIES: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new("area_entries");
 /// Chunk hash → `key ‖ offset (u64 LE) ‖ len (u32 LE)`.
@@ -259,8 +260,7 @@ impl FileArea {
     /// The area's index database, unless the area was closed.
     fn database(&self) -> io::Result<Arc<Database>> {
         self.db
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_recover()
             .clone()
             .ok_or_else(|| io::Error::other("the content area is closed"))
     }
@@ -269,10 +269,7 @@ impl FileArea {
     /// be opened again in this process while handles to this area remain.
     /// Every later operation on this area fails.
     pub fn close(&self) {
-        self.db
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        self.db.write_recover().take();
     }
 
     /// Opens (or creates) the area under `dir`, holding at most `budget`
@@ -391,9 +388,7 @@ impl FileArea {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// The file holding `key`'s bytes.
@@ -414,10 +409,7 @@ impl FileArea {
     /// It only orders cached entries: it never makes a local-only or
     /// pinned entry evictable, nor keeps the budget from being met.
     pub fn set_held_elsewhere(&self, held: HeldElsewhere) {
-        *self
-            .held_elsewhere
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(held);
+        *self.held_elsewhere.write_recover() = Some(held);
     }
 
     /// Resident bytes of cached entries, which the budget limits.
@@ -513,10 +505,7 @@ impl FileArea {
         retention: Retention,
         chunks: &[([u8; 32], u64, u32)],
     ) -> io::Result<()> {
-        let _create = self
-            .create
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _create = self.create.lock_recover();
         let existing = {
             let mut state = self.lock();
             state.entries.get_mut(key).map(|entry| {
@@ -569,10 +558,7 @@ impl FileArea {
         if chunks.is_empty() {
             return Ok(());
         }
-        let _commit = self
-            .commit
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _commit = self.commit.lock_recover();
         let mut members = Vec::with_capacity(chunks.len().saturating_mul(76));
         let txn = self.database()?.begin_write().map_err(db_error)?;
         {
@@ -952,10 +938,7 @@ impl FileArea {
         digest: Option<[u8; 32]>,
         chunks: &[([u8; 32], u64, u32)],
     ) -> io::Result<()> {
-        let _create = self
-            .create
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _create = self.create.lock_recover();
         if self.entry(key).is_some() {
             self.remove(key)?;
         }
@@ -1123,11 +1106,7 @@ impl FileArea {
             .copied()
             .unwrap_or(0);
         // Asked outside the area's lock: the answer may take other locks.
-        let held = self
-            .held_elsewhere
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let held = self.held_elsewhere.read_recover().clone();
         let held_elsewhere = held.map(|held| held()).unwrap_or_default();
         let mut freed = 0_u64;
         loop {
@@ -1171,10 +1150,7 @@ impl FileArea {
     }
 
     fn persist_stored(&self, key: &AreaKey, stored: &Stored) -> io::Result<()> {
-        let _commit = self
-            .commit
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _commit = self.commit.lock_recover();
         if !self.lock().entries.contains_key(key) {
             return Ok(());
         }
@@ -1188,10 +1164,7 @@ impl FileArea {
     }
 
     fn unpersist(&self, key: &AreaKey) -> io::Result<()> {
-        let _commit = self
-            .commit
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _commit = self.commit.lock_recover();
         let txn = self.database()?.begin_write().map_err(db_error)?;
         {
             txn.open_table(ENTRIES)
@@ -1257,10 +1230,7 @@ impl FileArea {
                 }
             }
         }
-        let _commit = self
-            .commit
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _commit = self.commit.lock_recover();
         let stored = stored_before_sync;
         let txn = self.database()?.begin_write().map_err(db_error)?;
         {

@@ -24,7 +24,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -40,6 +40,7 @@ use tilo_relay_protocol::environment::{
 };
 
 use crate::frame::{read_frame_or_eof, write_frame};
+use tilo_lock::MutexRecover as _;
 
 /// A tool's image for this worker's architecture.
 fn own_image(tool: &ToolImage) -> Option<String> {
@@ -532,7 +533,7 @@ struct Attachment {
 
 impl Slot {
     fn lock(&self) -> std::sync::MutexGuard<'_, SlotShared> {
-        self.shared.lock().unwrap_or_else(PoisonError::into_inner)
+        self.shared.lock_recover()
     }
 
     fn touch(&self) {
@@ -682,10 +683,7 @@ impl EnvironmentHost {
     }
 
     fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<SessionId, Arc<Slot>>> {
-        self.inner
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.inner.sessions.lock_recover()
     }
 
     /// Sessions running now.
@@ -1116,10 +1114,7 @@ impl EnvironmentHost {
                 continue;
             };
             let new: Vec<ToolImage> = {
-                let mut known = slot
-                    .known_tools
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let mut known = slot.known_tools.lock_recover();
                 let new = tools
                     .into_iter()
                     .filter(|tool| own_image(tool).is_some_and(|id| !known.contains(&id)))

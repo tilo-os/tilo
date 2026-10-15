@@ -57,6 +57,7 @@ bench = false
 required-features = ["test-support"]
 
 [dependencies]
+tilo-lock = { path = "../../platform/tilo-lock" }
 # Read the app SDK snapshot only in the owned native boundary fixture.
 tilo-net = { path = "../../platform/tilo-net", optional = true }
 

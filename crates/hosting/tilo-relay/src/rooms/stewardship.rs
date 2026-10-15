@@ -29,6 +29,7 @@ use collab_types::{
 };
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
+use tilo_lock::MutexRecover as _;
 
 /// Channels one room keeps a steward for.
 const MAX_CHANNELS: usize = 4096;
@@ -153,9 +154,7 @@ impl Steward {
     }
 
     fn known_routes(&self) -> std::sync::MutexGuard<'_, Routes> {
-        self.routes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.routes.lock_recover()
     }
 
     /// Every route this steward knows, for deciding Read on the records
@@ -238,9 +237,7 @@ impl Routes {
 
 impl Steward {
     fn handed_over(&self) -> std::sync::MutexGuard<'_, Option<(u64, Readers)>> {
-        self.readers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.readers.lock_recover()
     }
 
     /// Whether governance whose readers are `readers` must move the

@@ -15,6 +15,8 @@ use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{GroupId, RoomId, StripId, TabId, TileContent, Workspace, WorkspaceTree};
 use crate::shell::tab_binding::Placement;
 use tilo_desktop_model::MissingApp;
+#[cfg(not(test))]
+use tilo_lock::MutexRecover as _;
 
 /// Shown while the local instance is starting.
 pub(crate) const OPENING: &str = "Opening here…";
@@ -149,11 +151,7 @@ fn with_install_requests<R>(apply: impl FnOnce(&mut Vec<TabId>) -> R) -> R {
     }
     #[cfg(not(test))]
     {
-        apply(
-            &mut INSTALL_REQUESTS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        apply(&mut INSTALL_REQUESTS.lock_recover())
     }
 }
 
@@ -180,11 +178,7 @@ fn with_retry_requests<R>(apply: impl FnOnce(&mut Vec<RetryRequest>) -> R) -> R 
     }
     #[cfg(not(test))]
     {
-        apply(
-            &mut RETRY_REQUESTS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        apply(&mut RETRY_REQUESTS.lock_recover())
     }
 }
 

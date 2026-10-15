@@ -4,13 +4,14 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use format_provider_abi::{CodecError, Detected};
 use wasmi::Engine;
 
 use crate::registry::{ProviderEntry, Registry};
 use crate::runner::LoadedProvider;
+use tilo_lock::RwLockRecover as _;
 
 /// A provider as held by the router: the registry entry + its loaded module.
 #[derive(Clone)]
@@ -42,15 +43,11 @@ impl Router {
     // A panic while the map was held leaves a complete provider set behind:
     // writers swap in a fully built map, never a partial one.
     fn providers_read(&self) -> RwLockReadGuard<'_, HashMap<String, ActiveProvider>> {
-        self.providers
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.providers.read_recover()
     }
 
     fn providers_write(&self) -> RwLockWriteGuard<'_, HashMap<String, ActiveProvider>> {
-        self.providers
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.providers.write_recover()
     }
 
     /// Replace the current provider set with `reg` — loads new modules,

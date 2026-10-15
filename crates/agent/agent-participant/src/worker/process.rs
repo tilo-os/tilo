@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use super::proto::{FRAMING, Mode, PROTOCOL_VERSION, Reply, Request};
 use super::{ARG, ENV};
+use tilo_lock::MutexRecover as _;
 
 /// How long a worker may take to start, load what it needs and confine
 /// itself.
@@ -162,8 +163,7 @@ fn spawn(command: Command) -> std::io::Result<Child> {
     });
     let (reply, answer) = std::sync::mpsc::channel();
     sender
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .send((command, reply))
         .map_err(|_| gone())?;
     answer.recv().map_err(|_| gone())?

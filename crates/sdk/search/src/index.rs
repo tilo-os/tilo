@@ -10,6 +10,7 @@ use crate::engine::{self, Engine, IndexError, MakeEngine, Records, ScoreFn};
 use crate::query::{Matching, Used};
 use crate::typo::Typos;
 use crate::weight::{FieldWeight, MatchTier, Ranks};
+use tilo_lock::RwLockRecover as _;
 
 /// The segment value of a record's own document.
 pub(crate) const RECORD_SEGMENT: u64 = u64::MAX;
@@ -256,7 +257,7 @@ impl SearchIndex {
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, State> {
-        self.state.read().unwrap_or_else(PoisonError::into_inner)
+        self.state.read_recover()
     }
 
     pub(crate) fn state_mut(&mut self) -> &mut State {
@@ -476,7 +477,7 @@ impl SearchIndex {
         let Some(make) = engine::make() else {
             return Hits::default();
         };
-        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.write_recover();
         if state.deferred
             && let Err(error) = commit(
                 &mut state,

@@ -17,6 +17,7 @@ use std::time::Duration;
 use super::{PublishedAction, PublishedSurface};
 use crate::collab_broker::CrdtRoute;
 use crate::services::LaunchPlace;
+use tilo_lock::MutexRecover as _;
 
 /// Prefix of the provider token naming a retained launchable surface.
 const LAUNCHABLE_PROVIDER: &str = "launch";
@@ -241,19 +242,12 @@ impl LaunchableCatalogue {
     /// `actor` just ran an action of `app_id` in `room`: that view is
     /// where it works now.
     pub(super) fn note_view(&self, room: &str, actor: &str, app_id: &str) {
-        self.views
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .note(room, actor, app_id);
+        self.views.lock_recover().note(room, actor, app_id);
     }
 
     /// The app whose view `actor` last worked in, in `room`.
     pub(super) fn view_of(&self, room: &str, actor: &str) -> Option<String> {
-        self.views
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .of(room, actor)
-            .map(str::to_owned)
+        self.views.lock_recover().of(room, actor).map(str::to_owned)
     }
 
     /// Load the catalogue saved at `path` and keep saving changes there. A
@@ -381,10 +375,7 @@ impl LaunchableCatalogue {
 
     /// The launcher standing in for the host's, if one was installed.
     pub(super) fn launcher(&self) -> Option<AppLauncher> {
-        self.launcher
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.launcher.lock_recover().clone()
     }
 
     pub(super) fn delivery_timeout(&self) -> Duration {

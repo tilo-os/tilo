@@ -1254,11 +1254,7 @@ fn poisoned_tab_state_never_panics_or_poisons_routes() {
             take_supervisor_child(&slot)
         }));
         if result.is_err() {
-            if let Some(mut child) = slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-            {
+            if let Some(mut child) = slot.lock_recover().take() {
                 let _ = child.wait();
             }
         }

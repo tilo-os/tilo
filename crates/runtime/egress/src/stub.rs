@@ -434,6 +434,7 @@ pub use crate::config::nameservers;
 mod tests {
     use super::*;
     use crate::dns::tests::response;
+    use tilo_lock::MutexRecover as _;
     use tilo_test_env::idle;
 
     fn shared(policy: EgressPolicy, upstream: Vec<SocketAddr>) -> Shared {
@@ -552,9 +553,7 @@ mod tests {
 
     #[test]
     fn an_idle_stub_does_not_wake() {
-        let _one = STUBS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _one = STUBS.lock_recover();
         let shared = Arc::new(shared(
             EgressPolicy::from_grants(["github.com"]),
             Vec::new(),
@@ -567,9 +566,7 @@ mod tests {
 
     #[test]
     fn dropping_the_stub_ends_both_threads_promptly() {
-        let _one = STUBS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _one = STUBS.lock_recover();
         let shared = Arc::new(shared(EgressPolicy::none(), Vec::new()));
         let running = start(&shared);
         // Both threads parked in poll(2), as on an idle desktop.
@@ -595,9 +592,7 @@ mod tests {
 
     #[test]
     fn queries_over_both_sockets_resolve_or_are_refused_as_before() {
-        let _one = STUBS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _one = STUBS.lock_recover();
         let (resolver, asked) = fake_resolver();
         let shared = Arc::new(shared(
             EgressPolicy::from_grants(["github.com"]),

@@ -49,6 +49,7 @@ use crate::shell::device_fabric::{
     MediaHandoffFailure, MediaSession, MediaSourceLocator, PersonalFabricAction, RoamingSetting,
 };
 use crate::shell::network::{ShellNetwork, fabric_monotonic_us};
+use tilo_lock::MutexRecover as _;
 
 type ProductionGamepadFactory =
     os_actions::LinuxVirtualGamepadFactory<os_actions::UinputGamepadDeviceProvider>;
@@ -1105,9 +1106,7 @@ fn fabric_clock_state() -> &'static Mutex<crate::shell::fabric_clock::FabricCloc
 fn with_fabric_clock<T>(
     apply: impl FnOnce(&mut crate::shell::fabric_clock::FabricClockCore) -> T,
 ) -> T {
-    let mut core = fabric_clock_state()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut core = fabric_clock_state().lock_recover();
     apply(&mut core)
 }
 

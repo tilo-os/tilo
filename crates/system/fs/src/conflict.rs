@@ -14,6 +14,7 @@ use fs_protocol::{FileNameV1, FileRecordId, FileVersionId, MAX_FILE_NAME_BYTES};
 use iroh_blobs::Hash;
 
 use crate::namespace::{ContentAuthority, Namespace, ROOT_ID};
+use tilo_lock::MutexRecover as _;
 
 /// A conflict copy that needs to be created (fully resolved location + name).
 #[derive(Debug, Clone)]
@@ -306,9 +307,7 @@ impl NamespaceScan {
 }
 
 fn lock(namespace: &Mutex<Namespace>) -> std::sync::MutexGuard<'_, Namespace> {
-    namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    namespace.lock_recover()
 }
 
 fn push_copy(

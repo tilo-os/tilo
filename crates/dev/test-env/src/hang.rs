@@ -34,6 +34,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 use std::thread;
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 /// Overrides [`hang_bound`] with a whole number of seconds, for example to
 /// wait longer under a debugger or to fail faster while bisecting a hang.
@@ -193,8 +194,7 @@ impl Alarm {
         let timer = timer();
         timer
             .alarms
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .push_back((at, Arc::downgrade(&alarm)));
         timer.changed.notify_one();
         alarm
@@ -202,7 +202,7 @@ impl Alarm {
 
     /// Whether the alarm has rung; if not, `waker` is woken when it does.
     fn rung(&self, waker: &Waker) -> bool {
-        let mut slot = self.waker.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = self.waker.lock_recover();
         match slot.as_mut() {
             Some(current) if current.will_wake(waker) => {}
             _ => *slot = Some(waker.clone()),
@@ -213,11 +213,7 @@ impl Alarm {
 
     fn ring(&self) {
         self.rung.store(true, Ordering::Release);
-        let waker = self
-            .waker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let waker = self.waker.lock_recover().take();
         if let Some(waker) = waker {
             waker.wake();
         }
@@ -246,7 +242,7 @@ fn timer() -> &'static Timer {
 
 impl Timer {
     fn run(&self) {
-        let mut alarms = self.alarms.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut alarms = self.alarms.lock_recover();
         loop {
             let now = Instant::now();
             // A finished wait drops its alarm; forget it here.

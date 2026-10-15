@@ -4,6 +4,7 @@
 use super::*;
 use crate::workbook::{FIRST_SHEET_ID, Sheet};
 use ui::framework::testing::TestApp;
+use ui::lock::MutexRecover as _;
 use ui::tilo_resource::{Edit, Replica, Resource};
 
 fn sample() -> Replica<Workbook> {
@@ -146,9 +147,7 @@ fn document_scenarios_edit_through_the_dispatcher() {
     assert_eq!(raw(&fill, "C21").as_deref(), Some("Sat"));
     assert_eq!(raw(&fill, "D21").as_deref(), Some("Task 6"));
 
-    let _clipboard = crate::app::tests::CLIP_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _clipboard = crate::app::tests::CLIP_LOCK.lock_recover();
     let paste = TestApp::<SheetsShell>::capture(Some("pasteformula")).unwrap();
     // E2's `=SUM(B2:D2)` pasted one row down reads its own row.
     assert_eq!(raw(&paste, "E3").as_deref(), Some("=SUM(B3:D3)"));

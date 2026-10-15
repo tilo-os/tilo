@@ -50,6 +50,7 @@
 //! own default in place, the strictly smaller failure.
 
 use std::path::{Path, PathBuf};
+use tilo_lock::MutexRecover as _;
 
 /// GLVND's EGL vendor selection: a colon-separated list of vendor ICD
 /// JSONs; when set, GLVND loads only these and skips the directory scan.
@@ -361,12 +362,11 @@ fn node_numbers(node: &Path) -> std::io::Result<(u64, u64)> {
 #[cfg(target_os = "linux")]
 pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
     use std::collections::HashMap;
-    use std::sync::{Mutex, PoisonError};
+    use std::sync::Mutex;
     static CACHE: Mutex<Option<HashMap<(PathBuf, IcdSearch), GpuSelection>>> = Mutex::new(None);
     let key = (node.to_path_buf(), search.clone());
     if let Some(found) = CACHE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .as_ref()
         .and_then(|cache| cache.get(&key))
     {
@@ -409,8 +409,7 @@ pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
         },
     };
     CACHE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .get_or_insert_with(HashMap::new)
         .insert(key, selection.clone());
     selection

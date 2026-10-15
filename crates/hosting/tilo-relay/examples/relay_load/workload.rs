@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, anyhow};
@@ -29,6 +29,7 @@ use tilo_user_identity::{
 };
 
 use crate::relay_process::Setup;
+use tilo_lock::MutexRecover as _;
 
 /// The document every room edits together.
 const APP: &str = "so.tilo.word-processor";
@@ -279,23 +280,20 @@ impl Fleet {
 
     /// Note an edit about to be published to `recipients` other members.
     fn sent(&self, body: &[u8], recipients: usize) {
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                blake3::hash(body),
-                Pending {
-                    sent: Instant::now(),
-                    remaining: recipients,
-                },
-            );
+        self.pending.lock_recover().insert(
+            blake3::hash(body),
+            Pending {
+                sent: Instant::now(),
+                remaining: recipients,
+            },
+        );
     }
 
     /// Note that a member received the edit `body`.
     fn received(&self, body: &[u8]) {
         let now = Instant::now();
         let sent = {
-            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut pending = self.pending.lock_recover();
             let key = blake3::hash(body);
             let Some(entry) = pending.get_mut(&key) else {
                 return;
@@ -309,8 +307,7 @@ impl Fleet {
         };
         if self.measuring.load(Ordering::SeqCst) {
             self.latencies
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+                .lock_recover()
                 .push(now.duration_since(sent).as_secs_f64() * 1_000.0);
         }
     }
@@ -319,10 +316,7 @@ impl Fleet {
     /// other members.
     fn presence_sent(&self, body: &[u8], timed: Timed, recipients: usize) {
         let now = Instant::now();
-        let mut pending = self
-            .presence_pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut pending = self.presence_pending.lock_recover();
         if pending.len() >= PRESENCE_SWEEP {
             pending.retain(|_, sample| now.duration_since(sample.sent) < PRESENCE_FORGET);
         }
@@ -341,10 +335,7 @@ impl Fleet {
     fn presence_received(&self, body: &[u8]) {
         let now = Instant::now();
         let (sent, timed) = {
-            let mut pending = self
-                .presence_pending
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut pending = self.presence_pending.lock_recover();
             let key = blake3::hash(body);
             let Some(entry) = pending.get_mut(&key) else {
                 return;
@@ -362,8 +353,7 @@ impl Fleet {
                 Timed::Caret => &self.caret_latencies,
             };
             latencies
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+                .lock_recover()
                 .push(now.duration_since(sent).as_secs_f64() * 1_000.0);
         }
     }
@@ -371,27 +361,19 @@ impl Fleet {
     /// The pointer and caret delivery latencies measured so far, in
     /// milliseconds: publish to receipt by each other member of the room.
     pub fn take_presence_latencies(&self) -> (Vec<f64>, Vec<f64>) {
-        let take = |latencies: &Mutex<Vec<f64>>| {
-            std::mem::take(&mut *latencies.lock().unwrap_or_else(PoisonError::into_inner))
-        };
+        let take = |latencies: &Mutex<Vec<f64>>| std::mem::take(&mut *latencies.lock_recover());
         (take(&self.pointer_latencies), take(&self.caret_latencies))
     }
 
     /// The fan-out latencies measured so far, in milliseconds.
     pub fn take_latencies(&self) -> Vec<f64> {
-        std::mem::take(
-            &mut *self
-                .latencies
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
+        std::mem::take(&mut *self.latencies.lock_recover())
     }
 
     /// Deliveries of published edits that never arrived.
     pub fn undelivered(&self) -> usize {
         self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .values()
             .map(|pending| pending.remaining)
             .sum()
