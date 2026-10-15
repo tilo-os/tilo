@@ -1904,6 +1904,29 @@ settings-region-shared-card = Shared formats
 settings-storage-cleanup-caption = Review the cache files below before removing them.
 settings-storage-item-meta = { $size } · { $category }
 settings-storage-tools-caption = Use Backups to protect files before making storage changes.
+settings-storage-this-device = { $device } (this device)
+settings-storage-this-device-unnamed = This device
+settings-storage-no-workspaces = No synced workspace is stored here.
+settings-storage-only-here-mark = { $size } only here
+settings-storage-kept-here-mark = Kept here
+settings-storage-only-here = On no other device: { $size } in { $files ->
+    [one] one file
+   *[other] { $files } files
+}
+settings-storage-replicated = Also on another device: { $size }
+settings-storage-pinned = Kept here, also on another device: { $size }
+settings-storage-cache = Cache, safe to free: { $size }
+settings-storage-nothing-here = Nothing of it is stored here.
+settings-storage-free-cache = Free { $size }
+settings-storage-keep-here = Keep here
+settings-storage-stop-keeping = Stop keeping here
+settings-storage-cache-freed = Freed { $size } of cache from { $files ->
+    [one] one file
+   *[other] { $files } files
+}.
+settings-storage-now-kept = The workspace is kept on this device.
+settings-storage-no-longer-kept = The workspace is no longer kept on this device.
+settings-storage-residency-busy = Another storage change is still running.
 settings-users-boundary-body = Device accounts control signing in here. Workspace membership and identity sharing are managed separately.
 settings-users-boundary-title = Accounts and identities
 settings-users-identity-detail = { $id } · { $key } · { $threshold } of { $total } shares · { $protection }

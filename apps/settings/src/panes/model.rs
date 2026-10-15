@@ -158,9 +158,14 @@ impl Replies {
 
     /// Tell the caller of `effect` it succeeded, saying `message`.
     pub fn succeed(&mut self, effect: &'static str, message: impl Into<String>) {
+        self.answer(effect, serde_json::Value::String(message.into()));
+    }
+
+    /// Tell the caller of `effect` it succeeded, answering `value`.
+    pub fn answer(&mut self, effect: &'static str, value: serde_json::Value) {
         if let Some(reply) = self.waiting.remove(effect) {
             reply.finish(Ok(ui::tilo_actions::ActionOutput {
-                value: Some(serde_json::Value::String(message.into())),
+                value: Some(value),
                 resources: Vec::new(),
             }));
         }

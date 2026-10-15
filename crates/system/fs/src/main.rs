@@ -3788,7 +3788,12 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             storage_availability,
             storage_eviction_queue,
             storage_history,
-            "Current workspace",
+            // The name the person's devices tell this workspace by: its
+            // mount's directory, or its id where the mount has none.
+            mount_point
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map_or_else(|| checked_history_workspace.to_string(), str::to_owned),
         )
         .with_cache_policy(Arc::clone(&cache_policies))
     });

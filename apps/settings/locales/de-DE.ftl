@@ -1902,6 +1902,29 @@ settings-region-shared-card = Gemeinsame Formate
 settings-storage-cleanup-caption = Prüfe die folgenden Cache-Dateien, bevor du sie entfernst.
 settings-storage-item-meta = { $size } · { $category }
 settings-storage-tools-caption = Sichere Dateien mit Sicherungen, bevor du Änderungen am Speicher vornimmst.
+settings-storage-this-device = { $device } (dieses Gerät)
+settings-storage-this-device-unnamed = Dieses Gerät
+settings-storage-no-workspaces = Hier ist kein synchronisierter Arbeitsbereich gespeichert.
+settings-storage-only-here-mark = { $size } nur hier
+settings-storage-kept-here-mark = Hier behalten
+settings-storage-only-here = Auf keinem anderen Gerät: { $size } in { $files ->
+    [one] einer Datei
+   *[other] { $files } Dateien
+}
+settings-storage-replicated = Auch auf einem anderen Gerät: { $size }
+settings-storage-pinned = Hier behalten, auch auf einem anderen Gerät: { $size }
+settings-storage-cache = Cache, kann freigegeben werden: { $size }
+settings-storage-nothing-here = Davon ist hier nichts gespeichert.
+settings-storage-free-cache = { $size } freigeben
+settings-storage-keep-here = Hier behalten
+settings-storage-stop-keeping = Nicht mehr hier behalten
+settings-storage-cache-freed = { $size } Cache aus { $files ->
+    [one] einer Datei
+   *[other] { $files } Dateien
+} freigegeben.
+settings-storage-now-kept = Der Arbeitsbereich wird auf diesem Gerät behalten.
+settings-storage-no-longer-kept = Der Arbeitsbereich wird nicht mehr auf diesem Gerät behalten.
+settings-storage-residency-busy = Eine andere Speicheränderung läuft noch.
 settings-users-boundary-body = Gerätekonten steuern die Anmeldung hier. Mitgliedschaften in Arbeitsbereichen und das Teilen von Identitäten werden getrennt verwaltet.
 settings-users-boundary-title = Konten und Identitäten
 settings-users-identity-detail = { $id } · { $key } · { $threshold } von { $total } Anteilen · { $protection }

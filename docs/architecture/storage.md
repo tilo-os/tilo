@@ -1423,6 +1423,22 @@ partially cold files are not implemented; eviction is per entry.
 - `local` never means synced. "Synced" and "safe to free" come only from
   receipts (`docs/collaborative-files-product.md:300-302`).
 
+**Implemented:** the storage socket (`runtime_fs::storage`) answers a
+workspace's *residency*: its bytes on this device split into what losing
+the device would cost. *Only here* is content no other device is known to
+hold: no receipt names its current version and its bytes did not come
+from a peer, or it has unsaved changes. Pinned or not, that is what a
+wiped device loses. The rest is *pinned* ("Keep offline", on itself or a
+folder above), *cache* (the file area's cached entries, which free-cache
+drops and the budget drops anyway) or *replicated* (kept, and
+acknowledged elsewhere). The summary carries counts per workspace and
+never a path, because it is what the device answers the person's other
+devices. Settings' storage area is its client: the `storage-summary`,
+`free-cache` and `keep-here` effects, and one card per device. Collecting
+the other devices' summaries into that view needs the session to route an
+app's invocation to one of the person's own devices and hand back the
+answer; that route is not built yet.
+
 ### 12.4 Read-ahead and prediction
 
 - **In-file:** sequential reads of a partial file trigger read-ahead. The

@@ -565,6 +565,42 @@ impl AvailabilityRegistry {
         Ok(true)
     }
 
+    /// Set `policy` on a record, given its `ancestry`: every record from the
+    /// workspace root down to it, with its kind and parent. Each ancestor's
+    /// kind and parent are recorded too, so a directory's pin reaches what is
+    /// created in it later. Unpinning cancels the automatic transfers below
+    /// the record. An empty ancestry changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ancestry is invalid or state cannot persist.
+    pub fn set_policy_along(
+        &mut self,
+        ancestry: &[(FileRecordId, RecordKind, Option<FileRecordId>)],
+        policy: AvailabilityPolicy,
+    ) -> Result<(), AvailabilityError> {
+        let Some(&(target, ..)) = ancestry.last() else {
+            return Ok(());
+        };
+        for &(id, kind, parent) in ancestry {
+            let mut record = self
+                .records
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| RecordAvailability::new(id, kind));
+            record.kind = kind;
+            record.parent = parent;
+            if id == target {
+                record.policy = policy;
+            }
+            self.put(record)?;
+        }
+        if policy == AvailabilityPolicy::Automatic {
+            self.clear_automatic_transfer_subtree(target)?;
+        }
+        Ok(())
+    }
+
     /// Install the authenticated current revision before accepting replica
     /// evidence for it. Ordinary whole-workspace records use the same durable
     /// availability path as record-scoped shares; without this row a valid NAS
