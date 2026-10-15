@@ -1070,7 +1070,6 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
-        fn handle_event(&mut self, _: &WindowEvent, _: &mut crate::widget::EventCtx<'_>) {}
     }
     let history = std::rc::Rc::new(std::cell::RefCell::new(Some(LocalUndoStatus::Ready(
         UndoStatus {

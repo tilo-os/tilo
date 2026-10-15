@@ -18,8 +18,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::permissions::PermissionScope;
-use crate::presence::{PresenceCtx, PresenceKey};
+use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -1065,17 +1064,11 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
 impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::PublishesPresence
     for ResizableSplit<L, R>
 {
-    fn presence_key(&self) -> Option<PresenceKey> {
-        None
-    }
 }
 
 impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::PermissionGated
     for ResizableSplit<L, R>
 {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        None
-    }
 }
 
 #[cfg(test)]

@@ -3564,9 +3564,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("S")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     /// An app that asks for a new layout tree every time it is asked.
@@ -3601,9 +3598,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("R")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 
@@ -3837,9 +3831,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("L")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 

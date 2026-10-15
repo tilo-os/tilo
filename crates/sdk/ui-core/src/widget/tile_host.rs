@@ -3464,9 +3464,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("S")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     struct FloatingProbe {
@@ -3525,9 +3522,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("P")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 
@@ -3974,9 +3968,6 @@ mod tests {
         fn app_title(&self) -> &str {
             "Declared history probe"
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Glyph("H")
         }
@@ -4357,9 +4348,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("E")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     /// Records the window a panic hook would name while it lays out.
@@ -4391,9 +4379,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("S")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 
@@ -4665,9 +4650,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("F")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     /// Module-scoped alongside [`FloodFill`] purely to keep its one test's
@@ -4717,9 +4699,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("F")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 
@@ -4786,9 +4765,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("S")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     /// A presented app that remembers the transform it was drawn with.
@@ -4833,9 +4809,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("T")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 

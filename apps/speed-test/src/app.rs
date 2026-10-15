@@ -16,7 +16,6 @@ use ui::time::{Duration, Instant};
 use ui::widget::Element;
 use ui::widget::{AppModel, ModelPath};
 
-use ui::a11y::AccessNode;
 use ui::framework::{
     Dispatcher, EffectCx, EffectStatus, Effected, Progress, ResourceSurface, SurfaceCx,
 };
@@ -430,10 +429,6 @@ impl Widget for SpeedTestApp {
             root.apply_layout(taffy, node, origin);
             self.rect = root.get_rect();
         }
-    }
-
-    fn accessibility(&self) -> Option<AccessNode> {
-        None
     }
 
     fn name(&self) -> &'static str {
