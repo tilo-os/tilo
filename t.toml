@@ -979,6 +979,36 @@ run = "cargo test --locked -p tilo-media --features realtime --test realtime -- 
 cost = "heavy"
 default = false
 
+# Tenant and agent isolation of hosted rooms: one relay governing several
+# tenants' rooms, the agents delegated into them and the host's compute, against
+# both relay builds that ship (the default one and the room service's `agents`
+# build). Each suite also runs with its crate's tests; this runs them together
+# every night, each test in its own process as the test family runs them. The
+# relays run in process; nothing reaches a deployed host.
+[[check]]
+name = "security-isolation"
+run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0
+any() { local e="" t; for t; do e="${e:+$e | }test($t)"; done; printf '%s' "$e"; }
+run() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail "$@"; }
+run -p tilo-relay --lib -E "$(any room_access rooms:: compute_content host_authority)"
+run -p tilo-relay --test it -E "$(any tenant_isolation:: governed_rooms:: governed_workspace_access:: \
+  room_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: \
+  compute_content:: remote_action_routing::)"
+run -p tilo-relay --features agents --test it -E "$(any tenant_isolation:: governed_rooms:: \
+  governed_workspace_access:: room_admission:: auth_reject:: compute_content:: persistent_room::)"
+run -p tilo-agent-participant --test worker_isolation
+run -p tilo-agent-participant --test room_actions -E "$(any governed_agent::)"
+"""
+env = { RUST_BACKTRACE = "1" }
+inputs = ["apps/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+# nextest's ci profile keeps its store and JUnit report under the source tree's target/.
+writable_sources = true
+on = ["schedule:40 2 * * *", "dispatch"]
+timeout_secs = 5400
+cost = "heavy"
+default = false
+
 # ---------------------------------------------------------------------------
 # macOS, on t's Mac (`requires = ["os=macos"]`), where checks run on the host without the
 # project's image. The per-user runtime (`tilo-runtime`) is the Tilo host on stock macOS, and
