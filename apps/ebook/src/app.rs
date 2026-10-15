@@ -897,6 +897,10 @@ pub struct BooksApp {
     /// Height of the window's header row in the current theme, refreshed at
     /// the top of every frame so the event path hit-tests what was painted.
     header_h: f64,
+    /// Frame-local page spacing follows UI scale and the theme's density.
+    reader_spacing: ui::tokens::spacing::Spacing,
+    reader_compact_breakpoint: f64,
+    selection_hud_h: f64,
     /// Height of the page bubble in the current theme: the page foot's band
     /// is at least this tall, so the bubble it shares with the progress
     /// slider never covers text. Refreshed with `header_h`.
@@ -1234,10 +1238,21 @@ impl BooksApp {
             book_idx: 0,
             chapter: 0,
             page: 0,
-            toc_drawer: SidebarDrawer::new(),
+            // A chapter list needs less width than a general navigation pane.
+            // Keep a readable page beside both rails at desktop UI scales.
+            toc_drawer: SidebarDrawer::new()
+                .docked_width(f64::from(Metrics::BASE.sidebar_min_width)),
             notes_drawer: SidebarDrawer::new()
                 .right()
-                .docked_width(f64::from(Metrics::BASE.inspector_width)),
+                .docked_width(f64::from(Metrics::BASE.sidebar_width))
+                .content_min_width(f64::from(
+                    Metrics::BASE.content_min_width
+                        - ui::tokens::spacing::Spacing::BASE.s16
+                        - ui::tokens::spacing::Spacing::BASE.s4,
+                )),
+            reader_spacing: ui::tokens::spacing::Spacing::BASE,
+            reader_compact_breakpoint: f64::from(Metrics::BASE.compact_breakpoint),
+            selection_hud_h: ui::SelectionHud::height(&Theme::dark()),
             header_h: f64::from(Metrics::BASE.header_height),
             bubble_h: ui::status_bubble::pill_height(&Theme::dark()),
             type_button: Rect::ZERO,
@@ -4600,7 +4615,10 @@ impl Widget for BooksApp {
         self.reading_settings.begin_frame();
         self.shelf_controls.begin_frame();
         self.font_dropdown.begin_frame();
-        self.header_h = f64::from(theme.tokens.metrics.header_height);
+        self.header_h = ui::chrome::HeaderRowFace::height(theme);
+        self.reader_spacing = theme.tokens.spacing;
+        self.selection_hud_h = ui::SelectionHud::height(theme);
+        self.reader_compact_breakpoint = f64::from(theme.tokens.metrics.compact_breakpoint);
         self.bubble_h = ui::status_bubble::pill_height(theme);
         self.toast_area = self.rect;
         // Resolve the drawers against this frame's width (a breakpoint
@@ -5676,9 +5694,14 @@ impl BooksApp {
         } else {
             None
         };
-        // The bubble is drawn below subsequent reader overlays. Their app-wide
-        // hits therefore keep precedence when geometry ever overlaps.
-        let bubble_action = if comment_action.is_none() && shelf_action.is_none() && top.is_none() {
+        // The bubble owns the foot while visible; only later reader overlays
+        // take precedence, never the progress slider painted underneath it.
+        let bubble_action = if comment_action.is_none()
+            && shelf_action.is_none()
+            && top
+                .as_ref()
+                .is_none_or(|hit| matches!(hit.action, Action::SeekProgress))
+        {
             self.reader_bubble.hit_test(self.cursor)
         } else {
             None
@@ -5688,10 +5711,12 @@ impl BooksApp {
         self.press_pos = self.cursor;
         self.shelf_focus_visible = false;
 
-        if matches!(
-            top.as_ref().map(|hit| &hit.action),
-            Some(Action::SeekProgress)
-        ) {
+        if bubble_action.is_none()
+            && matches!(
+                top.as_ref().map(|hit| &hit.action),
+                Some(Action::SeekProgress)
+            )
+        {
             self.progress_dragging = true;
             self.on_seek_progress(self.progress_fraction_at(self.cursor));
             self.dirty = true;
@@ -7260,8 +7285,12 @@ impl BooksApp {
             theme.clone()
         } else if page_dark {
             Theme::dark()
+                .with_ui_scale(theme.ui_scale)
+                .with_text_scale(theme.text_scale)
         } else {
             Theme::light()
+                .with_ui_scale(theme.ui_scale)
+                .with_text_scale(theme.text_scale)
         };
         // The foot's band: the slider's, and the page bubble's while a new
         // page is shown. Reaching for the slider gives it back.
@@ -7293,14 +7322,14 @@ impl BooksApp {
             Slider::paint(ctx.scene, ctx.transform, &page_theme, &face);
             ctx.scene.pop_layer();
         }
-        self.push_hit(slider_rect, Action::SeekProgress);
+        self.push_hit(face.hit_rect(theme).intersect(band), Action::SeekProgress);
         self.toast_area = Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, band.y0);
         self.reader_bubble.draw(ctx, band, self.cursor, position);
 
         // ---- chrome: header row, selection HUD, drawers
         self.draw_reader_header(ctx, &lib);
-        // Floating selection toolbar over the page (under any overlay rail).
-        self.draw_selection_hud(ctx, geom, sel_anchor);
+        // Docked selection controls above the prose (under any overlay rail).
+        self.draw_selection_hud(ctx, geom);
         self.draw_rails(ctx, &lib);
         // The on-page note composer (anchored near the passage) floats over the
         // page instead of shunting note-writing off to a separate screen.
@@ -7350,9 +7379,9 @@ impl BooksApp {
         // ---- paper rect + content box -----------------------------------
         // In a compact window the page fills the reading area edge-to-edge,
         // no framed page or margin; a wide window keeps the framed page.
-        let framed = self.rect.width() >= f64::from(Metrics::BASE.compact_breakpoint);
+        let framed = self.rect.width() >= self.reader_compact_breakpoint;
         let center_w = (center_x1 - center_x0).max(120.0);
-        let sp = ui::tokens::spacing::Spacing::BASE;
+        let sp = self.reader_spacing;
         // The foot is one band the progress slider and the page bubble take
         // turns in, so neither ever lies over the text.
         let slider_band = if framed {
@@ -7375,7 +7404,8 @@ impl BooksApp {
             // keeps its pixel grid).
             let header_y = paper_y + f64::from(sp.s6);
             let rule_y = (header_y + self.running_header_h + f64::from(sp.s1)).round();
-            let pad_top = rule_y - paper_y + f64::from(sp.s2);
+            let pad_top = (rule_y - paper_y + f64::from(sp.s2))
+                .max(self.selection_hud_h + f64::from(sp.s2) * 2.0);
             let pad = f64::from(sp.s12);
             (
                 paper_x, paper_y, paper_w, paper_h, pad, pad_top, header_y, rule_y,
@@ -7399,7 +7429,7 @@ impl BooksApp {
                 paper_w,
                 paper_h,
                 pad_x,
-                f64::from(sp.s6),
+                self.selection_hud_h + f64::from(sp.s2) * 2.0,
                 0.0,
                 0.0,
             )
@@ -7622,7 +7652,7 @@ impl BooksApp {
             ctx.fill_rect(paper, palette.page);
         }
 
-        if geom.framed {
+        if geom.framed && self.sel.is_none_or(|selection| selection.is_empty()) {
             if let Some(book) = lib.get(self.book_idx)
                 && let Some(ch) = book.chapters.get(self.chapter)
             {
@@ -8250,17 +8280,10 @@ impl BooksApp {
         }
     }
 
-    /// A floating toolbar shown while a paragraph is selected: highlight
-    /// colours + Note, reachable at any width even with the rail collapsed.
-    fn draw_selection_hud(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        geom: &ReaderPageGeometry,
-        anchor: Option<(f64, f64)>,
-    ) {
+    /// Selection controls dock in the running-header slot, never over prose.
+    /// The slot is reserved even before selection, so a drag cannot reflow text.
+    fn draw_selection_hud(&mut self, ctx: &mut PaintCtx<'_>, geom: &ReaderPageGeometry) {
         let theme = ctx.theme;
-        let (paper_x, paper_w) = (geom.paper_x, geom.paper_w);
-        let (body_y0, body_y1) = (geom.body_y0, geom.body_y1);
         // Hide the picker while a note is being composed (the composer takes
         // over) or when there's no active selection/block.
         let has_sel = self.sel.is_some_and(|s| !s.is_empty());
@@ -8282,13 +8305,10 @@ impl BooksApp {
                 .named(col.name())
             })
             .collect();
-        // Anchor above the selection; fall back to the page centre near the top.
-        let anchor_pt = anchor.map_or_else(
-            || Point::new(paper_x + paper_w / 2.0, body_y0 + 54.0),
-            |(x, y)| Point::new(x, y),
-        );
-        // The toolbar stays inside the reading column, clear of the rails.
-        let bounds = Rect::new(geom.center_x0, body_y0, geom.center_x1, body_y1);
+        // Replace the running header rather than obscuring the preceding line.
+        // Both the HUD and its clearance use the same scaled theme as the page.
+        let anchor_pt = Point::new(geom.paper_x + geom.paper_w / 2.0, geom.content_y);
+        let bounds = Rect::new(geom.center_x0, geom.paper_y, geom.center_x1, geom.content_y);
         let hud = ui::SelectionHud::draw(
             ctx.scene,
             ctx.transform,
@@ -8443,17 +8463,21 @@ impl BooksApp {
 
         // Trailing, walking in from the edge: annotations, bookmark, type.
         let mut x1 = band.x1 - inset;
-        let notes = Rect::new(x1 - side, cy - side / 2.0, x1, cy + side / 2.0);
-        self.notes_drawer.draw_toggle(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            notes,
-            notes.contains(self.cursor),
-        );
-        self.push_hit(pointer_target(notes, theme), Action::ToggleNotes);
-        x1 = notes.x0 - gap;
+        // A docked inspector owns its toggle, leaving the book title more
+        // room rather than duplicating a control in the content column.
+        if !(self.notes_drawer.is_docked() && self.notes_drawer.reveal() > 0.5) {
+            let notes = Rect::new(x1 - side, cy - side / 2.0, x1, cy + side / 2.0);
+            self.notes_drawer.draw_toggle(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                notes,
+                notes.contains(self.cursor),
+            );
+            self.push_hit(pointer_target(notes, theme), Action::ToggleNotes);
+            x1 = notes.x0 - gap;
+        }
         let bookmark = Rect::new(x1 - side, cy - side / 2.0, x1, cy + side / 2.0);
         self.draw_bookmark_button(ctx, bookmark);
         x1 = bookmark.x0 - gap;
@@ -8503,9 +8527,8 @@ impl BooksApp {
     }
 
     /// A header's title in `Heading` with a secondary detail (an author, a
-    /// count) after it in `Body`, both on one baseline and centred as a line
-    /// in `band`, elided to `x0..x1`. The detail is dropped before the title
-    /// is shortened.
+    /// count) after it in `Body` on one baseline. When that no longer fits,
+    /// keep the author on a second caption line rather than silently losing it.
     fn draw_title_and_detail(
         ctx: &mut PaintCtx<'_>,
         band: Rect,
@@ -8529,6 +8552,31 @@ impl BooksApp {
         let with_detail = !detail.is_empty()
             && shown == title
             && f64::from(title_w) + gap + f64::from(detail_w) <= room;
+        if !detail.is_empty() && !with_detail {
+            let caption = theme.text(TextRole::Caption);
+            let detail = ctx
+                .text
+                .elide_to_width_style(detail, ui::num::f32_of_f64(room), &caption);
+            let (_, detail_h) = ctx.text.measure_style(&detail, None, &caption);
+            let gap = f64::from(theme.tokens.spacing.rhythm.tight);
+            let height = f64::from(title_h + detail_h) + gap;
+            let top = ui::text_metrics::centered_text_top(band.y0, band.height(), height);
+            ctx.text(
+                &shown,
+                &title_style,
+                theme.text_primary,
+                Point::new(x0, top),
+                None,
+            );
+            ctx.text(
+                &detail,
+                &caption,
+                theme.text_dim,
+                Point::new(x0, top + f64::from(title_h) + gap),
+                None,
+            );
+            return;
+        }
         let top = ui::text_metrics::centered_text_top(band.y0, band.height(), f64::from(title_h));
         ctx.text(
             &shown,
@@ -8558,15 +8606,11 @@ impl BooksApp {
     fn draw_toc(&mut self, ctx: &mut PaintCtx<'_>, lib: &[Arc<Book>], panel: Rect) {
         let theme = ctx.theme;
         let spacing = &theme.tokens.spacing;
-        let header = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + self.header_h);
-        let side = ControlSize::Regular.height(theme);
-        let inset = f64::from(spacing.s3);
-        let toggle = Rect::new(
-            header.x0 + inset,
-            header.center().y - side / 2.0,
-            header.x0 + inset + side,
-            header.center().y + side / 2.0,
-        );
+        let face = ui::chrome::HeaderRowFace::new(panel, theme)
+            .with_inset_title()
+            .with_toggle();
+        let header = face.row;
+        let toggle = face.toggle;
         self.toc_drawer.draw_toggle(
             ctx.scene,
             ctx.transform,
@@ -8576,14 +8620,14 @@ impl BooksApp {
             toggle.contains(self.cursor),
         );
         self.push_hit(pointer_target(toggle, theme), Action::ToggleToc);
-        let title_x = toggle.x1 + f64::from(spacing.rhythm.related);
-        ctx.text_role_in_band(
+        face.paint_title(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
             "Contents",
-            TextRole::Heading,
-            theme.text_primary,
-            title_x,
-            header,
-            Some(ui::num::f32_of_f64((header.x1 - inset - title_x).max(1.0))),
+            None,
+            None,
         );
 
         let Some(book) = lib.get(self.book_idx) else {
@@ -8643,19 +8687,29 @@ impl BooksApp {
 
     /// The annotations inspector inside `panel`: its header ("Annotations"
     /// and how many), how to add one, and one card per annotation, scrolling.
-    fn draw_notes(&mut self, ctx: &mut PaintCtx<'_>, panel: Rect) {
+    fn draw_notes_header(&mut self, ctx: &mut PaintCtx<'_>, panel: Rect, count: usize) -> Rect {
         let theme = ctx.theme;
-        let spacing = &theme.tokens.spacing;
-        let annos = self.annotations.clone();
-        let inset = f64::from(spacing.s3);
-        let header = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + self.header_h);
-        let count = annos.len().to_string();
-        Self::draw_title_and_detail(
-            ctx,
-            header,
-            (header.x0 + inset, header.x1 - inset),
+        let face = ui::chrome::HeaderRowFace::new(panel, theme)
+            .with_inset_title()
+            .with_trailing();
+        let header = face.row;
+        self.notes_drawer.draw_toggle(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            face.trailing,
+            face.trailing.contains(self.cursor),
+        );
+        self.push_hit(pointer_target(face.trailing, theme), Action::ToggleNotes);
+        face.paint_title(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
             "Annotations",
-            &count,
+            Some(count),
+            None,
         );
         if self.notes_drawer.is_docked() {
             ui::surface::separator(
@@ -8669,6 +8723,15 @@ impl BooksApp {
             );
         }
 
+        header
+    }
+
+    fn draw_notes(&mut self, ctx: &mut PaintCtx<'_>, panel: Rect) {
+        let theme = ctx.theme;
+        let spacing = &theme.tokens.spacing;
+        let annos = self.annotations.clone();
+        let inset = f64::from(spacing.s3);
+        let header = self.draw_notes_header(ctx, panel, annos.len());
         let (x0, x1) = (panel.x0 + inset, panel.x1 - inset);
         let mut y = header.y1 + inset;
         let has_sel = self.sel.is_some_and(|s| !s.is_empty());
@@ -8778,14 +8841,15 @@ impl BooksApp {
         let caption = theme.text(TextRole::Caption);
         let locator = ctx.text.elide_to_width_style(
             &note.locator,
-            ui::num::f32_of_f64(body.width().max(1.0)),
+            ui::num::f32_of_f64(layout.locator.width().max(1.0)),
             &caption,
         );
-        ctx.text_role(
+        ctx.text_role_in_band(
             &locator,
             TextRole::Caption,
             theme.text_dim,
-            Point::new(body.x0, layout.locator_y),
+            layout.locator.x0,
+            layout.locator,
             None,
         );
         let wrap = Some(ui::num::f32_of_f64(body.width().max(1.0)));
@@ -8814,12 +8878,19 @@ impl BooksApp {
             self.push_hit(text.intersect(list), Action::EditNote(a.id));
         }
         if layout.delete.intersect(list).height() > 0.0 {
-            self.button(
-                ctx,
-                ButtonFace::icon_only(layout.delete, Icon::Trash2, "Delete annotation")
-                    .control_size(ControlSize::Small),
-                Action::Delete(a.id),
+            let face = ButtonFace::icon_only(layout.delete, Icon::Trash2, "Delete annotation")
+                .control_size(ControlSize::Small);
+            // A partially scrolled card must not leave a delete target over
+            // the inspector's header or outside its clipped list.
+            let hit = face.hit_rect(theme).intersect(list);
+            Button::paint(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                &face.hovered(hit.contains(self.cursor)),
             );
+            self.push_hit(hit, Action::Delete(a.id));
         }
     }
 }
@@ -8841,8 +8912,8 @@ struct NoteCard {
 struct NoteCardLayout {
     chip: Rect,
     delete: Rect,
-    /// Where it is, on the line under the chip.
-    locator_y: f64,
+    /// Compact chapter/paragraph locator beside the kind chip.
+    locator: Rect,
     excerpt_y: f64,
     note_y: f64,
 }
@@ -8865,13 +8936,19 @@ impl NoteCard {
             dot: a.kind != AnnoKind::Bookmark,
             excerpt,
             text,
-            locator: format!("Chapter {}, paragraph {}", a.chapter + 1, a.block + 1),
+            locator: crate::resource::CATALOG.t_args(
+                "ebook-annotation-location",
+                &[
+                    ("chapter", (a.chapter + 1).into()),
+                    ("paragraph", (a.block + 1).into()),
+                ],
+            ),
             composing,
         }
     }
 
     fn excerpt_style(theme: &Theme) -> TextStyle {
-        theme.text(TextRole::Body).with_italic(true)
+        theme.text(TextRole::Caption).with_italic(true)
     }
 
     /// The header line (chip and delete control) and the y of each text
@@ -8901,8 +8978,8 @@ impl NoteCard {
         );
         let gap = f64::from(theme.tokens.spacing.rhythm.related);
         let wrap = Some(ui::num::f32_of_f64(body.width().max(1.0)));
-        let locator_y = body.y0 + line + f64::from(theme.tokens.spacing.rhythm.tight);
-        let excerpt_y = locator_y + ctx.line_box(TextRole::Caption) + gap;
+        let locator = Rect::new(chip.x1 + gap, body.y0, delete.x0 - gap, body.y0 + line);
+        let excerpt_y = body.y0 + line + gap;
         let excerpt_h = f64::from(
             ctx.text
                 .measure_style(&self.excerpt, wrap, &Self::excerpt_style(theme))
@@ -8911,7 +8988,7 @@ impl NoteCard {
         NoteCardLayout {
             chip,
             delete,
-            locator_y,
+            locator,
             excerpt_y,
             note_y: excerpt_y + excerpt_h + gap,
         }
@@ -10232,6 +10309,12 @@ fn page_for_block(layout: &ChapterLayout, block: usize) -> usize {
 
 mod stage;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod showcase;
+
 #[cfg(test)]
 #[path = "app/interaction_tests.rs"]
 mod interaction_tests;
+#[cfg(test)]
+#[path = "app/layout_tests.rs"]
+mod layout_tests;

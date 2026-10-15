@@ -210,6 +210,12 @@ fn place(m: &HudMetrics, width: f64, placement: HudPlacement) -> Rect {
 }
 
 impl SelectionHud {
+    /// Height of the scaled control row and floating panel insets. Readers
+    /// can reserve a docking slot without duplicating the HUD's metrics.
+    pub fn height(theme: &Theme) -> f64 {
+        HudMetrics::of(theme).height()
+    }
+
     /// The bar centres on `placement.anchor.x` on the preferred side of the
     /// selection, moving to the other side when that would leave
     /// `placement.bounds` or cover `placement.avoid`. `cursor` drives the

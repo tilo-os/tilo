@@ -1,4 +1,6 @@
 ebook-library = Books
+# Compact annotation-card location: chapter and paragraph.
+ebook-annotation-location = Ch { $chapter } · ¶ { $paragraph }
 
 ## History: what each change did, by field and by verb
 
