@@ -76,6 +76,13 @@ records and caller-supplied account IDs do not grant source access. Account
 controls and account-resource catalogues are restricted to the host person.
 Imported copies become ordinary files subject to the destination's permissions.
 
+Directory and search responses enforce this boundary even for cached metadata.
+A public document parent does not make custom private children public: document
+read eligibility is explicit per child, and reads bind to that child's item.
+Unknown operation kinds remain publisher-private, even if their metadata carries
+a document-read tag. Public Notes documents remain discoverable without exposing
+personal account controls or source listings.
+
 ## Actions and history
 
 Browse, selection, import, progress, cancellation, retry and reveal use the same
