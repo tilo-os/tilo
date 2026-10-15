@@ -16,6 +16,7 @@ use serde_json::{Map, Value, json};
 use crate::args::{Arg, Command, Values};
 use crate::ini::Ini;
 use crate::py::Dumps;
+use crate::target_transport::{is_digest, is_hex};
 use crate::{Error, Result, require};
 
 /// The command line.
@@ -171,15 +172,6 @@ pub trait Host {
 pub struct System;
 
 impl Host for System {}
-
-fn is_hex(text: &str, length: usize) -> bool {
-    text.len() == length && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-fn is_digest(text: &str) -> bool {
-    text.strip_prefix("sha256:")
-        .is_some_and(|hex| is_hex(hex, 64))
-}
 
 fn is_composefs(text: &str) -> bool {
     is_hex(text, 128)

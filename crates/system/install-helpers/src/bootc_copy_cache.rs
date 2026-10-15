@@ -22,6 +22,7 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 
 use crate::py::Dumps;
+use crate::target_transport::{is_digest, is_hex};
 use crate::{Error, Result, require};
 
 const IMAGE: &str = "localhost/bootc";
@@ -80,15 +81,6 @@ fn receipt_path(host: &dyn Host) -> PathBuf {
     host.receipt_dir().join("vm-bootc-copy-cache-v1.json")
 }
 
-fn is_hex(text: &str, length: usize) -> bool {
-    text.len() == length && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-fn is_sha256(text: &str) -> bool {
-    text.strip_prefix("sha256:")
-        .is_some_and(|hex| is_hex(hex, 64))
-}
-
 /// Root, the private marker and a VM.
 pub fn enabled(host: &dyn Host) -> bool {
     host.euid() == 0
@@ -132,7 +124,7 @@ pub fn booted_identity(host: &dyn Host) -> Result<Value> {
         return Err(Error::new("expected string or bytes-like object"));
     };
     require(
-        is_sha256(digest),
+        is_digest(digest),
         "booted image has no SHA-256 manifest digest",
     )?;
     let reference = field(image, "image")?;
