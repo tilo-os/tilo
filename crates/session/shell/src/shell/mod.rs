@@ -106,6 +106,7 @@ pub mod network;
 pub mod notification;
 pub mod notification_history;
 pub mod now_playing;
+pub mod opening_card;
 pub mod osd;
 pub mod output_scene;
 pub mod overlay_host;
@@ -482,12 +483,14 @@ fn try_to_ui_tile_for_tab(
         // own instance of yet; becomes a `Foreign` above once it arrives.
         ShellTile::PeerWindow {
             label,
+            note,
             missing: Some(tilo_desktop_model::MissingApp::Installable { display_name }),
             ..
         } if tab.is_some() => UiTile::App(Box::new(app_notice_card::AppNoticeCard::install(
             tab.unwrap_or_default(),
             label,
             display_name,
+            note,
         ))),
         ShellTile::PeerWindow {
             label,
@@ -500,10 +503,25 @@ fn try_to_ui_tile_for_tab(
                 &[("app", label.clone().into())],
             ),
         },
-        ShellTile::PeerWindow { label, note, .. } => UiTile::Notice {
-            title: label.clone(),
-            detail: note.clone(),
-        },
+        // Its instance here is starting, or being installed first: the
+        // place it will open in, moving until it does.
+        ShellTile::PeerWindow {
+            label,
+            note,
+            missing: None,
+            ..
+        } if note == peer_windows::OPENING
+            || tab.is_some_and(crate::shell::peer_windows::installing) =>
+        {
+            UiTile::App(Box::new(opening_card::OpeningCard::new(
+                label,
+                if note == peer_windows::OPENING {
+                    ""
+                } else {
+                    note
+                },
+            )))
+        }
         // A legacy window runs only on its host; until a stream of it is
         // attached here, the tab says where it is.
         ShellTile::HostedWindow {
@@ -538,14 +556,24 @@ fn try_to_ui_tile_for_tab(
                 note,
             )))
         }
-        ShellTile::LocalApp { label, note, .. } => UiTile::Notice {
-            title: label.clone(),
-            detail: if note.is_empty() {
+        // Asked for (a launch, a restore) and not yet arrived: the place
+        // it will open in, moving until it does.
+        ShellTile::LocalApp { label, note, .. }
+            if note.is_empty() || note == peer_windows::OPENING =>
+        {
+            let status = if note.is_empty() {
                 crate::shell::i18n::t("shell-window-restoring")
             } else {
-                note.clone()
-            },
-        },
+                String::new()
+            };
+            UiTile::App(Box::new(opening_card::OpeningCard::new(label, &status)))
+        }
+        ShellTile::PeerWindow { label, note, .. } | ShellTile::LocalApp { label, note, .. } => {
+            UiTile::Notice {
+                title: label.clone(),
+                detail: note.clone(),
+            }
+        }
         ShellTile::AppPlaceholder { kind, label } => match kind {
             // These are their apps' own components, mounted in this process
             // by `mount_in_process`; reaching here, the host mounts none.

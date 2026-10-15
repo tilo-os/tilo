@@ -3022,6 +3022,41 @@ fn draw_opening_card(
     name: &str,
     spinner: &mut Spinner,
 ) {
+    paint_opening_card(
+        scene,
+        transform,
+        tr,
+        theme,
+        presence,
+        rect,
+        OpeningCardText { name, status: "" },
+        spinner,
+    );
+}
+
+/// What the opening card says: the app's name, and a line under the
+/// indicator when the wait has something worth saying — an install under
+/// way, or a start taking longer than it should. An empty `status` draws
+/// exactly the card the tile shows for an arriving window, so handing over
+/// from one to the other changes nothing on screen.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OpeningCardText<'a> {
+    pub name: &'a str,
+    pub status: &'a str,
+}
+
+/// The opening card, for a place held before any window exists.
+pub fn paint_opening_card(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    rect: Rect,
+    text: OpeningCardText<'_>,
+    spinner: &mut Spinner,
+) {
+    let OpeningCardText { name, status } = text;
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
@@ -3057,6 +3092,22 @@ fn draw_opening_card(
         top + OPENING_SPINNER_PX,
     ));
     Widget::draw(spinner, scene, transform, tr, theme, presence);
+    if !status.is_empty() {
+        let style = theme.text(TextRole::Body);
+        let (tw, _) = tr.measure_style(status, None, &style);
+        tr.draw_style(
+            scene,
+            status,
+            theme.on_content().ink_dim,
+            translated(
+                transform,
+                cx - f64::from(tw) / 2.0,
+                top + OPENING_SPINNER_PX + OPENING_SPINNER_GAP,
+            ),
+            None,
+            &style,
+        );
+    }
 }
 
 /// One function so the two callers (`Stub`, `Notice`) can't drift apart —

@@ -5041,6 +5041,23 @@ fn pending_placement_deadline(grace: Duration) -> Instant {
     now.checked_add(grace).unwrap_or(now)
 }
 
+/// Give `package_id`'s waiting launch `extra` before its window is due, on
+/// top of the usual start-up allowance, counted from now. An install that
+/// precedes the start holds it for as long as the install may take, then
+/// passes [`Duration::ZERO`] once the app can actually start.
+pub(crate) fn hold_presentation_for(package_id: &str, extra: Duration) {
+    let session = LaunchSession::current();
+    let mut pending = lock(&session.pending);
+    if let Some(note) = pending
+        .iter_mut()
+        .rev()
+        .find(|note| note.key == package_id && note.claimed_by.is_none())
+    {
+        note.present_before =
+            pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT.saturating_add(extra));
+    }
+}
+
 fn retire_pending_placement_at(package_id: &str, deadline: Instant) {
     let session = LaunchSession::current();
     let mut pending = lock(&session.pending);

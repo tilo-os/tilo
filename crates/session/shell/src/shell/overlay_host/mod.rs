@@ -6158,10 +6158,17 @@ impl ShellOverlayHost {
         };
         let mut posted = false;
         for package_id in timed_out {
-            if crate::shell::peer_windows::mark_timed_out_restore(
-                &mut chrome_handle.borrow().tree_mut(),
-                &package_id,
-            ) {
+            let settled = {
+                let chrome = chrome_handle.borrow();
+                let mut tree = chrome.tree_mut();
+                crate::shell::peer_windows::mark_timed_out_restore(&mut tree, &package_id)
+                    | crate::shell::peer_windows::settle_install(
+                        &mut tree,
+                        &package_id,
+                        &t("host-app-did-not-open-body"),
+                    )
+            };
+            if settled {
                 chrome_handle.borrow_mut().bump();
             }
             crate::shell::catalogue::take_pending_launch(&package_id);
@@ -6318,11 +6325,20 @@ impl ShellOverlayHost {
             let Some(notice) = event.failure_notice() else {
                 continue;
             };
-            if crate::shell::peer_windows::settle_local_restore(
-                &mut chrome_handle.borrow().tree_mut(),
-                &event.package_id,
-                &notice.body,
-            ) {
+            let settled = {
+                let chrome = chrome_handle.borrow();
+                let mut tree = chrome.tree_mut();
+                crate::shell::peer_windows::settle_local_restore(
+                    &mut tree,
+                    &event.package_id,
+                    &notice.body,
+                ) | crate::shell::peer_windows::settle_install(
+                    &mut tree,
+                    &event.package_id,
+                    &notice.body,
+                )
+            };
+            if settled {
                 chrome_handle.borrow_mut().bump();
             }
             let mut st = chrome_handle.borrow_mut();

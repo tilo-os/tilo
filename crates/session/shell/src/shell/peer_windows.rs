@@ -35,6 +35,48 @@ impl From<String> for Refusal {
     }
 }
 
+thread_local! {
+    /// Tabs whose app is being installed so its window can open in them,
+    /// keyed to the package and the name the catalogue offers it under:
+    /// the card shows the install under way, and a failed one offers it
+    /// again. Only the shell thread installs and settles.
+    static INSTALLING: std::cell::RefCell<std::collections::HashMap<TabId, (String, String)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Whether `tab`'s card stands for an install under way.
+pub(crate) fn installing(tab: TabId) -> bool {
+    INSTALLING.with(|installing| installing.borrow().contains_key(&tab))
+}
+
+/// A failed or timed-out install answers the card that asked for it rather
+/// than leaving it saying "Installing…" for good: it offers the install
+/// again and says what went wrong.
+pub(crate) fn settle_install(tree: &mut WorkspaceTree, package_id: &str, detail: &str) -> bool {
+    let settled: Vec<(TabId, String)> = INSTALLING.with(|installing| {
+        let mut installing = installing.borrow_mut();
+        let settled: Vec<_> = installing
+            .iter()
+            .filter(|(_, (app, _))| app == package_id)
+            .map(|(tab, (_, display_name))| (*tab, display_name.clone()))
+            .collect();
+        for (tab, _) in &settled {
+            installing.remove(tab);
+        }
+        settled
+    });
+    let mut changed = false;
+    for (tab, display_name) in settled {
+        changed |= set_state(
+            tree,
+            tab,
+            detail.to_owned(),
+            Some(MissingApp::Installable { display_name }),
+        );
+    }
+    changed
+}
+
 /// Tabs whose card's install button was pressed, drained by [`examine`].
 #[cfg(not(test))]
 static INSTALL_REQUESTS: std::sync::Mutex<Vec<TabId>> = std::sync::Mutex::new(Vec::new());
@@ -396,6 +438,14 @@ fn install_for(tree: &mut WorkspaceTree, tab: TabId) -> bool {
     // Placement and any continued record are staged before the install
     // starts, so the window that finally maps lands in this tab.
     stage_continuation_for_tab(tree, &item);
+    // The window's deadline runs from when the app can start, not from
+    // the press: a cold fetch can take most of it.
+    launcher::hold_presentation_for(&item.app_id, crate::shell::catalogue::INSTALL_TIMEOUT);
+    INSTALLING.with(|installing| {
+        installing
+            .borrow_mut()
+            .insert(tab, (item.app_id.clone(), display_name.clone()));
+    });
     let changed = set_state(
         tree,
         tab,
@@ -1822,6 +1872,7 @@ mod tests {
             tab,
             "Word Processor",
             "Word Processor",
+            "",
         );
         card.press_for_test();
         let queued = with_install_requests(std::mem::take);

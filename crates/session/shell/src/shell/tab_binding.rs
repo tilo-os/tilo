@@ -234,6 +234,34 @@ pub fn open_hosted_app(
     tab_id
 }
 
+/// Hold the place a launch will open in from the moment it is asked for: a
+/// tab at `placement` showing the opening card, which the app's window then
+/// binds into ([`Placement::IntoTab`]). A cold start takes seconds, so
+/// without it nothing on screen answers the activation until the window
+/// maps. A failed launch or a missed deadline turns the card into the
+/// retry card (`peer_windows::settle_local_restore`), and the card is never
+/// saved as opening (`persist::clear_transient_launch_notes`).
+pub fn hold_place_for_launch(
+    tree: &mut WorkspaceTree,
+    package_id: &str,
+    label: &str,
+    placement: Placement,
+) -> TabId {
+    let new_tab = Tab {
+        id: next_id(),
+        title: label.to_owned(),
+        tile: TileContent::LocalApp {
+            app_id: package_id.to_owned(),
+            label: label.to_owned(),
+            note: crate::shell::peer_windows::OPENING.to_owned(),
+        },
+    };
+    let tab = place_tab(tree, new_tab, placement);
+    crate::shell::launcher::set_pending_placement(package_id, Placement::IntoTab(tab));
+    mark_tree_changed(tree);
+    tab
+}
+
 /// Rehome an existing tab through the same exact destination grammar used by
 /// a fresh drop. This is the deduplicated-document path: dragging a document
 /// which is already open moves its one live window instead of launching a
