@@ -788,10 +788,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 children.push(node);
             }
         }
-        let focused_target = self
-            .focused_affordance
-            .as_deref()
-            .filter(|_| self.is_focused && self.affordance_focus_valid);
+        let focused_target = self.focused_affordance_target();
         for child in &mut children {
             child.state.focused =
                 focused_target.is_some_and(|target| child.action_target.as_deref() == Some(target));
