@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use secret_vault::{Custody, VaultFormat};
 use zeroize::Zeroizing;
@@ -63,35 +63,15 @@ pub trait RoamingWifi: Send + Sync {
     ) -> Result<(), String>;
 }
 
-impl RoamingWifi for crate::shell::network::ShellNetwork {
-    fn password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {
-        self.shared_wifi_password(ssid, security)
-    }
-
-    fn share(
-        &self,
-        ssid: &str,
-        security: os_actions::WifiSecurity,
-        password: &str,
-    ) -> Result<(), String> {
-        self.share_wifi_credential(ssid, security, password)
-    }
-}
-
-/// The roaming store, once peer sync has started (it may never).
+/// The roaming store, once peer sync has started (it may never). Clones
+/// share one slot: the host keeps the session's and fills it when peer sync
+/// starts.
 #[derive(Clone, Default)]
 pub struct RoamingWifiSlot {
     inner: Arc<Mutex<Option<Arc<dyn RoamingWifi>>>>,
 }
 
 impl RoamingWifiSlot {
-    pub fn global() -> Self {
-        static SLOT: LazyLock<RoamingWifiSlot> = LazyLock::new(RoamingWifiSlot::default);
-        #[cfg(test)]
-        crate::shell::test_support::ambient_start("global roaming Wi-Fi slot");
-        SLOT.clone()
-    }
-
     pub fn set(&self, roaming: Arc<dyn RoamingWifi>) {
         *self.inner.lock().unwrap_or_else(PoisonError::into_inner) = Some(roaming);
     }
