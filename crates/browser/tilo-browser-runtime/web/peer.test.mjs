@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode, withCustody} from './peer.mjs';
+import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, REFUSED_JOIN, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const SEALED = 0x53;
@@ -322,6 +322,22 @@ test('reauthentication forgets the certificate and certifies again', async () =>
   await peer.recover({kind: 'retry-connection'});
   assert.equal(runtime.peer.reconnects, 1);
   await peer.dispose();
+});
+
+test('a kept certificate of another host than the one answering now is refused before the session starts', async () => {
+  // The host at this origin was set up again (a new device key or root):
+  // its predecessor's certificate and pinned state are never handed to it.
+  const runtime = fakeRuntime();
+  const store = memoryStore();
+  const host = (user, device) => ({user_public_key: Array(32).fill(user), device_public_key: Array(32).fill(device)});
+  await store.put('certificate', JSON.stringify({cert: {device: 9}, hostCert: host(1, 2)}));
+  runtime.hostInfo = async () => JSON.stringify({hostCert: host(1, 3), webtransportPort: 443});
+  await assert.rejects(connect(options(runtime, store)), {name: 'AdmissionError', code: 'host-changed', message: HOST_CHANGED});
+  assert.equal(runtime.calls.started.length, 0, 'no session was started');
+  runtime.hostInfo = async () => JSON.stringify({hostCert: host(1, 2), webtransportPort: 443});
+  const same = await connect(options(runtime, store));
+  assert.equal(runtime.calls.certify.length, 0, 'the same host takes the kept certificate');
+  await same.dispose();
 });
 
 test('a sealed seed is unsealed straight into the runtime', async () => {
@@ -850,6 +866,26 @@ test('a pre-admitted person joins without waiting for the owner', async () => {
   assert.equal(runtime.calls.status, undefined, 'never polled');
   assert.equal(runtime.peer.room, ROOM);
   await peer.dispose();
+});
+
+test('an invitation the host will not honour is refused in plain words, and so is an admission it refuses', async () => {
+  // Spent, expired, withdrawn or issued for someone else: the person is told
+  // what to do, the host's reason goes to the console.
+  const runtime = fakeRuntime();
+  runtime.inspectInvitation = async () => JSON.stringify({kind: 'refused', reason: 'invitation was already redeemed'});
+  await assert.rejects(inspectInvitation('https://host.example:8443', 'AQID', {runtime}),
+    {name: 'AdmissionError', code: 'invitation-unusable', message: UNUSABLE_INVITATION});
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
+  const join = async reply => {
+    const refusing = fakeRuntime();
+    refusing.askToJoin = async () => JSON.stringify({reply, cert: {guest: true, device_public_key: Array(32).fill(0xdd)}});
+    return joinWorkspace({origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity,
+      admissionToken: 'another-persons-token', runtime: refusing, custody, store: memoryStore(), storage: null,
+      liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); }});
+  };
+  await assert.rejects(join({kind: 'refused', reason: 'this invitation is bound to another person'}),
+    {name: 'AdmissionError', code: 'refused', message: REFUSED_JOIN});
+  await assert.rejects(join({kind: 'declined'}), {name: 'AdmissionError', code: 'refused', message: /declined/});
 });
 
 test('an old membership retry cannot replace a rejoined publishers presence subscription', async () => {

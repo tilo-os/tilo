@@ -253,8 +253,9 @@ metadata = dict(revision=sys.argv[2], dirty=bool(sys.argv[3]), profile=sys.argv[
                 cargoProfile=sys.argv[8], bundle=sys.argv[9])
 if metadata['wasmOpt']:
     metadata.update(wasmOptVersion=sys.argv[10], wasmOptFlags=sys.argv[11])
+# Never this file itself: an --update run finds the previous one in place.
 metadata['files'] = {str(p.relative_to(out)): hashlib.sha256(p.read_bytes()).hexdigest()
-                     for p in sorted(out.rglob('*')) if p.is_file()}
+                     for p in sorted(out.rglob('*')) if p.is_file() and p != out / 'build.json'}
 (out / 'build.json').write_text(json.dumps(metadata, indent=2) + '\n')
 PY
 echo "bundle: $out ($(du -sh "$out/pkg/tilo_browser_runtime_bg.wasm" | cut -f1) wasm, $profile)"
