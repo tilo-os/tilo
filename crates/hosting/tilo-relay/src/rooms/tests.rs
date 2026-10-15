@@ -1748,9 +1748,10 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
     .await
     .unwrap();
     let published: Vec<Vec<u8>> = {
-        let room = rooms.room(&created.room).await.unwrap();
-        let room = room.lock().await;
-        room.record
+        let governed = rooms.room(&created.room).await.unwrap();
+        let governed = governed.lock().await;
+        governed
+            .record
             .outgoing
             .iter()
             .filter(|publication| !publication.checkpoint)
