@@ -11,11 +11,13 @@
 //! - **opened together**: files opened within a few minutes of each other on
 //!   at least two separate occasions predict each other, wherever they live.
 //!
-//! The history is per mount (one workspace), bounded, held in memory only
-//! and keyed by inode: it never leaves the device and never names a file the
-//! caller has not already authorised. It only proposes inodes; the caller
-//! resolves them against the live, ACL-filtered namespace before anything is
-//! fetched.
+//! The history is per mount (one workspace), bounded and keyed by inode: it
+//! never leaves the device and never names a file the caller has not already
+//! authorised. It only proposes inodes; the caller resolves them against the
+//! live, ACL-filtered namespace before anything is fetched. Its
+//! opened-together pairs can be [exported](AccessHistory::pairs) and
+//! [restored](AccessHistory::restore_pair), which is how
+//! [`super::kept_history`] keeps them across restarts.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
@@ -50,10 +52,27 @@ struct Opened {
     at: Instant,
 }
 
+/// When a pair was last seen: milliseconds since the history's epoch,
+/// negative for pairs restored from before the process started, which an
+/// [`Instant`] cannot always represent (it starts at boot on Linux).
+type Stamp = i64;
+
 #[derive(Clone, Copy, Debug)]
 struct Together {
     occasions: u32,
-    last: Instant,
+    last: Stamp,
+}
+
+/// One opened-together pair as it leaves or enters the history: which two
+/// files, on how many occasions, and how long ago they were last opened
+/// together. `K` is the inode inside the history and a stable record id on
+/// disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PairRecord<K> {
+    pub a: K,
+    pub b: K,
+    pub occasions: u32,
+    pub age: Duration,
 }
 
 /// What one open predicts, most useful first.
@@ -68,16 +87,102 @@ pub struct Prediction {
 }
 
 /// A bounded, local record of which files were opened when.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AccessHistory {
     recent: VecDeque<Opened>,
     together: HashMap<(u64, u64), Together>,
+    /// What [`Stamp`]s count from.
+    epoch: Instant,
+    /// Bumped whenever the opened-together pairs change.
+    revision: u64,
+}
+
+impl Default for AccessHistory {
+    fn default() -> Self {
+        Self {
+            recent: VecDeque::new(),
+            together: HashMap::new(),
+            epoch: Instant::now(),
+            revision: 0,
+        }
+    }
+}
+
+fn millis_of(duration: Duration) -> Stamp {
+    Stamp::try_from(duration.as_millis()).unwrap_or(Stamp::MAX)
 }
 
 impl AccessHistory {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn stamp(&self, at: Instant) -> Stamp {
+        at.checked_duration_since(self.epoch).map_or_else(
+            || millis_of(self.epoch.saturating_duration_since(at)).saturating_neg(),
+            millis_of,
+        )
+    }
+
+    /// Changes whenever the opened-together pairs do: what a keeper compares
+    /// to know whether there is anything new to keep.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Forget everything: the recent opens and every pair.
+    pub fn clear(&mut self) {
+        self.recent.clear();
+        self.together.clear();
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// The opened-together pairs, with their age at `now`.
+    #[must_use]
+    pub fn pairs(&self, now: Instant) -> Vec<PairRecord<u64>> {
+        let now = self.stamp(now);
+        self.together
+            .iter()
+            .map(|(&(a, b), pair)| PairRecord {
+                a,
+                b,
+                occasions: pair.occasions,
+                age: Duration::from_millis(
+                    u64::try_from(now.saturating_sub(pair.last)).unwrap_or(0),
+                ),
+            })
+            .collect()
+    }
+
+    /// Bring back a pair kept from an earlier run, aged as of `now`. A pair
+    /// already known keeps whichever record has more occasions; a full table
+    /// makes room the way recording does.
+    pub fn restore_pair(&mut self, pair: PairRecord<u64>, now: Instant) {
+        if pair.a == pair.b || pair.occasions == 0 {
+            return;
+        }
+        let key = if pair.a < pair.b {
+            (pair.a, pair.b)
+        } else {
+            (pair.b, pair.a)
+        };
+        let restored = Together {
+            occasions: pair.occasions,
+            last: self.stamp(now).saturating_sub(millis_of(pair.age)),
+        };
+        if let Some(known) = self.together.get_mut(&key) {
+            if restored.occasions > known.occasions {
+                *known = restored;
+            }
+        } else {
+            if self.together.len() >= MAX_PAIRS {
+                self.forget_stalest_pairs();
+            }
+            self.together.insert(key, restored);
+        }
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Record that `file` in directory `dir` was opened at `at`. An
@@ -113,8 +218,10 @@ impl AccessHistory {
 
     fn note_together(&mut self, a: u64, b: u64, at: Instant) {
         let key = if a < b { (a, b) } else { (b, a) };
+        let at = self.stamp(at);
+        self.revision = self.revision.wrapping_add(1);
         if let Some(pair) = self.together.get_mut(&key) {
-            if at.saturating_duration_since(pair.last) > TOGETHER_WINDOW {
+            if at.saturating_sub(pair.last) > millis_of(TOGETHER_WINDOW) {
                 pair.occasions = pair.occasions.saturating_add(1);
             }
             pair.last = at;
@@ -136,7 +243,7 @@ impl AccessHistory {
     /// a full table costs one pass per [`MAX_PAIRS`] / 4 new pairs rather
     /// than one per pair.
     fn forget_stalest_pairs(&mut self) {
-        let mut lasts: Vec<Instant> = self.together.values().map(|pair| pair.last).collect();
+        let mut lasts: Vec<Stamp> = self.together.values().map(|pair| pair.last).collect();
         let cut = lasts.len() / 4;
         let (_, threshold, _) = lasts.select_nth_unstable(cut);
         let threshold = *threshold;
@@ -533,6 +640,76 @@ mod tests {
         let prediction = history.predict(DIR, 1, &siblings);
         assert_eq!(prediction.siblings, [2, 3]);
         assert!(prediction.together.is_empty());
+    }
+
+    #[test]
+    fn restored_pairs_predict_and_keep_counting_occasions() {
+        let start = Instant::now();
+        let mut earlier = AccessHistory::new();
+        for occasion in 0..2_u64 {
+            let at = start + Duration::from_secs(occasion * 3600);
+            earlier.record(DIR, 1, at);
+            earlier.record(2, 9, at + Duration::from_secs(5));
+        }
+        earlier.record(3, 5, start + Duration::from_secs(7200));
+        earlier.record(3, 6, start + Duration::from_secs(7201));
+        let now = start + Duration::from_secs(7300);
+        let kept = earlier.pairs(now);
+        assert_eq!(kept.len(), 2);
+
+        // Restored a week later, older than this process can express as an
+        // `Instant`.
+        let mut later = AccessHistory::new();
+        let restart = Instant::now();
+        for pair in kept {
+            let week = Duration::from_secs(7 * 24 * 3600);
+            later.restore_pair(
+                PairRecord {
+                    age: pair.age + week,
+                    ..pair
+                },
+                restart,
+            );
+        }
+        later.record(DIR, 1, restart);
+        assert_eq!(later.predict(DIR, 1, &[1]).together, [9]);
+        assert!(
+            later.predict(3, 5, &[5]).together.is_empty(),
+            "one occasion before the restart is not yet a habit"
+        );
+        later.record(3, 5, restart + Duration::from_secs(10));
+        later.record(3, 6, restart + Duration::from_secs(11));
+        assert_eq!(
+            later.predict(3, 5, &[5]).together,
+            [6],
+            "but it counts towards one after"
+        );
+        let ages: Vec<Duration> = later
+            .pairs(restart)
+            .into_iter()
+            .filter(|pair| (pair.a, pair.b) == (1, 9))
+            .map(|pair| pair.age)
+            .collect();
+        assert_eq!(ages.len(), 1);
+        assert!(
+            ages[0] >= Duration::from_secs(7 * 24 * 3600),
+            "a restored pair keeps its age: {ages:?}"
+        );
+    }
+
+    #[test]
+    fn the_revision_moves_only_when_pairs_change() {
+        let start = Instant::now();
+        let mut history = AccessHistory::new();
+        let revision = history.revision();
+        history.record(DIR, 1, start);
+        assert_eq!(history.revision(), revision, "an open alone pairs nothing");
+        history.record(DIR, 2, start + Duration::from_secs(1));
+        assert_ne!(history.revision(), revision);
+        let revision = history.revision();
+        history.clear();
+        assert_ne!(history.revision(), revision);
+        assert!(history.pairs(start).is_empty());
     }
 
     #[test]

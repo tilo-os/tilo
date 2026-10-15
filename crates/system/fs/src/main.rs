@@ -3739,6 +3739,12 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         },
         None => fs,
     };
+    // What this device learned about files opened together survives the
+    // restart, per workspace, in the cache directory.
+    let fs = match predictive_cache_root.as_ref() {
+        Some(root) => fs.with_kept_prefetch_history(root, checked_history_workspace),
+        None => fs,
+    };
     fs.resume_pending_evictions();
     // Bytes accepted by fsync, or whose commit failed, are staged per
     // workspace so they survive a crash or unmount and are replayed here.
