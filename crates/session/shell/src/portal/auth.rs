@@ -145,7 +145,7 @@ impl PortalAuthenticator {
 /// the request must be refused.
 pub async fn authenticate_call(
     ctx: &PortalContext,
-    sender: Option<&OwnedUniqueName>,
+    header: &zbus::message::Header<'_>,
     app_id: &str,
     parent_window: Option<&str>,
 ) -> Result<AuthenticatedCall, AuthenticationError> {
@@ -153,8 +153,9 @@ pub async fn authenticate_call(
         .authenticator
         .as_ref()
         .ok_or(AuthenticationError::FrontendUnavailable)?;
+    let sender = header.sender().cloned().map(OwnedUniqueName::from);
     authenticator
-        .authenticate(sender, app_id, parent_window)
+        .authenticate(sender.as_ref(), app_id, parent_window)
         .await
 }
 

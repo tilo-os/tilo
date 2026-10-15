@@ -24,8 +24,6 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
-#[cfg(target_os = "linux")]
 use zbus::zvariant::{ObjectPath, OwnedFd, OwnedValue};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -250,8 +248,7 @@ impl SecretBackend {
         fd: OwnedFd,
         options: std::collections::HashMap<String, OwnedValue>,
     ) -> (u32, std::collections::HashMap<String, OwnedValue>) {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
+        let Ok(auth) = authenticate_call(&self.ctx, &hdr, &app_id, None).await else {
             return (2, Default::default());
         };
         if crate::portal::option::<String>(&options, "token")
