@@ -5277,9 +5277,7 @@ fn write_snapshot_png(
     let rgba = {
         // A panic elsewhere poisons the mutex without damaging what it guards
         // (an intact renderer or empty slot) — recover rather than compound the failure.
-        let mut slot = cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = cache.lock_recover();
         let stale = match slot.as_ref() {
             Some(renderer) => renderer.width != w || renderer.height != h,
             None => true,
@@ -14303,6 +14301,7 @@ mod tests {
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
+    use tilo_lock::MutexRecover as _;
 
     /// Automatic brightness is off by default, so on almost every desktop its
     /// worker has nothing to do: it waits for a settings change instead of
@@ -16514,11 +16513,7 @@ mod tests {
 
     impl Drop for HeldSessionWorkers {
         fn drop(&mut self) {
-            *self
-                .0
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            *self.0.0.lock_recover() = true;
             self.0.1.notify_all();
         }
     }
@@ -16536,10 +16531,7 @@ mod tests {
             let ready = ready.clone();
             drop(runtime.spawn(async move {
                 ready.send(()).expect("worker ready");
-                let released = gate
-                    .0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let released = gate.0.lock_recover();
                 drop(
                     gate.1
                         .wait_while(released, |released| !*released)
@@ -20546,6 +20538,7 @@ mod external_floating_security_tests {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+use tilo_lock::MutexRecover as _;
 
 #[cfg(test)]
 #[allow(

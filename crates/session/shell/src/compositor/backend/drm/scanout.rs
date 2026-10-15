@@ -65,6 +65,7 @@ use super::output_signal::{
 use super::outputs::DrmOutputKey;
 use crate::shell::color_pipeline::SdrToPqEncoder;
 use settings_store::hardware::HdrUnavailable;
+use tilo_lock::MutexRecover as _;
 
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
 /// Smallest cursor plane every driver offers; the plane actually used is the
@@ -1668,10 +1669,7 @@ impl CursorPlanes {
     /// Move the cursor to global `(gx, gy)`, hiding the previously-active plane on an output crossing; outside every output (mismatched-height gap) the last position is left alone.
     pub fn move_to(&mut self, gx: f64, gy: f64) {
         self.last = Some((gx, gy));
-        *self
-            .shared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = (gx, gy);
+        *self.shared.lock_recover() = (gx, gy);
         let rects: Vec<_> = self.outputs.iter().map(|o| o.rect).collect();
         let (xi, yi) = (i32_of_f64(gx), i32_of_f64(gy));
         let Some(i) = output_index_at(&rects, xi, yi) else {

@@ -9,7 +9,7 @@
 )]
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use zbus::connection::Builder;
@@ -18,6 +18,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 use crate::service::{self, AGENT_MANAGER_PATH, AGENT_PATH, Sheets};
 use crate::store::{SecretStore, StoreKey};
 use crate::{ConnectionDict, FLAG_ALLOW_INTERACTION, SecretRequest, SettingSecrets};
+use tilo_lock::MutexRecover as _;
 
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 /// The connection path every stand-in request names.
@@ -35,16 +36,14 @@ pub struct MemoryStore {
 impl MemoryStore {
     pub fn get(&self, uuid: &str, setting: &str) -> Option<SettingSecrets> {
         self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .get(&(uuid.to_string(), setting.to_string()))
             .cloned()
     }
 
     pub fn put(&self, uuid: &str, setting: &str, secrets: SettingSecrets) {
         self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .insert((uuid.to_string(), setting.to_string()), secrets);
     }
 }
@@ -61,16 +60,14 @@ impl SecretStore for MemoryStore {
 
     fn forget(&self, key: &StoreKey) -> Result<(), String> {
         self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .remove(&(key.uuid.clone(), key.setting.clone()));
         Ok(())
     }
 
     fn forget_connection(&self, uuid: &str) -> Result<(), String> {
         self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .retain(|(entry, _), _| entry != uuid);
         Ok(())
     }
@@ -86,8 +83,7 @@ struct FakeAgentManager {
 impl FakeAgentManager {
     fn register_with_capabilities(&self, identifier: String, capabilities: u32) {
         self.registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .push((identifier, capabilities));
     }
 }
@@ -98,16 +94,13 @@ pub struct Captured(Arc<Mutex<Vec<u8>>>);
 
 impl Captured {
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap_or_else(PoisonError::into_inner)).into_owned()
+        String::from_utf8_lossy(&self.0.lock_recover()).into_owned()
     }
 }
 
 impl std::io::Write for Captured {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend_from_slice(bytes);
+        self.0.lock_recover().extend_from_slice(bytes);
         Ok(bytes.len())
     }
 

@@ -19,6 +19,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use tilo_lock::MutexRecover as _;
 pub(super) use tilo_relay_store::frames::{equal_files, frame_bytes};
 
 pub(crate) const DEFAULT_BATCH_FRAMES: usize = 64;
@@ -60,13 +61,10 @@ impl CaptureLeases {
     /// The leases of the store at `root`, shared by every handle on it.
     pub(crate) fn for_root(root: &Path) -> Arc<Self> {
         use std::collections::HashMap;
-        use std::sync::{Mutex, OnceLock, PoisonError, Weak};
+        use std::sync::{Mutex, OnceLock, Weak};
         static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<CaptureLeases>>>> = OnceLock::new();
         let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        let mut registry = REGISTRY
-            .get_or_init(Mutex::default)
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut registry = REGISTRY.get_or_init(Mutex::default).lock_recover();
         registry.retain(|_, leases| leases.strong_count() > 0);
         if let Some(leases) = registry.get(&root).and_then(Weak::upgrade) {
             return leases;
@@ -76,9 +74,7 @@ impl CaptureLeases {
         leases
     }
     fn deferred(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<PathBuf>> {
-        self.deferred
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.deferred.lock_recover()
     }
 }
 /// One capture's hold on its store's collection, until its frames are
@@ -88,12 +84,7 @@ impl Drop for CaptureLease {
     fn drop(&mut self) {
         if self.0.held.fetch_sub(1, Ordering::SeqCst) == 1
             && !self.0.deferred().is_empty()
-            && let Some(wake) = self
-                .0
-                .wake
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
+            && let Some(wake) = self.0.wake.lock_recover().as_ref()
         {
             wake.notify_one();
         }
@@ -103,11 +94,7 @@ impl WorkspaceStore {
     /// Wake `owner` when the last capture lease ends with collections
     /// waiting for it.
     pub(crate) fn wake_on_capture_release(&self, owner: Arc<tokio::sync::Notify>) {
-        *self
-            .capture_leases
-            .wake
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(owner);
+        *self.capture_leases.wake.lock_recover() = Some(owner);
     }
     /// From now on, leave the lineages of what only a channel's steward
     /// reads (access requests, acknowledgements:

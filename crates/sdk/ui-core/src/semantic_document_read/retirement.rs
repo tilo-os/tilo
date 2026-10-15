@@ -14,6 +14,7 @@ use std::sync::{
     Arc, Mutex, TryLockError,
     atomic::{AtomicBool, Ordering},
 };
+use tilo_lock::MutexRecover as _;
 
 /// Fixed lifecycle failures; none contains application content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,10 +69,7 @@ impl DomainCore {
         self.request_retirement();
         // Poison is permanent. Recover only to complete negative retirement;
         // never clear poison, invoke a callback, or drop custody under the guard.
-        let guard = self
-            .gate
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+        let guard = self.gate.lock_recover();
         self.retired.store(true, Ordering::Release);
         drop(guard);
     }
@@ -97,11 +95,7 @@ impl MarkerRef {
     }
     fn finish_retirement(&self) {
         self.request_retirement();
-        let guard = self
-            .domain
-            .gate
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+        let guard = self.domain.gate.lock_recover();
         self.marker.retired.store(true, Ordering::Release);
         drop(guard);
     }

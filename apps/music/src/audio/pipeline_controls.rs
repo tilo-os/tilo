@@ -5,6 +5,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     mpsc,
 };
+use ui::lock::MutexRecover as _;
 
 pub(super) struct Pipeline {
     pub element: gst::Element,
@@ -77,11 +78,7 @@ impl Controls {
 
     fn update(&self, change: impl FnOnce(&mut Intent)) {
         let changed = {
-            let mut intent = self
-                .shared
-                .intent
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut intent = self.shared.intent.lock_recover();
             let previous = intent.clone();
             change(&mut intent);
             if *intent == previous {
@@ -127,11 +124,7 @@ impl Controls {
     }
 
     pub fn ready(&self) -> bool {
-        let intent = self
-            .shared
-            .intent
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let intent = self.shared.intent.lock_recover();
         intent.source == self.shared.applied.load(Ordering::Acquire)
             && intent.version == self.shared.applied_version.load(Ordering::Acquire)
     }
@@ -139,17 +132,12 @@ impl Controls {
     #[cfg(test)]
     pub fn seek_result(&self) -> Option<Result<(), String>> {
         let current = {
-            let intent = self
-                .shared
-                .intent
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let intent = self.shared.intent.lock_recover();
             intent.seek.map(|(id, _)| (intent.source, id))
         };
         self.shared
             .seek_result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .as_ref()
             .filter(|result| current == Some((result.source, result.id)))
             .map(|result| result.result.clone())
@@ -166,39 +154,24 @@ fn run(pipeline: &Pipeline, shared: &Shared, receive: &mpsc::Receiver<()>) {
     let mut source = 0;
     let mut last_seek = None;
     while receive.recv().is_ok() {
-        let intent = shared
-            .intent
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let intent = shared.intent.lock_recover().clone();
         if intent.closed {
             break;
         }
         let outcome = apply(pipeline, &intent, &mut source, &mut last_seek);
         #[cfg(test)]
         if let Some((id, result)) = &outcome.seek {
-            *shared
-                .seek_result
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SeekResult {
+            *shared.seek_result.lock_recover() = Some(SeekResult {
                 source: intent.source,
                 id: *id,
                 result: result.clone(),
             });
         }
-        if shared
-            .intent
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .source
-            == intent.source
+        if shared.intent.lock_recover().source == intent.source
             && let Err(error) = outcome.result
         {
             pipeline.failed.store(true, Ordering::Release);
-            *pipeline
-                .error
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+            *pipeline.error.lock_recover() = Some(error);
         }
         // Publish completion only after its observation and failure are visible.
         shared.applied.store(intent.source, Ordering::Release);
@@ -235,10 +208,7 @@ fn apply(
             pipeline.frames.store(0, Ordering::Release);
             pipeline.eos.store(false, Ordering::Release);
             pipeline.failed.store(false, Ordering::Release);
-            *pipeline
-                .error
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            *pipeline.error.lock_recover() = None;
             *source = intent.source;
             *last_seek = None;
             if let Some(uri) = &intent.uri {

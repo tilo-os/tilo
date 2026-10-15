@@ -38,6 +38,8 @@ use ui::record::{RecordCheckout, RecordId};
 
 use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{RoomId, Workspace};
+#[cfg(test)]
+use tilo_lock::MutexRecover as _;
 
 /// Where the launcher keeps `app_id`'s profile in `room`: the directory the
 /// app sees as `XDG_DATA_HOME`.
@@ -316,9 +318,7 @@ pub fn any_waiting() -> bool {
 #[cfg(test)]
 fn waiting_count_matches_entries() -> bool {
     let (scanned, counted) = {
-        let entries = entries()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = entries().lock_recover();
         (
             entries
                 .iter()

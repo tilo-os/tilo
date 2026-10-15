@@ -8,6 +8,7 @@ use std::cell::{Ref, RefCell};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 pub(super) struct BackgroundIndex<G, T> {
     thread_name: &'static str,
@@ -26,20 +27,14 @@ struct BuildReply<G, T> {
 
 impl<G, T> BuildReply<G, T> {
     fn try_recv(&self) -> Result<(G, T), TryRecvError> {
-        let _notification = self
-            .notification
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _notification = self.notification.lock_recover();
         self.receiver.try_recv()
     }
 
     fn recv_timeout(&self, bound: Duration) -> Result<(G, T), RecvTimeoutError> {
         // Do not lock while waiting: the publisher needs the lock to send.
         let finished = self.receiver.recv_timeout(bound)?;
-        let _notification = self
-            .notification
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _notification = self.notification.lock_recover();
         Ok(finished)
     }
 }
@@ -103,9 +98,7 @@ impl<G: PartialEq + Send + 'static, T: Send + 'static> BackgroundIndex<G, T> {
                         Some(std::thread::current().id());
                 }
                 let finished = build();
-                let _notification = publish_notification
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _notification = publish_notification.lock_recover();
                 if sender.send(finished).is_ok() {
                     wake.wake();
                 }

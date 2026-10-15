@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use ui::lock::MutexRecover as _;
 
 /// What a Files drag carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,8 +35,7 @@ static SLOT: Mutex<Slot> = Mutex::new(Slot {
 });
 
 fn slot() -> std::sync::MutexGuard<'static, Slot> {
-    SLOT.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    SLOT.lock_recover()
 }
 
 /// Files started carrying `paths`.
@@ -94,9 +94,7 @@ mod tests {
     fn external_drag_hand_off_is_claimed_once() {
         // --- phase: a_drag_is_unclaimed_until_the_host_takes_it ---
         {
-            let _g = SERIAL
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _g = SERIAL.lock_recover();
             end();
             assert_eq!(unclaimed(), None);
             begin(vec![PathBuf::from("/w/photo.png")]);
@@ -119,9 +117,7 @@ mod tests {
 
         // --- phase: a_new_drag_forgets_the_previous_hand_off ---
         {
-            let _g = SERIAL
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _g = SERIAL.lock_recover();
             begin(vec![PathBuf::from("/a")]);
             let _ = hand_off();
             begin(vec![PathBuf::from("/b")]);

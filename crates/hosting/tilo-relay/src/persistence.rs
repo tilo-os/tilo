@@ -44,6 +44,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+use tilo_lock::MutexRecover as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 #[cfg(test)]
 mod durability_tests;
@@ -367,10 +368,7 @@ pub(crate) async fn handle(workspace: &SharedWorkspace) -> Persistence {
 fn initial_budgets(runtime: &crate::workspace::WorkspaceRuntime) -> AdmissionBudgets {
     #[cfg(test)]
     {
-        let budgets = test_budgets()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(runtime.store.root());
+        let budgets = test_budgets().lock_recover().remove(runtime.store.root());
         if let Some(budgets) = budgets {
             return budgets;
         }
@@ -435,8 +433,7 @@ pub(crate) fn isolate_test_admission_with_workers(
     );
     assert!(
         test_budgets()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .insert(
                 runtime.store.root().to_path_buf(),
                 AdmissionBudgets::isolated(workers)
@@ -465,15 +462,9 @@ fn idle_turns() -> &'static Mutex<std::collections::HashMap<std::path::PathBuf, 
 
 #[cfg(test)]
 fn note_idle_turn(state: &Mutex<State>) {
-    let root = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .store
-        .root()
-        .to_path_buf();
+    let root = state.lock_recover().store.root().to_path_buf();
     idle_turns()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .entry(root)
         .and_modify(|turns| *turns = turns.saturating_add(1))
         .or_insert(1);
@@ -608,19 +599,13 @@ async fn run_owner_lanes(
     mut replay_rx: mpsc::Receiver<ReplayJob>,
     state: Arc<Mutex<State>>,
 ) {
-    let workers = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .workers
-        .clone();
+    let workers = state.lock_recover().workers.clone();
     // The startup scan is never reused after a new ticket is admitted.
     let mut startup = None;
     loop {
         let shared = state.clone();
         let result = blocking(workers.clone(), move || {
-            let state = shared
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = shared.lock_recover();
             let result = (|| {
                 let cursor = match startup.take() {
                     Some(cursor) => cursor,
@@ -654,9 +639,7 @@ async fn run_owner_lanes(
     // the released entries one per interval, between jobs, until none is
     // left; with none it sleeps until a job or a released ticket arrives.
     let reclaim_wake = {
-        let state = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = state.lock_recover();
         let wake = state.replays.reclaim_wake();
         // So are collections that waited for the last capture to pin.
         state.store.wake_on_capture_release(wake.clone());
@@ -697,11 +680,7 @@ async fn run_owner_lanes(
         if waiting_prerequisite {
             let shared = state.clone();
             let has_basis = blocking(workers.clone(), move || {
-                shared
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .store
-                    .replay_capture_has_basis()
+                shared.lock_recover().store.replay_capture_has_basis()
             })
             .await;
             if matches!(has_basis, Ok(Ok(true))) {
@@ -763,11 +742,7 @@ async fn run_owner_lanes(
         }
         // One retained transaction can leave at most one known scratch
         // root. Finish its disposal before another mutation can create one.
-        let root = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retention_scratch
-            .take();
+        let root = state.lock_recover().retention_scratch.take();
         if let Some(root) = root {
             let mut discard = None;
             loop {
@@ -805,12 +780,7 @@ async fn run_owner_lanes(
                 }
             }
         }
-        let candidates = std::mem::take(
-            &mut state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retention_candidates,
-        );
+        let candidates = std::mem::take(&mut state.lock_recover().retention_candidates);
         for (lineage, staged) in candidates {
             let mut discard = None;
             loop {
@@ -848,11 +818,7 @@ async fn run_owner_lanes(
         // Generations retention replaced while a capture still had to pin
         // them, collected once no capture does. A failed collection is
         // left to the lineage's next commit, which collects all of them.
-        let deferred = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .store
-            .deferred_collections();
+        let deferred = state.lock_recover().store.deferred_collections();
         for lineage in deferred {
             let mut collect = None;
             loop {
@@ -888,12 +854,7 @@ async fn run_owner_lanes(
         // An entry still in use needs no turn: its ticket's drop wakes the
         // owner. So does an entry whose session or connection ended, since
         // that session drops its ticket as it ends.
-        if !state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .replays
-            .reclaimable()
-        {
+        if !state.lock_recover().replays.reclaimable() {
             reclaiming = false;
             continue;
         }
@@ -906,9 +867,7 @@ async fn run_owner_lanes(
         let shared = state.clone();
         let reclaiming_at = crate::timing::start();
         let _ = blocking(workers.clone(), move || {
-            let mut state = shared
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = shared.lock_recover();
             // A released entry keeps its process-wide replay permit until it
             // is gone, so new subscriptions wait on this. One bounded step
             // per turn fell behind a room where every guest's arrival
@@ -1211,11 +1170,7 @@ impl Persistence {
             move |state: Arc<Mutex<State>>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
                 Box::pin(async move {
                     let (_slots, _bytes) = (slots, bytes);
-                    let workers = state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .workers
-                        .clone();
+                    let workers = state.lock_recover().workers.clone();
                     let running = crate::timing::start();
                     let result = run(state, workers).await;
                     crate::timing::window("owner.sequence", running);
@@ -1370,11 +1325,7 @@ where
         move |state: Arc<Mutex<State>>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
             Box::pin(async move {
                 let (_slot, _bytes) = (slot, bytes);
-                let workers = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .workers
-                    .clone();
+                let workers = state.lock_recover().workers.clone();
                 crate::timing::window(steps.queue, timed);
                 let preparing = crate::timing::start();
                 let result = match preparation.await {
@@ -1387,9 +1338,7 @@ where
                             let shared = state.clone();
                             let quantum = blocking(workers.clone(), move || {
                                 let start = std::time::Instant::now();
-                                let mut state = shared
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                let mut state = shared.lock_recover();
                                 let result = loop {
                                     let result = operation(&mut state, &mut prepared);
                                     if !matches!(result, Ok(Step::More)) || start.elapsed() >= SLICE
@@ -1538,18 +1487,14 @@ mod tests {
     fn record_job(order: Arc<Mutex<Vec<&'static str>>>, value: &'static str) -> Job {
         Box::new(move |_| {
             Box::pin(async move {
-                order
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(value);
+                order.lock_recover().push(value);
             })
         })
     }
 
     fn idle_turns_of(root: &std::path::Path) -> u64 {
         super::idle_turns()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(root)
             .copied()
             .unwrap_or(0)
@@ -1833,11 +1778,7 @@ mod tests {
         let sequence_order = order.clone();
         let sequence = owner
             .submit_sequence_wait(4, 4, move |state, workers| async move {
-                let owner_workers = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .workers
-                    .clone();
+                let owner_workers = state.lock_recover().workers.clone();
                 assert!(Arc::ptr_eq(&workers, &owner_workers));
                 sequence_order.lock().unwrap().push("sequence");
                 Ok(())
@@ -1987,9 +1928,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            *order
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            *order.lock_recover(),
             ["replay-1", "normal-1", "replay-2", "normal-2"]
         );
     }
@@ -2024,8 +1963,7 @@ mod tests {
                 job: Box::new(move |state| {
                     Box::pin(async move {
                         let root = state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .lock_recover()
                             .store
                             .root()
                             .join(crate::store::shell_selection::DIRECTORY);

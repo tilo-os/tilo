@@ -61,7 +61,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 
@@ -76,6 +76,7 @@ use crate::environment_host::{
     MemberQuota,
 };
 use crate::environment_tools::ToolBuildService;
+use tilo_lock::MutexRecover as _;
 
 /// How members are separated by uid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,10 +211,7 @@ impl UshGuestLauncher {
     }
 
     fn supervisor_socket(&self, member: &MemberContext) -> Result<PathBuf, LaunchError> {
-        let mut supervisors = self
-            .supervisors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut supervisors = self.supervisors.lock_recover();
         if let Some(supervisor) = supervisors.get_mut(&member.identity.user) {
             if matches!(supervisor.child.try_wait(), Ok(None)) {
                 return Ok(supervisor.socket.clone());
@@ -410,11 +408,7 @@ impl GuestLauncher for UshGuestLauncher {
     }
 
     fn member_idle(&self, member: &MemberIdentity) {
-        let stopped = self
-            .supervisors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&member.user);
+        let stopped = self.supervisors.lock_recover().remove(&member.user);
         drop(stopped);
     }
 }

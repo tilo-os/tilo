@@ -4,10 +4,11 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 
 use crate::VPath;
+use tilo_lock::MutexRecover as _;
 
 /// What happened to a watched path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -59,7 +60,7 @@ impl Inbox {
     /// Queue `change` and hand back the waiting task's waker, for the caller
     /// to wake once it holds no lock of its own.
     fn queue(&self, change: Change) -> Option<Waker> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         if state.queue.back() != Some(&change) {
             state.queue.push_back(change);
         }
@@ -67,7 +68,7 @@ impl Inbox {
     }
 
     fn pop(&self, waker: Option<&Waker>) -> Option<Change> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         let next = state.queue.pop_front();
         if next.is_none()
             && let Some(waker) = waker
@@ -151,7 +152,7 @@ impl Watchers {
     /// Report changes at or below `watched` (full keys), relative to `root`.
     pub(crate) fn register(&self, watched: &VPath, root: &VPath) -> Arc<Inbox> {
         let inbox = Arc::new(Inbox::default());
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut entries = self.entries.lock_recover();
         entries.retain(|entry| entry.inbox.strong_count() > 0);
         entries.push(Registration {
             watched: watched.as_str().to_owned(),
@@ -169,7 +170,7 @@ impl Watchers {
     /// order than they were made: a write's `Changed` after the removal that
     /// followed it, for a file that is gone.
     pub(crate) fn notify(&self, key: &str, kind: ChangeKind) -> Wakes {
-        let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         Wakes(
             entries
                 .iter()
@@ -186,8 +187,7 @@ impl Watchers {
     #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .all(|entry| entry.inbox.strong_count() == 0)
     }

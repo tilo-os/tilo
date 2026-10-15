@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use tilo_action_broker::services::{
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
 };
+use tilo_lock::MutexRecover as _;
 
 const MAX_CALLS: usize = 16;
 const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -536,10 +537,7 @@ impl Shared {
         if policy.disable_sound_output {
             self.stop_all();
         } else if policy.disable_microphone {
-            let mut calls = self
-                .calls
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut calls = self.calls.lock_recover();
             for entry in calls.entries.values_mut() {
                 self.stop_capture(entry);
             }
@@ -634,10 +632,7 @@ impl Shared {
         if let Some(capture) = entry.capture.take() {
             capture.current.store(false, Ordering::Release);
             if let Some(backend) = &entry.backend {
-                backend
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .stop_capture();
+                backend.lock_recover().stop_capture();
             }
             if let Ok(mut broker) = self.capture.lock() {
                 broker.release(capture.lease);
@@ -652,20 +647,14 @@ impl Shared {
             worker.abort();
         }
         if let Some(backend) = entry.backend.take() {
-            backend
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .close();
+            backend.lock_recover().close();
         }
         if let Ok(mut broker) = self.capture.lock() {
             broker.session_ended(&entry.binding);
         }
     }
     fn stop_all(&self) {
-        let mut calls = self
-            .calls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut calls = self.calls.lock_recover();
         for entry in calls.entries.values_mut() {
             self.stop_entry(entry);
         }
@@ -750,10 +739,7 @@ impl Shared {
                     .and_then(|backend| backend.capture_stop());
                 let Some(stop) = stop else {
                     current.store(false, Ordering::Release);
-                    backend
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .stop_capture();
+                    backend.lock_recover().stop_capture();
                     broker.release(lease);
                     return Err(Issue::CaptureFailed);
                 };
@@ -797,10 +783,7 @@ impl Shared {
         };
         if !capture.paused {
             if let Some(backend) = &entry.backend {
-                backend
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .pause_capture();
+                backend.lock_recover().pause_capture();
             }
             capture.paused = true;
         }

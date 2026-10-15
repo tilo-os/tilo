@@ -29,6 +29,7 @@ use std::time::Duration;
 use crate::cache::{ThumbCache, ThumbKey};
 use crate::category::FileCategory;
 use crate::generate::{self, DEFAULT_EDGE, RgbaThumb, Source, ThumbSize};
+use tilo_lock::MutexRecover as _;
 
 /// Requests waiting for a worker before the lowest-priority one is dropped.
 pub const DEFAULT_MAX_QUEUED: usize = 512;
@@ -298,9 +299,7 @@ struct Shared {
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.lock_recover()
     }
 }
 
@@ -423,11 +422,7 @@ impl ThumbnailService {
     /// Call `wake` (from a worker thread) whenever a preview settles, so an
     /// app that sleeps between frames repaints when one lands.
     pub fn set_wake(&self, wake: impl Fn() + Send + Sync + 'static) {
-        *self
-            .shared
-            .wake
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(wake));
+        *self.shared.wake.lock_recover() = Some(Arc::new(wake));
     }
 
     /// The configured default longest edge for generated thumbnails.
@@ -727,11 +722,7 @@ fn finish(shared: &Shared, key: ThumbKey, slot: Slot) {
     }
     drop(inner);
     shared.settled.notify_all();
-    let wake = shared
-        .wake
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
+    let wake = shared.wake.lock_recover().clone();
     if let Some(wake) = wake {
         wake();
     }

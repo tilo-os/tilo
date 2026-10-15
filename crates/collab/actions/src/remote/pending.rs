@@ -13,6 +13,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 type Continuation<T> = Box<dyn FnOnce(Option<T>) + Send>;
 /// Whether whoever a continuation hands the answer to still wants it.
@@ -59,7 +60,7 @@ struct AbandonWake {
 
 impl AbandonSignal {
     fn register(&self, waker: &Waker) {
-        let mut wake = self.wake.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut wake = self.wake.lock_recover();
         if !wake
             .waker
             .as_ref()
@@ -70,10 +71,7 @@ impl AbandonSignal {
     }
 
     fn forward_to(&self, upstream: Arc<Self>) {
-        self.wake
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .upstream = Some(upstream);
+        self.wake.lock_recover().upstream = Some(upstream);
     }
 
     /// Wake whoever waits on this answer's abandonment, and on every answer
@@ -81,7 +79,7 @@ impl AbandonSignal {
     /// to abandon anything is harmless.
     fn wake(&self) {
         let (waker, upstream) = {
-            let wake = self.wake.lock().unwrap_or_else(PoisonError::into_inner);
+            let wake = self.wake.lock_recover();
             (wake.waker.clone(), wake.upstream.clone())
         };
         if let Some(waker) = waker {
@@ -106,7 +104,7 @@ impl Drop for AbandonOnDrop {
 
 impl<T> Slot<T> {
     fn settle(&self, value: Option<T>) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         match std::mem::replace(&mut *state, State::Taken) {
             State::Waiting {
                 then: Some(then), ..
@@ -134,7 +132,7 @@ impl<T> Slot<T> {
         if Arc::strong_count(slot) > own {
             return false;
         }
-        let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = slot.state.lock_recover();
         match &*state {
             State::Waiting {
                 then: Some(_),
@@ -276,11 +274,7 @@ impl<T> Pending<T> {
 
     /// Take the answer if it has arrived, without waiting.
     pub fn poll_ready(&mut self) -> PendingPoll<T> {
-        let mut state = self
-            .slot
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.slot.state.lock_recover();
         match std::mem::replace(&mut *state, State::Taken) {
             State::Done(Some(value)) => PendingPoll::Ready(value),
             State::Done(None) | State::Taken => PendingPoll::Abandoned,
@@ -300,11 +294,7 @@ impl<T> Pending<T> {
     /// `Ok(None)` if the producer abandoned the answer.
     pub fn wait_timeout(mut self, timeout: Duration) -> Result<Option<T>, Self> {
         let deadline = Instant::now().checked_add(timeout);
-        let mut state = self
-            .slot
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.slot.state.lock_recover();
         loop {
             if !matches!(*state, State::Waiting { .. }) {
                 drop(state);
@@ -336,11 +326,7 @@ impl<T> Pending<T> {
     }
 
     fn then_while(self, then: impl FnOnce(Option<T>) + Send + 'static, interest: Option<Interest>) {
-        let mut state = self
-            .slot
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.slot.state.lock_recover();
         match std::mem::replace(&mut *state, State::Taken) {
             State::Waiting { waker, .. } => {
                 *state = State::Waiting {
@@ -398,11 +384,7 @@ impl<T> Future for Pending<T> {
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<T>> {
         let this = self.get_mut();
-        let mut state = this
-            .slot
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = this.slot.state.lock_recover();
         match std::mem::replace(&mut *state, State::Taken) {
             State::Done(value) => Poll::Ready(value),
             State::Taken => Poll::Ready(None),

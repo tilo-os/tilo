@@ -12,11 +12,12 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use ui::time::Duration;
 
 use crate::rfb::{self, Framebuffer, PixelFormat, ServerInit};
 use crate::session::SessionStatus;
+use ui::lock::MutexRecover as _;
 
 /// Bound input queued while a VNC server is busy with a framebuffer read. The
 /// producer uses non-blocking `try_send`, so pointer motion can never stall
@@ -141,7 +142,7 @@ impl VncSession {
 /// worker thread's earlier panic must not cascade into every later read
 /// of shared session state.
 fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+    m.lock_recover()
 }
 
 fn friendly(e: &io::Error) -> String {

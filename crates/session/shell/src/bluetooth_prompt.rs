@@ -21,7 +21,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -30,6 +30,7 @@ use crate::shell::i18n::{t, t_args};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use tilo_bluez::{MAX_PIN_CODE_BYTES, PairingPrompt, PairingReply, PairingRequest};
+use tilo_lock::MutexRecover as _;
 use ui::TextRole;
 use ui::theme::Theme;
 use ui::widget::{
@@ -85,10 +86,7 @@ impl PairingPromptView {
             || std::mem::discriminant(&request.prompt)
                 != std::mem::discriminant(&self.request.prompt)
         {
-            self.entry
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clear();
+            self.entry.lock_recover().clear();
         }
         self.request = request;
         self.composed.invalidate();
@@ -177,12 +175,7 @@ impl PairingPromptView {
     /// a zero passkey, which the device would reject anyway and read as
     /// "pairing mysteriously failed".
     fn accepted(&self) -> PairingReply {
-        let entry = self
-            .entry
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .trim()
-            .to_string();
+        let entry = self.entry.lock_recover().trim().to_string();
         match self.request.prompt {
             PairingPrompt::RequestPasskey => match entry.parse::<u32>() {
                 Ok(n) if n <= MAX_PASSKEY && !entry.is_empty() => PairingReply::Passkey(n),
@@ -204,11 +197,7 @@ impl PairingPromptView {
     }
 
     fn entry_field(&self) -> TextInput {
-        let typed = self
-            .entry
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let typed = self.entry.lock_recover().clone();
         let pin = matches!(self.request.prompt, PairingPrompt::RequestPinCode);
         let field = TextInput::local()
             .with_initial_value(&typed)

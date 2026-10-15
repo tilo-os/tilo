@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_bytes as serde_bytes_codec;
 use sha2::{Digest, Sha512};
 use threshold_identity::{EnrolmentRound1, EnrolmentRound2, ThresholdError, ThresholdIdentity};
+use tilo_lock::MutexRecover as _;
 
 mod device_pairing;
 pub use device_pairing::HostPairing;
@@ -229,17 +230,10 @@ impl IdentityStore for MemoryIdentityStore {
     fn load(&self) -> Result<Option<IdentityRecord>, IdentityFlowError> {
         // Recover rather than panic on a poisoned lock: a panic here
         // would abort the whole process in a release build.
-        Ok(self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone())
+        Ok(self.inner.lock_recover().clone())
     }
     fn save(&self, record: &IdentityRecord) -> Result<(), IdentityFlowError> {
-        *self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(record.clone());
+        *self.inner.lock_recover() = Some(record.clone());
         Ok(())
     }
 }
@@ -816,10 +810,7 @@ impl PairingHandshake {
     /// discard all pending frames.
     pub fn cancel(&self) {
         match &self.backend {
-            PairingBackend::Memory(inner) => inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clear(),
+            PairingBackend::Memory(inner) => inner.lock_recover().clear(),
             #[cfg(unix)]
             PairingBackend::Durable(backend) => {
                 if let Ok(file) =
@@ -837,9 +828,7 @@ impl PairingHandshake {
         let key = hex::encode(nonce);
         match &self.backend {
             PairingBackend::Memory(inner) => {
-                let mut guard = inner
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut guard = inner.lock_recover();
                 guard.entry(key).or_default().pairer_round1 = Some(round1);
             }
             #[cfg(unix)]
@@ -869,12 +858,8 @@ impl PairingHandshake {
         // would abort the whole process in a release build.
         match &self.backend {
             PairingBackend::Memory(inner) => {
-                inner
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .entry(key)
-                    .or_default()
-                    .reply = Some((reply, PairingMac::from_bytes(mac)));
+                inner.lock_recover().entry(key).or_default().reply =
+                    Some((reply, PairingMac::from_bytes(mac)));
             }
             #[cfg(unix)]
             PairingBackend::Durable(backend) => {
@@ -915,9 +900,7 @@ impl PairingHandshake {
         let key = hex::encode(nonce);
         match &self.backend {
             PairingBackend::Memory(inner) => {
-                let mut guard = inner
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut guard = inner.lock_recover();
                 let state = guard.entry(key).or_default();
                 state.pairer_round1 = Some(round1);
                 state.reply = Some((round2, PairingMac::from_bytes(mac)));
@@ -952,12 +935,7 @@ impl PairingHandshake {
         let key = hex::encode(nonce);
         match &self.backend {
             PairingBackend::Memory(inner) => {
-                let (reply, mac) = inner
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get_mut(&key)?
-                    .reply
-                    .take()?;
+                let (reply, mac) = inner.lock_recover().get_mut(&key)?.reply.take()?;
                 Some((reply, mac.into_bytes()?))
             }
             #[cfg(unix)]
@@ -981,9 +959,7 @@ impl PairingHandshake {
         match &self.backend {
             PairingBackend::Memory(inner) => {
                 let (round1, round2, mac) = {
-                    let mut guard = inner
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut guard = inner.lock_recover();
                     let state = guard.get_mut(&key)?;
                     if state.pairer_round1.is_none() || state.reply.is_none() {
                         return None;
@@ -1036,12 +1012,8 @@ impl PairingHandshake {
         let key = hex::encode(nonce);
         match &self.backend {
             PairingBackend::Memory(inner) => {
-                inner
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .entry(key)
-                    .or_default()
-                    .host_round2 = Some((reply, PairingMac::from_bytes(mac)));
+                inner.lock_recover().entry(key).or_default().host_round2 =
+                    Some((reply, PairingMac::from_bytes(mac)));
                 true
             }
             #[cfg(unix)]
@@ -1074,12 +1046,7 @@ impl PairingHandshake {
         let key = hex::encode(nonce);
         match &self.backend {
             PairingBackend::Memory(inner) => {
-                let (reply, mac) = inner
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get_mut(&key)?
-                    .host_round2
-                    .take()?;
+                let (reply, mac) = inner.lock_recover().get_mut(&key)?.host_round2.take()?;
                 Some((reply, mac.into_bytes()?))
             }
             #[cfg(unix)]

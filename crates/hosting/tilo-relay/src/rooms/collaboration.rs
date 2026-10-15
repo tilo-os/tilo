@@ -31,6 +31,7 @@ use tilo_action_policy::roles::governance;
 use super::authority::RoomOp;
 use super::{GovernedRoom, RoomRecord, Rooms, system_time};
 use crate::host_authority::HostOperation;
+use tilo_lock::MutexRecover as _;
 
 /// A verified redemption to admit, and what its receipt answers for.
 pub(super) struct Redeeming<'a> {
@@ -1125,11 +1126,7 @@ impl Rooms {
     /// Queue `written` for `room`'s next write. True when it is the first
     /// since the room last took them, so its sender starts the write.
     fn queue_write(&self, room: &str, written: Written) -> bool {
-        let mut queued = self
-            .inner
-            .queued_writes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queued = self.inner.queued_writes.lock_recover();
         let waiting = queued.entry(room.to_owned()).or_default();
         waiting.push(written);
         let first = waiting.len() == 1;
@@ -1141,8 +1138,7 @@ impl Rooms {
         let take = || {
             self.inner
                 .queued_writes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .remove(room_id)
                 .unwrap_or_default()
         };

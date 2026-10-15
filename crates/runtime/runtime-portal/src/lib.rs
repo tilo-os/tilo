@@ -51,6 +51,8 @@ use capnp_rpc::{RpcSystem, rpc_twoparty_capnp};
 use rustix::io::fcntl_getfd;
 #[cfg(all(unix, feature = "rpc"))]
 use rustix::io::{FdFlags, fcntl_setfd};
+#[cfg(test)]
+use tilo_lock::RwLockRecover as _;
 #[cfg(all(unix, feature = "rpc"))]
 use tokio::net::UnixStream;
 #[cfg(feature = "rpc")]
@@ -419,18 +421,14 @@ static CHILD_SPAWNS: std::sync::RwLock<()> = std::sync::RwLock::new(());
 /// Held by a test while it spawns a child process.
 #[cfg(test)]
 pub(crate) fn spawning() -> std::sync::RwLockReadGuard<'static, ()> {
-    CHILD_SPAWNS
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    CHILD_SPAWNS.read_recover()
 }
 
 /// Held by a test that checks a descriptor was closed, so that no sibling test
 /// has a child between its fork and its exec meanwhile.
 #[cfg(test)]
 pub(crate) fn no_spawns() -> std::sync::RwLockWriteGuard<'static, ()> {
-    CHILD_SPAWNS
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    CHILD_SPAWNS.write_recover()
 }
 
 pub mod editor;

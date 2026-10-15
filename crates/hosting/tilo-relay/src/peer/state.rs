@@ -9,6 +9,7 @@ use super::{
     checkpoint_prefix_recovery_allowed, current_session, enqueue_checkpoint_prefix, enqueue_state,
     mpsc, over_change_limit, room_access, trace_native_publication,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Handle an inbound `Delta`: validate the author, fan out to every
 /// other subscriber via the same path a federated peer relay uses,
@@ -58,28 +59,18 @@ impl Lag {
     pub(super) fn mark(&self, workspace_id: u64) {
         // Counted, not timed: how often a live delivery fell back to replay.
         crate::timing::window("state.lag_mark", crate::timing::start());
-        let first = self
-            .rooms
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(workspace_id);
+        let first = self.rooms.lock_recover().insert(workspace_id);
         if first {
             self.wake.notify_one();
         }
     }
 
     pub(super) fn next(&self) -> Option<u64> {
-        self.rooms
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop_first()
+        self.rooms.lock_recover().pop_first()
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.rooms
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty()
+        self.rooms.lock_recover().is_empty()
     }
 }
 

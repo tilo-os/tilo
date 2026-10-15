@@ -1,0 +1,20 @@
+[package]
+name = "tilo-lock"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Lock a std Mutex or RwLock whatever a panicking holder left behind: the guard of a poisoned lock instead of an error."
+
+[lib]
+name = "tilo_lock"
+path = "src/lib.rs"
+
+# A std-only leaf, like tilo-clock: nearly every crate takes a lock.
+[dependencies]
+
+[lints]
+workspace = true

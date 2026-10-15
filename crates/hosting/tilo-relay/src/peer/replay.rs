@@ -8,6 +8,7 @@ use super::{
     SharedWorkspace, StateSource, Step, StoreError, WrittenBatch, current_session, encode_charged,
     mpsc, room_access, trace_native_publication, unix_now_ns, write_private_delivery,
 };
+use tilo_lock::MutexRecover as _;
 
 /// What a resuming subscriber has received: the frames this connection wrote
 /// to it are appended to its resume log, and a [`Envelope::Position`] naming
@@ -57,10 +58,7 @@ pub(super) fn resume_record<'f>(
     workspace_id: u64,
     frames: impl IntoIterator<Item = &'f Envelope>,
 ) -> Option<Envelope> {
-    let mut resumes = session
-        .resumes
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut resumes = session.resumes.lock_recover();
     resumes.get_mut(&workspace_id).map(|log| log.record(frames))
 }
 

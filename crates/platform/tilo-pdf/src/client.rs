@@ -25,6 +25,7 @@ use crate::text::RawChar;
 use tilo_sandbox::shm;
 
 use crate::Bitmap;
+use tilo_lock::MutexRecover as _;
 
 /// How long a helper may take to start and confine itself.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -103,9 +104,7 @@ impl AsRef<[u8]> for Lease {
 impl Drop for Lease {
     fn drop(&mut self) {
         if let (Some(buffer), Some(pool)) = (self.buffer.take(), self.pool.upgrade()) {
-            pool.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .give_back(buffer);
+            pool.lock_recover().give_back(buffer);
         }
     }
 }
@@ -188,9 +187,7 @@ impl Sandboxed {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     fn spawn(&self, state: &mut State) -> Result<Connection, Error> {
@@ -426,9 +423,7 @@ impl Sandboxed {
     }
 
     fn lock_pool(&self) -> std::sync::MutexGuard<'_, Pool> {
-        self.pool
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.pool.lock_recover()
     }
 
     /// A pixel buffer of at least `need` bytes, reused when one is idle.
@@ -647,8 +642,7 @@ fn spawn_from_spawner_thread(command: Command) -> std::io::Result<Child> {
     });
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     sender
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .send((command, reply_tx))
         .map_err(|_| std::io::Error::other("the helper spawner thread is gone"))?;
     reply_rx

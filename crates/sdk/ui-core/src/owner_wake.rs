@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::{Rc, Weak as LocalWeak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use tilo_lock::MutexRecover as _;
 use uuid::Uuid;
 
 /// Non-authoritative progress from an actual snapshot service. Errors retain
@@ -44,10 +45,7 @@ struct PendingState {
 struct Pending(Mutex<PendingState>);
 impl Pending {
     fn push(&self, token: &Arc<Token>, event: WakeEvent, requires_sync: bool) -> bool {
-        let mut pending = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pending = self.0.lock_recover();
         // Close may race a Send sink. Recheck while holding only the queue loan.
         if !token.accepts(&event) {
             return false;
@@ -181,10 +179,7 @@ impl Drop for OwnerWakeRegistration {
             }
         }
         if let Some(pending) = self.pending.upgrade() {
-            let mut entries = pending
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut entries = pending.0.lock_recover();
             if entries
                 .entries
                 .get(&self.token.id)
@@ -242,11 +237,7 @@ impl OwnerWakeQueue {
     /// Work is proportional to queued owners, not registrations.
     pub fn take_pending(&self) -> Vec<OwnerWakeRequest> {
         let mut packets = {
-            let mut pending = self
-                .pending
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut pending = self.pending.0.lock_recover();
             std::mem::take(&mut *pending)
         };
         let index = self.index.borrow();
@@ -294,13 +285,7 @@ impl OwnerWakeQueue {
     }
     /// Queue presence only, not current-owner custody or model purity.
     pub fn has_pending(&self) -> bool {
-        !self
-            .pending
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entries
-            .is_empty()
+        !self.pending.0.lock_recover().entries.is_empty()
     }
 }
 
@@ -336,11 +321,7 @@ impl OwnerWakeQueue {
                 })
                 .collect::<Vec<_>>()
         };
-        let mut pending = self
-            .pending
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pending = self.pending.0.lock_recover();
         let mut prefix = Vec::new();
         for (token, request) in retained {
             if !token.accepts(&request.event) {

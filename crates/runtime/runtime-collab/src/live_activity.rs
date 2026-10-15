@@ -13,13 +13,14 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use capnp::capability::Promise;
 use runtime_portal::NotAvailable;
 use serde_json::Value;
 
 use crate::collab_capnp::live_activity;
+use tilo_lock::MutexRecover as _;
 
 /// The most bytes one activity or batch of controls carries on the wire.
 pub const MAX_LIVE_ACTIVITY_BYTES: usize = 16 * 1024;
@@ -160,7 +161,7 @@ impl LiveActivities {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, App>> {
-        self.apps.lock().unwrap_or_else(PoisonError::into_inner)
+        self.apps.lock_recover()
     }
 }
 

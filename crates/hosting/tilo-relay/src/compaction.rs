@@ -50,6 +50,7 @@ use crate::payloads::ShellPayloads;
 use crate::store::compaction::{ChannelEntry, SnapshotWrite, file_digest};
 use crate::transport::Envelope;
 use crate::workspace::SharedWorkspace;
+use tilo_lock::MutexRecover as _;
 
 /// Tail size past which a channel is compacted: this many entries, or
 /// [`COMPACT_TAIL_BYTES`] that are at least half its snapshot's size, so a
@@ -215,9 +216,7 @@ impl Drop for Admitting {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 impl Compactor {

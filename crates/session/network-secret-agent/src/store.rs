@@ -8,12 +8,13 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use secret_vault::{Custody, VaultFormat};
 use zeroize::Zeroizing;
 
 use super::SettingSecrets;
+use tilo_lock::MutexRecover as _;
 
 /// Which remembered secrets: one setting of one connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,14 +74,11 @@ pub struct RoamingWifiSlot {
 
 impl RoamingWifiSlot {
     pub fn set(&self, roaming: Arc<dyn RoamingWifi>) {
-        *self.inner.lock().unwrap_or_else(PoisonError::into_inner) = Some(roaming);
+        *self.inner.lock_recover() = Some(roaming);
     }
 
     fn get(&self) -> Option<Arc<dyn RoamingWifi>> {
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.inner.lock_recover().clone()
     }
 }
 
@@ -165,7 +163,7 @@ impl VaultStore {
     }
 
     fn modify(&self, change: impl FnOnce(&mut Entries) -> bool) -> Result<(), String> {
-        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let _guard = self.lock.lock_recover();
         let mut entries = self.read()?;
         if change(&mut entries) {
             self.write(&entries)?;
@@ -190,7 +188,7 @@ impl VaultStore {
 impl SecretStore for VaultStore {
     fn load(&self, key: &StoreKey) -> Option<SettingSecrets> {
         let vaulted = {
-            let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+            let _guard = self.lock.lock_recover();
             match self.read() {
                 Ok(entries) => entries
                     .get(&key.uuid)

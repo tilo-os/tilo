@@ -18,6 +18,7 @@ use crate::model::{Artwork, Layer, Shape};
 use crate::model::{Mark, path_data};
 use crate::render::{Options, Renderer};
 use crate::resource::{Compare, Export, Inspect, Look};
+use ui::lock::MutexRecover as _;
 
 /// The default longest side of a look, in pixels: enough to judge a
 /// composition; a region look shows detail. A model pays for every pixel.
@@ -189,9 +190,7 @@ pub fn pixels(
     // The renderers for the last sizes are kept: each has learned how much
     // memory a scene this busy needs, so the next look fits at once, and an
     // eyedropper's tiny picture does not cost the magic wand's its renderer.
-    let mut kept = OFFSCREEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut kept = OFFSCREEN.lock_recover();
     let at = if let Some(at) = kept.iter().position(|(size, _)| *size == (width, height)) {
         at
     } else {

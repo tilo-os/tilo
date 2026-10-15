@@ -12,6 +12,7 @@ use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::{CertifiedKey, SingleCertAndKey};
+use tilo_lock::MutexRecover as _;
 
 /// A certificate chain (leaf first) and its private key, read from PEM
 /// files.
@@ -133,10 +134,7 @@ impl FileCertificate {
     /// The certificate to present now, reloading it first when the files
     /// changed since they were last read.
     pub fn current(&self) -> Arc<CertifiedKey> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         if state.checked.elapsed() >= self.recheck {
             state.checked = Instant::now();
             let now = stamp(&self.chain, &self.key);

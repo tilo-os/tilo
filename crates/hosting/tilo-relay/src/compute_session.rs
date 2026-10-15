@@ -44,6 +44,7 @@ use crate::peer::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
 use crate::room_access::{self, Decision, DenyReason, RelayTrust, RoomOperation};
 use crate::workspace::SharedWorkspace;
+use tilo_lock::MutexRecover as _;
 
 const COMPUTE_OUTBOUND_CAPACITY: usize = 32;
 static COMPUTE_QUEUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -743,15 +744,11 @@ async fn serve_input(
     // The relay already checked the job binds this digest to this worker;
     // the requester checks again against what it actually submitted.
     let bound = version == ENVIRONMENT_PROTOCOL_VERSION
-        && submitted
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&job_id)
-            .is_some_and(|job| {
-                job.workspace_id == workspace_id
-                    && job.worker == asker.device
-                    && job.inputs.contains(&digest)
-            });
+        && submitted.lock_recover().get(&job_id).is_some_and(|job| {
+            job.workspace_id == workspace_id
+                && job.worker == asker.device
+                && job.inputs.contains(&digest)
+        });
     if !bound {
         return match nonce {
             Some(_) => refuse_proof(send, "not_authorised").await,
@@ -985,10 +982,7 @@ impl ComputeClient {
             if let ComputeEnvelope::Result { result } = &*message
                 && result.binding.requester == self.own_device
             {
-                self.submitted
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&result.binding.job_id);
+                self.submitted.lock_recover().remove(&result.binding.job_id);
             }
             return Ok(ComputeDelivery {
                 workspace_id: Some(workspace_id),
@@ -1044,17 +1038,14 @@ impl ComputeClient {
                 "compute request does not belong to this certified client".into(),
             ));
         }
-        self.submitted
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                spec.job_id,
-                SubmittedJob {
-                    workspace_id: spec.workspace_id,
-                    worker: spec.worker,
-                    inputs: spec.inputs.iter().copied().collect(),
-                },
-            );
+        self.submitted.lock_recover().insert(
+            spec.job_id,
+            SubmittedJob {
+                workspace_id: spec.workspace_id,
+                worker: spec.worker,
+                inputs: spec.inputs.iter().copied().collect(),
+            },
+        );
         self.send(&ComputeEnvelope::Request { spec: spec.clone() })
             .await
     }

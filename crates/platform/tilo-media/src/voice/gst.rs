@@ -817,11 +817,10 @@ mod tests {
 
     use crate::voice::RECEIVE_LIFETIME;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use tilo_lock::MutexRecover as _;
     static DEVICE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn device_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        let guard = DEVICE_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = DEVICE_TESTS.lock_recover();
         wait_for_device_workers();
         guard
     }

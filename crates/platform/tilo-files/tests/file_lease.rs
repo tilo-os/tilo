@@ -21,6 +21,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, MutexGuard, mpsc};
 use std::time::Duration;
 use tilo_files::native::atomic::lease::{AcquireError, FileLease, LeaseMode};
+use tilo_lock::MutexRecover as _;
 
 const CHILD_MARKER: &str = "TILO_ATOMIC_FILE_LEASE_CHILD";
 const CHILD_PATH: &str = "TILO_ATOMIC_FILE_LEASE_PATH";
@@ -32,9 +33,7 @@ static TEST_MUTEX: Mutex<()> = Mutex::new(());
 fn serialize_native_lock_tests() -> MutexGuard<'static, ()> {
     // A concurrently spawned child can briefly inherit another test's open
     // lock across fork. Keep process creation and native leases disjoint.
-    TEST_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    TEST_MUTEX.lock_recover()
 }
 
 fn open(path: &Path) -> File {

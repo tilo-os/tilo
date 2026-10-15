@@ -28,7 +28,8 @@ pub mod watcher;
 #[cfg(test)]
 mod copy_lint_tests;
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+use tilo_lock::MutexRecover as _;
 
 pub use icon::{IconRasteriser, TrayIcon};
 
@@ -161,12 +162,12 @@ impl Tray {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, TrayState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// Where requests are sent from; set by whoever serves the watcher.
     pub fn attach_runtime(&self, runtime: tokio::runtime::Handle) {
-        *self.runtime.lock().unwrap_or_else(PoisonError::into_inner) = Some(runtime);
+        *self.runtime.lock_recover() = Some(runtime);
     }
 
     /// Bumped on every change, so a painter can skip an unchanged tray.
@@ -238,8 +239,7 @@ impl Tray {
         }
         let runtime = self
             .runtime
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .clone()
             .ok_or_else(|| "the tray is not being served".to_string())?;
         let address = item.address;

@@ -320,6 +320,8 @@ pub(crate) const HANG_BOUND: time::Duration = time::Duration::from_secs(30);
 pub use accesskit;
 pub use automerge;
 pub use taffy;
+/// Locks that hand out a poisoned lock's guard (`ui::lock::MutexRecover`).
+pub use tilo_lock as lock;
 /// The async runtime model: the app runtime off the UI thread, the CPU pool,
 /// the file-I/O pool and `block_on` for synchronous entry points.
 pub use tilo_rt as rt;

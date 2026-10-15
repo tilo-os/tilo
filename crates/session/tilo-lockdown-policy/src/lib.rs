@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[expect(
@@ -80,16 +81,12 @@ fn path_identity(path: PathBuf) -> PathBuf {
     path
 }
 fn shared_policy(path: &PathBuf) -> Arc<SharedPolicy> {
-    let mut policies = POLICIES
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut policies = POLICIES.get_or_init(Mutex::default).lock_recover();
     policies.retain(|_, state| {
         Arc::strong_count(state) > 1
             || state
                 .listeners
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .iter()
                 .any(|listener| listener.strong_count() != 0)
     });
@@ -156,11 +153,7 @@ impl PolicyStore {
         }
     }
     pub fn policy(&self) -> LockdownPolicy {
-        self.shared
-            .policy
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.shared.policy.lock_recover().clone()
     }
     /// Durably commit `policy`, then deliver it to every observer in commit order.
     ///

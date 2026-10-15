@@ -19,6 +19,7 @@
 //! driver check their own headers again before using the blob.
 
 use std::path::{Path, PathBuf};
+use tilo_lock::MutexRecover as _;
 
 /// The file format: [`MAGIC`], the 32-byte identity, the BLAKE3 hash of the
 /// blob, then the blob `wgpu::PipelineCache::get_data` returned.
@@ -96,11 +97,7 @@ static UNSAVED: std::sync::Mutex<Vec<AppPipelineCache>> = std::sync::Mutex::new(
 /// Keep every cache held by [`AppPipelineCache::keep_until_built`]: a
 /// renderer has built all it will. Each is written on a background thread.
 pub(crate) fn persist_unsaved() {
-    let unsaved = std::mem::take(
-        &mut *UNSAVED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    );
+    let unsaved = std::mem::take(&mut *UNSAVED.lock_recover());
     for cache in unsaved {
         cache.persist();
     }
@@ -184,10 +181,7 @@ impl AppPipelineCache {
     /// Hold this cache until the renderer it feeds has built the pipelines
     /// it deferred past the first frame; [`persist_unsaved`] then keeps it.
     pub(crate) fn keep_until_built(self) {
-        UNSAVED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(self);
+        UNSAVED.lock_recover().push(self);
     }
 
     /// Keep what this launch compiled, off the first frame's path: on a

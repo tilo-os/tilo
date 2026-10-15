@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Instant;
+use tilo_lock::MutexRecover as _;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PolicyClockError;
@@ -82,9 +83,7 @@ impl PolicyClockTestControl {
     }
     /// The controlled sample, still usable after a panicking test poisoned it.
     fn sample(&self) -> std::sync::MutexGuard<'_, TestSample> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0.lock_recover()
     }
 }
 impl OwnerPolicyClock {

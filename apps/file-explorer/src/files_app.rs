@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use thumbnail::{ThumbKey, ThumbnailService};
+use ui::lock::MutexRecover as _;
 use ui::paint::PaintCtx;
 #[cfg(test)]
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
@@ -7742,10 +7743,7 @@ impl FileExplorerWidget {
         std::thread::spawn(move || {
             let outcome = crate::model::read_merge_preflight(&path, conflict_id)
                 .ok_or_else(|| t("files-merge-review-unavailable"));
-            *result
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some((conflict_id, version_id, outcome));
+            *result.lock_recover() = Some((conflict_id, version_id, outcome));
         });
     }
 

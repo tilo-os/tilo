@@ -4302,10 +4302,7 @@ mod command_path_tests {
             lines: Vec::new(),
             action: None,
         });
-        *widget
-            .merge_preflight_result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+        *widget.merge_preflight_result.lock_recover() = Some((
             conflict_id,
             version_id,
             Ok(fs_protocol::MergePreflightProjectionV1 {
@@ -4326,10 +4323,7 @@ mod command_path_tests {
             }) if *actual_conflict == conflict_id && *actual_version == version_id
         ));
 
-        *widget
-            .merge_preflight_result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+        *widget.merge_preflight_result.lock_recover() = Some((
             conflict_id,
             version_id,
             Ok(fs_protocol::MergePreflightProjectionV1 {
@@ -4362,10 +4356,7 @@ mod command_path_tests {
             action: Some(CollabPanelAction::EmptyTrash),
         });
         widget.merge_preflight_pending = Some((current_conflict, version_id));
-        *widget
-            .merge_preflight_result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+        *widget.merge_preflight_result.lock_recover() = Some((
             stale_conflict,
             version_id,
             Ok(fs_protocol::MergePreflightProjectionV1 {

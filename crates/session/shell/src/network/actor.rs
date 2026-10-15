@@ -31,6 +31,7 @@ use tokio::sync::mpsc;
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
 use crate::network::reachability::{Need, Reachability};
 use neighbour_wire::{Retention, retention};
+use tilo_lock::MutexRecover as _;
 
 #[cfg(test)]
 static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
@@ -1198,8 +1199,7 @@ pub struct WireTally {
 impl WireTally {
     fn note(&self, kind: &'static str) {
         self.counts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .entry(kind)
             .and_modify(|count| *count = count.saturating_add(1))
             .or_insert(1);
@@ -1207,10 +1207,7 @@ impl WireTally {
 
     /// The counts so far, by message kind.
     pub fn snapshot(&self) -> std::collections::BTreeMap<&'static str, u64> {
-        self.counts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.counts.lock_recover().clone()
     }
 }
 
@@ -4709,10 +4706,7 @@ async fn register_content_peer(
 /// Hydrator and the durable catalog, so the shell cannot leave one stale.
 async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
     #[cfg(test)]
-    noted_content_peer_removals()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(relay);
+    noted_content_peer_removals().lock_recover().push(relay);
     if cfg!(test) && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none() {
         return true;
     }
@@ -6803,8 +6797,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(300)).await;
             assert!(
                 !noted_content_peer_removals()
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .contains(&relay.node_addr().id),
                 "an address refresh must retain the enrolled peer's Files route"
             );
@@ -6820,8 +6813,7 @@ mod tests {
                 async {
                     loop {
                         if noted_content_peer_removals()
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .lock_recover()
                             .contains(&relay.node_addr().id)
                         {
                             break;

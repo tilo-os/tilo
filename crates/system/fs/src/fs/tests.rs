@@ -30,12 +30,7 @@ mod availability_control_tests {
     ) {
         tokio::time::timeout(timeout, async {
             loop {
-                if registry
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(record)
-                    .is_some_and(&predicate)
-                {
+                if registry.lock_recover().get(record).is_some_and(&predicate) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -282,8 +277,7 @@ mod availability_control_tests {
                 .with_availability(registry.clone());
 
             let folder = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_dir(ROOT_INO, "offline", 1)
                 .unwrap();
             fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
@@ -292,8 +286,7 @@ mod availability_control_tests {
             // Created after the pin: no direct registry row is needed for the
             // effective projection to inherit the stable directory policy.
             let child = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(folder, "later.txt", None, 0, 2)
                 .unwrap();
             let projected = fs_protocol::AvailabilityProjectionV1::parse_xattr(
@@ -304,11 +297,7 @@ mod availability_control_tests {
 
             drop((fs, registry));
             let reopened = AvailabilityRegistry::open(registry_path).unwrap();
-            let folder_id = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_id_for(folder)
-                .unwrap();
+            let folder_id = namespace.lock_recover().record_id_for(folder).unwrap();
             assert_eq!(
                 reopened.get(folder_id).map(|record| record.policy),
                 Some(AvailabilityPolicy::Pinned)
@@ -323,8 +312,7 @@ mod availability_control_tests {
             let hydrator = Arc::new(Hydrator::new(endpoint, store));
             let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
             let ino = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(ROOT_INO, "shared.txt", None, 0, 1)
                 .unwrap();
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
@@ -339,18 +327,9 @@ mod availability_control_tests {
 
             assert_eq!(fs.check_access(ino, Access::Write), Err(EROFS));
             fs.set_pin_policy(ino, AvailabilityPolicy::Pinned).unwrap();
-            let record_id = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_id_for(ino)
-                .unwrap();
+            let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
             assert_eq!(
-                registry
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(record_id)
-                    .unwrap()
-                    .policy,
+                registry.lock_recover().get(record_id).unwrap().policy,
                 AvailabilityPolicy::Pinned
             );
         }
@@ -791,28 +770,19 @@ mod availability_control_tests {
             let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
                 .with_availability(registry.clone());
             let ino = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(ROOT_INO, "retry.txt", Some(&hash), 17, 1)
                 .unwrap();
-            let record = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_id_for(ino)
-                .unwrap();
+            let record = namespace.lock_recover().record_id_for(ino).unwrap();
 
             fs.retry_transfer(ino).unwrap();
             tilo_test_env::within("the retry completion event", async {
                 loop {
-                    let done = registry
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .get(record)
-                        .is_some_and(|state| {
-                            state.transfer.phase == TransferPhase::Idle
-                                && state.transfer.last_error.is_none()
-                                && state.residency == Residency::Resident { bytes: 17 }
-                        });
+                    let done = registry.lock_recover().get(record).is_some_and(|state| {
+                        state.transfer.phase == TransferPhase::Idle
+                            && state.transfer.last_error.is_none()
+                            && state.residency == Residency::Resident { bytes: 17 }
+                    });
                     if done {
                         break;
                     }
@@ -835,24 +805,14 @@ mod availability_control_tests {
             let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
                 .with_availability(registry.clone());
             let ino = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(ROOT_INO, "empty.txt", None, 0, 1)
                 .unwrap();
-            let record = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_id_for(ino)
-                .unwrap();
+            let record = namespace.lock_recover().record_id_for(ino).unwrap();
 
             fs.retry_transfer(ino).unwrap();
             assert_eq!(
-                registry
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(record)
-                    .unwrap()
-                    .residency,
+                registry.lock_recover().get(record).unwrap().residency,
                 Residency::Resident { bytes: 0 }
             );
         }
@@ -873,15 +833,10 @@ mod availability_control_tests {
             .with_availability(registry.clone());
         let missing = Hash::from([9; 32]);
         let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .create_file(ROOT_INO, "missing.txt", Some(&missing), 4, 1)
             .unwrap();
-        let record = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
+        let record = namespace.lock_recover().record_id_for(ino).unwrap();
 
         fs.retry_transfer(ino).unwrap();
         tilo_test_env::within("the retry failure event", async {
@@ -913,15 +868,10 @@ mod availability_control_tests {
         let hydrator = Arc::new(Hydrator::new(endpoint, Arc::clone(&store)));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .create_file(ROOT_INO, "empty.txt", None, 0, 1)
             .unwrap();
-        let record_id = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
+        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
         let version_id = fs_protocol::FileVersionId::new();
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
@@ -929,11 +879,7 @@ mod availability_control_tests {
         let mut availability = RecordAvailability::new(record_id, RecordKind::File);
         availability.current_version = Some(version_id);
         availability.residency = Residency::Resident { bytes: 0 };
-        registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .put(availability)
-            .unwrap();
+        registry.lock_recover().put(availability).unwrap();
         let mut queue = EvictionQueue::open(dir.path().join("evictions.json")).unwrap();
         let plan = crate::eviction::EvictionPlan {
             record_id,
@@ -960,19 +906,10 @@ mod availability_control_tests {
         // Simulate a new immutable revision arriving after the old request
         // completed but before daemon restart recovery runs.
         let newer_version = fs_protocol::FileVersionId::new();
-        let mut current = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(record_id)
-            .cloned()
-            .unwrap();
+        let mut current = registry.lock_recover().get(record_id).cloned().unwrap();
         current.current_version = Some(newer_version);
         current.residency = Residency::Resident { bytes: 0 };
-        registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .put(current)
-            .unwrap();
+        registry.lock_recover().put(current).unwrap();
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics)
             .with_availability(Arc::clone(&registry))
@@ -980,12 +917,7 @@ mod availability_control_tests {
 
         fs.resume_pending_evictions();
         assert_eq!(
-            registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(record_id)
-                .unwrap()
-                .residency,
+            registry.lock_recover().get(record_id).unwrap().residency,
             Residency::Resident { bytes: 0 }
         );
     }
@@ -1009,15 +941,10 @@ mod share_projection_tests {
             Arc::new(ShareAuthority::open(dir.path().join("share-authority.json")).unwrap());
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .create_file(ROOT_INO, "shared.txt", None, 0, 1)
             .unwrap();
-        let record_id = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
+        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
         let (issuer_key, issuer) = collab_types::generate_keypair();
         let (_, recipient) = collab_types::generate_keypair();
         let token = mint_file_invite(
@@ -1119,21 +1046,13 @@ mod thumb_tests {
             let png = solid_png(600, 400, [40, 130, 220]);
             let mh = store.write_content(&png).await.unwrap().unwrap();
             let ino = {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 ns.create_file(ROOT_INO, "photo.png", Some(&mh), png.len() as u64, 1)
                     .unwrap()
             };
 
             // No thumbnail recorded yet.
-            assert!(
-                namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .thumb_hash(ino)
-                    .is_none()
-            );
+            assert!(namespace.lock_recover().thumb_hash(ino).is_none());
 
             // The metadata path returns a sized PNG preview.
             let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
@@ -1152,8 +1071,7 @@ mod thumb_tests {
             // The thumbnail's blob hash is now on the node (so it gossips), and the
             // blob is a content blob in the store that peers can hydrate.
             let tbh = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .thumb_hash(ino)
                 .expect("thumbnail hash recorded on the node → projects to peers");
             assert!(
@@ -1177,8 +1095,7 @@ mod thumb_tests {
             let manifest = store.write_content(&image).await.unwrap().unwrap();
             let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
             let ino = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(
                     ROOT_INO,
                     "signed.png",
@@ -1187,11 +1104,7 @@ mod thumb_tests {
                     1,
                 )
                 .unwrap();
-            let record_id = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_id_for(ino)
-                .unwrap();
+            let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
             let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let device = ed25519_dalek::SigningKey::from_bytes(&[0x72; 32]);
@@ -1225,8 +1138,7 @@ mod thumb_tests {
 
             assert!(fs.thumbnail_for(ino).is_some());
             let verified = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .thumb_hash(ino)
                 .expect("signed preview is installed in the verified projection");
             let snapshot = publisher.snapshot(record_id).unwrap().unwrap();
@@ -1250,9 +1162,7 @@ mod thumb_tests {
                 let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
                 let mh = store.write_content(&png).await.unwrap().unwrap();
                 let ino = {
-                    let mut ns = namespace
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut ns = namespace.lock_recover();
                     ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
                         .unwrap()
                 };
@@ -1267,9 +1177,7 @@ mod thumb_tests {
             let mh = store2.write_content(&png).await.unwrap().unwrap();
             // Remove the content so it is not local on this mount.
             let ino2 = {
-                let mut ns = namespace2
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace2.lock_recover();
                 ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
                     .unwrap()
             };
@@ -1291,9 +1199,7 @@ mod thumb_tests {
             // A projected image: a hash the store never ingested (not local).
             let projected = iroh_blobs::Hash::from([3u8; 32]);
             let img_ino = {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 ns.create_file(ROOT_INO, "remote.png", Some(&projected), 4096, 1)
                     .unwrap()
             };
@@ -1304,9 +1210,7 @@ mod thumb_tests {
 
             // A non-previewable type is never a thumbnail regardless of content.
             let zip_ino = {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1)
                     .unwrap()
             };
@@ -1337,9 +1241,7 @@ mod thumb_tests {
         // gossiped thumbnail hash.
         let projected = iroh_blobs::Hash::from([5u8; 32]);
         let ino = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut ns = namespace.lock_recover();
             let ino = ns
                 .create_file(ROOT_INO, "big-photo.png", Some(&projected), 9_000_000, 1)
                 .unwrap();
@@ -1387,9 +1289,7 @@ mod predictive_tests {
         {
             let (namespace, fs) = fixture().await;
             let (first, second_hash, third_hash) = {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 let first = ns
                     .create_file(ROOT_INO, "01.png", Some(&Hash::from([1; 32])), 10, 1)
                     .unwrap();
@@ -1416,9 +1316,7 @@ mod predictive_tests {
             const ME: [u8; 32] = [0xA1; 32];
             let (namespace, fs) = fixture().await;
             let (first, visible_hash) = {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 let first = ns
                     .create_file(ROOT_INO, "01.png", Some(&Hash::from([1; 32])), 10, 1)
                     .unwrap();
@@ -1458,9 +1356,7 @@ mod predictive_tests {
             const ME: [u8; 32] = [0xA2; 32];
             let (namespace, fs) = fixture().await;
             let (visible_record, hidden_record) = {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 let folder = ns.create_dir(ROOT_INO, "folder", 1).unwrap();
                 let visible = ns
                     .create_file(folder, "visible.txt", Some(&Hash::from([1; 32])), 10, 1)
@@ -1496,9 +1392,7 @@ mod predictive_tests {
         {
             let (namespace, fs) = fixture().await;
             {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 for index in 0..fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES + 1 {
                     let byte = u8::try_from(index).expect("fixture index fits in one byte");
                     ns.create_file(
@@ -1533,8 +1427,7 @@ mod predictive_tests {
             ));
 
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(ROOT_INO, "new.txt", None, 1, 1)
                 .unwrap();
             assert!(
@@ -1547,8 +1440,7 @@ mod predictive_tests {
             const ME: [u8; 32] = [0xA3; 32];
             let (namespace, fs) = fixture().await;
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(ROOT_INO, "visible.txt", Some(&Hash::from([3; 32])), 3, 1)
                 .unwrap();
             let mut policy = WorkspaceAcl::new();
@@ -1576,9 +1468,7 @@ mod predictive_tests {
             const ME: [u8; 32] = [0xA4; 32];
             let (namespace, fs) = fixture().await;
             let visible_record = {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 // A deliberately large denied prefix must not change either the
                 // public manifest shape or the work of the visible page.
                 for index in 0..(fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES * 2) {
@@ -1614,8 +1504,7 @@ mod predictive_tests {
             // revision, or freshly-issued initial token.  It is indistinguishable
             // to the restricted authority.
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(ROOT_INO, "another-hidden.txt", None, 0, 1)
                 .unwrap();
             fs.refresh_acl_visible_record_index();
@@ -1630,9 +1519,7 @@ mod predictive_tests {
             const ME: [u8; 32] = [0xA5; 32];
             let (namespace, fs) = fixture().await;
             let first_record = {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 let ino = ns.create_file(ROOT_INO, "first.txt", None, 0, 1).unwrap();
                 ns.record_id_for(ino).unwrap()
             };
@@ -1645,8 +1532,7 @@ mod predictive_tests {
             assert!(fs.record_index_by_id_v2(first_record).is_some());
 
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(ROOT_INO, "second.txt", None, 0, 1)
                 .unwrap();
             fs.refresh_acl_visible_record_index();
@@ -1693,9 +1579,7 @@ mod predictive_tests {
             const ME: [u8; 32] = [0xA6; 32];
             let (namespace, fs) = fixture().await;
             {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 for index in 0..=fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES {
                     ns.create_projected_file(
                         ROOT_INO,
@@ -1713,14 +1597,8 @@ mod predictive_tests {
             let fs = fs.with_acl(policy, ME);
             let manifest: fs_protocol::projection::RecordIndexManifestV3 =
                 serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
-            let rebuilds = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_index_rebuild_count();
-            let page_reads = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_index_page_read_count();
+            let rebuilds = namespace.lock_recover().record_index_rebuild_count();
+            let page_reads = namespace.lock_recover().record_index_page_read_count();
             let first: fs_protocol::projection::RecordIndexPageV3 = serde_json::from_slice(
                 &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
                     .unwrap(),
@@ -1742,18 +1620,12 @@ mod predictive_tests {
                     .is_some()
             );
             assert_eq!(
-                namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .record_index_rebuild_count(),
+                namespace.lock_recover().record_index_rebuild_count(),
                 rebuilds,
                 "serving v3 continuations must not rebuild or walk the Automerge corpus"
             );
             assert_eq!(
-                namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .record_index_page_read_count(),
+                namespace.lock_recover().record_index_page_read_count(),
                 page_reads,
                 "manifest, page, and exact record requests use the retained snapshot, never Namespace pages"
             );
@@ -1763,13 +1635,11 @@ mod predictive_tests {
             const ME: [u8; 32] = [0xA7; 32];
             let (namespace, fs) = fixture().await;
             let visible_dir = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_dir(ROOT_INO, "visible", 1)
                 .unwrap();
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(visible_dir, "initial.txt", None, 0, 1)
                 .unwrap();
             let mut policy = WorkspaceAcl::new();
@@ -1778,17 +1648,13 @@ mod predictive_tests {
             let fs = fs.with_sync(sync.clone()).with_acl(policy, ME);
             let before: fs_protocol::projection::RecordIndexManifestV3 =
                 serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
-            let page_reads = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_index_page_read_count();
+            let page_reads = namespace.lock_recover().record_index_page_read_count();
 
             // A denied remote mutation rebuilds privately but has no public
             // generation/token effect. Several notifications coalesce to the
             // latest watch value, not one traversal per received delta.
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(ROOT_INO, "hidden-remote.txt", None, 0, 1)
                 .unwrap();
             for _ in 0..16 {
@@ -1803,18 +1669,14 @@ mod predictive_tests {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
             assert_eq!(hidden.unwrap(), serde_json::to_vec(&before).unwrap());
-            let after_hidden_reads = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_index_page_read_count();
+            let after_hidden_reads = namespace.lock_recover().record_index_page_read_count();
             assert!(
                 after_hidden_reads.saturating_sub(page_reads) <= 2,
                 "a burst must coalesce before rebuilding the retained view"
             );
 
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .create_file(visible_dir, "remote.txt", None, 0, 1)
                 .unwrap();
             let mut updated = None;
@@ -1859,9 +1721,7 @@ mod predictive_tests {
         const ME: [u8; 32] = [0xA9; 32];
         let (namespace, fs) = fixture().await;
         let visible = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut ns = namespace.lock_recover();
             let visible = ns.create_dir(ROOT_INO, "visible", 1).unwrap();
             for index in 0..64 {
                 ns.create_file(visible, format!("shown-{index:03}"), None, 0, 1)
@@ -1876,12 +1736,7 @@ mod predictive_tests {
         policy.grant_read(ME, "/visible");
         let handle = AclHandle::new(policy);
         let fs = fs.with_acl(handle.clone(), ME);
-        let rows = || {
-            namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .indexed_record_count()
-        };
+        let rows = || namespace.lock_recover().indexed_record_count();
         let initial = fs.acl_visible_record_index().unwrap();
         assert_eq!(initial.acl_evaluations, rows());
 
@@ -1894,9 +1749,7 @@ mod predictive_tests {
 
         // A new row and a moved row are the only ones judged again.
         let revealed = {
-            let mut ns = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut ns = namespace.lock_recover();
             ns.create_file(visible, "late.txt", None, 0, 2).unwrap();
             assert!(ns.rename(ROOT_INO, "hidden-000", visible, "revealed.txt", 2));
             ns.entry_at("visible/revealed.txt").unwrap().record_id
@@ -1907,9 +1760,7 @@ mod predictive_tests {
         assert!(incremental.by_id.contains_key(&revealed));
 
         // Judging every row from scratch agrees row for row.
-        *fs.acl_visible_record_index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *fs.acl_visible_record_index.lock_recover() = None;
         fs.refresh_acl_visible_record_index();
         let full = fs.acl_visible_record_index().unwrap();
         assert_eq!(full.acl_evaluations, rows());
@@ -1943,15 +1794,10 @@ mod history_integration_tests {
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .create_file(crate::namespace::ROOT_INO, "before.txt", None, 0, 1)
             .unwrap();
-        let record_id = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
+        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(
             crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
@@ -1976,8 +1822,7 @@ mod history_integration_tests {
         assert_eq!(
             after_edit.versions[1].content_hash,
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .hash_for(ino)
                 .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()))
         );
@@ -2001,13 +1846,7 @@ mod history_integration_tests {
         let after_rename = history.snapshot(record_id).unwrap();
         assert_eq!(after_rename.versions.len(), 3);
         assert_eq!(after_rename.versions[2].provenance, FileProvenance::Rename);
-        assert_eq!(
-            namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_id_for(ino),
-            Some(record_id)
-        );
+        assert_eq!(namespace.lock_recover().record_id_for(ino), Some(record_id));
 
         drop(fs);
         drop(history);
@@ -2150,8 +1989,7 @@ mod record_publisher_integration_tests {
         let original_manifest = store.write_content(original).await.unwrap().unwrap();
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .create_file(
                 crate::namespace::ROOT_INO,
                 "before.txt",
@@ -2160,11 +1998,7 @@ mod record_publisher_integration_tests {
                 1,
             )
             .unwrap();
-        let record_id = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
+        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(crate::history::FileHistoryStore::open(&history_path).unwrap());
@@ -2227,10 +2061,7 @@ mod record_publisher_integration_tests {
             "namespace mutation must wait for durable signed publication"
         );
         assert_eq!(
-            namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .hash_for(ino),
+            namespace.lock_recover().hash_for(ino),
             Some(original_manifest)
         );
         assert_eq!(history.snapshot(record_id).unwrap().versions.len(), 1);
@@ -2245,11 +2076,7 @@ mod record_publisher_integration_tests {
                 .iter()
                 .any(|version| version.provenance == FileProvenance::Edit)
         );
-        let edited_manifest = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .hash_for(ino)
-            .unwrap();
+        let edited_manifest = namespace.lock_recover().hash_for(ino).unwrap();
         assert_eq!(
             after_edit.metadata.as_ref().unwrap().content_hash,
             Some(fs_protocol::ContentHash(*edited_manifest.as_bytes()))
@@ -2283,20 +2110,13 @@ mod record_publisher_integration_tests {
             .unwrap()
             .is_empty()
         );
-        assert_eq!(
-            namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_id_for(ino),
-            Some(record_id)
-        );
+        assert_eq!(namespace.lock_recover().record_id_for(ino), Some(record_id));
         let after_rename = published_snapshot(&repository, &publisher, record_id);
         assert_eq!(after_rename.binding.as_ref().unwrap().name, "after.txt");
         assert_eq!(
             after_rename.binding.as_ref().unwrap().parent,
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .record_id_for(crate::namespace::ROOT_INO)
         );
         assert_eq!(after_rename.versions.len(), 3);
@@ -2311,9 +2131,7 @@ mod record_publisher_integration_tests {
             Some(fs_protocol::ContentHash(*edited_manifest.as_bytes()))
         );
         let installed_revision = {
-            let namespace = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let namespace = namespace.lock_recover();
             let node_id = namespace.id_for_ino(ino).unwrap();
             namespace.content_revision_for_id(node_id)
         };
@@ -2322,10 +2140,7 @@ mod record_publisher_integration_tests {
             "rename installs the exact signed revision while preserving content"
         );
         let sequence_before_restart = repository.highest_sequence(key, &actor).unwrap();
-        let namespace_bytes = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .save();
+        let namespace_bytes = namespace.lock_recover().save();
 
         drop(fs);
         drop(publisher);
@@ -2336,17 +2151,13 @@ mod record_publisher_integration_tests {
             Namespace::from_bytes("restarted-host", &namespace_bytes).unwrap(),
         ));
         let restarted_ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .lookup(crate::namespace::ROOT_INO, "after.txt")
             .unwrap()
             .ino
             .0;
         assert_eq!(
-            namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record_id_for(restarted_ino),
+            namespace.lock_recover().record_id_for(restarted_ino),
             Some(record_id)
         );
         let history = Arc::new(crate::history::FileHistoryStore::open(&history_path).unwrap());
@@ -2396,8 +2207,7 @@ mod record_publisher_integration_tests {
         assert!(!delta.is_empty());
         let created_record = restarted
             .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .record_id_for(created_ino)
             .unwrap();
         let created = publisher.snapshot(created_record).unwrap().unwrap();
@@ -2409,11 +2219,7 @@ mod record_publisher_integration_tests {
             created.versions[0].id
         );
         assert_eq!(
-            restarted
-                .namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .hash_for(created_ino),
+            restarted.namespace.lock_recover().hash_for(created_ino),
             None,
             "the empty signed baseline is visible only through its verified revision"
         );
@@ -2424,8 +2230,7 @@ mod record_publisher_integration_tests {
         assert!(!dir_delta.is_empty());
         let created_dir_record = restarted
             .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .record_id_for(created_dir_ino)
             .unwrap();
         let created_dir = publisher.snapshot(created_dir_record).unwrap().unwrap();
@@ -2477,10 +2282,7 @@ mod record_publisher_integration_tests {
             ),
             Err(EEXIST)
         );
-        let mut namespace = restarted
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut namespace = restarted.namespace.lock_recover();
         assert_eq!(
             namespace
                 .lookup(crate::namespace::ROOT_INO, "after.txt")
@@ -2539,10 +2341,7 @@ mod record_publisher_integration_tests {
                 .is_empty(),
             "the coordinator broadcasts the staged delta itself"
         );
-        let mut namespace = restarted
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut namespace = restarted.namespace.lock_recover();
         assert!(
             namespace
                 .lookup(crate::namespace::ROOT_INO, "after.txt")
@@ -2559,14 +2358,7 @@ mod record_publisher_integration_tests {
         assert!(namespace.ino_for_record_id(created_record).is_none());
         drop(namespace);
         assert!(namespace_path.exists());
-        assert_eq!(
-            journal
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entries()
-                .count(),
-            0
-        );
+        assert_eq!(journal.lock_recover().entries().count(), 0);
         let source_after_replacement = publisher.snapshot(record_id).unwrap().unwrap();
         let victim_after_replacement = publisher.snapshot(created_record).unwrap().unwrap();
         assert_eq!(
@@ -2604,8 +2396,7 @@ mod record_publisher_integration_tests {
         let original_manifest = store.write_content(original).await.unwrap().unwrap();
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .create_file(
                 crate::namespace::ROOT_INO,
                 "conflicted.txt",
@@ -2614,11 +2405,7 @@ mod record_publisher_integration_tests {
                 1,
             )
             .unwrap();
-        let record_id = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
+        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(
@@ -2655,8 +2442,7 @@ mod record_publisher_integration_tests {
 
         fs.commit_content(ino, b"current branch").unwrap();
         let current_version = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .content_revision_for(ino)
             .unwrap()
             .version_id;
@@ -2757,8 +2543,7 @@ mod record_publisher_integration_tests {
         );
         assert_eq!(
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .content_revision_for(ino)
                 .unwrap()
                 .version_id,
@@ -2814,8 +2599,7 @@ mod record_publisher_integration_tests {
         );
         assert!(
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .lookup(
                     crate::namespace::ROOT_INO,
                     keep_both_name("conflicted.txt", target_record)
@@ -2873,8 +2657,7 @@ mod record_publisher_integration_tests {
         assert!(staged_recovery.is_err());
         assert!(
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .lookup(
                     crate::namespace::ROOT_INO,
                     keep_both_name("conflicted.txt", target_record),
@@ -2884,8 +2667,7 @@ mod record_publisher_integration_tests {
         );
         assert_eq!(
             journal
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .get(keep_both_transaction_id)
                 .unwrap()
                 .phase,
@@ -2932,8 +2714,7 @@ mod record_publisher_integration_tests {
         .unwrap();
         let target_name = keep_both_name("conflicted.txt", target_record);
         let target_ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .lookup(crate::namespace::ROOT_INO, &target_name)
             .expect("Keep Both sibling is atomically visible")
             .ino
@@ -3002,14 +2783,7 @@ mod record_publisher_integration_tests {
             source_versions
         );
         assert_eq!(history.snapshot(target_record).unwrap().versions.len(), 1);
-        assert!(
-            journal
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entries()
-                .next()
-                .is_none()
-        );
+        assert!(journal.lock_recover().entries().next().is_none());
         assert!(namespace_path.exists());
 
         // Reopening reconstructs both signed record projections from the
@@ -3060,8 +2834,7 @@ mod record_publisher_integration_tests {
         .with_replacement_transactions(restarted_journal.clone(), namespace_path)
         .unwrap();
         let restarted_source = restarted_namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .ensure_ino_for_record_id(record_id)
             .unwrap();
         restarted
@@ -3088,14 +2861,7 @@ mod record_publisher_integration_tests {
                 .len(),
             1
         );
-        assert!(
-            restarted_journal
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entries()
-                .next()
-                .is_none()
-        );
+        assert!(restarted_journal.lock_recover().entries().next().is_none());
     }
 
     // Shared deterministic merge/recovery scenario used by both supported
@@ -3117,8 +2883,7 @@ mod record_publisher_integration_tests {
         let base_hash = store.write_content(&base_bytes).await.unwrap().unwrap();
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .create_file(
                 crate::namespace::ROOT_INO,
                 name,
@@ -3127,11 +2892,7 @@ mod record_publisher_integration_tests {
                 1,
             )
             .unwrap();
-        let record_id = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
+        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history_path = dir.path().join("history.json");
@@ -3300,21 +3061,13 @@ mod record_publisher_integration_tests {
         assert_eq!(resolution.strategy, fs_protocol::ConflictStrategy::Merge);
         assert_eq!(
             namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .content_revision_for(ino)
                 .unwrap()
                 .version_id,
             resolution.result
         );
-        assert!(
-            journal
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entries()
-                .next()
-                .is_none()
-        );
+        assert!(journal.lock_recover().entries().next().is_none());
         restarted
             .resolve_conflict(
                 ino,
@@ -3892,9 +3645,7 @@ mod read_lock_tests {
     }
 
     fn lock_namespace(namespace: &Arc<Mutex<Namespace>>) -> std::sync::MutexGuard<'_, Namespace> {
-        namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        namespace.lock_recover()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3989,17 +3740,14 @@ mod read_lock_tests {
         } = fixture().await;
         let fs = fs.with_acl(shared_read_policy(), ME);
         let fh = 7;
-        fs.open_file_handles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                fh,
-                OpenFileHandleState {
-                    ino: file,
-                    opened_path: "/shared/a.txt".to_string(),
-                    writable: false,
-                },
-            );
+        fs.open_file_handles.lock_recover().insert(
+            fh,
+            OpenFileHandleState {
+                ino: file,
+                opened_path: "/shared/a.txt".to_string(),
+                writable: false,
+            },
+        );
         assert!(lock_namespace(&namespace).remove(file));
 
         assert_eq!(

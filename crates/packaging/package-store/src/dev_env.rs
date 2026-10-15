@@ -22,6 +22,7 @@
 
 use std::ffi::OsString;
 use std::sync::Mutex;
+use tilo_lock::MutexRecover as _;
 
 /// Whether this build honours developer environment overrides.
 pub const DEV_ENV_OVERRIDES: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
@@ -64,9 +65,7 @@ static WARNED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
 /// Whether this is the first time `name` has been ignored in this process.
 fn first_ignore(name: &'static str) -> bool {
-    let mut warned = WARNED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut warned = WARNED.lock_recover();
     if warned.contains(&name) {
         return false;
     }

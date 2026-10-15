@@ -20,6 +20,7 @@ use tilo_wet_media::{LayerPainter, Painted};
 use ui::vello::peniko::ImageData;
 
 use crate::picture::image_of;
+use ui::lock::MutexRecover as _;
 
 /// What a painted layer is asked to show.
 #[derive(Clone)]
@@ -58,19 +59,16 @@ struct Slot {
 
 impl Slot {
     fn put(&self, painter: LayerPainter, done: Done) {
-        *self.done.lock().unwrap_or_else(PoisonError::into_inner) = Some((painter, done));
+        *self.done.lock_recover() = Some((painter, done));
         self.ready.notify_all();
     }
 
     fn take(&self) -> Option<(LayerPainter, Done)> {
-        self.done
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
+        self.done.lock_recover().take()
     }
 
     fn wait(&self) -> (LayerPainter, Done) {
-        let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut done = self.done.lock_recover();
         loop {
             if let Some(done) = done.take() {
                 return done;

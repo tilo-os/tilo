@@ -1,10 +1,11 @@
 //! A framework app's resource type, by the kind its records name.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 use tilo_resource::{Doc, Kinds, Resource, ResourceKind};
 
 use super::app::{ResourceApp, SeedCx, apply_seed};
+use tilo_lock::MutexRecover as _;
 
 /// `A`'s resource type as a kind a host can look up: hosted by `A`, and an
 /// open resource named as `A` names it ([`ResourceApp::label`]). Every
@@ -33,7 +34,7 @@ static HOSTED: Mutex<(Kinds, Vec<(&'static str, Seed)>)> = Mutex::new((Kinds::ne
 
 /// Remember `A`'s kind and seed; its definition is being created.
 pub(crate) fn register<A: ResourceApp>() {
-    let mut hosted = HOSTED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut hosted = HOSTED.lock_recover();
     hosted.0.insert(resource_kind::<A>());
     let kind = <A::Resource as Resource>::KIND;
     hosted.1.retain(|(known, _)| *known != kind);
@@ -88,8 +89,7 @@ fn seed_scoped(
     room: Option<&str>,
 ) -> Result<(), String> {
     let seed = HOSTED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .1
         .iter()
         .find(|(known, _)| *known == kind)
@@ -104,9 +104,5 @@ fn seed_scoped(
 /// ([`Kinds::get`]) or by its app ([`Kinds::hosted_by`]).
 #[must_use]
 pub fn hosted_kinds() -> Kinds {
-    HOSTED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .0
-        .clone()
+    HOSTED.lock_recover().0.clone()
 }

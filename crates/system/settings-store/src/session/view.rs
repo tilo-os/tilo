@@ -10,7 +10,7 @@
 //! each of those reads used to. Only a host whose copy watch could not start
 //! asks it to look at the copy on a timer as well.
 
-use std::sync::{Arc, PoisonError, mpsc};
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 
 use super::{Committed, SessionSettings};
 use crate::{ChangeOrigin, ChangeSignal, ConditionalUpdate, SectionChange, SettingsSource};
+use tilo_lock::MutexRecover as _;
 
 struct HostView {
     session: Arc<SessionSettings>,
@@ -80,13 +81,7 @@ impl HostView {
             // never grows the queue or blocks the event loop.
             let _ = sender.try_send(());
         }
-        Arc::clone(
-            &self
-                .session
-                .committed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
+        Arc::clone(&self.session.committed.lock_recover())
     }
 }
 

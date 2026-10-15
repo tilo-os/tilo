@@ -270,6 +270,7 @@ mod tests {
     use super::*;
     use crate::shell::nearby_transfer::NearbyTransferStore;
     use std::time::Duration;
+    use tilo_lock::MutexRecover as _;
 
     fn network() -> ShellNetwork {
         crate::shell::network::shell_network_for_test(
@@ -285,9 +286,7 @@ mod tests {
     /// their own.
     fn temporary_store() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
         static REPLACING: Mutex<()> = Mutex::new(());
-        let replacing = REPLACING
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let replacing = REPLACING.lock_recover();
         let root = tempfile::tempdir().expect("spool directory");
         let store = NearbyTransferStore::open(root.path().join("spool"), tilo_clock::unix_now_ms())
             .expect("temporary nearby store");
