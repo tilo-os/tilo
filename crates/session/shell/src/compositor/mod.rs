@@ -72,7 +72,6 @@ pub mod lock_screen;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod metrics;
-pub mod mp4_recording;
 #[cfg(target_os = "linux")]
 pub mod native;
 #[cfg(target_os = "linux")]
