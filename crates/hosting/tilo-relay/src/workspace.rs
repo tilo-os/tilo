@@ -31,15 +31,26 @@ impl Membership {
         self.devices.contains(device)
     }
 
-    /// Replace the membership with a new set. A different set wakes the
-    /// sessions admitted under the old one to re-check
-    /// ([`crate::authority_epoch`]).
+    /// Replace the membership with a new set. A set that leaves out a device
+    /// of the old one wakes the sessions admitted under it to re-check
+    /// ([`crate::authority_epoch`]). One that only adds devices narrows
+    /// nobody's access and wakes nobody: a public room admitting a crowd
+    /// re-audited every member's session for every newcomer.
     pub fn set(&mut self, devices: Vec<[u8; 32]>) {
         if self.devices != devices {
+            let narrowed = leaves_out(&self.devices, &devices);
             self.devices = devices;
-            crate::authority_epoch::bump();
+            if narrowed {
+                crate::authority_epoch::bump();
+            }
         }
     }
+}
+
+/// Whether `next` leaves out a device `previous` lists.
+fn leaves_out(previous: &[[u8; 32]], next: &[[u8; 32]]) -> bool {
+    let kept: std::collections::HashSet<&[u8; 32]> = next.iter().collect();
+    previous.iter().any(|device| !kept.contains(device))
 }
 
 /// One live subscription — the outbound envelope channel a
@@ -1095,6 +1106,17 @@ pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 mod tests {
     use super::*;
     use crate::transport::Envelope;
+
+    /// Only a membership that leaves a device out narrows anyone's access,
+    /// and so wakes the sessions admitted under it.
+    #[test]
+    fn only_a_membership_that_leaves_a_device_out_narrows() {
+        assert!(!leaves_out(&[[1; 32]], &[[1; 32], [2; 32]]));
+        assert!(!leaves_out(&[[1; 32], [2; 32]], &[[2; 32], [1; 32]]));
+        assert!(!leaves_out(&[], &[[3; 32]]));
+        assert!(leaves_out(&[[1; 32], [2; 32]], &[[2; 32], [3; 32]]));
+        assert!(leaves_out(&[[1; 32]], &[]));
+    }
 
     /// An auto-bound workspace is pinned, and every delta a session sends is
     /// a co-edit wrapper: routing one must not reach Automerge's parser,

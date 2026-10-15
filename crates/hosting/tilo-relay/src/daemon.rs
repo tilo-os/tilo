@@ -287,9 +287,22 @@ impl HandshakeTrust {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             next.clone(),
         );
-        if previous != next {
+        if narrows(&previous, &next) {
             crate::authority_epoch::bump();
         }
+    }
+}
+
+/// Whether `next` trusts less than `previous` did: a user root it no longer
+/// lists. One that only adds roots, as each person a public room admits
+/// does, ends nobody's session and announces nothing.
+fn narrows(previous: &TrustPolicy, next: &TrustPolicy) -> bool {
+    match (previous, next) {
+        (TrustPolicy::AllowList { users: before }, TrustPolicy::AllowList { users: after }) => {
+            let after: HashSet<&String> = after.iter().collect();
+            before.iter().any(|user| !after.contains(user))
+        }
+        _ => previous != next,
     }
 }
 
@@ -3108,6 +3121,20 @@ fn parse_iroh_node_id(hex_id: &str) -> Option<PublicKey> {
 mod tests {
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert};
+
+    /// Only a trust policy that drops a root, or changes kind, narrows who
+    /// may stay connected.
+    #[test]
+    fn only_a_policy_that_drops_a_root_narrows() {
+        let list = |users: &[&str]| TrustPolicy::AllowList {
+            users: users.iter().map(|user| (*user).to_owned()).collect(),
+        };
+        assert!(!narrows(&list(&["a"]), &list(&["a", "b"])));
+        assert!(!narrows(&list(&["a", "b"]), &list(&["b", "a"])));
+        assert!(narrows(&list(&["a", "b"]), &list(&["b", "c"])));
+        assert!(narrows(&TrustPolicy::AllowAny, &list(&["a"])));
+        assert!(!narrows(&TrustPolicy::AllowAny, &TrustPolicy::AllowAny));
+    }
 
     fn test_handshake_trust(
         live_policy: Arc<std::sync::RwLock<TrustPolicy>>,

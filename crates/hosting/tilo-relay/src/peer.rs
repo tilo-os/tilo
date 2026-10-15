@@ -2617,8 +2617,88 @@ pub(crate) struct StateDelivery {
     source: Option<StateSource>,
     _budget: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
     live: Arc<std::sync::atomic::AtomicBool>,
+    /// What the fan-out that authorised this delivery under the room's lock
+    /// read; `None` when the writer must authorise it under the lock again.
+    fanned: Option<FanoutStamp>,
 }
+
+/// The state a fan-out authorised its deliveries in: the authority epoch
+/// ([`crate::authority_epoch`]) and the room's membership generation, read
+/// under the room's lock before any recipient was checked.
+///
+/// Everything that authorisation read for a device recipient and a device
+/// author either narrows only with an epoch bump (membership, the room's
+/// admission, subscriptions, revocations, the trust policy, agent
+/// delegations), changes the delivery's own lease flag, or runs out by the
+/// clock, which the writer checks without the lock. So
+/// while the epoch and generation read the same, the writer need not take
+/// the room's lock to authorise the delivery again: a crowd's writers took
+/// it once per member for every commit, and every turn of the room queued
+/// behind them.
+#[derive(Clone)]
+pub(crate) struct FanoutStamp {
+    epoch: u64,
+    generation: crate::membership_watch::DiskGeneration,
+    loaded: u64,
+}
+
+impl FanoutStamp {
+    /// The stamp of a fan-out holding `runtime`'s lock, unless the room's
+    /// membership is read from disk on every authorisation (no live watch
+    /// vouches for it), which only the lock-holding check does.
+    fn of(runtime: &crate::workspace::WorkspaceRuntime) -> Option<Self> {
+        let epoch = crate::authority_epoch::current();
+        if !runtime.membership_is_current() {
+            return None;
+        }
+        Some(Self {
+            epoch,
+            generation: runtime.disk_generation.clone()?,
+            loaded: runtime.loaded_generation?,
+        })
+    }
+
+    /// Whether nothing the fan-out read has announced a change since.
+    fn holds(&self) -> bool {
+        crate::authority_epoch::current() == self.epoch
+            && self.generation.current() == Some(self.loaded)
+    }
+}
+
 impl StateDelivery {
+    /// Whether this delivery is still authorised exactly as its fan-out
+    /// authorised it, decided without the room's lock: its lease is live,
+    /// nothing the fan-out read has changed ([`FanoutStamp`]), and neither
+    /// the recipient's nor the author's certificate or agent delegation has
+    /// run out since. `false` means only that the writer must ask under the
+    /// lock.
+    fn still_fanned(
+        &self,
+        peer: &AuthenticatedPeer,
+        session: &SessionCtx<'_>,
+        workspace_id: u64,
+        now: u64,
+    ) -> bool {
+        let Some(fanned) = &self.fanned else {
+            return false;
+        };
+        self.cleanup.is_none()
+            && peer.role == crate::auth::PeerRole::Device
+            && self.live.load(std::sync::atomic::Ordering::SeqCst)
+            && fanned.holds()
+            && session.trust().principal(peer, workspace_id, now).is_ok()
+            && self.source.as_ref().is_none_or(|source| {
+                source.federation.is_none()
+                    && source.peer.role == crate::auth::PeerRole::Device
+                    && source.alive()
+                    && source
+                        .trust()
+                        .principal(&source.peer, workspace_id, now)
+                        .is_ok()
+                    && source.trust().principal(peer, workspace_id, now).is_ok()
+            })
+    }
+
     fn current_subscription(
         &self,
         runtime: &crate::workspace::WorkspaceRuntime,
@@ -4020,6 +4100,7 @@ async fn publish_checkpoint_commit(
             break;
         };
         let mut runtime = crate::workspace_io::fresh_membership(workspace).await?;
+        let fanned = FanoutStamp::of(&runtime);
         if !source.authorized(&runtime) {
             if activating {
                 return Err(crate::persistence::error(
@@ -4096,6 +4177,7 @@ async fn publish_checkpoint_commit(
                 source: Some(source.clone()),
                 _budget: budget.clone(),
                 live: target.live.clone(),
+                fanned: fanned.clone(),
             };
             match target.tx.try_send(delivery) {
                 Ok(()) => {
@@ -5117,6 +5199,7 @@ async fn enqueue_state_inner(
                     // Every hydration/worker wait precedes a fresh current-source,
                     // recipient membership and exact subscriber-channel fence.
                     let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+                    let fanned = FanoutStamp::of(&runtime);
                     if source.as_ref().is_some_and(|source| !source.authorized(&runtime)) {
                         if activating { return Err(crate::persistence::error("activation source authorization changed")); }
                         break;
@@ -5179,7 +5262,7 @@ async fn enqueue_state_inner(
                         }
                         let delivery = StateDelivery {
                             envelope: envelope.clone(), cleanup: commit.pending.remove(recipient), source: source.clone(),
-                            _budget: budget.clone(), live: target.live.clone(),
+                            _budget: budget.clone(), live: target.live.clone(), fanned: fanned.clone(),
                         };
                         match target.tx.try_send(delivery) {
                             Ok(()) => {
@@ -5446,8 +5529,10 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
 
 /// Write `run`, queued deliveries of one room in order, authorised under
 /// one membership read: authorised one by one, a room's every commit took
-/// its lock once per member, and a crowd's writers queued on it.
-#[expect(
+/// its lock once per member, and a crowd's writers queued on it. A run whose
+/// every delivery is still authorised as its fan-out authorised it
+/// ([`StateDelivery::still_fanned`]) is written without the room's lock.
+#[allow(
     clippy::significant_drop_tightening,
     reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
 )]
@@ -5462,13 +5547,6 @@ async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
     let Some(workspace_id) = run.first().and_then(delivery_room) else {
         return Ok(());
     };
-    let workspace = session
-        .workspaces
-        .lock()
-        .await
-        .get(&workspace_id)
-        .cloned()
-        .ok_or_else(|| PeerError::Protocol("state workspace disappeared".into()))?;
     if crate::persistence::correlated_diagnostics() {
         for delivery in &run {
             if let Envelope::Delta { authored_at_ns, .. } = &*delivery.envelope {
@@ -5476,39 +5554,18 @@ async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
             }
         }
     }
-    let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
-    if !session.admits(&runtime, peer, RoomOperation::State) {
-        return Ok(());
-    }
-    let mut accepted = Vec::with_capacity(run.len());
-    for delivery in run {
-        // A connection can unsubscribe and subscribe again on the same
-        // channel. Check the captured lease after the membership wait, before
-        // either writing or fencing: stale work must not affect the
-        // replacement subscription.
-        if delivery_room(&delivery) != Some(workspace_id)
-            || !delivery.current_subscription(&runtime, peer, session.outbound)
-        {
-            continue;
-        }
-        if delivery
-            .source
-            .as_ref()
-            .is_some_and(|source| !source.authorized(&runtime))
-        {
-            if matches!(&delivery.envelope, LiveEnvelope::Selected(_)) {
-                // CURRENT already committed this activation. A missing half
-                // cannot be retried live after semantic suppression; reconnect
-                // needs the durable basis. The exact recipient lease was
-                // checked above.
-                let _ = session.disconnect.try_send(());
-                runtime.remove_subscriber_session(&peer.device_public_key, session.outbound);
-            }
-            continue;
-        }
-        accepted.push(delivery);
-    }
-    drop(runtime);
+    let now = unix_now_ns();
+    let (accepted, workspace) = if run.iter().all(|delivery| {
+        delivery_room(delivery) == Some(workspace_id)
+            && delivery.still_fanned(peer, session, workspace_id, now)
+    }) {
+        // None of them has queue entries to retire.
+        (run, None)
+    } else {
+        let (accepted, workspace) =
+            authorize_state_deliveries(run, workspace_id, peer, session).await?;
+        (accepted, Some(workspace))
+    };
     if accepted.is_empty() {
         return Ok(());
     }
@@ -5554,7 +5611,66 @@ async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
         .into_iter()
         .filter(|delivery| delivery.cleanup.is_some())
         .collect();
-    retire_written(cleanups, &workspace, peer, session).await
+    match workspace {
+        Some(workspace) => retire_written(cleanups, &workspace, peer, session).await,
+        None => Ok(()),
+    }
+}
+
+/// The deliveries of `run` the recipient may still be written, decided under
+/// one membership read of its room, with the room.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+)]
+async fn authorize_state_deliveries(
+    run: Vec<StateDelivery>,
+    workspace_id: u64,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<(Vec<StateDelivery>, SharedWorkspace), PeerError> {
+    let workspace = session
+        .workspaces
+        .lock()
+        .await
+        .get(&workspace_id)
+        .cloned()
+        .ok_or_else(|| PeerError::Protocol("state workspace disappeared".into()))?;
+    let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+    if !session.admits(&runtime, peer, RoomOperation::State) {
+        drop(runtime);
+        return Ok((Vec::new(), workspace));
+    }
+    let mut accepted = Vec::with_capacity(run.len());
+    for delivery in run {
+        // A connection can unsubscribe and subscribe again on the same
+        // channel. Check the captured lease after the membership wait, before
+        // either writing or fencing: stale work must not affect the
+        // replacement subscription.
+        if delivery_room(&delivery) != Some(workspace_id)
+            || !delivery.current_subscription(&runtime, peer, session.outbound)
+        {
+            continue;
+        }
+        if delivery
+            .source
+            .as_ref()
+            .is_some_and(|source| !source.authorized(&runtime))
+        {
+            if matches!(&delivery.envelope, LiveEnvelope::Selected(_)) {
+                // CURRENT already committed this activation. A missing half
+                // cannot be retried live after semantic suppression; reconnect
+                // needs the durable basis. The exact recipient lease was
+                // checked above.
+                let _ = session.disconnect.try_send(());
+                runtime.remove_subscriber_session(&peer.device_public_key, session.outbound);
+            }
+            continue;
+        }
+        accepted.push(delivery);
+    }
+    drop(runtime);
+    Ok((accepted, workspace))
 }
 
 /// Retire the durable queue entries of `written` deliveries. Enqueue is

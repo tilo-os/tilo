@@ -24,7 +24,7 @@
 //! ([`tilo_relay_protocol::live::SealedLiveFrame`]): only their clear kind,
 //! sequence and record are read, never their content.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -201,6 +201,13 @@ impl LiveGrants {
     }
 
     /// Observe every grant once.
+    ///
+    /// The relay's room registry is read once, and each room is locked once
+    /// for all of its grants. A grant at a time, every observation took both
+    /// locks once per grant, and a public room's crowd is observed once per
+    /// guest's grant and per announced change: a room filling to 300 took
+    /// its lock some hundred thousand times for it, and the room's own
+    /// commits and replays queued behind each turn.
     pub(crate) async fn observe(&self, sessions: &Sessions) {
         let grants: Vec<Arc<Grant>> = self
             .grants
@@ -211,17 +218,51 @@ impl LiveGrants {
             .collect();
         let open: HashMap<[u8; 32], AuthenticatedPeer> =
             sessions.open_devices().into_iter().collect();
+        let mut rooms: BTreeMap<u64, Vec<(Arc<Grant>, &AuthenticatedPeer)>> = BTreeMap::new();
         for grant in grants {
-            let permitted = grant.expires > Instant::now()
-                && match open.get(&grant.session) {
-                    Some(peer) if peer.device_public_key == grant.device => {
-                        admitted_to(sessions, peer, grant.workspace_id, grant.plane).await
-                    }
-                    Some(_) | None => false,
-                };
-            // Update only grants this observation checked. A grant issued
-            // while admission awaits a workspace lock keeps its own decision.
-            grant.permitted.store(permitted, Ordering::Release);
+            match open.get(&grant.session) {
+                Some(peer)
+                    if peer.device_public_key == grant.device && grant.expires > Instant::now() =>
+                {
+                    rooms
+                        .entry(grant.workspace_id)
+                        .or_default()
+                        .push((grant, peer));
+                }
+                // Update only grants this observation checked. A grant issued
+                // while admission awaits a workspace lock keeps its own
+                // decision.
+                Some(_) | None => grant.permitted.store(false, Ordering::Release),
+            }
+        }
+        if rooms.is_empty() {
+            return;
+        }
+        let relay = &sessions.context().relay;
+        let workspaces: Vec<_> = {
+            let registry = relay.workspaces.lock().await;
+            rooms
+                .into_iter()
+                .map(|(workspace_id, grants)| (registry.get(&workspace_id).cloned(), grants))
+                .collect()
+        };
+        let trust = relay.trust();
+        for (workspace, grants) in workspaces {
+            let Some(workspace) = workspace else {
+                for (grant, _) in grants {
+                    grant.permitted.store(false, Ordering::Release);
+                }
+                continue;
+            };
+            let workspace = workspace.lock().await;
+            for (grant, peer) in grants {
+                // Expiry is read again: the room's lock may have been a wait.
+                let permitted = grant.expires > Instant::now()
+                    && room_access::decide(&workspace, &trust, peer, grant.plane)
+                        .admitted();
+                grant.permitted.store(permitted, Ordering::Release);
+            }
+            drop(workspace);
         }
     }
 }
