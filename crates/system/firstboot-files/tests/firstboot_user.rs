@@ -210,8 +210,11 @@ impl Transaction {
             .env("PATH", path)
             .output()
             .unwrap();
-        let text = String::from_utf8_lossy(&output.stdout).into_owned()
-            + &String::from_utf8_lossy(&output.stderr);
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(!text.contains(&hash()), "the hash leaked: {text}");
         output
     }
@@ -512,6 +515,12 @@ fn run_transport(root: &Path, full_name: bool, seeded_home: bool, fail_password:
         )
         .output()
         .unwrap();
+    assert_transport(root, full_name, fail_password, &output);
+    output
+}
+
+/// What every credential-transport run must show, whatever its outcome.
+fn assert_transport(root: &Path, full_name: bool, fail_password: bool, output: &Output) {
     let arguments: Vec<String> = read(&root.join("useradd.args"))
         .lines()
         .map(str::to_owned)
@@ -520,8 +529,14 @@ fn run_transport(root: &Path, full_name: bool, seeded_home: bool, fail_password:
         !arguments.contains(&hash()),
         "password hashes must not be process arguments"
     );
-    let value =
-        |flag: &str| arguments[arguments.iter().position(|a| a == flag).unwrap() + 1].clone();
+    let value = |flag: &str| {
+        arguments
+            .iter()
+            .skip_while(|a| *a != flag)
+            .nth(1)
+            .unwrap()
+            .clone()
+    };
     let lock = value("-p");
     let token = lock.strip_prefix("!tilo-firstboot-").unwrap();
     assert!(
@@ -536,15 +551,17 @@ fn run_transport(root: &Path, full_name: bool, seeded_home: bool, fail_password:
     assert!(arguments.iter().any(|a| a == "-M"));
     assert!(!arguments.iter().any(|a| a == "-m"));
     assert_eq!(arguments.iter().any(|a| a == "-c"), full_name);
-    let text = String::from_utf8_lossy(&output.stdout).into_owned()
-        + &String::from_utf8_lossy(&output.stderr);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(!text.contains(&hash()));
     assert_eq!(read(&root.join("chpasswd.args")), "--encrypted\n");
     assert_eq!(
         read(&root.join("password-stdin")),
         format!("fixtureuser:{}\n", hash())
     );
-    output
 }
 
 #[test]

@@ -55,16 +55,9 @@ fn write_complete(
     directory: BorrowedFd<'_>,
     name: &OsStr,
     content: &[u8],
-    mode: u32,
+    mode: Mode,
 ) -> Result<()> {
-    write_file(
-        &System,
-        directory,
-        name,
-        &mut &content[..],
-        Mode::from_raw_mode(mode.try_into().unwrap()),
-        me(),
-    )
+    write_file(&System, directory, name, &mut &content[..], mode, me())
 }
 
 /// Hands out three bytes, then fails like an interrupted copy.
@@ -122,7 +115,14 @@ fn interrupted_file_copy_has_no_final_and_retry_is_complete() {
         &System,
         directory.as_fd(),
         OsStr::new("default"),
-        &mut |name| write_complete(directory.as_fd(), name, b"complete", 0o640),
+        &mut |name| {
+            write_complete(
+                directory.as_fd(),
+                name,
+                b"complete",
+                Mode::from_raw_mode(0o640),
+            )
+        },
     )
     .unwrap();
     assert_eq!(fs::read(work.path().join("default")).unwrap(), b"complete");
@@ -189,7 +189,14 @@ fn killed_partial_temporary_never_becomes_default_or_intent() {
             &System,
             directory.as_fd(),
             OsStr::new(name),
-            &mut |temporary| write_complete(directory.as_fd(), temporary, b"complete", 0o600),
+            &mut |temporary| {
+                write_complete(
+                    directory.as_fd(),
+                    temporary,
+                    b"complete",
+                    Mode::from_raw_mode(0o600),
+                )
+            },
         )
         .unwrap();
         assert_eq!(fs::read(work.path().join(name)).unwrap(), b"complete");
