@@ -192,9 +192,10 @@ build, not only the one that runs agents.
 
 The suite that holds a hosted relay to this is
 `crates/hosting/tilo-relay/tests/tenant_isolation.rs`: one relay governing
-two tenants' rooms, where each tenant's administrator, member and the
-host's delegated agent try every administration command, subscription,
-write, catalogue, action and compute door against the other room, and
+two tenants' rooms, where a member one room lets invite, a member of the
+other and the host's delegated agent try every governance, host and member
+action, the administration door, subscription, write, catalogue and
+compute door against the room that is not theirs, and
 every refusal is checked against that room's governance afterwards. The
 `Security / tenant and agent isolation` workflow
 (`.forgejo/workflows/security-isolation.yml`) runs it nightly and on

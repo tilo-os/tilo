@@ -30,16 +30,17 @@ use std::path::Path;
 use std::time::Duration;
 
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
-use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     CatalogueQuery, InvokeArgument, InvokeRequest, ROOM_GOVERNANCE_PROVIDER, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, room_governance_resource,
 };
+use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay::rooms::{
-    CancelInvitationRequest, GrantAppAuthorshipRequest, IssueInvitationRequest, IssuedInvitation,
-    RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand, RoomReply, RoomSummary,
-    Rooms, SetMemberRoleRequest,
+    CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, ENTER_ROOM, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER,
+    HOST_ROOMS_RESOURCE, IssueInvitationRequest, IssuedInvitation, LIST_ROOMS,
+    MEMBER_ACTIONS_PROVIDER, RECORD_EFFECT_RECEIPT, RemoveMemberRequest, RoomAdminClient,
+    RoomAdminError, RoomCommand, RoomReply, RoomSummary, Rooms, member_resource,
 };
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
@@ -184,72 +185,6 @@ async fn governance(rooms: &Rooms, host: &TestDevice, room: &str) -> String {
     format!("{generation} {members:?} {pending:?} {:?}", summary.members)
 }
 
-/// Every administration command a device could send about `room`, each
-/// with request identifiers no earlier request used.
-fn every_command(room: &RoomSummary, victim: [u8; 32], invite_id: [u8; 32]) -> Vec<RoomCommand> {
-    let room = room.room.clone();
-    let expires_at_ns = tilo_clock::unix_now_ns()
-        .checked_add(600_000_000_000)
-        .unwrap();
-    vec![
-        RoomCommand::List,
-        RoomCommand::Create {
-            name: "Squatter".into(),
-        },
-        RoomCommand::Enter { room: room.clone() },
-        RoomCommand::Invite {
-            room: room.clone(),
-            request: IssueInvitationRequest {
-                request_id: [0xA1; 32],
-                role: MemberRole::Viewer,
-                recipient_user_public_key: None,
-                invitee_name: None,
-                inviter_name: None,
-                expires_at_ns,
-            },
-        },
-        RoomCommand::Cancel {
-            room: room.clone(),
-            request: CancelInvitationRequest {
-                request_id: [0xA2; 32],
-                invite_id,
-            },
-        },
-        RoomCommand::Pending { room: room.clone() },
-        RoomCommand::SetRole {
-            room: room.clone(),
-            request: SetMemberRoleRequest {
-                request_id: [0xA3; 32],
-                user_public_key: victim,
-                role: MemberRole::Viewer,
-            },
-        },
-        RoomCommand::Remove {
-            room: room.clone(),
-            request: RemoveMemberRequest {
-                request_id: [0xA4; 32],
-                user_public_key: victim,
-            },
-        },
-        RoomCommand::ClaimTopologyNamespace {
-            room: room.clone(),
-            salt: 0x00A5,
-        },
-        RoomCommand::RecordEffectReceipt {
-            room: room.clone(),
-            invocation: uuid::Uuid::new_v4(),
-            redacted: br#"{"status":"completed"}"#.to_vec(),
-        },
-        RoomCommand::GrantAppAuthorship {
-            room,
-            request: GrantAppAuthorshipRequest {
-                request_id: [0xA6; 32],
-                app: "so.tilo.notes".into(),
-            },
-        },
-    ]
-}
-
 /// The relay's answer to `command` from `admin`. A transport failure is
 /// neither a grant nor a refusal, so the exchange is tried again, a few
 /// times, before its error is the answer; a refusal or a grant is final.
@@ -269,24 +204,76 @@ async fn administer(
     admin.send(relay.node_addr(), command).await
 }
 
-/// `admin` sends every command about `room`; each must be refused.
-async fn every_command_refused(
+/// `admin` asks the administration door, whose one remaining command is
+/// removing a member, to remove `victim` from `room`: it must be refused.
+async fn removal_refused(
     who: &str,
     admin: &RoomAdminClient,
     relay: &Relay,
     room: &RoomSummary,
     victim: [u8; 32],
-    invite_id: [u8; 32],
 ) {
-    for command in every_command(room, victim, invite_id) {
-        let name = format!("{command:?}");
-        let answer = administer(admin, relay, command).await;
-        assert!(
-            matches!(answer, Err(RoomAdminError::Refused(_))),
-            "{who} must be refused {name} in room {}: {answer:?}",
-            room.name
-        );
-    }
+    let answer = administer(
+        admin,
+        relay,
+        RoomCommand::Remove {
+            room: room.room.clone(),
+            request: RemoveMemberRequest {
+                request_id: [0xA4; 32],
+                user_public_key: victim,
+            },
+        },
+    )
+    .await;
+    assert!(
+        matches!(answer, Err(RoomAdminError::Refused(_))),
+        "{who} must be refused removing a member of {}: {answer:?}",
+        room.name
+    );
+}
+
+/// An invocation of `action` on `resource` of `provider` with `argument`.
+fn invocation(
+    provider: &str,
+    resource: String,
+    action: &str,
+    argument: serde_json::Value,
+) -> RemoteActionMessage {
+    let serde_json::Value::Object(argument) = argument else {
+        panic!("arguments are an object");
+    };
+    RemoteActionMessage::Invoke(InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: provider.into(),
+            address: ActionAddress::new(resource, action),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    })
+}
+
+/// Whether `answer` is a receipt of an action that ran.
+fn completed(answer: &RemoteActionMessage) -> bool {
+    matches!(
+        answer,
+        RemoteActionMessage::Receipt(receipt)
+            if matches!(receipt.status, ReceiptStatus::Completed { .. })
+    )
+}
+
+/// Whether `answer` is a receipt of an action the relay refused.
+fn rejected(answer: &RemoteActionMessage) -> bool {
+    matches!(
+        answer,
+        RemoteActionMessage::Receipt(receipt)
+            if matches!(receipt.status, ReceiptStatus::Rejected { .. })
+    )
 }
 
 /// A retained delta carrying `marker`, as a device publishes one.
@@ -518,36 +505,119 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
     let t = TwoTenants::start().await;
     let rooms = t.rooms();
     let before = t.globex_governance().await;
+    let ann = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
 
-    // Positive control: Ann governs her own room through the same door.
+    // Positive control: Ann governs her own room through the same actions.
+    let own = invocation(
+        ROOM_GOVERNANCE_PROVIDER,
+        room_governance_resource(&t.acme.room),
+        "invitation.list",
+        serde_json::json!({}),
+    );
+    to_host(&ann, &t.host, t.acme.workspace_id, own);
+    let own = action_answer(&ann).await;
+    assert!(
+        completed(&own),
+        "Ann lists her own room's invitations: {own:?}"
+    );
+
+    // Globex's governance, the host's own operations on Globex and a
+    // member's own business there: every one rejected, from Ann's room.
+    let globex = t.globex.room.as_str();
+    let probes = [
+        (
+            ROOM_GOVERNANCE_PROVIDER,
+            room_governance_resource(globex),
+            "invite",
+            serde_json::json!({ "role": "viewer" }),
+        ),
+        (
+            ROOM_GOVERNANCE_PROVIDER,
+            room_governance_resource(globex),
+            "invitation.list",
+            serde_json::json!({}),
+        ),
+        (
+            ROOM_GOVERNANCE_PROVIDER,
+            room_governance_resource(globex),
+            "invitation.cancel",
+            serde_json::json!({ "invite": hex::encode(t.carol_invitation.invite_id) }),
+        ),
+        (
+            ROOM_GOVERNANCE_PROVIDER,
+            room_governance_resource(globex),
+            governance::SET_ROLE,
+            serde_json::json!({ "person": hex::encode(t.bob.user_pk), "role": "viewer" }),
+        ),
+        (
+            HOST_ACTIONS_PROVIDER,
+            HOST_ROOMS_RESOURCE.to_owned(),
+            LIST_ROOMS,
+            serde_json::json!({}),
+        ),
+        (
+            HOST_ACTIONS_PROVIDER,
+            HOST_ROOMS_RESOURCE.to_owned(),
+            CREATE_ROOM,
+            serde_json::json!({ "name": "Squatter" }),
+        ),
+        (
+            HOST_ACTIONS_PROVIDER,
+            HOST_ROOMS_RESOURCE.to_owned(),
+            ENTER_ROOM,
+            serde_json::json!({ "room": globex }),
+        ),
+        (
+            HOST_ACTIONS_PROVIDER,
+            HOST_ROOMS_RESOURCE.to_owned(),
+            GRANT_APP_AUTHORSHIP,
+            serde_json::json!({ "room": globex, "app": "so.tilo.notes" }),
+        ),
+        (
+            MEMBER_ACTIONS_PROVIDER,
+            member_resource(globex),
+            CLAIM_TOPOLOGY_NAMESPACE,
+            serde_json::json!({ "salt": 165 }),
+        ),
+        (
+            MEMBER_ACTIONS_PROVIDER,
+            member_resource(globex),
+            RECORD_EFFECT_RECEIPT,
+            serde_json::json!({
+                "invocation": uuid::Uuid::new_v4().to_string(),
+                "redacted": r#"{"status":"completed"}"#,
+            }),
+        ),
+    ];
+    for (provider, resource, action, argument) in probes {
+        to_host(
+            &ann,
+            &t.host,
+            t.acme.workspace_id,
+            invocation(provider, resource, action, argument),
+        );
+        let answer = action_answer(&ann).await;
+        assert!(
+            rejected(&answer),
+            "Ann ran {provider} {action} on Globex: {answer:?}"
+        );
+    }
+
+    // The administration door's one command, removing a member, is refused.
     let ann_admin = RoomAdminClient::new(
         device_endpoint(&t.ann_laptop).await,
         t.ann_laptop.cert.clone(),
     );
-    let own = administer(
-        &ann_admin,
-        &t.relay,
-        RoomCommand::Pending {
-            room: t.acme.room.clone(),
-        },
-    )
-    .await;
-    assert!(
-        matches!(own, Ok(RoomReply::Pending(_))),
-        "Ann lists her own room's invitations: {own:?}"
-    );
-
-    // Enumerate, administer, enter or record anything in Globex: refused,
-    // and Globex's governance is exactly what it was.
-    every_command_refused(
+    removal_refused(
         "Acme's inviter",
         &ann_admin,
         &t.relay,
         &t.globex,
         t.bob.user_pk,
-        t.carol_invitation.invite_id,
     )
     .await;
+
+    // Nothing of that changed Globex.
     assert_eq!(t.globex_governance().await, before);
     assert_eq!(rooms.list().await.len(), 2, "no room was created");
 
@@ -827,26 +897,51 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
     t.relay.register_agent(delegation).unwrap();
 
     // An agent governs nothing, not even the room it is delegated, and it
-    // is no host person: not one administration command is its to send.
+    // is no host person: the administration door refuses it removing anyone,
+    // and the one decision every door asks refuses it the host's
+    // operations and either room's governance.
     let admin = RoomAdminClient::new(device_endpoint(&agent).await, agent.cert.clone());
-    every_command_refused(
-        "the agent",
-        &admin,
-        &t.relay,
-        &t.acme,
-        t.ann.user_pk,
-        t.carol_invitation.invite_id,
-    )
-    .await;
-    every_command_refused(
-        "the agent",
-        &admin,
-        &t.relay,
-        &t.globex,
-        t.bob.user_pk,
-        t.carol_invitation.invite_id,
-    )
-    .await;
+    removal_refused("the agent", &admin, &t.relay, &t.acme, t.ann.user_pk).await;
+    removal_refused("the agent", &admin, &t.relay, &t.globex, t.bob.user_pk).await;
+    let rooms = t.rooms();
+    for room in [&t.acme.room, &t.globex.room] {
+        let expires_at_ns = tilo_clock::unix_now_ns()
+            .checked_add(600_000_000_000)
+            .unwrap();
+        let issued = rooms
+            .issue(
+                room,
+                &agent.cert,
+                IssueInvitationRequest {
+                    request_id: [0xB1; 32],
+                    role: MemberRole::Viewer,
+                    recipient_user_public_key: None,
+                    invitee_name: None,
+                    inviter_name: None,
+                    expires_at_ns,
+                },
+            )
+            .await;
+        assert!(issued.is_err(), "the agent invited into {room}");
+        let administrator = rooms
+            .set_member_administrator(room, &agent.cert, [0xB2; 32], t.ann.user_pk)
+            .await;
+        assert!(
+            administrator.is_err(),
+            "the agent made an administrator in {room}"
+        );
+        let removed = rooms
+            .remove_member(
+                room,
+                &agent.cert,
+                RemoveMemberRequest {
+                    request_id: [0xB3; 32],
+                    user_public_key: t.bob.user_pk,
+                },
+            )
+            .await;
+        assert!(removed.is_err(), "the agent removed a member of {room}");
+    }
     assert_eq!(t.globex_governance().await, before);
     assert_eq!(
         governance(&t.rooms(), &t.host, &t.acme.room).await,
