@@ -78,7 +78,10 @@ fn policy(lib_path: &Path, catalog: Option<&Path>) -> confine::Policy {
     // The image installs the catalog inside a system font directory, which
     // already covers it; a development run reads the checkout's copy.
     read_only.extend(catalog.map(Path::to_path_buf));
-    confine::Policy { read_only }
+    confine::Policy {
+        read_only,
+        socket_pairs: false,
+    }
 }
 
 /// Pixel buffers the client attached, mapped writable once.

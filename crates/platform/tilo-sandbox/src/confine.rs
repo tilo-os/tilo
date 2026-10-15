@@ -21,6 +21,12 @@ use std::path::PathBuf;
 pub struct Policy {
     /// Files and directories (recursively) the helper may read.
     pub read_only: Vec<PathBuf>,
+    /// The helper may make connected `AF_UNIX` socket pairs, which a media
+    /// framework wakes its own threads through (every `GStreamer` bus and
+    /// clock makes one). A pair has no address and reaches nothing outside
+    /// the process; macOS allows them to every helper, Linux only with
+    /// this.
+    pub socket_pairs: bool,
 }
 
 /// Why a start-up step failed.
@@ -55,6 +61,38 @@ pub fn detach() -> Result<(), ConfineError> {
 /// [`ConfineError::Setup`] when a limit cannot be set.
 pub fn limit_resources(max_open_files: u64) -> Result<(), ConfineError> {
     sys::limit_resources(max_open_files).map_err(ConfineError::Setup)
+}
+
+/// Cap the calling process's address space at `bytes`, so a helper that
+/// runs away with memory fails its own allocations instead of the host's.
+/// Returns whether the platform enforces it: Linux does (`RLIMIT_AS`);
+/// macOS accepts the limit but does not enforce it, and a GPU process maps
+/// far more address space than it uses, so it is not set there.
+///
+/// # Errors
+///
+/// [`ConfineError::Setup`] when Linux refuses the limit.
+pub fn limit_address_space(bytes: u64) -> Result<bool, ConfineError> {
+    #[cfg(target_os = "linux")]
+    {
+        let limit = libc::rlimit {
+            rlim_cur: bytes as libc::rlim_t,
+            rlim_max: bytes as libc::rlim_t,
+        };
+        // SAFETY: setrlimit with a valid struct.
+        if unsafe { libc::setrlimit(libc::RLIMIT_AS, &raw const limit) } != 0 {
+            return Err(ConfineError::Setup(format!(
+                "setrlimit(RLIMIT_AS): {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(true)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bytes;
+        Ok(false)
+    }
 }
 
 /// Confine the calling process to `policy`, irreversibly, for it and every
@@ -122,7 +160,7 @@ mod sys {
 
     pub fn confine(policy: &Policy) -> Result<(), ConfineError> {
         confine_filesystem(policy).map_err(ConfineError::NotEnforced)?;
-        confine_syscalls().map_err(ConfineError::NotEnforced)
+        confine_syscalls(policy.socket_pairs).map_err(ConfineError::NotEnforced)
     }
 
     fn confine_filesystem(policy: &Policy) -> Result<(), String> {
@@ -141,8 +179,13 @@ mod sys {
         }
     }
 
-    fn confine_syscalls() -> Result<(), String> {
-        let program = sandbox_core::seccomp::parser_program().map_err(|e| e.to_string())?;
+    fn confine_syscalls(socket_pairs: bool) -> Result<(), String> {
+        let program = if socket_pairs {
+            sandbox_core::seccomp::parser_program_with_socket_pairs()
+        } else {
+            sandbox_core::seccomp::parser_program()
+        }
+        .map_err(|e| e.to_string())?;
         sandbox_core::seccomp::install(&program).map_err(|e| e.to_string())
     }
 }
@@ -400,6 +443,7 @@ mod tests {
         let allowed = root.join("allowed");
         let policy = Policy {
             read_only: vec![allowed.clone()],
+            socket_pairs: false,
         };
         if detach().is_err() {
             return 200;

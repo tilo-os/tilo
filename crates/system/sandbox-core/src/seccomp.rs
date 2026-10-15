@@ -451,6 +451,27 @@ pub fn parser_program() -> Result<BpfProgram, SeccompError> {
     deny_list_program(rules)
 }
 
+/// [`parser_program`], allowing `socketpair`: for a helper whose media
+/// framework wakes its own threads through a connected pair (every
+/// `GStreamer` bus and clock makes one). A pair has no address and reaches
+/// nothing outside the process; Linux makes them only in `AF_UNIX`, and
+/// `socket`, `connect` and `bind` stay refused.
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] if the rules or their compilation fail.
+#[cfg(target_os = "linux")]
+pub fn parser_program_with_socket_pairs() -> Result<BpfProgram, SeccompError> {
+    let mut rules = baseline_rules(SeccompProfile::TiloDefault)?;
+    for nr in PARSER_DENIES
+        .iter()
+        .filter(|nr| **nr != libc::SYS_socketpair)
+    {
+        rules.insert(*nr, Vec::new());
+    }
+    deny_list_program(rules)
+}
+
 /// Install `program` on every thread of the calling process. Sets
 /// `no_new_privs` first, as the kernel requires for an unprivileged filter.
 /// Irreversible.
