@@ -136,8 +136,8 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # package-windows.sh) and the x86_64 Windows test executables. Inno Setup is
 # installed into a throwaway Wine prefix and only its program directory kept,
 # at /opt/inno-setup. jsign signs Authenticode with a key that stays in AWS
-# KMS; osslsigncode and openssl verify the signatures it makes. PyYAML and
-# jsonschema check the WinGet manifests against WinGet's published schemas.
+# KMS; osslsigncode verifies the signatures it makes without an OpenSSL CLI.
+# PyYAML and jsonschema check WinGet manifests against its published schemas.
 # wine-core alone loops forever creating a prefix: wine.inf copies files that
 # wine-common (winmd metadata) and wine-cms (the sRGB profile) ship.
 ARG INNO_SETUP_VERSION=6.7.3
@@ -147,7 +147,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     --mount=type=bind,source=tools/ci/windows/wine-prefix.sh,target=/tmp/wine-prefix.sh,ro \
     if [ "$(uname -m)" = x86_64 ]; then \
       dnf install -y --setopt=install_weak_deps=False \
-        wine-core wine-common wine-cms java-25-openjdk-headless osslsigncode openssl \
+        wine-core wine-common wine-cms java-25-openjdk-headless osslsigncode \
         python3-pyyaml python3-jsonschema \
       && dnf clean all && rm -rf /var/cache/dnf \
       && for archive in "innosetup-${INNO_SETUP_VERSION}.exe" "jsign-${JSIGN_VERSION}.jar"; do \
