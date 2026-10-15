@@ -1,7 +1,9 @@
 /**
  * Other members' legacy (non-Tilo) windows on the mounted desktop. A session
  * streams each legacy window it shares with the room's host (a browser, an
- * office suite: anything that is not a Tilo app) as H.264 video; the host
+ * office suite: anything that is not a Tilo app) as video, in a codec every
+ * member's page decodes (H.264, VP9 or AV1: each page tells the host which,
+ * `decodableCodecs`, and a page that never did counts as H.264 only); the host
  * re-publishes those streams on live record tracks in the session device's
  * namespace (`tilo_relay_protocol::legacy_window`). This layer reads every
  * member's legacy-window index, opens a desktop window for each listed
@@ -27,7 +29,29 @@
 export const LEGACY_APP = 'so.tilo.legacy-window';
 /** Codec of a page shared as a display list rather than as video. */
 export const PAINT_CODEC = 'tilo-paint';
-const CODECS = new Set(['h264', PAINT_CODEC]);
+/**
+ * The WebCodecs configuration each video codec of a stream is decoded with
+ * (H.264's profile and level come from the stream's own SPS), and probed
+ * with when the page tells the host what it decodes
+ * (`tilo_relay_protocol::legacy_window::VIDEO_CODECS`).
+ */
+export const VIDEO_DECODER_CONFIGS = Object.freeze({h264: 'avc1.42E01F', vp9: 'vp09.00.10.08', av1: 'av01.0.04M.08'});
+const CODECS = new Set([...Object.keys(VIDEO_DECODER_CONFIGS), PAINT_CODEC]);
+const isVideo = codec => codec !== PAINT_CODEC;
+
+/**
+ * The video codecs this page's WebCodecs decodes, as stream codec labels;
+ * empty without WebCodecs (the page then plays no legacy window at all).
+ */
+export async function decodableCodecs(VideoDecoder = globalThis.VideoDecoder) {
+  if (typeof VideoDecoder?.isConfigSupported !== 'function') return [];
+  const probed = await Promise.all(Object.entries(VIDEO_DECODER_CONFIGS).map(async ([label, codec]) => {
+    try {
+      return (await VideoDecoder.isConfigSupported({codec, optimizeForLatency: true}))?.supported ? label : null;
+    } catch { return null; }
+  }));
+  return probed.filter(Boolean);
+}
 export const INDEX_RECORD = Object.freeze({app: LEGACY_APP, record: '@tilo:legacy-windows'});
 const FRAME_TAG = 0xf1;
 const KIND_INDEX = 1;
@@ -89,7 +113,9 @@ export function decodeFrame(bytes) {
       case KIND_INDEX: {
         const streams = JSON.parse(text.decode(bytes.subarray(2)));
         if (!Array.isArray(streams) || streams.length > MAX_STREAMS) return null;
-        const valid = streams.map(validStream);
+        // A stream in a codec this page does not know (a newer host's) is
+        // left out; the publisher's other windows still show.
+        const valid = streams.filter(stream => !stream || typeof stream !== 'object' || CODECS.has(stream.codec)).map(validStream);
         return valid.every(Boolean) ? {kind: 'index', streams: valid} : null;
       }
       case KIND_START: {
@@ -156,6 +182,11 @@ export function h264CodecString(accessUnit) {
   return 'avc1.42E01F';
 }
 
+/** The WebCodecs codec string a `codec` stream's key frame `data` decodes with. */
+export function decoderCodecString(codec, data) {
+  return codec === 'h264' ? h264CodecString(data) : VIDEO_DECODER_CONFIGS[codec] ?? null;
+}
+
 /**
  * WebCodecs decode of one stream: configured from its first keyframe, frames
  * before a keyframe (or after a backlog) are skipped until the next one.
@@ -163,6 +194,8 @@ export function h264CodecString(accessUnit) {
  * a group the host replays (to a new subscription) arrives at once, and only
  * all of it ends on the window's current picture. `onStall()` is told when
  * a backlog starts a skip.
+ * `decode(frame, codec)` takes the stream's codec label (H.264 by default);
+ * a stream whose session switched codec reconfigures at its next keyframe.
  */
 export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, onError = () => {}, onStall = () => {}}) {
   let decoder = null;
@@ -189,9 +222,10 @@ export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, o
   }
   return {
     stats,
-    decode(frame) {
+    decode(frame, streamCodec = 'h264') {
       if (frame.key) {
-        const next = h264CodecString(frame.data);
+        const next = decoderCodecString(streamCodec, frame.data);
+        if (!next) { stats.skipped++; return false; }
         try {
           if (!decoder || decoder.state === 'closed' || codec !== next) open(next);
         } catch (error) { stats.errors++; onError(error); close(); return false; }
@@ -371,7 +405,10 @@ export function createLegacyWindows({
   function addStream(publisher, stream) {
     const key = streamKey(publisher, stream);
     const existing = streams.get(key);
-    if (existing) { existing.stream = stream; return; }
+    // A session that switches between video codecs keeps the window; one
+    // that turns video into a painted page (or back) gets a new one.
+    if (existing && isVideo(existing.stream.codec) === isVideo(stream.codec)) { existing.stream = stream; return; }
+    if (existing) removeStream(key);
     const pixels = [...streams.values()].reduce((sum, entry) => sum + entry.stream.width * entry.stream.height, 0);
     if (streams.size >= MAX_ROOM_STREAMS || pixels + stream.width * stream.height > MAX_ROOM_PIXELS) return;
     if (stream.codec === PAINT_CODEC) {
@@ -635,7 +672,7 @@ export function createLegacyWindows({
     stats.frames++;
     if (value.kind === 'start') {
       if (value.stream.surface !== entry.stream.surface || value.stream.record !== entry.stream.record
-        || value.stream.codec !== entry.stream.codec) return;
+        || isVideo(value.stream.codec) !== isVideo(entry.stream.codec)) return;
       entry.stream = value.stream;
       entry.decoder?.reset();
       entry.reassembler.reset();
@@ -645,7 +682,7 @@ export function createLegacyWindows({
       if (!encoded) return;
       if (entry.paint) {
         try { if (paintFrame(streamKey(entry.publisher, entry.stream), encoded.data)) stats.drawn++; } catch (error) { report(error); }
-      } else if (entry.decoder.decode(encoded) && encoded.key) entry.stalledAt = undefined;
+      } else if (entry.decoder.decode(encoded, entry.stream.codec) && encoded.key) entry.stalledAt = undefined;
     } else if (value.kind === 'end') {
       entry.decoder?.reset();
       entry.reassembler.reset();

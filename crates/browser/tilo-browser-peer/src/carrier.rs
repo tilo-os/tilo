@@ -259,6 +259,40 @@ pub async fn legacy_input(
     }
 }
 
+/// Tell the host which video codecs this page decodes
+/// ([`tilo_relay_protocol::legacy_window::CodecsRequest`]), so sessions
+/// stream legacy windows in one of them. `Ok(false)`: the host predates
+/// codec adverts, and this page counts as decoding H.264 only.
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or refuses the advert.
+pub async fn legacy_codecs(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::legacy_window::CodecsRequest,
+) -> Result<bool, LinkError> {
+    let (status, bytes) = client
+        .post(
+            &path(tilo_relay_protocol::legacy_window::CODECS_ROUTE),
+            Some(session),
+            encode(request)?,
+        )
+        .await
+        .map_err(LinkError::Unavailable)?;
+    match status {
+        204 => Ok(true),
+        404 => Ok(false),
+        401 => Err(LinkError::Refused(
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )),
+        _ => Err(LinkError::Unavailable(format!(
+            "status {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        ))),
+    }
+}
+
 /// Administer the host's rooms as this session's device (`/rooms`).
 ///
 /// # Errors

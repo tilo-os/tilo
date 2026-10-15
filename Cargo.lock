@@ -16396,6 +16396,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-identity-host",
  "tilo-joined-room",
+ "tilo-media",
  "tilo-moq",
  "tilo-net",
  "tilo-paint-stream",
