@@ -270,7 +270,9 @@ driving it with headless Chromium.
 `dev/auth-e2e.mjs` checks getting in on that stack, end to end, in headless
 Chrome: a fresh browser's first visit through the door, a reload, a second
 and a new tab, a damaged link, another person's invitation (spent, and one
-issued for someone else), and a host set up again with its stale link. It
+issued for someone else), and a host set up again: its stale link refused,
+the offer to join it again declined and then accepted (one join, the same
+person, the old host's state left untouched beside the new host's). It
 starts `run.py` from prebuilt binaries and a bundle and writes
 `summary.json` and `summary.md`; the `Browser / authentication` workflow
 runs it nightly and on demand.

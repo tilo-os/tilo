@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, randomDisplayName, rememberEntered, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
+import {HOST_CHANGED, NOT_REJOINED} from './peer.mjs';
 
 const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(key), userPublicKey: key.toString(16).padStart(2, '0').repeat(32), sign: async () => new Uint8Array(64)});
 
@@ -106,6 +107,47 @@ test('another tab holding the device key keeps the membership and asks the host 
   assert.equal(calls.posted.length, 0);
   assert.equal(calls.joined.length, 0);
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
+});
+
+test('a host set up again is joined again through its door once, only when the person agrees', async () => {
+  // The peer refuses what this browser kept for the previous host before
+  // any session starts (peer.mjs); the page asks the person what to do.
+  const membership = {origin: 'https://rooms.example', room: 'OLD', userPublicKey: '11'.repeat(32)};
+  const changed = () => Object.assign(new Error(HOST_CHANGED), {name: 'AdmissionError', code: 'host-changed'});
+  const run = async answer => {
+    const {calls, options, store} = harness({person: identity(0x11), membership});
+    const asked = [];
+    options.connect = async connected => { calls.connected.push(connected); throw changed(); };
+    if (answer !== undefined) options.confirmRejoin = async () => { asked.push(true); return answer; };
+    return {calls, store, asked, joining: joinViaHost(options)};
+  };
+
+  // No one to ask (an embedding page, a link naming the old room): refused.
+  const unasked = await run(undefined);
+  await assert.rejects(unasked.joining, {code: 'host-changed', message: HOST_CHANGED});
+  assert.equal(unasked.calls.posted.length, 0, 'no join was spent');
+  assert.deepEqual(keptMembership(commons, {getItem: key => unasked.store.get(key)}), membership);
+
+  // Not now: refused in those words, still with no join, the membership kept.
+  const declined = await run(false);
+  await assert.rejects(declined.joining, {name: 'AdmissionError', code: 'host-changed', message: NOT_REJOINED});
+  assert.equal(declined.asked.length, 1);
+  assert.equal(declined.calls.posted.length, 0, 'no join was spent');
+  assert.equal(declined.calls.joined.length, 0);
+  assert.deepEqual(keptMembership(commons, {getItem: key => declined.store.get(key)}), membership);
+
+  // Join again: one door join as the same person, kept as the new room.
+  const agreed = await run(true);
+  const peer = await agreed.joining;
+  assert.equal(agreed.asked.length, 1);
+  assert.equal(agreed.calls.connected.length, 1, 'the kept membership was tried once');
+  assert.equal(agreed.calls.posted.length, 1, 'exactly one join at the door');
+  assert.equal(agreed.calls.posted[0].body.userPublicKey, '11'.repeat(32));
+  assert.equal(agreed.calls.joined.length, 1);
+  assert.equal(agreed.calls.joined[0].identity.userPublicKey, '11'.repeat(32));
+  assert.equal(peer.room, 'ROOM');
+  assert.deepEqual(keptMembership(commons, {getItem: key => agreed.store.get(key)}),
+    {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)});
 });
 
 test('a membership kept for another person is not reused for this one', async () => {
