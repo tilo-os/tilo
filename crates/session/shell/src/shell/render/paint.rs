@@ -4370,10 +4370,6 @@ impl VelloDrmBridge {
         )
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "render, retained-resource settlement, mapped readback cleanup, and transactional publication must remain auditable as one ordered operation"
-    )]
     fn paint_damage_into_xrgb8888_core(
         &mut self,
         scene: &Scene,
@@ -9528,7 +9524,6 @@ mod tests {
 
     #[test]
     #[allow(
-        clippy::arithmetic_side_effects,
         clippy::too_many_lines,
         reason = "the two-target fixture keeps each ordered history transaction and exact staging comparison together"
     )]
@@ -9693,7 +9688,6 @@ mod tests {
 
     #[test]
     #[allow(
-        clippy::arithmetic_side_effects,
         clippy::too_many_lines,
         reason = "the native action fixture keeps one- and two-target transactions adjacent to their exact current-staging checks"
     )]
@@ -10391,7 +10385,6 @@ mod tests {
 
     #[test]
     #[allow(
-        clippy::arithmetic_side_effects,
         clippy::too_many_lines,
         reason = "the overflow fixture keeps the complete two-target recovery chain and next-paint proof together"
     )]

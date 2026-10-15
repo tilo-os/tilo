@@ -17,7 +17,10 @@ ignored = ["getrandom03"]
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
+# The descriptor authority reads the committed governed workspace.
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# Transport hints and invite grants of the workspace join contract.
+tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-relay-client = { path = "../tilo-relay-client" }

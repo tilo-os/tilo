@@ -60,3 +60,8 @@ c799b9ccae8728793da2186718fbe53b76400a9da396184fac0c64aa3298ec37	mold-2.40.4-aar
 # The browser engine: CEF's pinned minimal Linux distributions (scripts/browser/cef-lock.json).
 daf8c2b6e63787d6a91d666205a8a4521419937eabaf47723738c86aea7135bd	cef-152.0.7977.83-linux64-minimal.tar.bz2	https://cef-builds.spotifycdn.com/cef_binary_152.0.6%2Bg708dc14%2Bchromium-152.0.7977.83_linux64_minimal.tar.bz2
 6a2448eccce01ab2495131f754a1c75a49333aa1678a95cb794dfe166cc477d2	cef-152.0.7977.83-linuxarm64-minimal.tar.bz2	https://cef-builds.spotifycdn.com/cef_binary_152.0.6%2Bg708dc14%2Bchromium-152.0.7977.83_linuxarm64_minimal.tar.bz2
+# Windows cross-builds and packaging in the CI builder (os/Containerfile.builder).
+c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360	cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz	https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz
+dc0a0fb28fdd90405f69e7365bce91d2504ea7491eb4d79d5655ffa106358925	cargo-xwin-v0.23.1.aarch64-unknown-linux-musl.tar.gz	https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.aarch64-unknown-linux-musl.tar.gz
+9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732	innosetup-6.7.3.exe	https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+6cf58aa080e7ff82656f320cff8d4a3bff30408df8766806dcba3740dd839fa5	jsign-7.6.jar	https://github.com/ebourg/jsign/releases/download/7.6/jsign-7.6.jar

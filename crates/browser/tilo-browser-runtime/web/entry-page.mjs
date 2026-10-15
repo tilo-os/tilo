@@ -16,7 +16,7 @@
  * has no seat for watches live instead and is let in once a seat frees up.
  */
 import {AdmissionError} from './admission.mjs';
-import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
+import {failureMessage, refusedByHost, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
@@ -706,14 +706,15 @@ export async function startEntryPage({mode}) {
   } catch (error) {
     if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');
     arrive('stopped');
-    document.documentElement.dataset.entry = error instanceof AdmissionError ? 'refused' : 'failed';
+    // A refusal is the host's answer, which trying again does not change.
+    document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
     // Plain words and a way to try again (index.html); the cause, thrown
     // on, reaches the console and the host's error report.
     status.textContent = failureMessage(error, {workspace: workspaceName, loaded: Boolean(runtime)});
     const known = admitting && remembering(() => rememberedRoom(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the room.
-    const local = error?.name === 'CustodyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed'].includes(error.code));
+    const local = error?.name === 'CustodyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed', 'removed'].includes(error.code));
     if (known && !local) {
       // A room this browser was a member of: say what is known, and stop
       // reopening it on a bare entry.

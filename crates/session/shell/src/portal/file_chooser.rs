@@ -204,12 +204,6 @@ pub(super) fn filters_from_options(
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
-    let v = options.get(key)?.try_clone().ok()?;
-    bool::try_from(v).ok()
-}
-
-#[cfg(any(target_os = "linux", test))]
 fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     let v = options.get(key)?.try_clone().ok()?;
     String::try_from(v).ok().filter(|s| !s.is_empty())
@@ -222,8 +216,8 @@ fn decode_open_options(
     options: &HashMap<String, OwnedValue>,
 ) -> FilePickerOptions {
     FilePickerOptions::new(caller, title, /*save=*/ false)
-        .directory(opt_bool(options, "directory").unwrap_or(false))
-        .multiple(opt_bool(options, "multiple").unwrap_or(false))
+        .directory(crate::portal::option::<bool>(options, "directory").unwrap_or(false))
+        .multiple(crate::portal::option::<bool>(options, "multiple").unwrap_or(false))
         .accept_label(opt_string(options, "accept_label"))
         .filters(filters_from_options(options))
 }

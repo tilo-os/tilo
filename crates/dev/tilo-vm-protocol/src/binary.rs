@@ -193,10 +193,6 @@ impl<R: Read> Read for Reader<R> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "codec fixtures assert on production framing"
-)]
 mod tests {
     use super::*;
     #[test]

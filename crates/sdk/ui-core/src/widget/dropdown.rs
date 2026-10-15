@@ -72,10 +72,6 @@ const LIST_GAP: f64 = 4.0;
 /// The open list's inset round its rows: the menu inset every menu shares
 /// (`floating_surface::menu_inset`), so the armed row runs concentric with
 /// the panel.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const; f32 -> f64 is exact"
-)]
 const LIST_PAD: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 const PAD_X: f64 = 10.0;
 const CHEVRON_W: f64 = 30.0;

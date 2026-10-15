@@ -18,6 +18,7 @@ use crate::{
     auth::PeerRole,
     workspace::{Membership, WorkspaceRuntime},
 };
+use tilo_relay_shell::ShellAuthority as _;
 use tilo_user_identity::{RevocationList, UserIdentity};
 
 mod presence_cost;
@@ -984,7 +985,7 @@ async fn personal_continuity_prefix_revocation_before_promotion_keeps_prior_curr
 
 #[tokio::test]
 async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates() {
-    use crate::store::shell_selection::tests::{producer_frame, producer_metadata};
+    use tilo_relay_shell::selection::fixtures::{producer_frame, producer_metadata};
     let metadata = producer_metadata();
     let raw = producer_frame(&metadata, &metadata["baseline"][1], 1);
     let Envelope::Delta { delta, .. } = crate::transport::decode(&raw[4..]).unwrap() else {
@@ -2940,6 +2941,7 @@ async fn replay_boundary_cross_workspace_full_live_queue_fences_exact_session() 
                 source: None,
                 _budget: None,
                 live: session.live.clone(),
+                fanned: None,
             })
             .unwrap();
         let catchup = Arc::new(ReplayCatchup::new(
@@ -3038,6 +3040,7 @@ async fn replay_fenced_before_final_ready_never_writes_ready() {
                 source: None,
                 _budget: None,
                 live: live.clone(),
+                fanned: None,
             })
             .unwrap();
     }

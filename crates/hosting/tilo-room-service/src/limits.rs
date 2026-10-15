@@ -160,6 +160,34 @@ impl JoinLimits {
         }
     }
 
+    /// Windows already holding `joins`, `(address hash, when)` in any order:
+    /// the joins of the last day kept on the persistent volume, so a restart
+    /// of the service does not give every address its windows back.
+    pub fn restored<'a>(rates: JoinRates, joins: impl IntoIterator<Item = (&'a str, u64)>) -> Self {
+        let mut limits = Self::new(rates);
+        for (ip_hash, at_ms) in joins {
+            limits
+                .joins
+                .entry(ip_hash.to_owned())
+                .or_default()
+                .push_back(at_ms);
+        }
+        for times in limits.joins.values_mut() {
+            times.make_contiguous().sort_unstable();
+        }
+        limits
+    }
+
+    /// Takes back the join [`Self::check_and_record`] recorded for `ip_hash`
+    /// at `at_ms`, for a visitor who got no answer.
+    pub fn forget(&mut self, ip_hash: &str, at_ms: u64) {
+        if let Some(times) = self.joins.get_mut(ip_hash)
+            && let Some(at) = times.iter().rposition(|time| *time == at_ms)
+        {
+            times.remove(at);
+        }
+    }
+
     /// Records a join from `ip_hash` at `now_ms`, or says in how many
     /// seconds the next one would be allowed.
     pub fn check_and_record(&mut self, ip_hash: &str, now_ms: u64) -> std::result::Result<(), u64> {
@@ -392,6 +420,43 @@ mod tests {
             day.check_and_record("h", index * 11 * 60_000).unwrap();
         }
         assert!(day.check_and_record("h", 30 * 11 * 60_000).is_err());
+    }
+
+    #[test]
+    fn restored_windows_refuse_as_the_ones_before_a_restart_did() {
+        let kept: Vec<(&str, u64)> = [4, 0, 2, 1, 3]
+            .into_iter()
+            .map(|minute| ("h", minute * 60_000))
+            .collect();
+        let mut before = JoinLimits::default();
+        let mut in_order = kept.clone();
+        in_order.sort_unstable_by_key(|(_, at)| *at);
+        for (hash, at) in in_order {
+            before.check_and_record(hash, at).unwrap();
+        }
+        let mut after = JoinLimits::restored(JoinRates::GUESTS, kept);
+        let now = 5 * 60_000;
+        assert_eq!(after.check_and_record("h", now), Err(300));
+        assert_eq!(
+            after.check_and_record("h", now),
+            before.check_and_record("h", now)
+        );
+        after.check_and_record("other", now).unwrap();
+    }
+
+    #[test]
+    fn a_forgotten_join_frees_its_place_in_the_window() {
+        let mut limits = JoinLimits::default();
+        for minute in 0..5 {
+            limits.check_and_record("h", minute * 60_000).unwrap();
+        }
+        limits.forget("h", 4 * 60_000);
+        limits.check_and_record("h", 5 * 60_000).unwrap();
+        assert!(limits.check_and_record("h", 5 * 60_000).is_err());
+        // Forgetting what was never recorded changes nothing.
+        limits.forget("h", 1);
+        limits.forget("nobody", 0);
+        assert!(limits.check_and_record("h", 5 * 60_000).is_err());
     }
 
     #[test]

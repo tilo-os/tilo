@@ -45,12 +45,15 @@
  * Spectating (the homepage embed): the page makes a device key in memory
  * only and asks the host to certify it as the room's one read-only
  * spectator person (`POST <admission>spectate`), then connects through the
- * ordinary `connectPeer` path with that certificate. Nothing is stored and
+ * ordinary `connectPeer` path with that certificate, watching only (it
+ * writes nothing, and takes the keys of what members seal from the room's
+ * steward). Nothing is stored and
  * no person is created, so a visitor who only scrolls past leaves no member
  * behind.
  */
 import {AdmissionError} from './admission.mjs';
 import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, NOT_REJOINED, pairDevice} from './peer.mjs';
+import {memberText} from './json-text.mjs';
 
 const MEMBERSHIPS = 'tilo-host-memberships';
 const ADJECTIVES = ['Brave', 'Calm', 'Clever', 'Curious', 'Eager', 'Gentle', 'Happy', 'Jolly', 'Kind', 'Lively', 'Lucky', 'Merry', 'Nimble', 'Quiet', 'Swift', 'Witty'];
@@ -198,6 +201,9 @@ export function workspaceActions(choices) {
   });
 }
 
+/** What a person the host took out of a workspace is told. */
+export const removedFrom = name => `You were removed from ${name || 'this workspace'}. To come back, ask someone in it for a new invitation.`;
+
 export class HostAdmissionError extends Error {
   constructor(code, message, retryAfter = null) {
     super(message);
@@ -342,6 +348,8 @@ export async function joinViaHost({
       profile: identityProfile(known, known.origin), displayName});
   }
   if (!identity?.userPublicKey) throw new TypeError("joining through a host needs the person's identity");
+  /** Whether the host refused the membership this browser kept. */
+  let refused = false;
   if (known?.userPublicKey === identity.userPublicKey) {
     let peer;
     try {
@@ -368,13 +376,25 @@ export async function joinViaHost({
         // started its room anew): ask the host to admit the same person
         // again rather than stop at an error.
         console.warn('host admission: reconnecting failed, asking to join again', error);
+        refused = true;
       }
       keepMembership(memberships, workspace, null);
     }
   }
-  const {invitation, admissionToken, origin} = await ask({
-    workspace, path: 'join', fetch, body: {userPublicKey: identity.userPublicKey, displayName: fitDisplayName(displayName)},
-  });
+  let admitted;
+  try {
+    admitted = await ask({
+      workspace, path: 'join', fetch, body: {userPublicKey: identity.userPublicKey, displayName: fitDisplayName(displayName)},
+    });
+  } catch (error) {
+    // The host no longer has the person, and its door turns away the
+    // address they joined from because someone was removed: they were taken
+    // out of the room, not pruned after an absence. Only an invitation
+    // brings them back.
+    if (refused && error?.code === 'cooling-down') throw new AdmissionError('removed', removedFrom(workspace.name));
+    throw error;
+  }
+  const {invitation, admissionToken, origin} = admitted;
   let room = null;
   const peer = await join({
     ...connectOptions, origin, invitation, admissionToken, identity, displayName,
@@ -445,13 +465,13 @@ export async function spectate({
     workspace, path: 'spectate', fetch, body: {devicePublicKey: hex(custody.publicKey)},
   });
   runtime ??= await loadRuntime();
-  const {hostCert} = JSON.parse(await runtime.hostInfo(httpsPost(origin, fetch)));
-  // The certificate arrives as JSON text and is passed on as such: its
+  const hostText = await runtime.hostInfo(httpsPost(origin, fetch));
+  // Both certificates are passed on as the JSON text they arrived as: their
   // nanosecond timestamps exceed what a JavaScript number holds exactly, and
-  // a rounded copy no longer matches its signature.
+  // a rounded copy no longer matches its signature (json-text.mjs).
   return connect({
     ...connectOptions, origin, room, runtime, custody, store: memoryStore(), fetch,
-    userPublicKey: hex(JSON.parse(certificate).user_public_key), label: 'Spectator',
-    deviceCertificate: `{"cert":${certificate},"hostCert":${JSON.stringify(hostCert)}}`,
+    userPublicKey: hex(JSON.parse(certificate).user_public_key), label: 'Spectator', watching: true,
+    deviceCertificate: `{"cert":${certificate},"hostCert":${memberText(hostText, 'hostCert')}}`,
   });
 }

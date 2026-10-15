@@ -9,33 +9,23 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use launcher::capture::{CaptureCancellation, CapturedRunOutput, CapturedTermination};
-use package_store::InstalledPackage;
 use tilo_clock::unix_now_ms;
 use tilo_relay::{
     ComputeClient, ComputeContentStore, ComputeEnvelope, ComputeJobBinding, ComputeJobPhase,
-    ComputeJobSpec, ComputeOutputSource, ComputePackageCatalogue, ComputeResourceLimits,
-    ComputeResultUpdate, ComputeSandbox, ComputeSandboxInvocation, ComputeStatusUpdate,
-    ComputeWorker, ComputeWorkerAdvertisement, ContentFetchError, DeviceRole,
-    FileComputeContentStore, PowerAvailability, ServerAdvertisement, ServiceCapabilities,
+    ComputeJobSpec, ComputeOutputSource, ComputeResourceLimits, ComputeResultUpdate,
+    ComputeSandbox, ComputeSandboxInvocation, ComputeStatusUpdate, ComputeWorker,
+    ComputeWorkerAdvertisement, ContentFetchError, FileComputeContentStore, PowerAvailability,
     WorkerEnvironments, fetch_job_content, run_compute_assignment, serve_worker_stream_with,
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
+use crate::common::compute::{FixtureCatalogue, installed_package, worker_advertisement};
 use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 const WORKSPACE: u64 = 99;
 const APP: &str = "org.tilo.compute-transform";
 const ENTRYPOINT: &str = "uppercase";
 const INPUT_BYTES: usize = 1024 * 1024;
-
-/// The catalogue of a worker with exactly one installed package.
-struct FixtureCatalogue(InstalledPackage);
-
-impl ComputePackageCatalogue for FixtureCatalogue {
-    fn resolve(&self, app_id: &str) -> Result<Option<InstalledPackage>, String> {
-        Ok((self.0.id == app_id).then(|| self.0.clone()))
-    }
-}
 
 /// What the fixture package's entrypoint does, without a nested user
 /// namespace: every input the worker staged, upper-cased, as an output. It
@@ -67,87 +57,6 @@ impl ComputeSandbox for UppercaseSandbox {
             stdout: b"transformed".to_vec(),
             stderr: Vec::new(),
         })
-    }
-}
-
-/// A signed package installed the way the package store lays it out, and
-/// the digest of its signed root.
-fn installed_package(root: &std::path::Path) -> (InstalledPackage, [u8; 32]) {
-    use ed25519_dalek::Signer;
-    use tilo_app_package::blobs::{BlobHash, Collection};
-    use tilo_app_package::signed::SignedRoot;
-
-    let manifest = format!(
-        "[package]\nid = {APP:?}\nversion = \"1.0.0\"\nkind = \"app\"\n\
-         [publisher]\nidentity = \"ed25519:{}\"\n\
-         [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
-         [sandbox.net]\nmode = \"off\"\n\
-         [entrypoint]\nbin = \"bin/worker\"\ntype = \"cli\"\n\
-         [cli]\ncommands = [{ENTRYPOINT:?}]\n",
-        "00".repeat(32),
-    );
-    let collection =
-        Collection::from_entries([("bin/worker".to_string(), BlobHash::of(b"signed worker"))]);
-    let collection_bytes = collection.encode();
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
-    let mut signed = SignedRoot::unsigned(
-        BlobHash::of(manifest.as_bytes()),
-        BlobHash::of(&collection_bytes),
-        signing_key.verifying_key().to_bytes(),
-    );
-    signed.signature = Some([0; 64]);
-    signed.signature = Some(signing_key.sign(&signed.signing_bytes()).to_bytes());
-    let signed_bytes = signed.encode();
-    let package_digest = *BlobHash::of(&signed_bytes).as_bytes();
-    let layout = package_store::Layout::new(root.join("apps"));
-    let id = tilo_app_package::PackageId::from_bytes(package_digest);
-    let payload = layout.payload(id);
-    std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::write(payload.join("bin/worker"), b"signed worker").unwrap();
-    let record = layout.meta_dir(id);
-    std::fs::create_dir_all(&record).unwrap();
-    std::fs::write(record.join("signed-root"), signed_bytes).unwrap();
-    std::fs::write(record.join("manifest.toml"), manifest.as_bytes()).unwrap();
-    std::fs::write(record.join("collection.qcl"), &collection_bytes).unwrap();
-    let package = InstalledPackage {
-        id: APP.into(),
-        version: "1.0.0".into(),
-        package_id_hex: hex::encode(package_digest),
-        payload_root: payload,
-        manifest_path: layout.manifest(id),
-        publisher_key_hex: hex::encode(signing_key.verifying_key().to_bytes()),
-        pinned: false,
-        installed_at: 0,
-        last_used: 0,
-        attested_by: String::new(),
-        cli_commands: vec![ENTRYPOINT.into()],
-        runtime: String::new(),
-        source: String::new(),
-        held: false,
-        payload_bytes: 0,
-        system: false,
-    };
-    (package, package_digest)
-}
-
-fn worker_advertisement(worker: [u8; 32]) -> ServerAdvertisement {
-    ServerAdvertisement {
-        device: worker,
-        role: DeviceRole::AlwaysOnServer,
-        services: ServiceCapabilities {
-            compute: true,
-            ..ServiceCapabilities::default()
-        },
-        workspaces: BTreeSet::from([WORKSPACE]),
-        apps: BTreeSet::from([APP.into()]),
-        accelerators: BTreeSet::new(),
-        priority: 0,
-        latency_ms: 0,
-        power: PowerAvailability::External,
-        energy_saver: false,
-        active_assignments: 0,
-        assignment_capacity: 1,
-        online: true,
     }
 }
 
@@ -215,9 +124,9 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
 
     // The worker: one signed package, the production executor with its
     // retained-output store, serving the streams the relay opens to it.
-    let (package, package_digest) = installed_package(root.path());
+    let (package, package_digest) = installed_package(root.path(), APP, ENTRYPOINT);
     let executor = Arc::new(ComputeWorker::new(
-        worker_advertisement(worker_key),
+        worker_advertisement(worker_key, WORKSPACE, APP),
         root.path().join("data"),
         root.path().join("execution"),
         FileComputeContentStore::open(root.path().join("retained")).unwrap(),

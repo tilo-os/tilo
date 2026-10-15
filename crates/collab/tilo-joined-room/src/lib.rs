@@ -481,10 +481,6 @@ impl NativeWorkspaceOwner {
             _observer: observer,
         }
     }
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "fence observers are notified in order under the continuity write lock"
-    )]
     pub fn invalidate_identity(&self, room: RoomId) {
         let mut current = self.0.current.write();
         if !current.denied.insert(room) {

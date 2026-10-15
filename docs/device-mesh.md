@@ -118,6 +118,35 @@ online while its job hydrates; a job whose inputs already live on the worker
 still travels from the requester, which is the price of never widening what
 a worker reads.
 
+### Offloadable actions
+
+An action whose contract declares `offload` (`tilo_actions::Offload`: a signed
+package, its catalogue entrypoint, GPU need and CPU, memory and output
+ceilings) is a pure content transform: files in, content out, the same bytes
+whichever device computes them. Invoking one goes through
+`tilo_relay::offload::Offloader::invoke`, the same path for a person, a script
+or an agent, after the action door admitted the invocation:
+
+- The inputs are workspace files, named by the manifest hash the invoker's own
+  view resolved. `WorkspaceContent` reads each from this device's content
+  store, checks it against its manifest and hashes the bytes; only digests it
+  bound this way are servable to a worker, so the fs's manifest addressing and
+  compute's byte digests meet without either being guessed from the other.
+- It asks the workspace's relay `compute.place` (`RelayPlacement`). When
+  another device is better placed it binds a job to that worker (no
+  arguments, the declared ceilings, the inputs by digest) on its long-lived
+  compute session, serves exactly those inputs, follows the result and fetches
+  the outputs back, storing each as a file version.
+- No better device, an unreachable relay, a package not installed here, or any
+  remote failure runs the same transform locally. An action that fails on its
+  own inputs fails identically either way.
+
+The output is the outputs as content resources, in order, identical wherever
+the action ran; where it ran and how long it took are reported beside it
+(`OffloadRun::ran_on`, `Offloader::wall_times`). Thumbnailing a batch of images
+(`thumbnail::batch`, entrypoint `thumbnail-batch` of `so.tilo.thumbnails`) is
+the first offloadable transform.
+
 ## Integration seams
 
 - Shell/device settings write device role and per-workspace replication intent.

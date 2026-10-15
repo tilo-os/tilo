@@ -999,10 +999,6 @@ impl QuickFS {
     /// the stage lock. The commit then runs under this inode's stage lock
     /// only, so the bytes and their generation describe one state while other
     /// inodes' writes and reads proceed.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the stage stays locked while it is committed or staged so the bytes and their generation describe one state"
-    )]
     fn persist_buffer(&self, ino: u64, intent: PersistIntent) -> Result<(), i32> {
         let lock = self.commit_lock_for(ino);
         let _serialised = lock
@@ -4928,7 +4924,6 @@ impl QuickFS {
     /// metadata, instead of an empty file followed by an edit.
     #[allow(
         clippy::significant_drop_tightening,
-        clippy::too_many_lines,
         reason = "signed baseline publication must complete before the new file becomes visible in the namespace"
     )]
     fn create_file_stamped(

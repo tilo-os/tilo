@@ -35,15 +35,6 @@ impl EmailBackend {
         }
     }
 }
-#[cfg(target_os = "linux")]
-fn string(options: &HashMap<String, OwnedValue>, key: &str, max: usize) -> Option<String> {
-    options
-        .get(key)?
-        .try_clone()
-        .ok()
-        .and_then(|v| String::try_from(v).ok())
-        .filter(|v| v.len() <= max && !v.chars().any(char::is_control))
-}
 fn strings(
     options: &HashMap<String, OwnedValue>,
     key: &str,
@@ -133,7 +124,7 @@ impl EmailBackend {
             ) else {
                 return Err(Ended::Failed);
             };
-            if let Some(address) = string(&options, "address", 4096) {
+            if let Some(address) = crate::portal::text_option(&options, "address", 4096) {
                 addresses.push(address);
             }
             let attachment_paths = attachments
@@ -149,11 +140,11 @@ impl EmailBackend {
                 addresses,
                 cc,
                 bcc,
-                subject: string(&options, "subject", 998),
-                body: string(&options, "body", 256 * 1024),
+                subject: crate::portal::text_option(&options, "subject", 998),
+                body: crate::portal::text_option(&options, "body", 256 * 1024),
                 attachments,
                 attachment_paths: attachment_paths.unwrap_or_default(),
-                activation_token: string(&options, "activation_token", 4096),
+                activation_token: crate::portal::text_option(&options, "activation_token", 4096),
             };
             let path = handle.to_string();
             let dialogs = self.dialogs.clone();
@@ -163,43 +154,29 @@ impl EmailBackend {
                 app_id: auth.caller.app_id,
                 resource: LifecycleResource::Prompt,
             };
-            if !matches!(
-                self.lifecycle
-                    .register_request(connection, &path, entry, move |_| {
-                        let _ = dialogs.cancel(&cancel_path);
-                    })
-                    .await,
-                Ok(true)
-            ) {
-                return Err(Ended::Failed);
-            }
-            let review = match self.dialogs.enqueue_review(ReviewRequest {
-                handle: path.clone(),
-                app_id: request.app_id.clone(),
-                title: crate::shell::i18n::t("portal-email-title"),
-                reason: crate::shell::i18n::t("portal-email-reason"),
-                resource: compose_detail(&request),
-                confirm_label: crate::shell::i18n::t("portal-email-confirm"),
-            }) {
-                Ok(review) => review,
-                Err(_) => {
-                    self.lifecycle
-                        .complete_request_object(connection, &path)
-                        .await;
-                    return Err(Ended::Failed);
-                }
+            let cancel = move |_: &LifecycleEntry| {
+                let _ = dialogs.cancel(&cancel_path);
             };
-            if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
-                self.lifecycle
-                    .complete_request_object(connection, &path)
-                    .await;
-                return Err(Ended::Cancelled);
-            }
-            let result = self.ctx.desktop_services.email.compose(&request);
             self.lifecycle
-                .complete_request_object(connection, &path)
-                .await;
-            result.into_result().map(|()| Results::new())
+                .with_request(connection, &path, entry, cancel, async {
+                    let review = self
+                        .dialogs
+                        .enqueue_review(ReviewRequest {
+                            handle: path.clone(),
+                            app_id: request.app_id.clone(),
+                            title: crate::shell::i18n::t("portal-email-title"),
+                            reason: crate::shell::i18n::t("portal-email-reason"),
+                            resource: compose_detail(&request),
+                            confirm_label: crate::shell::i18n::t("portal-email-confirm"),
+                        })
+                        .or_fail()?;
+                    if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
+                        return Err(Ended::Cancelled);
+                    }
+                    let result = self.ctx.desktop_services.email.compose(&request);
+                    result.into_result().map(|()| Results::new())
+                })
+                .await
         })
         .await
     }

@@ -18,7 +18,7 @@ import {createSemanticPresentation} from './semantic-presentation.mjs';
 export {createPanorama} from './panorama.mjs';
 import {createLegacyWindows} from './legacy-windows.mjs';
 import {createNodeApps} from './node-apps.mjs';
-import {createNativeCatalogueBridge} from './native-catalogue.mjs';
+import {createNativeCatalogueBridge, invokeRoomMembership} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
 import {browserSettings} from './browser-locale.mjs';
 // Page host for the Tilo browser runtime. Ported from the Tilo browser runtime
@@ -466,7 +466,9 @@ export async function mountDesktop(target,options={}) {
       semantic:(...args)=>runtime.semantic(id,...args),
       publications:()=>JSON.parse(runtime.component_publications(id)),
       actions:(resource,{window}={})=>JSON.parse(runtime.component_actions(id,resource??undefined,window)),
-      invokeAction:(resource,action,args={},{confirm=false,window}={})=>JSON.parse(runtime.invoke_component_action(id,resource,action,JSON.stringify(args),confirm,window)),};
+      // The room's own membership actions are the host's, not an app's: a promise of the host's answer.
+      invokeAction:(resource,action,args={},{confirm=false,window}={})=>invokeRoomMembership({membership:options.peer?.membership,room:options.peer?.room,resource,action,args,confirm})
+        ??JSON.parse(runtime.invoke_component_action(id,resource,action,JSON.stringify(args),confirm,window)),};
   }catch(error){registry.remove(token);await cleanup();throw error;}
 }
 async function settleBeforeGpu(){

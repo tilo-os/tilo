@@ -189,11 +189,13 @@ record and public identity are documented in the infra repository at
 `operations/local-model-release-20261005/README.md`. It is independent of the
 development, registry, OS, and runtime signing keys.
 
-Dispatch `release-local-model-catalog.yml` on protected main to reproduce and
-publish the reviewed catalog. The build job receives no model signing key. The
-publication job fetches the public weights and license, checks their pinned
-receipts, signs with `TILO_MODEL_CATALOG_SIGNING_KEY`, compares both outputs with
-the checked-in image inputs, and verifies anonymous downloads after publication.
+`t dispatch publish-model-catalog --ref stable` reproduces and publishes the
+reviewed catalog (`tools/release/local-model-catalog.sh`). The compiler is built
+by `model-catalog-compiler`, which receives no model signing key.
+`sign-model-catalog` fetches the public weights and license, checks their pinned
+receipts, signs with `TILO_MODEL_CATALOG_SIGNING_KEY` and compares both outputs
+with the checked-in image inputs; `publish-model-catalog`, holding only the
+package token, uploads them and verifies anonymous downloads after publication.
 It never changes the catalog carried by an already-installed OS; normal image
 releases deliver that trust and catalog update.
 

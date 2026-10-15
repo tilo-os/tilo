@@ -65,15 +65,6 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod error;
 #[cfg(not(target_arch = "wasm32"))]
 mod espeak;

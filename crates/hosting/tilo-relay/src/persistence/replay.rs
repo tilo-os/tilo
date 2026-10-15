@@ -196,7 +196,8 @@ impl Replays {
         self.reclaim.clone()
     }
 }
-pub(crate) fn output_budget() -> &'static ReplayBudget {
+/// The process-wide budget every replay and publication shares.
+pub fn output_budget() -> &'static ReplayBudget {
     static OUTPUT: OnceLock<ReplayBudget> = OnceLock::new();
     OUTPUT.get_or_init(|| ReplayBudget::new(DEFAULT_OUTPUT_BYTES))
 }

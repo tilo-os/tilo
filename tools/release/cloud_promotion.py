@@ -656,8 +656,8 @@ def drift_report(registry: Registry, git: Git, transport: Transport, main: str,
     lines.append("")
     if ready:
         lines.append(f"Newest revision ready to promote (both images published): `{ready[:12]}`, "
-                     f"{git.count(ready, head)} commits behind main. Promote it with the "
-                     "`Release / Cloud promotion` workflow's manual run.")
+                     f"{git.count(ready, head)} commits behind main. Promote it with "
+                     "`t dispatch cloud-promotion --ref stable`.")
     else:
         lines.append(f"No commit among main's last {SEARCH_DEPTH} has both images published.")
     for problem in problems:

@@ -29,15 +29,6 @@
 //! Missing env var / missing file / bad JSON all surface as
 //! [`NotAvailable`] — never a panic.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};

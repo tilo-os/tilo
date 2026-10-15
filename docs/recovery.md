@@ -102,6 +102,22 @@ the global mount never becomes writable. Without that, every rename failed with
 `EROFS`, and a deployment that booted fine spent a try on each boot until the
 boot loader abandoned it.
 
+Where the ESP is mounted depends on the layout. On a sealed or dev disk `/boot`
+is the ESP. An installed system has an encrypted root and a separate ext4
+`/boot` (`TILO_BOOT`, mounted by its signed UKI and by bootc's `/etc/fstab`,
+which is what an update's own UKI relies on), and nothing mounted its ESP:
+`systemd-gpt-auto-generator` mounts nothing on this composefs layout. The
+boot-entry maintenance found no boot loader and gave no update a try counter
+("nothing to maintain"), so a broken update was never rolled back, and
+`systemd-bless-boot` stopped with "Couldn't find $BOOT partition", so a good boot
+was never blessed. `tilo-esp-generator` now mounts the ESP the boot loader names
+(`LoaderDevicePartUUID`) at `/boot/efi` whenever the command line or fstab
+mounts `/boot` from anything but that ESP, which is where every one of those
+tools looks. Its
+FAT superblock stays writable and the mount everyone sees is a read-only bind
+(`tilo-esp-mount`): bootc mounts the same ESP read-write to stage an update,
+and a read-only superblock would refuse that.
+
 Three failed boots and the previous deployment becomes the default. Nothing runs
 a rollback command — the boot loader simply declines to keep choosing an entry it
 has already given three chances, which is the only mechanism that still works when

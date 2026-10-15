@@ -10,7 +10,6 @@
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     reason = "pixel sizes and kurbo float geometry, bounded by the document's limits"
 )]
 

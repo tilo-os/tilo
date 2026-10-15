@@ -49,15 +49,6 @@
 //! constructors. (The app cannot read `/proc` under Landlock, so it cannot time its own
 //! exec.)
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use serde::Serialize;
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 use web_time::Instant;

@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, search, hosting, browser); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, search, hosting, browser, stream); empty runs all."
         required: false
         default: ""
       accept:
@@ -94,6 +94,7 @@ jobs:
       search: ${{ steps.select.outputs.search }}
       hosting: ${{ steps.select.outputs.hosting }}
       browser: ${{ steps.select.outputs.browser }}
+      stream: ${{ steps.select.outputs.stream }}
     steps:
       - name: Select KPI groups
         id: select
@@ -103,7 +104,7 @@ jobs:
           AB_ROUNDS: ${{ github.event.inputs.ab_rounds }}
         run: |
           set -euo pipefail
-          known=(fs footprint agent latency render wakeups search hosting browser)
+          known=(fs footprint agent latency render wakeups search hosting browser stream)
           mode=${MODE:-scheduled}
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           if [[ $mode == ab ]]; then
@@ -892,6 +893,97 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # A native window on the browser desktop: scripts/perf/native_stream_qualification.mjs
+  # streams a session's legacy window through this commit's host
+  # (`tilo-relay dev`, feature web) to the release desktop bundle in headless
+  # Chrome for Testing, and judges each picture the page draws. The session is
+  # tilo-relay's legacy_stream_source example: the shell's share session's
+  # protocol and production encoder over a drawn window, since the runner has
+  # neither a GPU nor a Wayland capture to give it. It encodes in software
+  # (30 fps), Chrome decodes in software and the desktop underneath draws on
+  # SwiftShader at 960x540, as the browser job's does. SwiftShader compiles
+  # the pipelines of the window's tile when the desktop first draws it, which
+  # blocked the page for about 25 s here, so the stream's first 30 s are a
+  # warm-up, judged but not timed (startup still counts it); the hardware numbers
+  # (60 fps encode, hardware decode, a GPU desktop) are a hardware
+  # qualification's (kpi-budgets.toml, "A native window on the browser
+  # desktop"). An incorrect stream fails the job and records nothing.
+  stream:
+    needs: [plan, builder]
+    if: needs.plan.outputs.stream == 'true'
+    runs-on: runner
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Prepare verified fonts for the desktop bundle
+        uses: ./.forgejo/actions/prepare-font-assets
+
+      - name: Build the release desktop bundle
+        run: |
+          set -euo pipefail
+          cargo fetch --locked
+          # Outside the checkout, which must stay clean (the browser job's reason).
+          bundle="$RUNNER_TEMP/stream-bundle"
+          bash scripts/ci-run.sh "release desktop bundle build" -- \
+            crates/browser/tilo-browser-runtime/scripts/build.sh "$bundle" --bundle desktop
+          echo "STREAM_BUNDLE=$bundle" >> "$GITHUB_ENV"
+
+      - name: Build the host and the session
+        run: |
+          set -euo pipefail
+          bash scripts/ci-run.sh "stream host and session release build" -- \
+            cargo build --locked --release -p tilo-relay --features web,stream-source \
+              --bin tilo-relay --example legacy_stream_source
+          # The session's frame numbers read back as the harness reads them.
+          bash scripts/ci-run.sh "stream session tests" -- \
+            cargo test --locked --release -p tilo-relay --features stream-source --example legacy_stream_source
+
+      - name: Headless Chrome for Testing
+        run: |
+          set -euo pipefail
+          command -v node || dnf install -y nodejs
+          bash tools/ci/ensure-browser-dependencies.sh
+          npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
+            | tee "$RUNNER_TEMP/chrome.txt"
+          echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
+
+      - name: Qualify the stream and record
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer swiftshader \
+            --virtualization kvm --runner runner > perf/env.json
+          node scripts/perf/native_stream_qualification.mjs "$STREAM_BUNDLE" --out perf/stream.json \
+            --relay target/release/tilo-relay --source target/release/examples/legacy_stream_source \
+            --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
+            | tee perf/stream-summary.txt
+          python3 tools/perf/adapters.py native-stream --env-json perf/env.json \
+            perf/stream.json > perf/stream.jsonl
+          cat perf/stream.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-stream
+          path: perf/
+          if-no-files-found: warn
+
   # The same-job A/B lane: one leg per selected group, each on one
   # `runner` for its whole length, so both sides see the same machine. The
   # Cargo environment is the union of the nightly group jobs' (release with
@@ -978,7 +1070,7 @@ jobs:
           if-no-files-found: warn
 
   compare:
-    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, search, hosting, hosting-room, browser]
+    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, search, hosting, hosting-room, browser, stream]
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.mode != 'ab' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -1014,13 +1106,14 @@ jobs:
           HOSTING_RESULT: ${{ needs.hosting.result }}
           HOSTING_ROOM_RESULT: ${{ needs.hosting-room.result }}
           BROWSER_RESULT: ${{ needs.browser.result }}
+          STREAM_RESULT: ${{ needs.stream.result }}
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -uo pipefail
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "search:$SEARCH_RESULT" "hosting:$HOSTING_RESULT" "hosting-room:$HOSTING_ROOM_RESULT" "browser:$BROWSER_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "search:$SEARCH_RESULT" "hosting:$HOSTING_RESULT" "hosting-room:$HOSTING_ROOM_RESULT" "browser:$BROWSER_RESULT" "stream:$STREAM_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;

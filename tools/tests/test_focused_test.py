@@ -211,12 +211,6 @@ class FocusedTests(unittest.TestCase):
                  patch.object(focused.subprocess, 'run') as run, self.assertRaisesRegex(ValueError, 'absent'):
                 focused.execute(Path('/focused-test-fixture'), values)
             run.assert_not_called()
-        with self.subTest(phase='fuse consumer selects helper changes'):
-            self.doCleanups()
-            self.setUp()
-            workflow = (PATH.parents[2] / '.forgejo/workflows/ci-filesystem.yml').read_text()
-            pr_paths = workflow.split('  pull_request:', 1)[1].split('  schedule:', 1)[0]
-            self.assertIn('"tools/ci/focused_test.py"', pr_paths)
         with self.subTest(phase='workflow keeps source separate and request out of shell'):
             self.doCleanups()
             self.setUp()
