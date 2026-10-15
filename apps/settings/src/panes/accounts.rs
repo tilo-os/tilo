@@ -989,7 +989,15 @@ impl AccountsPane {
         }
     }
 
-    fn select_account_services(
+    /// Update the open, idle connection form's service choices without starting sign-in.
+    ///
+    /// Uses the same validation as the `select-account-services` action; `mode`
+    /// must be `sync` or `import`.
+    ///
+    /// # Errors
+    /// Returns an error if the mode is invalid, the form is closed or busy,
+    /// or the requested services are unavailable for the account.
+    pub fn select_account_services(
         &mut self,
         files: bool,
         mail: bool,
