@@ -686,6 +686,95 @@ fn grouped_sections_are_settings_rows_with_separators() {
     );
 }
 
+fn value_fixture(german: bool) -> Element {
+    let pairs = if german {
+        [
+            ("Lokale Modelle", "Bleiben auf diesem Gerät"),
+            ("Downloads", "Nur mit deiner Zustimmung"),
+            ("Kompatibilität", "Nicht genug Speicher"),
+            (
+                "Empfohlenes Modell",
+                "Warte auf den signierten Modellkatalog",
+            ),
+        ]
+    } else {
+        [
+            ("Local models", "Stay on this device"),
+            ("Downloads", "Only with your approval"),
+            ("Compatibility", "Not enough memory"),
+            ("Recommended model", "Waiting for signed model catalog"),
+        ]
+    };
+    Box::new(pairs.into_iter().fold(
+        FormSection::untitled().grouped(),
+        |section, (label, value)| section.field(Field::value(label, value)),
+    ))
+}
+
+#[test]
+fn read_only_values_reserve_readable_phrase_width_in_both_themes() {
+    // The content width left by an ordinary Settings window and its sidebar.
+    for theme in [Theme::light(), Theme::dark()] {
+        for german in [false, true] {
+            let harness = FrameHarness::new_with_theme(
+                crate::State::new(),
+                value_fixture(german),
+                (500, 768),
+                theme.clone(),
+            );
+            let snapshot = harness.inspection();
+            let mut fields = Vec::new();
+            collect(&snapshot.root, "Field", &mut fields);
+            assert_eq!(fields.len(), 4);
+            for field in fields {
+                let label = &field.children[0];
+                let body = &field.children[1];
+                assert!(body.rect[0] >= label.rect[0] + label.rect[2]);
+                assert!(body.rect[2] >= 0.4 * field.rect[2], "{:?}", body.rect);
+                assert!(body.rect[0] + body.rect[2] <= 500.5);
+                let mut texts = Vec::new();
+                collect(body, "Text", &mut texts);
+                assert_eq!(texts.len(), 1);
+                let line = f64::from(theme.text(TextRole::Body).line_height_px());
+                assert!(texts[0].rect[3] <= 2.0 * line + 1.0, "{:?}", texts[0].rect);
+            }
+        }
+    }
+}
+
+#[test]
+fn read_only_values_stack_without_overlap_at_narrow_width_and_large_type() {
+    for theme in [Theme::light(), Theme::dark()] {
+        for german in [false, true] {
+            for scale in [1.0, 2.0] {
+                let harness = FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    value_fixture(german),
+                    (320, 1600),
+                    theme.clone().with_text_scale(scale),
+                );
+                let snapshot = harness.inspection();
+                let mut fields = Vec::new();
+                collect(&snapshot.root, "Field", &mut fields);
+                assert_eq!(fields.len(), 4);
+                for field in &fields {
+                    let label = &field.children[0];
+                    let body = &field.children[1];
+                    assert!(body.rect[1] >= label.rect[1] + label.rect[3]);
+                    assert!((body.rect[0] - label.rect[0]).abs() < 0.5);
+                    assert!(body.rect[0] + body.rect[2] <= 320.5);
+                    let mut names = Vec::new();
+                    semantic_names(field, &mut names);
+                    assert_eq!(names.len(), 2, "each field retains its label and value");
+                }
+                for pair in fields.windows(2) {
+                    assert!(pair[1].rect[1] >= pair[0].rect[1] + pair[0].rect[3]);
+                }
+            }
+        }
+    }
+}
+
 fn trailing_fixture() -> Element {
     use crate::widget::Dropdown;
     Box::new(
