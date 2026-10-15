@@ -1600,6 +1600,31 @@ it is `vello` + `wgpu` unoptimised — so expect the nested one to feel soft.
 not hand you a seat the running desktop owns, and fails with `ENOSYS` (error
 code 38), which is a refusal, not an unimplemented backend.
 
+### Nested desktop with Tilo's own apps
+
+A bare `shell --backend winit` has an empty launcher: it lists only installed,
+signed `.tapp` packages. One command builds the shell and the apps through
+`rcargo`, packages and signs the apps with a development key, installs them
+with their runtime bundle into a private store, and starts the nested shell
+beside the model gateway:
+
+```bash
+dist/dev/nested-session.sh                                  # core apps + agent
+dist/dev/nested-session.sh --apps "notes chat agent"        # a smaller set
+```
+
+Everything lives in `~/.local/state/tilo-nested` (`--state DIR`): a scratch
+HOME and XDG tree, the app store, the runtime, the publisher key and a
+throwaway identity (re-minted before its 24-hour expiry). The shell gets a
+private `XDG_RUNTIME_DIR` and D-Bus session, so it cannot collide with your
+desktop or another Tilo session. Re-running repackages only the apps whose
+binary, manifest or surface changed. The script prints the `tilo-control`
+command line for driving the session; logs are under `logs/` in the state
+directory. Configure a model provider in the nested Settings app before
+asking the agent to act. The browser installs without its Chromium engine and
+offers to fetch it itself. `--fresh-desktop` forgets saved workspaces and
+windows but keeps the identity and the installed apps.
+
 ### Edit → build → log into your own build
 
 After installing `tilo-session-devel`, or while the transient developer entry is
