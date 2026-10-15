@@ -325,6 +325,10 @@ pub struct FrameHarness {
     frame_witness: Option<FrameWitness>,
     /// Frames that skipped sync and publication as quiet, since construction.
     quiet_frames: u64,
+    /// The host drives frames through [`Self::poll_frame`], so a witness can
+    /// make one quiet. A host that only calls [`Self::relayout`] never reads
+    /// one and does not pay for taking it.
+    polls_frames: bool,
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_focus_pending: bool,
     history_pointer_owned: bool,
@@ -1486,6 +1490,7 @@ impl FrameHarness {
             local_epoch: 0,
             frame_witness: None,
             quiet_frames: 0,
+            polls_frames: false,
             history_layout: None,
             history_focus_pending: false,
             history_pointer_owned: false,
@@ -2628,6 +2633,7 @@ impl FrameHarness {
             // last synced to know which deadlines had their frame).
             self.invalidate_local();
         }
+        self.polls_frames = true;
         // The tick follows interaction, and every interaction since the last
         // complete frame ran its own: with nothing in flight it has nothing
         // to dispatch, record or undo.
@@ -3692,7 +3698,9 @@ impl FrameHarness {
         if quiet {
             self.verify_quiet_frame();
         }
-        self.frame_witness = Some(self.read_witness());
+        // Only a polled frame reads it, and only while it follows everything.
+        self.frame_witness =
+            (self.polls_frames && self.bookkeeping_followed()).then(|| self.read_witness());
         Ok(())
     }
 
