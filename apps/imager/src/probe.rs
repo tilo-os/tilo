@@ -738,7 +738,6 @@ mod tests {
     #[test]
     fn inspect_source_rejects_fifo_without_waiting_for_a_writer() {
         use std::os::unix::ffi::OsStrExt;
-        use ui::time::Duration;
 
         const CHILD_FIFO: &str = "TILO_IMAGER_TEST_INSPECTION_FIFO";
         if let Some(path) = std::env::var_os(CHILD_FIFO) {
@@ -763,20 +762,8 @@ mod tests {
             .stdout(std::fs::File::create(root.path().join("child.stdout")).unwrap())
             .spawn()
             .unwrap();
-        let deadline = tilo_test_env::hang_deadline();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if ui::time::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                _ => break None,
-            }
-        };
-        if status.is_none() {
-            let _ = child.kill();
-            child.wait().unwrap();
-        }
+        let status =
+            bounded_command::wait_or_kill(&mut child, tilo_test_env::hang_bound()).unwrap();
         assert!(
             status.is_some(),
             "source inspection blocked on a FIFO with no writer"

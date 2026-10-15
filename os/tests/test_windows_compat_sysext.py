@@ -20,7 +20,8 @@ CATALOGUE = json.loads(
 BUILD_IMAGE = (REPO / ".forgejo/workflows/build-image.yml").read_text()
 MANIFESTS = (REPO / ".forgejo/workflows/extension-manifests.yml").read_text()
 BUILD_SCRIPT = (REPO / "os/dev/build-windows-compat-sysext.sh").read_text()
-HELPER = (REPO / "os/usr/libexec/tilo-extension").read_text()
+# /usr/libexec/tilo-extension, built from this crate.
+HELPER = "".join(path.read_text() for path in sorted((REPO / "crates/system/extension-helper/src").glob("*.rs")))
 PLAN = (REPO / "crates/windows/compat-service/src/plan.rs").read_text()
 
 # What the compatibility service and the Windows VM name by absolute path.
@@ -110,8 +111,8 @@ class CatalogueOffersIt(unittest.TestCase):
         self.assertLessEqual(size["download_bytes"], size["installed_bytes"])
 
     def test_the_helper_installs_prebuilt_images_and_only_those_it_verified(self):
-        self.assertIn('RAW_FORMAT = "sysext-raw"', HELPER)
-        self.assertIn("def build_raw_part", HELPER)
+        self.assertIn('pub const RAW_FORMAT: &str = "sysext-raw";', HELPER)
+        self.assertIn("fn build_raw_part(", HELPER)
         self.assertIn("a sysext image part is exactly one artifact", HELPER)
 
     def test_planner_probes_exactly_the_paths_the_sysext_provides(self):
