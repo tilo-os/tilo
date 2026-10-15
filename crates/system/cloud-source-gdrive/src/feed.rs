@@ -18,8 +18,9 @@ use cloud_source::{Change, ChangePage, Cursor, Error, ItemId, Result, Wait};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 
+use crate::Inner;
 use crate::api::{self, ChangeList, StartPageToken};
-use crate::{Inner, lock};
+use tilo_lock::MutexRecover as _;
 
 /// Folders per enumeration query; keeps the query string well under
 /// Drive's limit.
@@ -217,7 +218,7 @@ impl Inner {
     /// Whether a folder already known was inside the subtree, without
     /// asking the server about the folder itself.
     fn known_inside(&self, folder: &str, root: &str) -> Result<Option<bool>> {
-        let parents = lock(&self.folders).get(folder).cloned();
+        let parents = self.folders.lock_recover().get(folder).cloned();
         match parents {
             None => Ok(None),
             Some(parents) => self.inside(&parents, root, MAX_DEPTH).map(Some),
@@ -234,7 +235,7 @@ impl Inner {
             return Ok(false);
         };
         for parent in parents {
-            let known = lock(&self.folders).get(parent).cloned();
+            let known = self.folders.lock_recover().get(parent).cloned();
             let grandparents = if let Some(known) = known {
                 known
             } else {

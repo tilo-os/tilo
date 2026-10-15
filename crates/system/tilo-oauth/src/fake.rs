@@ -51,10 +51,6 @@ pub struct FakeAuthorizationServer {
     state: Arc<Mutex<State>>,
 }
 
-fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
-    state.lock_recover()
-}
-
 fn query_of(target: &str) -> BTreeMap<String, String> {
     let query = target.split_once('?').map_or("", |(_, query)| query);
     url::form_urlencoded::parse(query.as_bytes())
@@ -107,36 +103,39 @@ impl FakeAuthorizationServer {
 
     /// Lifetime of access tokens issued from now on.
     pub fn set_token_lifetime(&self, seconds: u64) {
-        lock(&self.state).token_lifetime = seconds;
+        self.state.lock_recover().token_lifetime = seconds;
     }
 
     /// Issue `token` as every access token from now on.
     pub fn issue_access_token(&self, token: &str) {
-        lock(&self.state).access_token = Some(token.to_string());
+        self.state.lock_recover().access_token = Some(token.to_string());
     }
 
     /// Refuse token requests without this `client_secret`, as Google does
     /// for installed-app clients.
     pub fn require_client_secret(&self, secret: &str) {
-        lock(&self.state).client_secret = Some(secret.to_string());
+        self.state.lock_recover().client_secret = Some(secret.to_string());
     }
 
     /// Accept `token` as a refresh token this server issued, for a grant
     /// sealed before the test started (a vault written by an earlier
     /// version).
     pub fn accept_refresh_token(&self, token: &str) {
-        lock(&self.state).refresh_tokens.insert(token.to_string());
+        self.state
+            .lock_recover()
+            .refresh_tokens
+            .insert(token.to_string());
     }
 
     /// Make the redirect carry `state` instead of the request's own.
     pub fn forge_state(&self, state: &str) {
-        lock(&self.state).forged = Some(state.to_string());
+        self.state.lock_recover().forged = Some(state.to_string());
     }
 
     /// Revoke every refresh token server-side, as a person removing the
     /// app's access in their provider account does.
     pub fn revoke_all_refresh_tokens(&self) {
-        let mut state = lock(&self.state);
+        let mut state = self.state.lock_recover();
         let tokens: Vec<String> = std::mem::take(&mut state.refresh_tokens)
             .into_iter()
             .collect();
@@ -145,17 +144,17 @@ impl FakeAuthorizationServer {
 
     /// Tokens revoked through `POST /revoke` or [`Self::revoke_all_refresh_tokens`].
     pub fn revoked(&self) -> Vec<String> {
-        lock(&self.state).revoked.clone()
+        self.state.lock_recover().revoked.clone()
     }
 
     /// Verifiers offered to the token endpoint.
     pub fn verifiers(&self) -> Vec<String> {
-        lock(&self.state).verifiers.clone()
+        self.state.lock_recover().verifiers.clone()
     }
 
     /// Successful refresh grants served.
     pub fn refreshes(&self) -> usize {
-        lock(&self.state).refreshes
+        self.state.lock_recover().refreshes
     }
 
     /// Every request received so far.
@@ -174,7 +173,7 @@ fn handle(shared: &Mutex<State>, request: &Request) -> Reply {
         ("POST", "/token") => token(shared, &query_of(&format!("?{}", request.body_text()))),
         ("POST", "/revoke") => {
             let form = query_of(&format!("?{}", request.body_text()));
-            let mut state = lock(shared);
+            let mut state = shared.lock_recover();
             if let Some(token) = form.get("token") {
                 state.refresh_tokens.remove(token);
                 state.revoked.push(token.clone());
@@ -198,7 +197,7 @@ fn authorize(shared: &Mutex<State>, query: &BTreeMap<String, String>) -> Reply {
     {
         return Reply::status(400);
     }
-    let mut state = lock(shared);
+    let mut state = shared.lock_recover();
     state.next = state.next.saturating_add(1);
     let code = format!("code-{}", state.next);
     state.codes.insert(
@@ -224,7 +223,7 @@ fn authorize(shared: &Mutex<State>, query: &BTreeMap<String, String>) -> Reply {
 
 fn token(shared: &Mutex<State>, form: &BTreeMap<String, String>) -> Reply {
     let invalid_grant = || json(400, &serde_json::json!({"error": "invalid_grant"}));
-    let mut state = lock(shared);
+    let mut state = shared.lock_recover();
     if let Some(secret) = &state.client_secret
         && form.get("client_secret") != Some(secret)
     {
