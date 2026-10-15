@@ -1550,15 +1550,11 @@ impl EmojiPicker {
             let shape =
                 RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.control));
             if i == self.selected {
-                let lift = colors.lift_on(ui::chrome::shell::panel_ground(theme), 1.0);
+                // The armed cell is the panel's overlay lift, like a menu's
+                // armed row (HIG 9.3): no ring in your colour, which is for
+                // the focus ring and the caret alone (HIG 9.4).
+                let (lift, _) = ui::widget::floating_surface::armed_row(theme);
                 scene.fill(Fill::NonZero, transform, lift, None, &shape);
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.5),
-                    transform,
-                    colors.border_focus,
-                    None,
-                    &shape,
-                );
             } else if self.hover == Some(Hit::Emoji(i)) {
                 let lift = colors.lift_on(ui::chrome::shell::panel_ground(theme), 0.5);
                 scene.fill(Fill::NonZero, transform, lift, None, &shape);
@@ -1636,15 +1632,11 @@ impl EmojiPicker {
                         rect.inset(-2.0),
                         f64::from(theme.tokens.radii.control),
                     );
-                    let lift = colors.lift_on(colors.surfaces.raised, 1.0);
-                    scene.fill(Fill::NonZero, transform, lift, None, &cell_shape);
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(1.5),
-                        tone_transform,
-                        colors.border_focus,
-                        None,
-                        &cell_shape,
+                    let lift = colors.lift_on(
+                        colors.surfaces.raised,
+                        ui::widget::floating_surface::OVERLAY_LIFT,
                     );
+                    scene.fill(Fill::NonZero, tone_transform, lift, None, &cell_shape);
                 }
                 draw_emoji(scene, tone_transform, text_renderer, theme, *rect, text);
             }
