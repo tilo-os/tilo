@@ -120,6 +120,9 @@ impl OwnerCommitService for Native {
         let key = self.key.clone();
         let cert = self.certificate.clone();
         Box::pin(async move {
+            // A real owner commits asynchronously: let other requests run
+            // first, as they do while a commit is on its way.
+            tokio::task::yield_now().await;
             let receipt = match request.operation {
                 CommitOperation::WorkspaceTaskCommand { .. } => owner
                     .commit_workspace_task_command(request.clone(), std::time::SystemTime::now()),
@@ -1165,6 +1168,35 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
                     .status,
                 WorkspaceTaskStatus::Cancelled
             );
+            drop(f);
+        })
+        .await;
+}
+
+/// An agent reports acceptance and its first progress without waiting for
+/// the host in between. Progress is decided against the accepted run, so it
+/// must apply after acceptance, not race its commit: refused, it failed the
+/// run at its end ("public progress requires accepted run").
+#[tokio::test(flavor = "current_thread")]
+async fn progress_sent_right_after_acceptance_applies_in_order() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (accepted, progress) = tokio::join!(
+                report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted),
+                report(
+                    &agent,
+                    &run,
+                    runtime_collab::TaskRunUpdate::Progress {
+                        message: "Reviewing the catalogue".into(),
+                    },
+                ),
+            );
+            accepted.unwrap();
+            progress.unwrap();
             drop(f);
         })
         .await;

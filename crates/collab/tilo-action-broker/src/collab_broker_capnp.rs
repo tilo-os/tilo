@@ -3247,6 +3247,9 @@ pub struct CapnpBrokerState {
     committed_read_id: AtomicU64,
     owner_commit_failure: Mutex<Option<String>>,
     owner_commit_order: AsyncMutex<()>,
+    /// Native task run reports apply one at a time, each from the state the
+    /// one before it committed ([`Self::report_native_task`]).
+    native_task_report_order: AsyncMutex<()>,
     /// The shell's one replicated workspace owner/capability authority.
     /// `None` exists only for transitional test/diagnostic brokers; a
     /// certified join fails closed when they have no authority to consult.
@@ -4082,6 +4085,7 @@ impl CapnpBrokerState {
                 committed_read_id: AtomicU64::new(1),
                 owner_commit_failure: Mutex::new(None),
                 owner_commit_order: AsyncMutex::new(()),
+                native_task_report_order: AsyncMutex::new(()),
                 membership,
                 trusted_devices,
                 certificate_authority: config
