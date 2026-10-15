@@ -135,8 +135,20 @@ expect sealed "$update" $'UUID=137A-C31F /boot vfat umask=0077 0 2\n' no \
   "the sealed disk's fstab mounts the ESP itself at /boot"
 expect sealed-auto "$update" $'UUID=137A-C31F /boot auto ro 0 2\n' no \
   "an fstab /boot of type auto that is the ESP is left alone"
-expect commented "$update" "# UUID=$boot_uuid /boot ext4 ro 1 2"$'\n' no "a commented-out fstab line mounts nothing"
-expect no-boot "$update" '' no "nothing mounts /boot"
+expect commented "$update" "# UUID=$boot_uuid /boot ext4 ro 1 2"$'\n' yes "a commented-out fstab line claims no /boot, so the ESP is /boot"
+expect no-boot "$update" '' yes "nothing mounts /boot (an update booted on an installed system)"
+unit="$work/no-boot/tilo-esp-mount.service"
+if [ -f "$unit" ]; then
+  grep -qxF "ExecStart=/usr/libexec/tilo-esp-mount /dev/disk/by-partuuid/$esp_lower /boot" "$unit" \
+    && grep -qx 'ConditionPathIsMountPoint=!/boot' "$unit" \
+    && ! grep -q '^RequiresMountsFor=' "$unit" \
+    && ok "no-boot: the ESP becomes /boot itself, as on the sealed disk" \
+    || bad "no-boot: the ESP is not mounted at /boot: $(sed -n 's/^ExecStart=//p' "$unit")"
+fi
+rm -rf "$work/efivars"
+expect no-boot-no-loader "$update" '' no "no /boot and no boot loader report: nothing is guessed"
+[ ! -s "$work/no-boot-no-loader.log" ] || bad "a board with no boot loader report logs an ESP complaint at every boot"
+efivar "$esp_uuid"
 expect dev "composefs=abc root=tilo-auto rw systemd.mount-extra=UUID=137A-C31F:/boot:auto:ro,nosuid,nodev,noexec" '' no \
   "a dev disk's /boot is its ESP (by FAT volume id)"
 expect dev-label "composefs=abc systemd.mount-extra=LABEL=ESP:/boot:auto:ro" '' no \
@@ -146,9 +158,12 @@ expect dev-partuuid "composefs=abc systemd.mount-extra=PARTUUID=$esp_uuid:/boot:
 expect other-partuuid "composefs=abc systemd.mount-extra=PARTUUID=11111111-2222-3333-4444-555555555555:/boot:auto:ro" '' yes \
   "a /boot on another partition is separate"
 expect fat "composefs=abc systemd.mount-extra=UUID=137A-C31F:/boot:vfat:ro" '' no "a FAT /boot is not separate"
-expect other-path "composefs=abc systemd.mount-extra=LABEL=DATA:/srv:ext4:ro" '' no "a mount elsewhere is not /boot"
+expect other-path "composefs=abc systemd.mount-extra=LABEL=DATA:/srv:ext4:ro" '' yes "a mount elsewhere leaves /boot unclaimed, so the ESP is /boot"
 expect auto-unprobed "composefs=abc systemd.mount-extra=UUID=$boot_uuid:/boot:auto:ro" '' no \
   "a /boot of type auto that cannot be compared with the ESP is left alone" TEST_BLKID_FAIL=1
+
+expect live-installer "$update tilo.install" '' no \
+  "the live installer: it refuses to install to a mounted ESP, and a staged one boots from it"
 
 # 3. The initrd mounts no /boot.
 touch "$work/initrd-release"

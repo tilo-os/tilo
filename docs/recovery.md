@@ -102,21 +102,22 @@ the global mount never becomes writable. Without that, every rename failed with
 `EROFS`, and a deployment that booted fine spent a try on each boot until the
 boot loader abandoned it.
 
-Where the ESP is mounted depends on the layout. On a sealed or dev disk `/boot`
-is the ESP. An installed system has an encrypted root and a separate ext4
-`/boot` (`TILO_BOOT`, mounted by its signed UKI and by bootc's `/etc/fstab`,
-which is what an update's own UKI relies on), and nothing mounted its ESP:
-`systemd-gpt-auto-generator` mounts nothing on this composefs layout. The
-boot-entry maintenance found no boot loader and gave no update a try counter
-("nothing to maintain"), so a broken update was never rolled back, and
-`systemd-bless-boot` stopped with "Couldn't find $BOOT partition", so a good boot
-was never blessed. `tilo-esp-generator` now mounts the ESP the boot loader names
-(`LoaderDevicePartUUID`) at `/boot/efi` whenever the command line or fstab
-mounts `/boot` from anything but that ESP, which is where every one of those
-tools looks. Its
-FAT superblock stays writable and the mount everyone sees is a read-only bind
-(`tilo-esp-mount`): bootc mounts the same ESP read-write to stage an update,
-and a read-only superblock would refuse that.
+Where the ESP is mounted depends on the layout. On a sealed disk `/etc/fstab`
+mounts it at `/boot`, on a dev disk the entry's `systemd.mount-extra` does. An
+installed system has an encrypted root and a separate ext4 `/boot` (`TILO_BOOT`)
+that only its signed target UKI mounts; it has no fstab, and an update's own UKI
+mounts no `/boot` at all. Nothing mounted its ESP: `systemd-gpt-auto-generator`,
+which would take an unclaimed `/boot`, mounts nothing on this composefs layout,
+and the image has no `/efi`. The boot-entry maintenance found no boot loader and
+gave no update a try counter ("nothing to maintain"), so a broken update was
+never rolled back, and `systemd-bless-boot` stopped with "Couldn't find $BOOT
+partition", so a good boot was never blessed. `tilo-esp-generator` now mounts the
+ESP the boot loader names (`LoaderDevicePartUUID`) where every one of those tools
+looks: at `/boot/efi` when `/boot` comes from anything but that ESP, and at
+`/boot` itself when nothing claims `/boot`. Its FAT superblock stays writable and
+the mount everyone sees is a read-only bind (`tilo-esp-mount`): bootc mounts the
+same ESP read-write to stage an update, and a read-only superblock would refuse
+that. The live installer is left alone: it refuses to install to a mounted ESP.
 
 Three failed boots and the previous deployment becomes the default. Nothing runs
 a rollback command — the boot loader simply declines to keep choosing an entry it
