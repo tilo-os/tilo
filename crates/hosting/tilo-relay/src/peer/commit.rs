@@ -74,18 +74,15 @@ pub(super) async fn handle_commit(
         return refused(reason);
     };
     let digest = *blake3::hash(&delta).as_bytes();
-    let gated = crate::timing::start();
-    let gate = ws.lock().await.commit_gate.clone();
-    let _admitting = gate.lock().await;
-    crate::timing::event("commit.gate_wait", gated, 0);
+    let claiming = crate::timing::start();
+    // Held until the commit is recorded: a copy of it (a resend after a
+    // reconnect) waits for this one, then is answered from the ledger.
+    let _claim = match claim(&ws, author_device_public_key, op).await {
+        Ok(claim) => claim,
+        Err(admitted) => return Ok(Some(resent_commit(workspace_id, admitted, digest))),
+    };
+    crate::timing::event("commit.claim_wait", claiming, 0);
     let committing = crate::timing::start();
-    let admitted = ws
-        .lock()
-        .await
-        .admitted_commit(&author_device_public_key, &op);
-    if let Some(admitted) = admitted {
-        return Ok(Some(resent_commit(workspace_id, admitted, digest)));
-    }
     let observed = session
         .compactor
         .and_then(|compactor| compactor.observe(&delta));
@@ -140,6 +137,30 @@ pub(super) async fn handle_commit(
     }))
 }
 
+/// Claim `author`'s commit `op` for admission in `ws`
+/// ([`crate::workspace::WorkspaceRuntime::claim_commit`]), first waiting for
+/// a copy of it already being admitted. `Err` with its record when the
+/// ledger holds it.
+async fn claim(
+    ws: &SharedWorkspace,
+    author: [u8; 32],
+    op: [u8; 16],
+) -> Result<crate::workspace::CommitClaim, crate::store::CommitRecord> {
+    loop {
+        let runtime = ws.lock().await;
+        let claimed = runtime
+            .admitted_commit(&author, &op)
+            .map_or_else(|| Ok(runtime.claim_commit(author, op)), Err);
+        drop(runtime);
+        let copy = match claimed {
+            Err(admitted) => return Err(admitted),
+            Ok(Ok(claim)) => return Ok(claim),
+            Ok(Err(copy)) => copy,
+        };
+        drop(copy.lock().await);
+    }
+}
+
 /// The answer to a resent commit the ledger already holds: its original
 /// host order, or a refusal when the same operation id carries other content.
 fn resent_commit(
@@ -174,6 +195,8 @@ async fn remember_commit(
     ws: &SharedWorkspace,
     mut record: crate::store::CommitRecord,
 ) -> Result<u64, PeerError> {
+    let lane = ws.lock().await.commit_ledger_lane.clone();
+    let _writing = lane.lock().await;
     let (ledger, store) = {
         let mut runtime = ws.lock().await;
         if record.seq == 0 {
