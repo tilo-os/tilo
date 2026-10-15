@@ -2009,7 +2009,10 @@ source = "frames an idle desktop of the demo windows presents per second (headle
 # and a GPU desktop are a hardware qualification's (--renderer gpu
 # --enforce-goals, docs/measurements/performance.md). Every run is first
 # judged correct (no decoder error, no corrupt, misnamed or older picture, the
-# last frame shown, every press delivered) or it records nothing. The
+# last frame shown, every press delivered) or it records nothing. SwiftShader
+# compiles the window tile's pipelines when the desktop first draws it, which
+# blocks the page for about 25 s on this runner: startup includes that, and
+# the frame KPIs are timed after a 30 s warm-up (--warm-up 30). The
 # ceilings are the harness's goals: the window's first picture within a second
 # of the session starting its stream (an uninterrupted flow of thought), a
 # frame on screen within 100 ms of its capture at p95, under 1 % of the frames
