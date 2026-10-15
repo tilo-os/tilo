@@ -16,15 +16,6 @@
 //! colorimetry — what a peer's shared surface decodes through) and
 //! `mp4_recording` (`recording`: the MP4/MOV muxer behind screen recordings).
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod decoder;
 pub mod encoder;
 #[cfg(feature = "recording")]

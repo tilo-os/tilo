@@ -11,15 +11,6 @@
 //! trusted host; this crate does not discover or authenticate that host.
 //! Unix also retains its inherited-descriptor and host-local lifecycle APIs.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod client;
 #[cfg(unix)]
 pub mod connected;

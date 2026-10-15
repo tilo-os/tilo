@@ -29,14 +29,6 @@
 //! [`RichTextSurface`] is the surface behind that line, for an app that
 //! configures the editor or places it inside its own layout.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod block_commands;
 mod blocks;
 mod composer;

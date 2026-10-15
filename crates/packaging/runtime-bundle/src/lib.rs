@@ -10,15 +10,6 @@
 //! the host and silently skipped if absent, since Debian and Fedora
 //! layouts differ and only what exists is copied.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod component_pins;
 pub mod gc;
 pub mod verity;

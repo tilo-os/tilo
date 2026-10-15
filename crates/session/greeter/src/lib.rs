@@ -18,15 +18,6 @@
 //! * [`i18n`] — the sign-in screen's string catalogue.
 //! * [`local_users`] — conservative local-account discovery for one-passcode login.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod auth;
 pub mod device_status;
 pub mod greeter_app;

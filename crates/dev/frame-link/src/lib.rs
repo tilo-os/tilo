@@ -38,15 +38,6 @@
 //! `total_token_wait_ns` (cumulative latency + throttle wait, for a
 //! mean). `stats()` returns a snapshot.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
