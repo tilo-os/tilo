@@ -70,6 +70,13 @@ fields = [
 ]
 
 [[resources.verbs]]
+id = "import-workspace"
+kind = "undoable"
+params = [
+  { name = "workspace", required = true, schema = {} },
+]
+
+[[resources.verbs]]
 id = "new-request"
 kind = "undoable"
 
@@ -169,4 +176,3 @@ params = [
   { name = "status", required = true, schema = { type = "integer", maximum = 65535, minimum = 0 } },
   { name = "duration_ms", required = true, schema = { type = "integer", minimum = 0 } },
 ]
-

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub mod local;
+pub mod protocol;
 /// Single-shot model calls in either provider dialect.
 pub mod transform;
 

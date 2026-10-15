@@ -14,8 +14,14 @@ path = "src/lib.rs"
 name = "tilo-model-gateway"
 path = "src/main.rs"
 
+[[bin]]
+name = "tilo-model-http"
+path = "src/http_main.rs"
+
 [dependencies]
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 hex.workspace = true
+
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -35,12 +41,20 @@ agent-provider-config = { path = "../provider-config" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 accounts = { path = "../../system/accounts" }
 reqwest = { workspace = true, features = ["json"] }
-tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 tilo-rt.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 clap.workspace = true
 base64.workspace = true
+# Provider wire encoding, response normalization and SSE decoding. Transport
+# remains the gateway's explicitly configured, non-retrying HTTP client.
+rig-core = { version = "=0.44.0", default-features = false }
+bytes.workspace = true
+futures-util.workspace = true
+
 workspace-hack = { version = "0.1" }
 # The subject of a picture is found here, with the segmentation model the
 # person installed, so no app holds the model or its runtime.

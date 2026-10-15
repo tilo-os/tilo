@@ -7,4 +7,10 @@
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-ui::main!(chat::ChatShell);
+fn main() {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        chat::enable_standalone_models();
+        ui::framework::run::<chat::ChatShell>();
+    }
+}

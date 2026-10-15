@@ -186,6 +186,13 @@ fn holds(profile_id: &str) -> bool {
 fn child_follows_settings_and_vault() {
     let reads = || PLAN_PROFILES.reads.load(Ordering::Relaxed);
     save_profile(true);
+    // Establish local test custody explicitly, never use an ambient keyring.
+    let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
+    let profile = configured_profile("test-provider").unwrap();
+    let (reference, authorization) = credential_binding(&profile).unwrap();
+    ServiceCredentials::open_in(&root)
+        .store(&reference, &authorization, "seed-key")
+        .unwrap();
     set_key("test-provider", "first-key".into()).unwrap();
 
     // Phase: the first turn reads; the next reuses without touching a file.
@@ -214,12 +221,11 @@ fn child_follows_settings_and_vault() {
     // Phase: a vault another writer rewrote is read again.
     set_key("test-provider", "third-key".into()).unwrap();
     assert_eq!(planned_key().unwrap(), "third-key");
-    let mut vault = SecretVault::open();
-    vault.put(
-        &vault_id("test-provider").unwrap(),
-        &Secret::password("fourth-key"),
-    );
-    vault.try_save().unwrap();
+    let profile = credential_profile("test-provider").unwrap();
+    let (reference, authorization) = credential_binding(&profile).unwrap();
+    ServiceCredentials::open()
+        .store(&reference, &authorization, "fourth-key")
+        .unwrap();
     assert_eq!(planned_key().unwrap(), "fourth-key");
 
     // Phase: a settings change reaches the next turn. `ProviderConfig`
@@ -242,7 +248,7 @@ fn plan_profiles_follow_the_settings_document_and_vault_on_disk() {
         child
             .args([
                 "--exact",
-                "profile_tests::plan_profiles_follow_the_settings_document_and_vault_on_disk",
+                "service::profile_tests::plan_profiles_follow_the_settings_document_and_vault_on_disk",
                 "--nocapture",
             ])
             // No ambient credentials, settings path, or secret-tool.

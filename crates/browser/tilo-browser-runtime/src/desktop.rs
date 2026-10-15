@@ -99,6 +99,7 @@ pub(crate) struct Inputs {
     pub room: String,
     pub author: String,
     pub permissions: Rc<RefCell<PermissionContext>>,
+    pub models: ui::models::Models,
 }
 
 /// The person who made each strip or opened each window, by its id. Kept
@@ -564,11 +565,12 @@ impl Tiles {
             author: UserId(self.inputs.author.clone()),
             action_context: tilo_actions::ActionContext::default(),
         };
-        let context = match named_new {
+        let mut context = match named_new {
             Some(id) => HostContext::prepare_new_record(definition, inputs, id),
             None => HostContext::prepare(definition, inputs, &target),
         }
         .map_err(|error| error.to_string())?;
+        context.provide_models(self.inputs.models.clone());
         let destination = Rc::clone(&self.shared.images);
         let mut component = ui::ImageStore::with_host_factory_with_max_dimension(
             Rc::new(move |max_dimension| {

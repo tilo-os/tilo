@@ -132,7 +132,7 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
-        self.thread_open.is_some()
+        let handled = self.thread_open.is_some()
             && !self.emoji_open
             && matches!(
                 event,
@@ -140,7 +140,12 @@ impl ChatApp {
                     | WindowEvent::MouseInput { .. }
                     | WindowEvent::MouseWheel { .. }
             )
-            && drive_retained_control(&mut self.thread_scroll, event, scale, modifiers, doc)
+            && drive_retained_control(&mut self.thread_scroll, event, scale, modifiers, doc);
+        if handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
+            self.thread_follow =
+                (self.thread_scroll.offset_y() - self.thread_scroll.max_offset_y()).abs() < 1.0;
+        }
+        handled
     }
 
     pub(crate) fn dispatch_event(
@@ -503,6 +508,32 @@ impl ChatApp {
             }
             *handled = true;
             return;
+        }
+
+        if self.thread_open.is_some()
+            && self.right_flap_open()
+            && (matches!(self.focus, Focus::Thread) || self.thread_body.contains(self.last_mouse))
+        {
+            let target = match logical_key {
+                Key::Named(NamedKey::PageUp) => {
+                    Some(f64::from(self.thread_scroll.offset_y()) - self.thread_body.height() * 0.9)
+                }
+                Key::Named(NamedKey::PageDown) => {
+                    Some(f64::from(self.thread_scroll.offset_y()) + self.thread_body.height() * 0.9)
+                }
+                Key::Named(NamedKey::Home) if modifiers.state().control_key() => Some(0.0),
+                Key::Named(NamedKey::End) if modifiers.state().control_key() => {
+                    Some(f64::from(self.thread_scroll.max_offset_y()))
+                }
+                _ => None,
+            };
+            if let Some(target) = target {
+                self.thread_scroll.set_offset_y(ui::num::f32_of_f64(target));
+                self.thread_follow =
+                    (self.thread_scroll.offset_y() - self.thread_scroll.max_offset_y()).abs() < 1.0;
+                *handled = true;
+                return;
+            }
         }
 
         // Preserve TextInput's ordinary End behaviour, but offer the familiar
@@ -924,8 +955,26 @@ impl ChatApp {
                 self.focus = Focus::Thread;
                 self.set_composer_focus();
             }
+            Hit::HostModel(command) => {
+                self.activate_model_control(&command);
+            }
             Hit::Send => self.send_focused(doc),
             Hit::JumpToLatest => self.jump_to_latest(),
+            Hit::ThreadScroll(end) => {
+                self.thread_follow = end;
+                let target = if end {
+                    self.thread_scroll.max_offset_y()
+                } else {
+                    0.0
+                };
+                self.thread_scroll.set_offset_y(target);
+            }
+            Hit::AgentReasoning(id) => {
+                self.thread_follow = false;
+                if !self.expanded_reasoning.remove(&id) {
+                    self.expanded_reasoning.insert(id);
+                }
+            }
             Hit::ComposerEmoji(anchor) if self.can_participate() => {
                 self.open_emoji_picker(None, anchor);
             }
@@ -1101,6 +1150,7 @@ impl ChatApp {
 
     fn on_hit_open_thread(&mut self, id: Id) {
         if self.thread_open.as_ref() != Some(&id) {
+            self.thread_follow = false;
             self.thread_scroll.set_offset_y(0.0);
         }
         if self.thread_open.as_deref() == Some(id.as_str()) {

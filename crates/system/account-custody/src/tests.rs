@@ -105,6 +105,39 @@ fn vault_refresh_token(root: &Path, id: &AccountId) -> String {
 }
 
 #[test]
+fn unreadable_credentials_are_storage_errors_not_missing_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tilo");
+    let id = AccountId::from("google-drive-1");
+    let tokens = tilo_oauth::TokenSet::default();
+    save(
+        &root,
+        &id,
+        GOOGLE_DRIVE_TYPE,
+        &oauth_secret(&tokens),
+        serde_json::json!({}),
+    );
+    let sealed = accounts::vault_dir_in(&root).join("vault.enc");
+    std::fs::write(&sealed, b"corrupt credentials").unwrap();
+    let custodian = Custodian::for_root(Some(root.clone()));
+
+    assert!(matches!(
+        custodian.seal_oauth(&id, &tokens),
+        Err(CustodyError::Storage(_))
+    ));
+    assert!(matches!(
+        custodian.oauth_access_token(&id, GMAIL, false),
+        Err(CustodyError::Storage(_))
+    ));
+    assert!(matches!(
+        custodian.publish(&id, false),
+        Err(CustodyError::Storage(_))
+    ));
+    assert_eq!(std::fs::read(&sealed).unwrap(), b"corrupt credentials");
+    assert_eq!(health(&root, &id), None);
+}
+
+#[test]
 fn sign_in_publishes_the_access_token_only() {
     let (fixture, tokens) = signed_in_drive(3600);
     assert_eq!(

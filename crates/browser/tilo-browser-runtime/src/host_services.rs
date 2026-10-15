@@ -18,6 +18,37 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Model access belongs to a mount, never to the page's ambient services.
+/// The embedding host supplies a short-lived model-service session token,
+/// not a provider credential. The service enforces its audience and grants.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ModelConfig {
+    endpoint: String,
+    session_token: String,
+    profile_id: String,
+    model_id: String,
+}
+
+impl ModelConfig {
+    pub(crate) fn connect(&self) -> Result<ui::models::Models, String> {
+        use tilo_model_gateway::transport::{FetchTransport, ModelClient};
+        if self.session_token.trim().is_empty()
+            || self.profile_id.trim().is_empty()
+            || self.model_id.trim().is_empty()
+        {
+            return Err("model session and selection are required".into());
+        }
+        let transport = FetchTransport::new(&self.endpoint, self.session_token.clone())?;
+        Ok(ui::models::Models::new(std::rc::Rc::new(ModelClient::new(
+            transport,
+            self.profile_id.clone(),
+            self.model_id.clone(),
+            std::time::Duration::from_secs(120),
+        ))))
+    }
+}
+
 use tilo_desktop_surface::{AppInbox, AppNotifier};
 
 thread_local! {

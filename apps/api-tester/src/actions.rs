@@ -17,10 +17,32 @@ pub const REQUEST_MENU_CHOICES: &[&str] = &["Save request…", "Rename request�
 pub const ENVIRONMENT_MENU_CHOICES: &[&str] =
     &["Rename environment…", "Add variable…", "Delete variable…"];
 
+impl std::fmt::Debug for ApiTesterEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::ImportLegacy { .. } => "ImportLegacy",
+            Self::Send => "Send",
+            Self::SendSaved { .. } => "SendSaved",
+            Self::SetCredential { .. } => "SetCredential",
+            Self::PickEnvironment { .. } => "PickEnvironment",
+            Self::SetSecretValue { .. } => "SetSecretValue",
+            Self::RequestMenu { .. } => "RequestMenu",
+            Self::EnvironmentMenu { .. } => "EnvironmentMenu",
+        };
+        f.debug_struct(name).finish_non_exhaustive()
+    }
+}
+
 /// Work that reaches outside the document.
-#[derive(Clone, Debug, PartialEq, Effect)]
+#[derive(Clone, PartialEq, Effect)]
 #[effect(operation = "api_tester.effects", device_only)]
 pub enum ApiTesterEffect {
+    /// Import an old Automerge snapshot into an empty workspace
+    #[effect(job)]
+    ImportLegacy {
+        #[param("Base64-encoded legacy Automerge snapshot; handled only on this device")]
+        snapshot: String,
+    },
     /// Send request
     #[effect(job)]
     Send,
@@ -31,6 +53,7 @@ pub enum ApiTesterEffect {
         request: String,
     },
     /// Set the request's credential
+    #[effect(job)]
     SetCredential {
         #[param("The token, password or key, kept on this device")]
         secret: String,

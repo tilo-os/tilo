@@ -206,6 +206,20 @@ pub enum AgentModelsEffect {
         #[param(secret, "The API key; what the key field holds when omitted")]
         key: Option<String>,
     },
+    /// Bind a legacy key only after independently confirming its original endpoint.
+    #[effect(job, row, label = "Confirm original endpoint and migrate key")]
+    MigrateProviderKey {
+        #[param("The provider's id")]
+        provider: String,
+        #[param("Original endpoint used with this key, not a newly edited endpoint")]
+        original_endpoint: String,
+    },
+    /// Remove a legacy key that is not bound to a provider origin.
+    #[effect(job, row, destructive, label = "Remove unbound legacy key")]
+    RemoveLegacyProviderKey {
+        #[param("The provider's id")]
+        provider: String,
+    },
     /// Remove a provider's stored API key.
     #[effect(job, row, destructive, label = "Remove API key")]
     RemoveProviderKey {
@@ -371,6 +385,41 @@ pub(crate) fn answer(
                 },
             ))
         }
+        AgentModelsEffect::MigrateProviderKey {
+            provider,
+            original_endpoint,
+        } => {
+            drop(model);
+            Ok(cx.thread(
+                move |_| {
+                    tilo_model_gateway::migrate_api_key(&provider, &original_endpoint)
+                        .map_err(|error| error.to_string())
+                },
+                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                    let model = app.agent_models().model();
+                    let mut model = model.borrow_mut();
+                    model.read_keys();
+                    model.provider_notice(outcome.as_ref().map(|()| t("agent-key-migrated")));
+                    outcome.map(|()| Effected::done())
+                },
+            ))
+        }
+        AgentModelsEffect::RemoveLegacyProviderKey { provider } => {
+            drop(model);
+            Ok(cx.thread(
+                move |_| {
+                    tilo_model_gateway::remove_legacy_api_key(&provider)
+                        .map_err(|error| error.to_string())
+                },
+                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                    let model = app.agent_models().model();
+                    let mut model = model.borrow_mut();
+                    model.read_keys();
+                    model.provider_notice(outcome.as_ref().map(|()| t("agent-key-removed")));
+                    outcome.map(|()| Effected::done())
+                },
+            ))
+        }
         AgentModelsEffect::RemoveProviderKey { provider } => {
             drop(model);
             Ok(cx.thread(
@@ -463,7 +512,7 @@ pub struct AgentModelsArea {
 /// built from it on the UI thread ([`AgentModelsModel::from_read`]).
 pub(crate) struct AgentModelsRead {
     snapshot: Result<LocalModelSnapshot, String>,
-    keys: HashMap<String, Result<bool, String>>,
+    keys: HashMap<String, Result<tilo_model_gateway::CredentialStatus, String>>,
 }
 
 impl AgentModelsRead {
@@ -491,12 +540,14 @@ fn hosted_profiles(providers: &AgentProviders) -> Vec<String> {
 
 /// Ask the gateway whether this device's vault holds each of `hosted`'s
 /// keys: one blocking request each.
-fn hosted_keys(hosted: Vec<String>) -> HashMap<String, Result<bool, String>> {
+fn hosted_keys(
+    hosted: Vec<String>,
+) -> HashMap<String, Result<tilo_model_gateway::CredentialStatus, String>> {
     hosted
         .into_iter()
         .map(|id| {
             let configured =
-                tilo_model_gateway::secret_configured(&id).map_err(|error| error.to_string());
+                tilo_model_gateway::credential_status(&id).map_err(|error| error.to_string());
             (id, configured)
         })
         .collect()
@@ -676,6 +727,20 @@ impl AgentModelsArea {
             } else {
                 row
             };
+            let row = if profile.location == EndpointLocation::Hosted {
+                row.operation(
+                    SettingsEffect::from(AgentModelsEffect::MigrateProviderKey {
+                        provider: profile.id.clone(),
+                        original_endpoint: String::new(),
+                    })
+                    .bound_asking(&["original_endpoint"]),
+                )
+                .operation(offer(AgentModelsEffect::RemoveLegacyProviderKey {
+                    provider: profile.id.clone(),
+                }))
+            } else {
+                row
+            };
             rows.push(row);
             rows.extend(request_limit_rows(profile));
         }
@@ -707,7 +772,7 @@ pub struct AgentModelsModel {
     limit_field_buffers: Mutex<HashMap<(String, String), LimitFieldBuffers>>,
     /// Whether this device's vault holds each hosted provider's key, or why
     /// that could not be told.
-    keys: HashMap<String, Result<bool, String>>,
+    keys: HashMap<String, Result<tilo_model_gateway::CredentialStatus, String>>,
     changed: bool,
 }
 
@@ -774,7 +839,11 @@ impl AgentModelsModel {
     /// it: one that roamed here from another device needs its own.
     fn needs_key(&self, profile: &ProviderProfile) -> bool {
         profile.location == EndpointLocation::Hosted
-            && matches!(self.keys.get(&profile.id), Some(Ok(false)))
+            && matches!(
+                self.keys.get(&profile.id),
+                Some(Ok(tilo_model_gateway::CredentialStatus::Missing
+                    | tilo_model_gateway::CredentialStatus::MigrationRequired))
+            )
     }
 
     fn refresh(&mut self) {
@@ -993,12 +1062,14 @@ impl AgentModelsModel {
                 if config.remove(&provider).is_none() {
                     return Err(t("agent-provider-gone"));
                 }
-                tilo_model_gateway::remove_api_key(&provider).map_err(|error| {
-                    t_args(
-                        "agent-key-remove-err",
-                        &[("error", error.to_string().into())],
-                    )
-                })?;
+                tilo_model_gateway::remove_api_key(&provider)
+                    .and_then(|()| tilo_model_gateway::remove_legacy_api_key(&provider))
+                    .map_err(|error| {
+                        t_args(
+                            "agent-key-remove-err",
+                            &[("error", error.to_string().into())],
+                        )
+                    })?;
             }
             _ => return Err("not a provider effect".into()),
         }
@@ -1435,6 +1506,7 @@ impl AgentModelsModel {
         buffers
             .entry(profile.id.clone())
             .or_insert_with(|| HostedFieldBuffers {
+                original_endpoint: Arc::new(Mutex::new(String::new())),
                 label: Arc::new(Mutex::new(profile.label.clone())),
                 endpoint: Arc::new(Mutex::new(profile.endpoint.clone())),
                 model: Arc::new(Mutex::new(
@@ -1593,7 +1665,10 @@ impl AgentModelsModel {
             let buffer = self.key_buffer(&profile_id);
             let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
             let (configured, configured_error) = match self.keys.get(&profile_id) {
-                Some(Ok(configured)) => (*configured, None),
+                Some(Ok(status)) => (
+                    matches!(status, tilo_model_gateway::CredentialStatus::Configured),
+                    None,
+                ),
                 Some(Err(error)) => (false, Some(error.clone())),
                 None => (false, None),
             };
@@ -1601,6 +1676,50 @@ impl AgentModelsModel {
                 body.push(row(crate::widgets::error_caption(&t_args(
                     "agent-key-read-error",
                     &[("error", error.into())],
+                ))));
+            }
+            if matches!(
+                self.keys.get(&profile_id),
+                Some(Ok(tilo_model_gateway::CredentialStatus::MigrationRequired))
+            ) {
+                body.push(note(&t("agent-key-migration-required")));
+                let original = Arc::clone(&fields.original_endpoint);
+                let initial_original = original
+                    .lock()
+                    .map(|value| value.clone())
+                    .unwrap_or_default();
+                body.push(field_row(
+                    &t("agent-original-endpoint"),
+                    Box::new(
+                        TextInput::local()
+                            .with_id(&format!("agent-models-original-endpoint-{profile_id}"))
+                            .with_external_buffer(Arc::clone(&original))
+                            .with_initial_value(&initial_original)
+                            .with_placeholder(t("agent-original-endpoint")),
+                    ),
+                ));
+                let migrate_id = profile_id.clone();
+                body.push(row(Box::new(self.cx.bind(
+                    Button::new(
+                        &format!("agent-models-migrate-key-{profile_id}"),
+                        &t("agent-migrate-key"),
+                    ),
+                    effect(AgentModelsEffect::MIGRATE_PROVIDER_KEY).map(move |()| {
+                        let endpoint = original
+                            .lock()
+                            .map(|value| value.clone())
+                            .unwrap_or_default();
+                        (migrate_id.clone(), endpoint)
+                    }),
+                ))));
+                body.push(row(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-remove-legacy-key-{profile_id}"),
+                        &t("agent-remove-legacy-key"),
+                    ),
+                    AgentModelsEffect::RemoveLegacyProviderKey {
+                        provider: profile_id.clone(),
+                    },
                 ))));
             }
             body.push(field_row(
@@ -1945,6 +2064,7 @@ fn manager_run(args: &[&str], timeout: Duration) -> Result<bounded_command::Outp
 
 #[derive(Clone)]
 struct HostedFieldBuffers {
+    original_endpoint: Arc<Mutex<String>>,
     label: Arc<Mutex<String>>,
     endpoint: Arc<Mutex<String>>,
     model: Arc<Mutex<String>>,
@@ -2610,7 +2730,10 @@ mod tests {
         })
         .unwrap();
         let profile = pane.providers.get().config.profiles[0].clone();
-        pane.keys.insert(profile.id.clone(), Ok(false));
+        pane.keys.insert(
+            profile.id.clone(),
+            Ok(tilo_model_gateway::CredentialStatus::Missing),
+        );
         assert!(pane.needs_key(&profile));
         let text = crate::widgets::announced_text(pane.compose().as_ref());
         assert!(
@@ -2618,7 +2741,10 @@ mod tests {
             "{text:#?}"
         );
 
-        pane.keys.insert(profile.id.clone(), Ok(true));
+        pane.keys.insert(
+            profile.id.clone(),
+            Ok(tilo_model_gateway::CredentialStatus::Configured),
+        );
         assert!(!pane.needs_key(&profile));
         let save = SettingsEffect::from(AgentModelsEffect::SaveProviderKey {
             provider: profile.id,
@@ -2626,6 +2752,42 @@ mod tests {
         })
         .bound_asking(&["key"]);
         assert!(save.params().iter().any(|param| param.name == "key"));
+    }
+
+    #[test]
+    fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.change_providers(AgentModelsEffect::AddProvider {
+            protocol: "anthropic".into(),
+        })
+        .unwrap();
+        let profile = pane.providers.get().config.profiles[0].clone();
+        pane.keys.insert(
+            profile.id.clone(),
+            Ok(tilo_model_gateway::CredentialStatus::MigrationRequired),
+        );
+        assert!(pane.needs_key(&profile));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line.contains("unbound legacy API key")),
+            "{text:#?}"
+        );
+        assert!(
+            text.iter().any(|line| line == "Remove unbound legacy key"),
+            "{text:#?}"
+        );
+        let migration = SettingsEffect::from(AgentModelsEffect::MigrateProviderKey {
+            provider: profile.id,
+            original_endpoint: String::new(),
+        })
+        .bound_asking(&["original_endpoint"]);
+        assert!(
+            migration
+                .params()
+                .iter()
+                .any(|param| param.name == "original_endpoint")
+        );
     }
 
     fn model_over(control: Arc<MockControl>) -> AgentModelsModel {

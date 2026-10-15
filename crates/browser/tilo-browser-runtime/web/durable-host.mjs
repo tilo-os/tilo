@@ -38,7 +38,12 @@ export function createDurableHost({runtime,acquireStorage,schedule=queueMicrotas
     async function commitNow(writes){
       if(!writes.length)return;
       publish({persistence:'pending',pendingWrites:writes.length,error:null});
-      try{await lease.commit(writes);}
+      try{
+        // Write hooks and pagehide also reach this path without host.persist().
+        // A document must never become durable before its credential custody.
+        if(runtime.flush_files)await runtime.flush_files();
+        await lease.commit(writes);
+      }
       catch(error){
         failed=true;acknowledge(writes,String(error));
         publish({persistence:'failed',pendingWrites:writes.length,error:String(error)});

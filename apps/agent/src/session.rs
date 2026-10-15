@@ -448,6 +448,7 @@ impl Session {
             run,
             runtime_collab::TaskRunUpdate::Progress {
                 message: "Reviewing the permission-filtered action catalogue".into(),
+                presentation: None,
             },
         )?;
         self.poll_cancellation(run)?;
@@ -544,6 +545,7 @@ impl Session {
                         actions.len(),
                         action.label
                     ),
+                    presentation: None,
                 },
             )?;
             match self.run_task_step(run, index, action, &arguments)? {
@@ -1244,6 +1246,7 @@ mod tests {
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::RulesOnly,
+            presentation_version: None,
             execution_budget: None,
             action_context: serde_json::json!({
                 "purpose": "Review draft",

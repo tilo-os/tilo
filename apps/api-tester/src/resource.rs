@@ -35,6 +35,23 @@ pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.
     search = Workspace::search
 )]
 impl Workspace {
+    /// Apply a reference-only legacy import after this device has stored its credentials.
+    #[action]
+    pub fn import_workspace(
+        &mut self,
+        #[param("The converted workspace, with device-local credential references")]
+        workspace: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        use ui::tilo_resource::Model;
+        if *self != Self::blank() {
+            return Err(Refusal::new("Import requires a new, empty workspace"));
+        }
+        let imported = Self::from_json(&workspace)
+            .map_err(|_| Refusal::new("Invalid converted API workspace"))?;
+        *self = imported;
+        Ok(())
+    }
+
     /// Start a new request in the builder.
     #[action]
     pub fn new_request(&mut self, cx: &mut ActionCx) {
@@ -265,7 +282,7 @@ impl Workspace {
 
 impl Workspace {
     /// A new workspace opens on one blank request, the same on every device.
-    fn blank() -> Self {
+    pub(super) fn blank() -> Self {
         Self {
             request: RequestRecord::named("New request"),
             opened: Atom(uuid::Uuid::nil().to_string()),
@@ -335,6 +352,10 @@ impl ResourceApp for ApiTesterShell {
     const ID: &'static str = "so.tilo.api-tester";
     const TITLE: &'static str = "API Tester";
     const ICON: Option<&'static str> = Some("api-tester");
+
+    fn import_record(context: &ui::application::HostContext) -> Result<(), String> {
+        crate::migration::open(context)
+    }
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
         cx.surface(ApiTesterApp::new_with_actions(&cx.actions()))

@@ -41,7 +41,7 @@ impl AuthMethod {
 
 /// Account-level connection settings. This is exactly the form the
 /// account-setup screen collects and the transport layer consumes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountConfig {
     pub display_name: String,
     pub email: String,
@@ -65,6 +65,12 @@ pub struct AccountConfig {
     /// hence `serde(skip)`.
     #[serde(skip)]
     pub password: String,
+}
+
+impl std::fmt::Debug for AccountConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccountConfig").finish_non_exhaustive()
+    }
 }
 
 impl Default for AccountConfig {

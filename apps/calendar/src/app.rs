@@ -1999,7 +1999,12 @@ impl CalendarApp {
         if person.accounts.is_empty() {
             return;
         }
-        let adopted = AccountStore::from_store(&person.store(), &accounts::SecretVault::open());
+        let Ok(credentials) = accounts::AccountCredentials::open() else {
+            tracing::error!("calendar account credentials could not be opened");
+            *seen = None;
+            return;
+        };
+        let adopted = AccountStore::from_store(&person.store(), &credentials);
         if adopted != self.configured {
             self.configured = adopted;
             self.show_accounts();

@@ -21,7 +21,7 @@ test-support = ["tilo-dialogs/test-support", "tilo-clock/test-support"]
 # The native desktop services (`native::services`): each platform crate's
 # system backend, speech, and the backends below. Without it the crate is the
 # host vocabulary only, and a host installs its own `host::HostServices`.
-native = ["dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files"]
+native = ["dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files", "dep:tilo-model-gateway"]
 # Screen capture through the XDG Desktop Portal. Linux only: the native
 # runner turns it on for Linux targets, and it enables nothing elsewhere.
 # File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
@@ -34,6 +34,7 @@ portal = ["native", "dep:ashpd"]
 mpris = ["native", "dep:zbus", "dep:tilo-media"]
 
 [dependencies]
+agent-provider-config = { version = "0.1.0", path = "../../agent/provider-config" }
 # The authenticated host updates the app process's portable network hints.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false }
 # Bounded reads of the host-selected read-only policy projection.
@@ -61,6 +62,10 @@ tilo-location.workspace = true
 tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", optional = true }
 # App-scoped secrets, with each target's store.
 tilo-secrets.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Native model RPC belongs to each host instance, never the process default.
+tilo-model-gateway = { version = "0.1.0", path = "../../agent/model-gateway", optional = true }
 
 [target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
 # MPRIS needs a Unix session bus; p2p supports hermetic tests.

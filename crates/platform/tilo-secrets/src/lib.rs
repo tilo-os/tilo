@@ -31,8 +31,9 @@
 //! headless node or server. Every process given it keeps its secrets in that
 //! directory instead of the system store; see the `files` module.
 //!
-//! `BrowserWrapped` protects secrets at rest (a copied profile, a disk
-//! image), not against script running in the page's origin.
+//! `BrowserWrapped` encrypts stored records with non-extractable browser keys.
+//! It does not protect against script running in the page's origin or an
+//! attacker controlling the browser/profile that holds those keys.
 //!
 //! The API is async because the browser's is. Its futures are `Send` on the
 //! desktop and not in the browser, where everything runs on the page's
@@ -93,7 +94,8 @@ pub enum Protection {
     /// The operating system's keychain holds them, unlocked with the user's
     /// session.
     OsKeychain,
-    /// Encrypted under a key the browser will not export; see the crate docs.
+    /// Encrypted under a key the browser will not export through `WebCrypto`;
+    /// this is not a boundary against a compromised browser or origin.
     BrowserWrapped,
     /// Sealed in owner-only files under a key file beside them: as private
     /// as the machine's disk and the Unix account that owns them.
@@ -217,6 +219,14 @@ impl SecretStore {
 
     pub fn app_id(&self) -> &str {
         &self.app
+    }
+
+    /// Whether this handle uses the page's built-in asynchronous custody.
+    /// Host-injected backends keep their own persistence contract, even when
+    /// they report browser-wrapped protection.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub fn is_page_store(&self) -> bool {
+        matches!(self.backend, Backend::Web)
     }
 
     pub fn protection(&self) -> Protection {
