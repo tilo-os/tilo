@@ -1070,9 +1070,8 @@ cost = "heavy"
 default = false
 
 # The workspace's cargo metadata sealed to this exact committed source, for
-# offline affected-package selection (AGENTS.md): `t test source-metadata` in a
-# clean checkout of a pushed commit, then `t outputs source-metadata`, which
-# writes target/ci/current-source-metadata.json.
+# offline affected-package selection (AGENTS.md): `t outputs source-metadata` in
+# a clean checkout of a pushed commit writes target/ci/current-source-metadata.json.
 [[check]]
 name = "source-metadata"
 run = """
