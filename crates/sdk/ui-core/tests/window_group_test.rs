@@ -7,13 +7,12 @@ use tilo_ui::widget::{
 /// frame's width motion. Count real layout and scene-recording progress.
 #[test]
 fn composition_settle_preserves_width_motion_until_the_next_paint() {
-    use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
     use tilo_ui::Widget;
     use tilo_ui::presence::PresenceCtx;
     use tilo_ui::text_render::TextRenderer;
     use tilo_ui::theme::Theme;
     use tilo_ui::widget::GroupRow;
-    use vello::kurbo::{Affine, Point};
+    use vello::kurbo::Affine;
 
     let mut opening = group(WindowWidth::Wide, 1200.0);
     opening.set_strip_usable_px(1200.0);
@@ -22,22 +21,7 @@ fn composition_settle_preserves_width_motion_until_the_next_paint() {
     let mut row = GroupRow::new(vec![opening, sibling]);
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
-    let mut initial_tree = TaffyTree::new();
-    let root = row.build_layout(&mut initial_tree, &theme, &mut Default::default());
-    let mut style = initial_tree.style(root).unwrap().clone();
-    style.size.width = Dimension::length(1200.0);
-    style.size.height = Dimension::length(500.0);
-    initial_tree.set_style(root, style).unwrap();
-    initial_tree
-        .compute_layout(
-            root,
-            Size {
-                width: AvailableSpace::Definite(1200.0),
-                height: AvailableSpace::Definite(500.0),
-            },
-        )
-        .unwrap();
-    row.apply_layout(&initial_tree, root, Point::ORIGIN);
+    layout_motion_row(&mut row, &theme);
     let usable = row.usable_per_group()[0];
     assert!(row.remove_group_by_id(1));
     let mut opening = group(WindowWidth::Wide, usable);
@@ -67,21 +51,7 @@ fn composition_settle_preserves_width_motion_until_the_next_paint() {
                         .next()
                         .unwrap()
                         .take_structure_dirty();
-                    let mut tree = TaffyTree::new();
-                    let root = row.build_layout(&mut tree, &theme, &mut Default::default());
-                    let mut style = tree.style(root).unwrap().clone();
-                    style.size.width = Dimension::length(1200.0);
-                    style.size.height = Dimension::length(500.0);
-                    tree.set_style(root, style).unwrap();
-                    tree.compute_layout(
-                        root,
-                        Size {
-                            width: AvailableSpace::Definite(1200.0),
-                            height: AvailableSpace::Definite(500.0),
-                        },
-                    )
-                    .unwrap();
-                    row.apply_layout(&tree, root, Point::ORIGIN);
+                    layout_motion_row(&mut row, &theme);
                     layouts = layouts.saturating_add(1);
                 }
                 let _ = row
@@ -119,6 +89,28 @@ fn composition_settle_preserves_width_motion_until_the_next_paint() {
         (previous - target).abs() < 0.5,
         "painted width {previous} must settle at {target}"
     );
+}
+
+fn layout_motion_row(row: &mut tilo_ui::widget::GroupRow, theme: &tilo_ui::theme::Theme) {
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
+    use tilo_ui::Widget;
+
+    let mut tree = TaffyTree::new();
+    let root = row.build_layout(&mut tree, theme, &mut HashMap::default());
+    let mut style = tree.style(root).unwrap().clone();
+    style.size.width = Dimension::length(1200.0);
+    style.size.height = Dimension::length(500.0);
+    tree.set_style(root, style).unwrap();
+    tree.compute_layout(
+        root,
+        Size {
+            width: AvailableSpace::Definite(1200.0),
+            height: AvailableSpace::Definite(500.0),
+        },
+    )
+    .unwrap();
+    row.apply_layout(&tree, root, vello::kurbo::Point::ORIGIN);
 }
 
 /// Display widths this suite pins the width model against. The bug being
