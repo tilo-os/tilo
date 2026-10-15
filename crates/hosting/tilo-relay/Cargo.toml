@@ -30,7 +30,7 @@ test-support = ["tilo-relay-store/test-support"]
 agents = ["web", "dep:tilo-agent-participant", "dep:tilo-desktop-model", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:notes", "dep:canvas", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
 web = ["tilo-relay-shell/web", "dep:tilo-moq","dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 # The legacy_stream_source example: a session streaming a window through the
-# production H.264 encoder (needs the GStreamer stack). No binary uses it.
+# production encoder (H.264, VP9 or AV1; needs the GStreamer stack). No binary uses it.
 stream-source = ["dep:tilo-media"]
 
 [[bin]]

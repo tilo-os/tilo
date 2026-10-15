@@ -17,8 +17,12 @@
 //!
 //! ```text
 //! legacy_stream_source --dev-state DIR --host IROH_ADDR_JSON --room UUID --out FRAMES.jsonl
-//!     [--width 1280] [--height 720] [--seconds 10] [--fps N] [--surface 7]
+//!     [--width 1280] [--height 720] [--seconds 10] [--fps N] [--surface 7] [--codec h264|vp9|av1]
 //! ```
+//!
+//! `--codec` picks the stream's codec (H.264 by default). VP9 and AV1 are what
+//! a session without an H.264 encoder (no hardware one, no codec pack) streams
+//! once every browser member decodes them.
 //!
 //! `--dev-state` is `tilo-relay dev --state`: its `dev-identity.bin` holds
 //! the user root and the host device's keys. Protocol on stdio, one JSON
@@ -75,6 +79,7 @@ struct Args {
     seconds: f64,
     fps: Option<u32>,
     surface: u64,
+    codec: StreamCodec,
 }
 
 fn args() -> anyhow::Result<Args> {
@@ -88,6 +93,7 @@ fn args() -> anyhow::Result<Args> {
         seconds: 10.0,
         fps: None,
         surface: 7,
+        codec: StreamCodec::H264,
     };
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -104,6 +110,16 @@ fn args() -> anyhow::Result<Args> {
             "--seconds" => parsed.seconds = value.parse().context("--seconds")?,
             "--fps" => parsed.fps = Some(value.parse().context("--fps")?),
             "--surface" => parsed.surface = value.parse().context("--surface")?,
+            "--codec" => {
+                parsed.codec = StreamCodec::from_wire_label(&value)
+                    .filter(|codec| {
+                        matches!(
+                            codec,
+                            StreamCodec::H264 | StreamCodec::Vp9 | StreamCodec::Av1
+                        )
+                    })
+                    .with_context(|| format!("--codec {value}: one of h264, vp9, av1"))?;
+            }
             other => bail!("unknown flag {other}"),
         }
     }
@@ -443,13 +459,13 @@ async fn run(args: Args) -> anyhow::Result<()> {
     })
     .await
     .context("the subscription was not ready within 30 s")??;
-    let mut config = EncoderConfig::new(StreamCodec::H264, args.width, args.height, HARDWARE_FPS);
+    let mut config = EncoderConfig::new(args.codec, args.width, args.height, HARDWARE_FPS);
     config.bitrate_bps = BITRATE_BPS;
     config.keyframe_interval = HARDWARE_FPS;
     config.input = InputFormat::Rgba;
     config.screen_content = true;
     let mut encoder = tilo_media::RealtimeEncoder::new(&config)
-        .map_err(|error| anyhow::anyhow!("no H.264 encoder: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("no {} encoder: {error}", args.codec.wire_label()))?;
     let element = encoder.element();
     let fps = args.fps.unwrap_or(if element.is_hardware() {
         HARDWARE_FPS
@@ -465,6 +481,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     emit(&serde_json::json!({
         "event": "ready", "device": hex::encode(cert.device_public_key),
         "encoder": element.describe(), "hardware": element.is_hardware(), "fps": fps,
+        "codec": args.codec.wire_label(),
         "width": args.width, "height": args.height, "surface": args.surface, "enteredRoom": entered,
     }));
     let mut stdin = stdin_lines();
@@ -487,7 +504,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         source_peer,
         width: args.width,
         height: args.height,
-        codec: "h264".into(),
+        codec: args.codec.wire_label().into(),
         ts: start_us.saturating_mul(1000),
         sender_monotonic_ns_at_send: 0,
         colorimetry: None,
