@@ -20,8 +20,8 @@ use tilo_actions::{
 };
 use tilo_clock::unix_now_ms;
 use tilo_relay::offload::{
-    LocalTransform, OffloadError, OffloadJob, Offloader, OffloaderParts, RanOn, RelayPlacement,
-    WorkspaceContent,
+    ComputePlacement, LocalTransform, OffloadError, OffloadJob, Offloader, OffloaderParts,
+    PlacementQuery, RanOn, RelayPlacement, WorkspaceContent,
 };
 use tilo_relay::{
     ComputeClient, ComputeEnvelope, ComputeJobBinding, ComputeJobPhase, ComputeOutputSource,
@@ -30,7 +30,9 @@ use tilo_relay::{
     InputStaging, InputTransfer, PowerAvailability, RelayClient, WorkerEnvironments,
     run_compute_assignment, serve_worker_stream_with,
 };
-use tilo_user_identity::{DeviceCapabilities, RevocationList};
+use tilo_user_identity::{
+    DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
+};
 
 use crate::common::compute::{FixtureCatalogue, installed_package, worker_advertisement};
 use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay};
@@ -292,7 +294,7 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
         compute: laptop_compute,
         workspaces: vec![WORKSPACE],
         content: content.clone(),
-        placement,
+        placement: Arc::clone(&placement) as Arc<dyn ComputePlacement>,
         packages: Arc::new(FixtureCatalogue(laptop_package)),
     })
     .await
@@ -406,45 +408,11 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
         Arc::clone(&staging),
     ));
 
-    // Now the relay places the job on the desktop: it runs there, and the
-    // laptop gets back exactly what it computed itself.
-    let there = tilo_test_env::within(
-        "the offloaded run",
-        offloader.invoke(
-            OffloadJob {
-                workspace_id: WORKSPACE,
-                action: &action,
-                inputs: manifests.clone(),
-            },
-            Arc::clone(&local),
-        ),
-    )
-    .await
-    .unwrap();
-    assert_eq!(there.ran_on, RanOn::Worker(desktop_key));
-    assert_eq!(
-        there.output, here.output,
-        "the same output, wherever it ran"
-    );
-    assert_eq!(there.outputs, expected_digests);
-    for (digest, bytes) in expected_digests.iter().zip(&expected) {
-        assert_eq!(content.read(*digest).await.unwrap().as_ref(), Some(bytes));
-        assert!(
-            content.manifest_of(*digest).is_some(),
-            "a workspace file version"
-        );
-    }
-    let times = offloader.wall_times();
-    assert!(times.iter().any(|time| time.device == laptop_key));
-    assert!(times.iter().any(|time| time.device == desktop_key));
-    let fetched = *staging.staged.lock().unwrap().last().unwrap();
-    assert_eq!(fetched.bytes, u64::try_from(input_bytes).unwrap());
-    assert_eq!(fetched.held, 0);
-
     // The desktop's own replica of the workspace already holds the
     // photographs (it is the home server that keeps their originals): the
-    // laptop proves it holds them too, names their file versions, and no
-    // input byte moves.
+    // relay places the job there, the laptop proves it holds them too,
+    // names their file versions, and no input byte moves. The laptop gets
+    // back exactly what it computed itself.
     let desktop_store = Arc::new(fs::store::ContentStore::memory());
     for bytes in &photographs {
         desktop_store.write_content(bytes).await.unwrap().unwrap();
@@ -480,6 +448,47 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
         (from_held.held, from_held.held_bytes),
         (IMAGES, u64::try_from(input_bytes).unwrap())
     );
+
+    // Without that replica the inputs hydrate from the laptop through the
+    // relay, and the output is still the same.
+    staging.next.lock().unwrap().held = None;
+    let there = tilo_test_env::within(
+        "the offloaded run",
+        offloader.invoke(
+            OffloadJob {
+                workspace_id: WORKSPACE,
+                action: &action,
+                inputs: manifests.clone(),
+            },
+            Arc::clone(&local),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(there.ran_on, RanOn::Worker(desktop_key));
+    assert_eq!(
+        there.output, here.output,
+        "the same output, wherever it ran"
+    );
+    assert_eq!(there.outputs, expected_digests);
+    for (digest, bytes) in expected_digests.iter().zip(&expected) {
+        assert_eq!(content.read(*digest).await.unwrap().as_ref(), Some(bytes));
+        assert!(
+            content.manifest_of(*digest).is_some(),
+            "a workspace file version"
+        );
+    }
+    let fetched = *staging.staged.lock().unwrap().last().unwrap();
+    assert_eq!(fetched.bytes, u64::try_from(input_bytes).unwrap());
+    assert_eq!(fetched.held, 0);
+    let times = offloader.wall_times();
+    assert!(times.iter().any(|time| time.device == laptop_key));
+    assert!(times.iter().any(|time| time.device == desktop_key));
+    let input_total = u64::try_from(input_bytes).unwrap();
+    assert!(
+        times.iter().all(|time| time.input_bytes == input_total),
+        "{times:?}"
+    );
     eprintln!(
         "offloadable action ({IMAGES} images, {input_bytes} input bytes): \
          local {:?}, offloaded {:?} (inputs staged in {:?}), \
@@ -487,6 +496,38 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
          (single host: both devices share its cores)",
         here.elapsed, there.elapsed, fetched.elapsed, preseeded.elapsed, from_held.elapsed,
     );
+
+    // The relay measured the link while it moved those inputs, so it now
+    // weighs moving them against the laptop's own run: inputs far heavier
+    // than any gain stay on the laptop, with the reason; a light job of
+    // heavy compute still goes to the desktop.
+    let heavy = placement
+        .place(PlacementQuery {
+            workspace_id: WORKSPACE,
+            app: PACKAGE,
+            gpu: false,
+            input_bytes: 1 << 40,
+            local_wall_ms: Some(1),
+        })
+        .await
+        .unwrap();
+    assert_eq!(heavy.worker, None, "{}", heavy.reason);
+    assert!(
+        heavy.reason.starts_with("inputs_heavier_than_gain"),
+        "{}",
+        heavy.reason
+    );
+    let light = placement
+        .place(PlacementQuery {
+            workspace_id: WORKSPACE,
+            app: PACKAGE,
+            gpu: false,
+            input_bytes: 1,
+            local_wall_ms: Some(600_000),
+        })
+        .await
+        .unwrap();
+    assert_eq!(light.worker, Some(desktop_key), "{}", light.reason);
 
     // An input that is not an image fails the batch on the worker, and the
     // action fails exactly as it does locally.
@@ -550,4 +591,225 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
     ));
     jobs.abort();
     serving.abort();
+}
+
+/// Attach `worker` and advertise the thumbnails package from it.
+async fn advertise_thumbnails(worker: &mut ComputeClient, device: [u8; 32]) {
+    worker.attach(WORKSPACE).await.unwrap();
+    assert!(matches!(
+        worker.receive().await.unwrap().envelope,
+        ComputeEnvelope::Ready { .. }
+    ));
+    let issued_at_ms = unix_now_ms();
+    worker
+        .send(&ComputeEnvelope::Advertise {
+            workspace_id: WORKSPACE,
+            advertisement: ComputeWorkerAdvertisement {
+                version: 1,
+                worker: device,
+                workspace_id: WORKSPACE,
+                apps: BTreeSet::from([PACKAGE.into()]),
+                accelerators: BTreeSet::new(),
+                assignment_capacity: 1,
+                active_assignments: 0,
+                environment_capacity: 0,
+                active_environments: 0,
+                power: PowerAvailability::External,
+                energy_saver: false,
+                issued_at_ms,
+                expires_at_ms: issued_at_ms.saturating_add(60_000),
+            },
+        })
+        .await
+        .unwrap();
+    worker.send(&ComputeEnvelope::Ping).await.unwrap();
+    assert!(matches!(
+        worker.receive().await.unwrap().envelope,
+        ComputeEnvelope::Pong
+    ));
+}
+
+/// Take the next job routed to `worker` and report it running, then
+/// never finish it.
+async fn take_one_job(worker: &mut ComputeClient) {
+    loop {
+        let delivery = worker.receive().await.unwrap();
+        worker.acknowledge(&delivery).await.unwrap();
+        let ComputeEnvelope::Request { spec } = delivery.envelope else {
+            continue;
+        };
+        worker
+            .send(&ComputeEnvelope::Status {
+                update: ComputeStatusUpdate {
+                    binding: ComputeJobBinding {
+                        workspace_id: spec.workspace_id,
+                        job_id: spec.job_id,
+                        requester: spec.requester,
+                        worker: spec.worker,
+                    },
+                    sequence: 1,
+                    phase: ComputeJobPhase::Running,
+                    log_tail: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        return;
+    }
+}
+
+/// How long after its worker went away an invocation may take to come back
+/// with the local output: the local run of a two-image batch and a margin,
+/// far inside the job's lifetime (four and a half minutes here), which the
+/// requester used to wait out.
+const PROMPT_FALLBACK: std::time::Duration = std::time::Duration::from_secs(20);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "two workers going away mid-job, lost then revoked, read top to bottom"
+)]
+async fn a_lost_or_revoked_worker_fails_its_job_at_once_and_the_action_runs_locally() {
+    let user = TestUser::fresh("offload owner");
+    let relay_device = user.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+    let laptop_key = laptop.device_pubkey();
+    let desktop = user.enrol("desktop", DeviceCapabilities::host());
+    let desktop_key = desktop.device_pubkey();
+    let server = user.enrol("server", DeviceCapabilities::host());
+    let server_key = server.device_pubkey();
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_device,
+        &[WORKSPACE],
+        &[laptop_key, desktop_key, server_key],
+    ))
+    .await;
+    let address = relay.relay.node_addr();
+    let root = tempfile::tempdir().unwrap();
+
+    let store = Arc::new(fs::store::ContentStore::memory());
+    let content = WorkspaceContent::new(Arc::clone(&store), tokio::runtime::Handle::current());
+    let photographs: Vec<Vec<u8>> = (0..2).map(photograph).collect();
+    let mut manifests = Vec::new();
+    for bytes in &photographs {
+        manifests.push(
+            *store
+                .write_content(bytes)
+                .await
+                .unwrap()
+                .unwrap()
+                .as_bytes(),
+        );
+    }
+    let (laptop_package, _) = installed_package(&root.path().join("laptop"), PACKAGE, ENTRYPOINT);
+    let placement = Arc::new(RelayPlacement::new(
+        relay_session(address.clone(), &user, &laptop).await,
+        relay_key,
+    ));
+    let offloader = Offloader::start(OffloaderParts {
+        compute: compute_session(address.clone(), &user, relay_key, laptop).await,
+        workspaces: vec![WORKSPACE],
+        content,
+        placement,
+        packages: Arc::new(FixtureCatalogue(laptop_package)),
+    })
+    .await
+    .unwrap();
+    let action = make_thumbnails();
+    let local: Arc<LocalTransform> =
+        Arc::new(|inputs: &[Vec<u8>]| thumbnail_batch(inputs).map_err(|error| error.to_string()));
+    let expected: Vec<[u8; 32]> = thumbnail_batch(&photographs)
+        .unwrap()
+        .iter()
+        .map(|bytes| *blake3::hash(bytes).as_bytes())
+        .collect();
+    let invoke = || {
+        offloader.invoke(
+            OffloadJob {
+                workspace_id: WORKSPACE,
+                action: &action,
+                inputs: manifests.clone(),
+            },
+            Arc::clone(&local),
+        )
+    };
+
+    // The desktop takes the job, reports it running, and its connection
+    // drops: the laptop hears `worker_lost` and runs the action itself.
+    let mut desktop_compute = compute_session(address.clone(), &user, relay_key, desktop).await;
+    advertise_thumbnails(&mut desktop_compute, desktop_key).await;
+    let (lost, gone_at) = tilo_test_env::within("the run after a lost worker", async {
+        tokio::join!(invoke(), async {
+            take_one_job(&mut desktop_compute).await;
+            desktop_compute.close().await;
+            std::time::Instant::now()
+        })
+    })
+    .await;
+    let lost = lost.unwrap();
+    let after_loss = gone_at.elapsed();
+    let RanOn::Local { reason } = &lost.ran_on else {
+        panic!("the lost worker's job runs locally: {:?}", lost.ran_on);
+    };
+    assert!(reason.contains("worker_lost"), "{reason}");
+    assert_eq!(lost.outputs, expected, "the local output, in full");
+    assert!(
+        after_loss < PROMPT_FALLBACK,
+        "the laptop fell back {after_loss:?} after the worker left"
+    );
+
+    // The server takes the next job, reports it running, and its device
+    // certificate is revoked: the relay ends its session and the laptop
+    // hears `worker_revoked`.
+    let mut server_compute = compute_session(address, &user, relay_key, server).await;
+    advertise_thumbnails(&mut server_compute, server_key).await;
+    let (revoked, revoked_at) = tilo_test_env::within("the run after a revoked worker", async {
+        tokio::join!(invoke(), async {
+            take_one_job(&mut server_compute).await;
+            let mut entry = RevocationEntry {
+                user_public_key: user.user_pk,
+                revoked_device_public_key: server_key,
+                revoked_at_ns: 1,
+                reason: RevocationReason::Stolen,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
+            tilo_relay::store::save_revocations(&relay.state_root, &[entry]).unwrap();
+            std::time::Instant::now()
+        })
+    })
+    .await;
+    let revoked = revoked.unwrap();
+    let after_revocation = revoked_at.elapsed();
+    let RanOn::Local { reason } = &revoked.ran_on else {
+        panic!(
+            "the revoked worker's job runs locally: {:?}",
+            revoked.ran_on
+        );
+    };
+    assert!(reason.contains("worker_revoked"), "{reason}");
+    assert_eq!(revoked.outputs, expected);
+    assert!(
+        after_revocation < PROMPT_FALLBACK,
+        "the laptop fell back {after_revocation:?} after the revocation"
+    );
+    // The revoked worker is told and cut off.
+    let cut_off = tilo_test_env::within("the revoked worker's session to end", async {
+        loop {
+            match server_compute.receive().await {
+                Ok(delivery) => {
+                    if let ComputeEnvelope::NotAuthorised { reason, .. } = delivery.envelope {
+                        break Some(reason);
+                    }
+                }
+                Err(_) => break None,
+            }
+        }
+    })
+    .await;
+    if let Some(reason) = cut_off {
+        assert!(reason.contains("revoked"), "{reason}");
+    }
 }

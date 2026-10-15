@@ -35,7 +35,7 @@ use crate::compute_content::{
 };
 use crate::compute_transport::{
     COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeRouteOutcome, ComputeTransportError,
-    MAX_COMPUTE_FRAME_BYTES,
+    MAX_COMPUTE_FRAME_BYTES, WORKER_LOST, WORKER_NOT_ADMITTED, WORKER_REVOKED,
 };
 use crate::environment_host::{EnvironmentStreamError, read_message};
 use crate::frame::{read_frame, write_frame};
@@ -175,6 +175,14 @@ async fn run_server_session(
     let (outbound, mut outbound_rx) = mpsc::channel(COMPUTE_OUTBOUND_CAPACITY);
     let (disconnect, mut disconnect_rx) = mpsc::channel(1);
     let mut attached = Vec::new();
+    // Workspaces this session offered compute in: the only ones whose jobs
+    // it can hold when it ends.
+    let mut advertised = BTreeSet::new();
+    // Workspaces that stopped admitting the device while it was attached,
+    // and the code its jobs there end with.
+    let mut refused = HashMap::new();
+    let mut authority = crate::authority_epoch::subscribe();
+    authority.mark_unchanged();
 
     let outcome = async {
         loop {
@@ -183,6 +191,16 @@ async fn run_server_session(
                 _ = connection.closed() => break Ok(()),
                 _ = disconnect_rx.recv() => {
                     break Err(ComputeSessionError::Protocol("outbound compute queue saturated".into()));
+                }
+                // The epoch's sender is a process-wide static and never
+                // closes, so this cannot spin on an error.
+                _ = authority.changed() => {
+                    refused = refused_workspaces(&protocol, &peer, &attached, &mut send).await;
+                    if !refused.is_empty() {
+                        break Err(ComputeSessionError::Protocol(
+                            "the compute device is no longer admitted".into(),
+                        ));
+                    }
                 }
                 outgoing = outbound_rx.recv() => {
                     let Some(outgoing) = outgoing else { break Ok(()); };
@@ -228,9 +246,14 @@ async fn run_server_session(
                             "compute message sent before workspace attach".into(),
                         ));
                     }
+                    let advertising = match &incoming {
+                        ComputeEnvelope::Advertise { workspace_id, .. } => Some(*workspace_id),
+                        _ => None,
+                    };
                     if let Some(reply) = dispatch_compute(&protocol.workspaces, &peer, incoming).await? {
                         write_compute(&mut send, &reply).await?;
                     }
+                    advertised.extend(advertising);
                 }
             }
         }
@@ -239,14 +262,100 @@ async fn run_server_session(
 
     for workspace_id in attached {
         if let Some(workspace) = find_workspace(&protocol.workspaces, workspace_id).await {
-            workspace
-                .lock()
-                .await
-                .compute
-                .detach(&peer.device_public_key);
+            // A worker's jobs end with it, truthfully and now: the
+            // requester is told why instead of waiting out each job.
+            let lost = advertised
+                .contains(&workspace_id)
+                .then(|| refused.get(&workspace_id).copied().unwrap_or(WORKER_LOST));
+            release_workspace(workspace, peer.device_public_key, &disconnect, lost).await;
         }
     }
     outcome
+}
+
+/// The attached workspaces that no longer admit `peer` to compute, each
+/// with the code its jobs end with. Each refusal is told to the peer on
+/// `send`, best effort: the session ends next.
+async fn refused_workspaces(
+    protocol: &ComputeProtocol,
+    peer: &AuthenticatedPeer,
+    attached: &[u64],
+    send: &mut SendStream,
+) -> HashMap<u64, &'static str> {
+    let trust = protocol.trust();
+    let mut refused = HashMap::new();
+    for workspace_id in attached {
+        let Some(workspace) = find_workspace(&protocol.workspaces, *workspace_id).await else {
+            continue;
+        };
+        let decision = room_access::decide(
+            &*workspace.lock().await,
+            &trust,
+            peer,
+            RoomOperation::Compute,
+        );
+        if let Decision::Deny(reason) = decision {
+            let code = match reason {
+                DenyReason::Revoked => WORKER_REVOKED,
+                _ => WORKER_NOT_ADMITTED,
+            };
+            refused.insert(*workspace_id, code);
+            let _ = write_compute(
+                send,
+                &ComputeEnvelope::NotAuthorised {
+                    workspace_id: *workspace_id,
+                    reason: reason.reason().into(),
+                },
+            )
+            .await;
+        }
+    }
+    refused
+}
+
+/// Release `device`'s compute state in `workspace` when this session (whose
+/// disconnect signal is `disconnect`) still holds it, and when it was
+/// working there, end its jobs with `lost`. The job scan is blocking I/O,
+/// so it runs on the blocking pool with the workspace lock moved along.
+async fn release_workspace(
+    workspace: SharedWorkspace,
+    device: [u8; 32],
+    disconnect: &mpsc::Sender<()>,
+    lost: Option<&'static str>,
+) {
+    let Some(code) = lost else {
+        workspace
+            .lock()
+            .await
+            .compute
+            .detach_session(&device, disconnect);
+        return;
+    };
+    let mut runtime = workspace.lock_owned().await;
+    let disconnect = disconnect.clone();
+    let released = tokio::task::spawn_blocking(move || {
+        let crate::workspace::WorkspaceRuntime { compute, store, .. } = &mut *runtime;
+        if !compute.detach_session(&device, &disconnect) {
+            return Ok(0);
+        }
+        compute.fail_worker_jobs(store, &device, code, &mut next_queue_sequence)
+    })
+    .await;
+    match released {
+        Ok(Ok(0)) => {}
+        Ok(Ok(ended)) => tracing::info!(
+            worker = %hex::encode(device),
+            ended,
+            code,
+            "ended a departed worker's compute jobs"
+        ),
+        Ok(Err(error)) => tracing::warn!(
+            worker = %hex::encode(device),
+            %error,
+            "could not end a departed worker's compute jobs"
+        ),
+        Err(_) => tracing::warn!("ending a departed worker's compute jobs panicked"),
+    }
 }
 
 /// Serve every further stream of an authenticated connection.

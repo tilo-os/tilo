@@ -45,6 +45,19 @@ const MAX_OBSERVED_RTT: Duration = Duration::from_secs(60);
 /// Each new observation moves the smoothed RTT by this fraction of the
 /// difference, rounded up so sustained samples converge exactly.
 const RTT_SMOOTHING_DIVISOR: u64 = 4;
+/// A content transfer smaller than this says more about round trips than
+/// about the link's rate, so it is not a throughput observation.
+pub const MIN_THROUGHPUT_SAMPLE_BYTES: u64 = 256 * 1024;
+/// Why a job ended because its worker went away: the connection ended.
+pub const WORKER_LOST: &str = "worker_lost";
+/// ... because the worker's device certificate was revoked.
+pub const WORKER_REVOKED: &str = "worker_revoked";
+/// ... because the worker is no longer admitted to the workspace for any
+/// other reason (its certificate expired, it left the membership).
+pub const WORKER_NOT_ADMITTED: &str = "worker_not_admitted";
+/// The placement reason when moving a job's inputs to every eligible
+/// worker would take longer than running the job where it was asked.
+pub const INPUTS_HEAVIER_THAN_GAIN: &str = "inputs_heavier_than_gain";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ComputeEnvelope {
@@ -276,6 +289,96 @@ impl SmoothedRtt {
     }
 }
 
+/// A requester-to-worker content rate, smoothed across transfers.
+///
+/// Fed from the job content the relay already forwards
+/// ([`crate::compute_content`]): each input moved from requester to worker
+/// that is large enough to say something about the link is one
+/// observation. Inputs a worker already holds move nothing and say
+/// nothing. Like latency, it is a routing hint and grants nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SmoothedThroughput {
+    bytes_per_second: Option<u64>,
+}
+
+impl SmoothedThroughput {
+    fn observe(&mut self, bytes: u64, elapsed: Duration) {
+        let micros = u64::try_from(elapsed.as_micros())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        let sample = u64::try_from(
+            u128::from(bytes)
+                .saturating_mul(1_000_000)
+                .checked_div(u128::from(micros))
+                .unwrap_or(u128::MAX),
+        )
+        .unwrap_or(u64::MAX)
+        .max(1);
+        self.bytes_per_second = Some(match self.bytes_per_second {
+            None => sample,
+            Some(smoothed) if sample >= smoothed => {
+                smoothed.saturating_add(sample.abs_diff(smoothed).div_ceil(RTT_SMOOTHING_DIVISOR))
+            }
+            Some(smoothed) => smoothed
+                .saturating_sub(smoothed.abs_diff(sample).div_ceil(RTT_SMOOTHING_DIVISOR))
+                .max(1),
+        });
+    }
+}
+
+/// What a job asks to move against what it costs where it was asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputWeight {
+    /// The bytes of every input the job lists.
+    pub input_bytes: u64,
+    /// The requester's own wall time for this action over inputs like
+    /// these: what offloading has to beat.
+    pub local_wall_ms: u64,
+}
+
+/// Placement weighed against moving the inputs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WeighedPlacement {
+    /// Run it on this worker.
+    Worker(Placement),
+    /// Run it where it was asked: moving the inputs to every eligible
+    /// worker takes longer than the run there took.
+    Local(InputsHeavierThanGain),
+}
+
+/// Why a job is better run by its requester: the estimate for the
+/// best-ranked eligible worker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputsHeavierThanGain {
+    /// The best-ranked eligible worker.
+    pub worker: DeviceKey,
+    /// What the job would move to it.
+    pub input_bytes: u64,
+    /// The measured requester-to-worker rate.
+    pub bytes_per_second: u64,
+    /// The estimated time to move the inputs, round trip included.
+    pub transfer_ms: u64,
+    /// The requester's own wall time it would have to beat.
+    pub local_wall_ms: u64,
+    /// Every advertised device, as placement ranked it.
+    pub considered: Vec<crate::placement::PlacementCandidate>,
+}
+
+impl std::fmt::Display for InputsHeavierThanGain {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{INPUTS_HEAVIER_THAN_GAIN}: moving {} bytes to {} takes about {} ms at {} bytes/s; \
+             the requester ran it in {} ms",
+            self.input_bytes,
+            hex::encode(self.worker.get(..4).unwrap_or_default()),
+            self.transfer_ms,
+            self.bytes_per_second,
+            self.local_wall_ms,
+        )
+    }
+}
+
 /// The RTT of the path a connection sends on now, or the best open path's
 /// when none is selected; `None` once the connection has closed.
 fn connection_rtt(connection: &iroh::endpoint::Connection) -> Option<Duration> {
@@ -300,6 +403,8 @@ pub struct ComputeTransportState {
     sessions: HashMap<DeviceKey, ComputeSubscriber>,
     /// Smoothed relay-to-worker RTT per attached worker connection.
     latency: HashMap<DeviceKey, SmoothedRtt>,
+    /// Smoothed content rate per (requester, worker) pair.
+    throughput: HashMap<(DeviceKey, DeviceKey), SmoothedThroughput>,
     /// Members' environment sessions and legacy launches routed to workers.
     pub environments: crate::environment_routing::WorkspaceEnvironments,
 }
@@ -385,6 +490,108 @@ impl ComputeTransportState {
         place_compute_job(needs, &advertised)
     }
 
+    /// Fold one forwarded content transfer between a job's `requester` and
+    /// its `worker` into their smoothed rate. Transfers below
+    /// [`MIN_THROUGHPUT_SAMPLE_BYTES`] are ignored.
+    pub fn observe_transfer(
+        &mut self,
+        (requester, worker): (DeviceKey, DeviceKey),
+        bytes: u64,
+        elapsed: Duration,
+    ) {
+        if bytes < MIN_THROUGHPUT_SAMPLE_BYTES {
+            return;
+        }
+        self.throughput
+            .entry((requester, worker))
+            .or_default()
+            .observe(bytes, elapsed);
+    }
+
+    /// The smoothed content rate between `requester` and `worker` in bytes
+    /// per second, once the relay has forwarded enough between them.
+    #[must_use]
+    pub fn throughput(&self, requester: &DeviceKey, worker: &DeviceKey) -> Option<u64> {
+        self.throughput
+            .get(&(*requester, *worker))
+            .and_then(|smoothed| smoothed.bytes_per_second)
+    }
+
+    /// How long moving `input_bytes` from `requester` to `worker` should
+    /// take, with the rate it assumes; `None` while the rate is unmeasured.
+    fn transfer_estimate(
+        &self,
+        requester: &DeviceKey,
+        worker: &DeviceKey,
+        input_bytes: u64,
+    ) -> Option<(u64, u64)> {
+        let rate = self.throughput(requester, worker)?;
+        let moving = u128::from(input_bytes)
+            .saturating_mul(1_000)
+            .div_ceil(u128::from(rate.max(1)));
+        let round_trip = match self.latency_ms(worker) {
+            UNMEASURED_LATENCY_MS => 0,
+            measured => u128::from(measured),
+        };
+        Some((
+            u64::try_from(moving.saturating_add(round_trip)).unwrap_or(u64::MAX),
+            rate,
+        ))
+    }
+
+    /// [`Self::place`], weighed against moving the inputs: the
+    /// best-ranked eligible worker whose inputs move faster than the
+    /// requester ran the job itself, or [`WeighedPlacement::Local`] when
+    /// none does. A worker whose rate is not measured yet is not held
+    /// back: offloading to it is how it gets measured. Without a `weight`
+    /// this is [`Self::place`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::place`].
+    pub fn place_weighed(
+        &self,
+        needs: &ComputeRequirements<'_>,
+        weight: Option<InputWeight>,
+        now_ms: u64,
+    ) -> Result<WeighedPlacement, NoEligibleWorker> {
+        let mut placement = self.place(needs, now_ms)?;
+        let Some(weight) = weight else {
+            return Ok(WeighedPlacement::Worker(placement));
+        };
+        let mut best_refused = None;
+        let mut chosen = None;
+        for candidate in &placement.considered {
+            let Ok(rank) = candidate.verdict else {
+                continue;
+            };
+            match self.transfer_estimate(&needs.requester, &candidate.device, weight.input_bytes) {
+                Some((transfer_ms, rate)) if transfer_ms >= weight.local_wall_ms => {
+                    best_refused.get_or_insert((candidate.device, transfer_ms, rate));
+                }
+                _ => {
+                    chosen = Some((candidate.device, rank));
+                    break;
+                }
+            }
+        }
+        if let Some((worker, rank)) = chosen {
+            placement.worker = worker;
+            placement.rank = rank;
+            return Ok(WeighedPlacement::Worker(placement));
+        }
+        let (worker, transfer_ms, bytes_per_second) =
+            best_refused.unwrap_or((placement.worker, u64::MAX, 0));
+        Ok(WeighedPlacement::Local(InputsHeavierThanGain {
+            worker,
+            input_bytes: weight.input_bytes,
+            bytes_per_second,
+            transfer_ms,
+            local_wall_ms: weight.local_wall_ms,
+            considered: placement.considered,
+        }))
+    }
+
     pub fn remove_worker(&mut self, worker: &DeviceKey) {
         self.workers.remove(worker);
     }
@@ -396,8 +603,11 @@ impl ComputeTransportState {
         disconnect: mpsc::Sender<()>,
         connection: Option<iroh::endpoint::Connection>,
     ) {
-        // A new connection is a new path; the old one's RTT says nothing.
+        // A new connection is a new path; the old one's RTT and rate say
+        // nothing.
         self.latency.remove(&device);
+        self.throughput
+            .retain(|(requester, worker), _| *requester != device && *worker != device);
         self.sessions.insert(
             device,
             ComputeSubscriber {
@@ -480,6 +690,88 @@ impl ComputeTransportState {
         self.sessions.remove(device);
         self.workers.remove(device);
         self.latency.remove(device);
+    }
+
+    /// Detach the session whose disconnect signal is `disconnect`, unless a
+    /// newer session of the same device replaced it. Returns whether the
+    /// device's compute state was this session's to release: `false` when
+    /// a newer session holds it, which this one must leave alone.
+    pub fn detach_session(&mut self, device: &DeviceKey, disconnect: &mpsc::Sender<()>) -> bool {
+        if self
+            .sessions
+            .get(device)
+            .is_some_and(|current| !current.disconnect.same_channel(disconnect))
+        {
+            return false;
+        }
+        self.detach(device);
+        true
+    }
+
+    /// End every job still bound to `worker` as
+    /// [`ComputeJobPhase::Failed`] with `code` ([`WORKER_LOST`],
+    /// [`WORKER_REVOKED`] or [`WORKER_NOT_ADMITTED`]) and tell each
+    /// requester now, rather than leaving it to wait out the job's
+    /// lifetime. Deliveries still queued to the worker for those jobs are
+    /// withdrawn, so a returning worker is not handed work that already
+    /// ended. Returns how many jobs ended.
+    ///
+    /// Blocking: it scans the workspace's job records, so it runs off the
+    /// async runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first store or routing failure.
+    pub fn fail_worker_jobs(
+        &mut self,
+        store: &WorkspaceStore,
+        worker: &DeviceKey,
+        code: &'static str,
+        next_sequence: &mut dyn FnMut() -> u64,
+    ) -> Result<usize, ComputeTransportError> {
+        let explanation: &[u8] = match code {
+            WORKER_REVOKED => b"the worker's device certificate was revoked while it held the job",
+            WORKER_NOT_ADMITTED => b"the worker is no longer admitted to this workspace",
+            _ => b"the worker's connection to the relay ended while it held the job",
+        };
+        let mut ended = BTreeSet::new();
+        for mut record in store.load_compute_jobs()? {
+            if record.spec.worker != *worker || record.lifecycle.phase.is_terminal() {
+                continue;
+            }
+            let phase = ComputeJobPhase::Failed { code: code.into() };
+            let sequence = record.lifecycle.sequence.saturating_add(1);
+            record
+                .lifecycle
+                .advance(sequence, phase.clone())
+                .map_err(|_| ComputeTransportError::InvalidLifecycle)?;
+            record.log_bytes = record
+                .log_bytes
+                .saturating_add(u64::try_from(explanation.len()).unwrap_or(u64::MAX));
+            store.save_compute_job(&record)?;
+            let result = ComputeResultUpdate {
+                binding: ComputeJobBinding {
+                    workspace_id: record.spec.workspace_id,
+                    job_id: record.spec.job_id,
+                    requester: record.spec.requester,
+                    worker: record.spec.worker,
+                },
+                sequence,
+                phase,
+                log_tail: explanation.to_vec(),
+            };
+            self.route(
+                record.spec.requester,
+                &ComputeEnvelope::Result { result },
+                store,
+                next_sequence(),
+            )?;
+            ended.insert(record.spec.job_id);
+        }
+        if !ended.is_empty() {
+            withdraw_queued(store, worker, &ended)?;
+        }
+        Ok(ended.len())
     }
 
     /// Durably enqueue an envelope and attempt immediate delivery when the
@@ -688,6 +980,31 @@ impl ComputeJobPhase {
             Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled
         )
     }
+}
+
+/// Drop deliveries queued to `worker` that concern a job in `ended`.
+fn withdraw_queued(
+    store: &WorkspaceStore,
+    worker: &DeviceKey,
+    ended: &BTreeSet<[u8; 16]>,
+) -> Result<(), ComputeTransportError> {
+    for entry in store.load_compute_pending(worker)? {
+        let Ok(ComputeEnvelope::Delivery {
+            sequence, message, ..
+        }) = postcard::from_bytes::<ComputeEnvelope>(&entry.bytes)
+        else {
+            continue;
+        };
+        let job_id = match &*message {
+            ComputeEnvelope::Request { spec } => spec.job_id,
+            ComputeEnvelope::Cancel { binding } => binding.job_id,
+            _ => continue,
+        };
+        if ended.contains(&job_id) {
+            store.ack_compute_pending(worker, sequence)?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_binding(
@@ -901,6 +1218,214 @@ mod tests {
         assert_eq!(state.latency_ms(&[2; 32]), UNMEASURED_LATENCY_MS);
         state.observe_latency([2; 32], Duration::from_micros(300));
         assert_eq!(state.latency_ms(&[2; 32]), 1);
+    }
+
+    /// Moving 129 MB at a measured 38 MB/s takes longer than the 507 ms the
+    /// requester's own run took, so the job stays with it, with the
+    /// estimate; a small batch of heavy compute still goes to the worker,
+    /// and a worker whose rate is not measured yet is not held back.
+    #[test]
+    fn placement_weighs_moving_the_inputs_against_the_requesters_own_run() {
+        const MB: u64 = 1_000_000;
+        let mut state = ComputeTransportState::default();
+        let needs = spec();
+        state
+            .advertise([2; 32], 7, 200, advertisement(false))
+            .unwrap();
+        state.observe_latency([2; 32], Duration::from_millis(2));
+        // Three loopback-rate transfers of 10.75 MB each, as the 12-image
+        // batch moved; small transfers say nothing about the rate.
+        for _ in 0..3 {
+            state.observe_transfer(([1; 32], [2; 32]), 10_750_000, Duration::from_millis(283));
+        }
+        state.observe_transfer(([1; 32], [2; 32]), 1_000, Duration::from_secs(10));
+        let rate = state.throughput(&[1; 32], &[2; 32]).unwrap();
+        assert!((37 * MB..39 * MB).contains(&rate), "{rate} bytes/s");
+
+        let heavy = InputWeight {
+            input_bytes: 129 * MB,
+            local_wall_ms: 507,
+        };
+        let WeighedPlacement::Local(kept) = state
+            .place_weighed(&needs.requirements(), Some(heavy), 200)
+            .unwrap()
+        else {
+            panic!("129 MB on a 38 MB/s link is slower than 507 ms here");
+        };
+        assert_eq!(kept.worker, [2; 32]);
+        assert!((3_300..3_500).contains(&kept.transfer_ms), "{kept}");
+        assert_eq!(kept.local_wall_ms, 507);
+        assert!(
+            kept.to_string().starts_with(INPUTS_HEAVIER_THAN_GAIN),
+            "{kept}"
+        );
+
+        // Small inputs, heavy compute: the worker.
+        let light = InputWeight {
+            input_bytes: 2 * MB,
+            local_wall_ms: 20_000,
+        };
+        assert!(matches!(
+            state.place_weighed(&needs.requirements(), Some(light), 200).unwrap(),
+            WeighedPlacement::Worker(placement) if placement.worker == [2; 32]
+        ));
+        // Without a weight, placement is unchanged.
+        assert!(matches!(
+            state.place_weighed(&needs.requirements(), None, 200).unwrap(),
+            WeighedPlacement::Worker(placement) if placement.worker == [2; 32]
+        ));
+
+        // A second worker, ranked lower (on battery) and never measured,
+        // takes the heavy job rather than keeping it here: offloading to it
+        // is how its rate gets known.
+        let mut laptop = advertisement(false);
+        laptop.worker = [5; 32];
+        laptop.power = PowerAvailability::Battery(80);
+        state.advertise([5; 32], 7, 200, laptop).unwrap();
+        let WeighedPlacement::Worker(placement) = state
+            .place_weighed(&needs.requirements(), Some(heavy), 200)
+            .unwrap()
+        else {
+            panic!("an unmeasured worker is not held back");
+        };
+        assert_eq!(placement.worker, [5; 32]);
+        assert_eq!(placement.rank.power, crate::placement::PowerClass::Battery);
+
+        // A reattached worker's rate is unknown again.
+        let (sender, _receiver) = mpsc::channel(1);
+        let (disconnect, _disconnected) = mpsc::channel(1);
+        state.attach([2; 32], sender, disconnect, None);
+        assert_eq!(state.throughput(&[1; 32], &[2; 32]), None);
+    }
+
+    /// A worker that leaves mid-job fails each job it held, Pending or
+    /// Running, with the truthful code; its requester hears at once and
+    /// the worker is not handed those jobs again.
+    #[test]
+    fn a_departed_workers_jobs_fail_at_once_and_reach_their_requester() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut state, store) = admitted(root.path());
+        state
+            .route(
+                [2; 32],
+                &ComputeEnvelope::Request { spec: spec() },
+                &store,
+                1,
+            )
+            .unwrap();
+        state
+            .accept_status(
+                [2; 32],
+                &store,
+                &ComputeStatusUpdate {
+                    binding: binding(),
+                    sequence: 1,
+                    phase: ComputeJobPhase::Running,
+                    log_tail: Vec::new(),
+                },
+            )
+            .unwrap();
+        // A second job, still Pending, and another worker's job.
+        let mut pending = spec();
+        pending.job_id = [10; 16];
+        state
+            .accept_request([1; 32], 7, 200, &store, &pending)
+            .unwrap();
+        state
+            .route(
+                [2; 32],
+                &ComputeEnvelope::Request { spec: pending },
+                &store,
+                2,
+            )
+            .unwrap();
+        let mut elsewhere = advertisement(false);
+        elsewhere.worker = [5; 32];
+        state.advertise([5; 32], 7, 200, elsewhere).unwrap();
+        let mut other = spec();
+        other.job_id = [11; 16];
+        other.worker = [5; 32];
+        state
+            .accept_request([1; 32], 7, 200, &store, &other)
+            .unwrap();
+
+        // The worker is gone; its requester is attached.
+        state.detach(&[2; 32]);
+        let (requester, mut delivered) = mpsc::channel(4);
+        let (requester_disconnect, _requester_disconnected) = mpsc::channel(1);
+        state.attach([1; 32], requester, requester_disconnect, None);
+
+        let mut sequence = 100;
+        let mut next = || {
+            sequence += 1;
+            sequence
+        };
+        assert_eq!(
+            state
+                .fail_worker_jobs(&store, &[2; 32], WORKER_LOST, &mut next)
+                .unwrap(),
+            2
+        );
+        let lost = ComputeJobPhase::Failed {
+            code: WORKER_LOST.into(),
+        };
+        for (job_id, sequence) in [([9; 16], 2), ([10; 16], 1)] {
+            let record = store.load_compute_job(&job_id).unwrap().unwrap().lifecycle;
+            assert_eq!((record.phase, record.sequence), (lost.clone(), sequence));
+        }
+        let mut told = Vec::new();
+        while let Ok(ComputeEnvelope::Delivery { message, .. }) = delivered.try_recv() {
+            let ComputeEnvelope::Result { result } = *message else {
+                panic!("the requester is told the result");
+            };
+            assert_eq!(result.phase, lost);
+            assert!(!result.log_tail.is_empty());
+            told.push(result.binding.job_id);
+        }
+        told.sort_unstable();
+        assert_eq!(told, vec![[9; 16], [10; 16]]);
+        assert!(
+            store.load_compute_pending(&[2; 32]).unwrap().is_empty(),
+            "a returning worker is not handed jobs that already ended"
+        );
+        // The other worker's job is untouched, and ending again is a no-op.
+        assert_eq!(
+            store
+                .load_compute_job(&[11; 16])
+                .unwrap()
+                .unwrap()
+                .lifecycle
+                .phase,
+            ComputeJobPhase::Pending
+        );
+        assert_eq!(
+            state
+                .fail_worker_jobs(&store, &[2; 32], WORKER_REVOKED, &mut next)
+                .unwrap(),
+            0
+        );
+    }
+
+    /// A session ending after a newer session of the same device attached
+    /// leaves the newer one's state alone; the current session releases it.
+    #[test]
+    fn only_the_current_session_releases_a_devices_compute_state() {
+        let mut state = ComputeTransportState::default();
+        state
+            .advertise([2; 32], 7, 200, advertisement(false))
+            .unwrap();
+        let (worker, _deliveries) = mpsc::channel(4);
+        let (old_session, _old) = mpsc::channel(1);
+        let (new_session, _new) = mpsc::channel(1);
+        state.attach([2; 32], worker, new_session.clone(), None);
+        assert!(!state.detach_session(&[2; 32], &old_session));
+        assert!(
+            state.workers.contains_key(&[2; 32]),
+            "the newer session keeps it"
+        );
+        assert!(state.detach_session(&[2; 32], &new_session));
+        assert!(!state.workers.contains_key(&[2; 32]));
+        assert!(state.worker_connection(&[2; 32]).is_none());
     }
 
     /// The worker's advertisement samples the RTT its live compute connection

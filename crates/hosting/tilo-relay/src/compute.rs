@@ -205,9 +205,13 @@ impl ComputeJobLifecycle {
         }
         let allowed = matches!(
             (&self.phase, &next),
+            // A job can fail before it starts: its worker is lost or
+            // revoked before it reports running.
             (
                 ComputeJobPhase::Pending,
-                ComputeJobPhase::Running | ComputeJobPhase::Cancelled
+                ComputeJobPhase::Running
+                    | ComputeJobPhase::Failed { .. }
+                    | ComputeJobPhase::Cancelled
             ) | (
                 ComputeJobPhase::Running,
                 ComputeJobPhase::Completed { .. }

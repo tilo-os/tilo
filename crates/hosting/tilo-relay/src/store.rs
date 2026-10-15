@@ -619,6 +619,36 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    /// Every durable compute record of this workspace. A record that no
+    /// longer decodes is skipped with a warning rather than hiding the rest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the job directory cannot be enumerated or a
+    /// record cannot be read.
+    pub(crate) fn load_compute_jobs(
+        &self,
+    ) -> Result<Vec<crate::compute_transport::DurableComputeJob>, StoreError> {
+        let directory = self.root.join(COMPUTE_DIR);
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+        let mut jobs = Vec::new();
+        for entry in fs::read_dir(directory)? {
+            let path = entry?.path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            match serde_json::from_slice(&fs::read(&path)?) {
+                Ok(job) => jobs.push(job),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "skipping an unreadable compute record");
+                }
+            }
+        }
+        Ok(jobs)
+    }
+
     fn compute_job_path(&self, job_id: &[u8; 16]) -> PathBuf {
         self.root
             .join(COMPUTE_DIR)
