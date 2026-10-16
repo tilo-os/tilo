@@ -2899,10 +2899,10 @@ requires = ["arch=x86_64"]
 on = ["stable"]
 
 # The kernel's build half (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config
-# fragment, built natively FROM the pinned signed buildroot, then booted under KVM with its
-# module signatures checked and the firmware's Secure Boot enforcement probed, on a privileged
-# node (kernel-acceptance-<arch>). No compiler cache reaches checks yet, so every build compiles
-# the whole kernel. build-kernel.yml still signs, publishes and pins it.
+# fragment, built natively FROM the pinned signed buildroot, then booted under emulation with
+# its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
+# micro-VM step (kernel-acceptance-<arch>). No compiler cache reaches checks yet, so every build
+# compiles the whole kernel. build-kernel.yml still signs, publishes and pins it.
 [[check]]
 name = "image-kernel-x86_64"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -2929,26 +2929,30 @@ memory = "24G"
 timeout_secs = 14400
 default = false
 
-# The kernel image-kernel-<arch> built (tools/ci/products.toml), booted under KVM with its
-# module signatures checked and the firmware's Secure Boot enforcement probed, on a privileged
-# node.
+# The kernel image-kernel-<arch> built (tools/ci/products.toml), booted under emulation with
+# its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
+# micro-VM step.
 [[check]]
 name = "kernel-acceptance-x86_64"
-run = "bash tools/ci/publish/kernel.sh accept x86_64 /target/publish/kernel/x86_64"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+run = "bash tools/ci/publish/kernel-acceptance.sh x86_64 /target/publish/kernel/x86_64"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
 needs = ["image-kernel-x86_64"]
 requires = ["arch=x86_64", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 4
+memory = "8G"
 timeout_secs = 3600
 default = false
 
 [[check]]
 name = "kernel-acceptance-aarch64"
-run = "bash tools/ci/publish/kernel.sh accept aarch64 /target/publish/kernel/aarch64"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+run = "bash tools/ci/publish/kernel-acceptance.sh aarch64 /target/publish/kernel/aarch64"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
 needs = ["image-kernel-aarch64"]
 requires = ["arch=aarch64", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 4
+memory = "8G"
 timeout_secs = 3600
 default = false
 # END generated
@@ -3340,6 +3344,50 @@ run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-fex-x
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-fex-x86-sdk"]
 outputs = ["/target/publish/fex-x86-sdk/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=x86_64"]
+on = ["dispatch"]
+
+# The portable FEX payload (os/Containerfile.fex-payload): the pinned FEX source, fetched and
+# verified with its submodules, compiled offline on aarch64 in the toolchain above against the
+# x86 SDK. Both are named by the digests they are published as, so publish-fex-payload pushes
+# them first. Unsigned: the release key signs for stable and v* tags only, and the payload is a
+# development candidate.
+[[check]]
+name = "image-fex-payload-context"
+run = "bash tools/ci/publish/windows-compat.sh fex-source /target/publish/fex-payload/fex-source.tar"
+inputs = ["tools/ci/publish/lib.sh", "os/dev/fetch-fex-source.sh", "os/external-assets/fex-source.env", "tools/ci/publish/windows-compat.sh"]
+outputs = ["/target/publish/fex-payload/fex-source.tar"]
+requires = ["arch=aarch64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "image-fex-payload"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/fex-payload.sh /target/publish/fex-payload /target/publish/fex-buildroot /target/publish/fex-x86-sdk /target/publish/fex-payload/fex-source.tar"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.fex-payload", "os/base-snapshot.env", "os/external-assets/fex-source.env", "os/dev/fetch-fex-source.sh", "os/dev/build-fex-payload.sh", "os/dev/validate-fex-payload.py", "os/dev/apply-fex-patches.py", "os/external-assets/fex-patches/**", "os/dev/toolchains/**", ".containerignore", "tools/ci/publish/fex-payload.sh"]
+needs = ["image-fex-payload-context", "image-fex-buildroot", "image-fex-x86-sdk"]
+outputs = ["/target/publish/fex-payload/image.oci.tar", "/target/publish/fex-payload/digest"]
+requires = ["arch=aarch64"]
+isolation = "vm"
+cost = "heavy"
+cpus = 16
+memory = "48G"
+timeout_secs = 10800
+default = false
+
+[[check]]
+name = "publish-fex-payload"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = '''
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload '{commit}'
+sed -n 's/.*"image":"\([^"]*\)".*/\1/p' /target/publish/fex-payload/receipt.json > /target/publish/fex-payload/reference
+'''
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-fex-payload", "publish-fex-buildroot", "publish-fex-x86-sdk"]
+outputs = ["/target/publish/fex-payload/receipt.json", "/target/publish/fex-payload/reference"]
+pointers = { fex-payload-candidate = "/target/publish/fex-payload/reference" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=x86_64"]
 on = ["dispatch"]
