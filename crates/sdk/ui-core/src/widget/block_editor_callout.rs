@@ -165,10 +165,12 @@ pub(super) fn draw_callout(b: &mut Block, kind: CalloutKind, x0: f64, ctx: &mut 
         ctx.scene,
         &label,
         wash.mark,
-        super::translated(
-            ctx.transform,
-            icon_rect.x1 + f64::from(tokens.metrics.icon_label_gap) * scale,
-            label_y,
+        ctx.transform.pre_translate(
+            (
+                icon_rect.x1 + f64::from(tokens.metrics.icon_label_gap) * scale,
+                label_y,
+            )
+                .into(),
         ),
         None,
         &label_style,
