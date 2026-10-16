@@ -224,18 +224,30 @@ def prepare(source, dest, scope, cache, offline):
 
 
 def verify_prepared(root, source, scope):
-    verify(root, scope)
-    for name in ("PROVENANCE.md", "LICENSES/UPSTREAM.md"):
+    # The catalog's manifest must be the source's, so its fonts are checked against the hashes
+    # the source pins, never against ones written beside them in a shared cache.
+    for name in ("manifest.toml", "PROVENANCE.md", "LICENSES/UPSTREAM.md"):
         expected = source / name
         if expected.is_file() and checked_path(root, name).read_bytes() != expected.read_bytes():
             raise ValueError(f"prepared font provenance differs: {name}")
+    verify(root, scope)
 
 
 
 def default_cache():
-    """The artifact cache: TILO_FONT_ASSET_CACHE, else font-artifacts in the cargo target directory."""
+    """The artifact cache: TILO_FONT_ASSET_CACHE, else font-artifacts in the machine's tilo test
+    cache (TILO_TEST_CACHE_DIR, which tools/test-env.sh sets, or ~/.cache/tilo/test-env), which
+    outlives build directories: a fresh one would otherwise download and prepare the catalog again
+    in every build of the fonts crate, on the critical path of every UI crate. Entries are named
+    by their SHA-256 and the catalog by its inputs' digest, and both are verified when read, so a
+    shared cache can't serve a stale or altered font. Without a home, the cargo target directory."""
     if cache := os.environ.get("TILO_FONT_ASSET_CACHE"):
         return Path(cache)
+    if tests := os.environ.get("TILO_TEST_CACHE_DIR"):
+        return Path(tests) / "font-artifacts"
+    home = os.environ.get("XDG_CACHE_HOME") or (os.environ.get("HOME") and os.path.join(os.environ["HOME"], ".cache"))
+    if home:
+        return Path(home) / "tilo/test-env/font-artifacts"
     target = os.environ.get("CARGO_TARGET_DIR")
     return Path(target) / "font-artifacts" if target else AUTHORITATIVE.parents[5] / "target/font-artifacts"
 
