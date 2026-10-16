@@ -223,6 +223,8 @@ impl Surface for NativeSurface {
 
         let result = {
             profiling::scope!("vkCreateSwapchainKHR");
+            // Tilo: see `LOADER_DEVICE_LISTS`.
+            let _lists = crate::vulkan::LOADER_DEVICE_LISTS.lock();
             unsafe { functor.create_swapchain(&info, None) }
         };
 
