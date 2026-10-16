@@ -89,9 +89,9 @@ pub mod vault;
 pub use vault::{Secret, SecretCustody, SecretVault};
 pub mod secrets;
 pub use secrets::{
-    AccessDecision, AccessRequest, BrokerError, ClipboardLease, CredentialBroker, CredentialGrant,
-    CredentialOwner, CredentialProposal, CredentialScope, GeneratedPasswordPolicy, GrantLifetime,
-    SecretId, SecretItem, SecretItemKind, SecretStore,
+    AccessDecision, AccessRequest, BrokerError, CredentialBroker, CredentialGrant, CredentialOwner,
+    CredentialProposal, CredentialScope, GeneratedPasswordPolicy, GrantLifetime, SecretId,
+    SecretItem, SecretItemKind, SecretStore,
 };
 #[cfg(feature = "person")]
 pub mod person;

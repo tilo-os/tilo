@@ -86,9 +86,9 @@ pub const MAX_SELECTION_MIME_BYTES: usize = 128;
 /// session-private and bounded independently of the larger live selection.
 pub const MAX_CLIPBOARD_HISTORY_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_HISTORY_ITEM_BYTES: usize = 256 * 1024;
-/// Secret-capable widgets use this MIME marker to make retention impossible at
-/// the compositor boundary, even if an application accidentally offers it.
-pub const SECRET_MIME: &str = "application/x-tilo-secret";
+/// Secret copies (`ui::try_clipboard_copy_secret`) carry this MIME marker to
+/// make retention impossible at the compositor boundary.
+pub use ui::clipboard::SECRET_MIME;
 
 /// Bytes a fresh pipe accepts before write blocks (Linux default 64 KiB);
 /// kept conservative so the "cannot block" assumption holds even under a
@@ -308,10 +308,11 @@ pub fn selection_snapshot(store: &SharedSelection, target: Target) -> SelectionS
     )
 }
 
-/// Password managers (`1Password`, `KeePassXC`) mark a copy with this format. The
-/// copy still has to paste, so it is persisted like any other, but it is kept
-/// out of history, never logged, and wiped when the next selection replaces it.
-pub const PASSWORD_MANAGER_HINT_MIME: &str = "x-kde-passwordManagerHint";
+/// Password managers (`1Password`, `KeePassXC`) and Tilo's own secret copies
+/// mark a copy with this format. The copy still has to paste, so it is
+/// persisted like any other, but it is kept out of history, never logged, and
+/// wiped when the next selection replaces it.
+pub use ui::clipboard::PASSWORD_MANAGER_HINT_MIME;
 
 /// Whether an offer carries a marker that forbids retention beyond the live selection.
 fn is_secret_offer(mimes: &[String]) -> bool {
@@ -645,11 +646,39 @@ pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) -> b
     // generation. Primary selection remains ephemeral and is not retained.
     if let Ok(mut store) = store.lock() {
         let slot = store.slot_mut(target);
+        wipe_if_secret(slot);
         slot.values.clear();
         slot.mime_types.clear();
         slot.compositor_owned = false;
     }
     set_mirror_bytes(store, target, TEXT_MIME, text.as_bytes().to_vec()).is_ok()
+}
+
+/// Write a secret `text` to the clipboard from chrome: the same as
+/// [`set_mirror_text`], but offered with [`SECRET_MIME`] and
+/// [`PASSWORD_MANAGER_HINT_MIME`] from the start, so it never enters
+/// history or device sync and is wiped when the next selection replaces it.
+pub fn set_mirror_secret_text(store: &SharedSelection, text: &str) -> bool {
+    let Ok(mut store) = store.lock() else {
+        return false;
+    };
+    let watchers = std::sync::Arc::clone(&store.revision_watchers);
+    let slot = store.slot_mut(Target::Clipboard);
+    wipe_if_secret(slot);
+    slot.values.clear();
+    for marker in [SECRET_MIME, PASSWORD_MANAGER_HINT_MIME] {
+        slot.values
+            .insert(marker.to_owned(), ui::clipboard::SECRET_MARKER.to_vec());
+    }
+    slot.values
+        .insert(TEXT_MIME.to_owned(), text.as_bytes().to_vec());
+    slot.mime_types = normalized_mimes(slot.values.keys().cloned());
+    slot.generation = slot.generation.wrapping_add(1).max(1);
+    slot.compositor_owned = true;
+    bump_revision(slot, &watchers, true);
+    slot.publish_pending = true;
+    slot.clear_pending = false;
+    true
 }
 
 /// Replace Tilo's pending portal offer.  There is deliberately no publication
@@ -751,6 +780,7 @@ pub fn clear_mirror(store: &SharedSelection, target: Target) {
     let clipboard = target == Target::Clipboard;
     let watchers = std::sync::Arc::clone(&store.revision_watchers);
     let slot = store.slot_mut(target);
+    wipe_if_secret(slot);
     slot.values.clear();
     slot.mime_types.clear();
     slot.generation = slot.generation.wrapping_add(1);
@@ -1535,6 +1565,13 @@ impl ui::clipboard::ClipboardBackend for HostClipboard {
 
     fn text(&self, target: ui::clipboard::ClipboardTarget) -> Option<String> {
         mirror_text(&self.store, ui_target(target))
+    }
+
+    fn set_secret_text(&self, text: &str) -> bool {
+        if text.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_BYTES {
+            return false;
+        }
+        set_mirror_secret_text(&self.store, text)
     }
 
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
@@ -2730,6 +2767,46 @@ mod tests {
         // The next selection replaces and clears it.
         client_copy(&s, Target::Clipboard, &[TEXT_MIME], "next");
         assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("next"));
+    }
+
+    #[test]
+    fn a_secret_copy_from_chrome_pastes_as_text_but_never_enters_history_or_sync() {
+        let s = store();
+        let _host = ui::host::enter(&host_services(s.clone()));
+        assert!(set_mirror_text(&s, Target::Clipboard, "ordinary copy"));
+        assert!(ui::try_clipboard_copy_secret(
+            "hunter2",
+            std::time::Duration::from_secs(3600)
+        ));
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("hunter2"),
+            "a plain-text paste still receives the secret"
+        );
+        for mime in [
+            TEXT_MIME,
+            "text/plain",
+            SECRET_MIME,
+            PASSWORD_MANAGER_HINT_MIME,
+        ] {
+            assert!(offered(&s).iter().any(|offered| offered == mime), "{mime}");
+        }
+        let history: Vec<_> = clipboard_history(&s)
+            .into_iter()
+            .map(|item| item.text_preview)
+            .collect();
+        assert_eq!(history, [Some("ordinary copy".to_owned())]);
+        assert!(
+            shareable_clipboard_history(&s)
+                .iter()
+                .all(|shared| shared.bytes != b"hunter2"),
+            "the device fabric is never offered the secret"
+        );
+        assert!(set_mirror_text(&s, Target::Clipboard, "next"));
+        assert!(
+            !offered(&s).iter().any(|mime| mime == SECRET_MIME),
+            "the next copy is not a secret"
+        );
     }
 
     /// The owner announces its next selection on the tick its previous copy

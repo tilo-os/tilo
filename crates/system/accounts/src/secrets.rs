@@ -14,7 +14,6 @@
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
 
 use getrandom::{SysRng, rand_core::TryRng as _};
 use serde::{Deserialize, Serialize};
@@ -409,30 +408,6 @@ pub struct CredentialBroker {
     store: SecretStore,
     session_grants: BTreeMap<GrantKey, CredentialGrant>,
     revision: u64,
-}
-
-/// A short-lived clipboard ownership lease. Callers clear the clipboard only
-/// when `should_clear` says it still contains the value Tilo wrote, avoiding
-/// destruction of something the user copied afterward.
-pub struct ClipboardLease {
-    value: Zeroizing<String>,
-    expires: Instant,
-}
-
-impl ClipboardLease {
-    pub fn new(value: Zeroizing<String>, lifetime: Duration) -> Self {
-        Self {
-            value,
-            expires: Instant::now() + lifetime,
-        }
-    }
-    pub fn expired(&self) -> bool {
-        Instant::now() >= self.expires
-    }
-    pub fn should_clear(&self, clipboard: Option<&str>) -> bool {
-        self.expired()
-            && clipboard.is_some_and(|current| current.as_bytes() == self.value.as_bytes())
-    }
 }
 
 impl CredentialBroker {
@@ -995,24 +970,13 @@ mod tests {
     }
 
     #[test]
-    fn generated_passwords_and_clipboard_leases_keep_secrets_safe() {
-        // Phase `generated_password_is_long_and_avoids_ambiguous_characters`.
-        {
-            let password = GeneratedPasswordPolicy::default().generate().unwrap();
-            assert_eq!(password.len(), 20);
-            assert!(!password.contains(['0', '1', 'I', 'l', 'O']));
-            assert!(password.chars().any(|c| c.is_ascii_lowercase()));
-            assert!(password.chars().any(|c| c.is_ascii_uppercase()));
-            assert!(password.chars().any(|c| c.is_ascii_digit()));
-            assert!(password.chars().any(|c| "!@#$%^&*-_=+".contains(c)));
-        }
-
-        // Phase `clipboard_lease_never_clears_new_user_content`.
-        {
-            let expired = ClipboardLease::new(Zeroizing::new("secret".into()), Duration::ZERO);
-            assert!(expired.should_clear(Some("secret")));
-            assert!(!expired.should_clear(Some("new copy")));
-            assert!(!expired.should_clear(None));
-        }
+    fn generated_password_is_long_and_avoids_ambiguous_characters() {
+        let password = GeneratedPasswordPolicy::default().generate().unwrap();
+        assert_eq!(password.len(), 20);
+        assert!(!password.contains(['0', '1', 'I', 'l', 'O']));
+        assert!(password.chars().any(|c| c.is_ascii_lowercase()));
+        assert!(password.chars().any(|c| c.is_ascii_uppercase()));
+        assert!(password.chars().any(|c| c.is_ascii_digit()));
+        assert!(password.chars().any(|c| "!@#$%^&*-_=+".contains(c)));
     }
 }

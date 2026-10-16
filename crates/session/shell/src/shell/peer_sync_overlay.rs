@@ -23,6 +23,10 @@ use ui::widget::ButtonRole;
 mod accessibility;
 pub use accessibility::is_sheet_target as is_accessibility_target;
 
+/// How long a copied invite token stays on the clipboard: time to paste it
+/// into a message to the person it is for.
+const INVITE_ON_CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// A transport request emitted by the overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncRequest {
@@ -759,8 +763,15 @@ impl PeerSyncOverlay {
         let Some(token) = self.state.invite_token.as_deref() else {
             return;
         };
-        ui::text_selection::clipboard_copy(token);
-        self.state.status = Some(t("peer-sync-copied"));
+        // The token admits whoever pastes it: it stays out of clipboard
+        // history and device sync, and leaves the clipboard after a while.
+        self.state.status = Some(t(
+            if ui::try_clipboard_copy_secret(token, INVITE_ON_CLIPBOARD_FOR) {
+                "peer-sync-copied"
+            } else {
+                "peer-sync-copy-failed"
+            },
+        ));
     }
 
     fn paste_invite_token(&mut self) {

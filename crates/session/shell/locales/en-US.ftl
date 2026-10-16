@@ -1475,6 +1475,7 @@ search-action-tab-split-failed = Can't split this tab
 search-action-device-list-copied = Device list copied
 search-action-enrollment-copied = Device setup code copied · expires in { $minutes } min
 search-action-home-server-copied = Home-server setup code copied · expires in { $minutes } min
+search-action-enrollment-copy-failed = Could not copy the setup code to the clipboard
 search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 
@@ -1835,6 +1836,7 @@ peer-sync-name-required = Say who this invite is for
 peer-sync-identity-required = Paste their Tilo identity key so the invite cannot be stolen
 peer-sync-recipient-required = Choose a verified person or paste their Tilo identity so the invite cannot be stolen
 peer-sync-copied = Copied
+peer-sync-copy-failed = Could not copy to the clipboard
 peer-sync-joining = Joining…
 peer-sync-pasted = Pasted
 peer-sync-clipboard-empty = Nothing on the clipboard to paste

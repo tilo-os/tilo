@@ -1470,6 +1470,7 @@ search-action-tab-split-failed = Dieser Tab kann nicht geteilt werden
 search-action-device-list-copied = Geräteliste kopiert
 search-action-enrollment-copied = Geräte-Einrichtungscode kopiert · läuft in { $minutes } Min. ab
 search-action-home-server-copied = Heimserver-Einrichtungscode kopiert · läuft in { $minutes } Min. ab
+search-action-enrollment-copy-failed = Der Einrichtungscode konnte nicht in die Zwischenablage kopiert werden
 search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
 
@@ -1830,6 +1831,7 @@ peer-sync-name-required = Gib an, für wen diese Einladung ist
 peer-sync-identity-required = Füge den Tilo-Identitätsschlüssel der Person ein, damit die Einladung nicht gestohlen werden kann
 peer-sync-recipient-required = Wähle eine verifizierte Person oder füge ihre Tilo-Identität ein, damit die Einladung nicht gestohlen werden kann
 peer-sync-copied = Kopiert
+peer-sync-copy-failed = Konnte nicht in die Zwischenablage kopiert werden
 peer-sync-joining = Beitreten…
 peer-sync-pasted = Eingefügt
 peer-sync-clipboard-empty = Die Zwischenablage ist leer

@@ -504,7 +504,8 @@ pub use text_selection::{
     clipboard_copy_primary, clipboard_paste, clipboard_paste_image, clipboard_paste_primary,
     extend_span_drag, grapheme_boundary_at_or_before, line_boundaries, next_char_boundary,
     next_word_boundary, next_word_boundary_chars, prev_char_boundary, prev_word_boundary,
-    prev_word_boundary_chars, try_clipboard_copy, word_boundaries, word_boundaries_chars,
+    prev_word_boundary_chars, try_clipboard_copy, try_clipboard_copy_secret, word_boundaries,
+    word_boundaries_chars,
 };
 pub use tokens::{ReadingFace, TextRole, UiFace};
 
