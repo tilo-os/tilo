@@ -7,9 +7,13 @@
 # finds it on the published image.
 #
 # The predicate names the commit it was built from as `{commit}`, which only a trusted run knows
-# (T_COMMIT); it is filled in here. Unless TILO_SIGN_TLOG=0 the attestation is entered in the
+# (T_COMMIT); it is filled in here. With TILO_SIGN_TLOG=1 the attestation is entered in the
 # public transparency log, which a plain `cosign verify-attestation --key keys/cosign.pub`
-# (os/dev/resolve-rpm-snapshot.sh, os/dev/verify-kernel-provenance.sh) requires.
+# (os/dev/resolve-rpm-snapshot.sh, os/dev/verify-kernel-provenance.sh) requires, and the entry
+# kept as OUT/attestation.bundle.json.
+#
+# With TILO_DEV_SIGNING=1 (`dev_signed`) it attests a development candidate of main with the
+# development key (keys/cosign-dev.pub), as oci-sign.sh signs it.
 #
 # With TILO_PUBLISH_DRY_RUN set, the throwaway key oci-sign.sh's dry run made signs instead,
 # with no identity token and no transparency log.
@@ -19,7 +23,14 @@ set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 repository=${1:?usage: oci-attest.sh REPOSITORY OUT}
 out=${2:?}
-[[ $(channel) == release ]] || die "only releases are attested; this run is for $T_REF"
+run_channel=$(channel)
+if [[ ${TILO_DEV_SIGNING:-} == 1 ]]; then
+  [[ $run_channel == dev ]] || die "the development key attests main's candidates only; this run is for $T_REF"
+  [[ ${COSIGN_KEY_REF:-} == *alias/tilo-dev-signing || -n ${TILO_PUBLISH_DRY_RUN:-} ]] \
+    || die 'development attestations use the development key alias/tilo-dev-signing'
+else
+  [[ $run_channel == release ]] || die "only releases are attested; this run is for $T_REF"
+fi
 require_commit
 expected=$(cat "$out/digest")
 [[ $(archive_digest "$out/image.oci.tar") == "$expected" ]] || die 'the archive is not the build'
@@ -36,8 +47,9 @@ if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
     --key "$scratch/dry-run-signing/cosign.key" "$repository" > "$out/attestation.json"
 else
   . "$repo_root/os/dev/configure-cosign-kms.sh"
-  tlog=(--tlog-upload=true)
-  [[ ${TILO_SIGN_TLOG:-1} == 0 ]] && tlog=(--tlog-upload=false)
+  tlog=(--tlog-upload=false)
+  rm -f "$out/attestation.bundle.json"
+  [[ ${TILO_SIGN_TLOG:-} == 1 ]] && tlog=(--tlog-upload=true --bundle "$out/attestation.bundle.json")
   cosign attest-blob "${args[@]}" "${tlog[@]}" --key "$COSIGN_KEY_REF" "$repository" > "$out/attestation.json"
 fi
 grep -q '"payloadType":"application/vnd.in-toto+json"' "$out/attestation.json" \

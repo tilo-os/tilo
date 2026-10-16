@@ -89,9 +89,28 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(c["sign-cand"]["id_token"], ["tilo-dev-signing"])
         self.assertEqual(c["sign-cand"]["env"], {"K": "dev", "TILO_DEV_SIGNING": "1"})
         self.assertIn("sign-cand", c["publish-cand"]["needs"])
+        # Beside a release: main's candidates get sign-dev-<name>, stable keeps the release key.
+        c = checks({"family": "f", "name": "both", "repository": "r/both", "dev": ["{commit}"],
+                    "release": ["sha-{commit}"], "dev_signed": True, "tlog": True,
+                    "build": {"run": "build {out}"}})
+        self.assertEqual(c["sign-dev-both"]["on"], ["main"])
+        self.assertEqual(c["sign-dev-both"]["id_token"], ["tilo-dev-signing"])
+        self.assertNotIn("TILO_SIGN_TLOG", c["sign-dev-both"]["env"])
+        self.assertEqual(c["sign-both"]["on"], ["stable"])
+        self.assertEqual(c["sign-both"]["id_token"], ["sts.amazonaws.com"])
+        self.assertEqual(c["publish-both"]["optional_needs"], ["sign-both", "sign-dev-both"])
+        self.assertNotIn("sign-both", c["publish-both"]["needs"])
         with self.assertRaises(products.ProductError):
-            checks({"family": "f", "name": "both", "repository": "r/both", "dev": ["{commit}"],
-                    "release": ["sha-{commit}"], "dev_signed": True, "build": {"run": "build {out}"}})
+            checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["sha-{commit}"],
+                    "dev_signed": True, "build": {"run": "build {out}"}})
+        # Development provenance is attested with the development key, without a log entry.
+        c = checks({"family": "f", "name": "cand", "repository": "r/cand", "dev": ["{commit}"],
+                    "dev_signed": True, "build": {"run": "build {out}"},
+                    "provenance": {"run": "prov {dir}", "needs": ["image-other"]}})
+        self.assertEqual(c["provenance-cand"]["needs"], ["image-cand", "image-other"])
+        self.assertIn("oci-attest.sh r/cand /target/publish/cand", c["sign-cand"]["run"])
+        self.assertIn("provenance-cand", c["sign-cand"]["needs"])
+        self.assertNotIn("/target/publish/cand/attestation.bundle.json", c["sign-cand"]["outputs"])
 
     def test_release_only_products_need_their_signature(self):
         c = checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["{version}"],
@@ -480,6 +499,22 @@ class ScriptTests(unittest.TestCase):
         result = self.publish("release:sha-{commit}", ref="stable")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("cosign verify-blob-attestation", self.log.read_text())
+
+    def test_development_provenance_is_attested_on_main_only(self):
+        self.provenance()
+        env = {"TILO_DEV_SIGNING": "1"}
+        for script in ("oci-sign.sh", "oci-attest.sh"):
+            result = subprocess.run(["bash", str(PUBLISH / script), "r.example/img", str(self.out)],
+                                    env={**self.env, **env, "T_REF": "main"}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.out / "attestation.json").exists())
+        self.assertFalse((self.out / "attestation.bundle.json").exists())
+        result = self.publish("dev:{commit}", ref="main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("cosign verify-blob-attestation", self.log.read_text())
+        result = subprocess.run(["bash", str(PUBLISH / "oci-attest.sh"), "r.example/img", str(self.out)],
+                                env={**self.env, **env, "T_REF": "stable"}, capture_output=True, text=True)
+        self.assertIn("attests main's candidates only", result.stderr)
 
     def test_provenance_of_another_image_is_refused(self):
         self.provenance("sha256:" + "1" * 64)

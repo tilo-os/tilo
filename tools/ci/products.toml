@@ -191,9 +191,10 @@ about = """
 The CI builder (os/Containerfile.builder, tools/ci/publish/ci-builder.sh): the image t's checks
 and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture and
 joined into one index. The canaries below run inside each candidate before anything is signed
-or published. Everyone pushes to main, so main publishes only unsigned development tags
-(`dev-<commit>`, and `dev-<commit>-<arch>` for each image); nothing a consumer resolves by a
-moving tag or verifies against keys/cosign.pub comes from main. Stable signs the index and both
+or published. Everyone pushes to main, so main publishes only development tags (`dev-<commit>`,
+and `dev-<commit>-<arch>` for each image), signed with the development key (keys/cosign-dev.pub)
+by sign-dev-ci-builder; nothing a consumer resolves by a moving tag or verifies against
+keys/cosign.pub comes from main. Stable signs the index and both
 images with the release key and publishes `<commit>` and `<rust channel>`. `latest`, which
 resolve_builder.py and the Forgejo jobs follow, stays with build-ci-builder.yml until the
 cutover: stable lags main, and moving `latest` from it now would hand main's Forgejo jobs an
@@ -204,6 +205,7 @@ index = true
 children = true
 dev = ["dev-{commit}"]
 release = ["{commit}", "{rust}"]
+dev_signed = true
 gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64"]
 publish = { inputs = ["rust-toolchain.toml"] }
 
@@ -793,6 +795,12 @@ after_publish = "sed -n 's/.*\"image\":\"\\([^\"]*\\)\".*/\\1/p' {dir}/receipt.j
 [product.publish]
 outputs = ["{dir}/reference"]
 pointers = { fex-payload-candidate = "{dir}/reference" }
+
+# Its limited provenance (a development build whose runtime acceptance nothing verified),
+# attested with the development key beside the signature.
+[product.provenance]
+run = "bash tools/ci/publish/fex-provenance.sh {dir} /target/publish/fex-buildroot /target/publish/fex-x86-sdk"
+needs = ["image-fex-buildroot", "image-fex-x86-sdk"]
 
 [product.context]
 run = "bash tools/ci/publish/windows-compat.sh fex-source {dir}/fex-source.tar"
