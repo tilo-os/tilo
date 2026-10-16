@@ -264,15 +264,20 @@ def diff(a: Snapshot, b: Snapshot) -> dict:
 
 def read_trace(path: Path) -> list[dict]:
     rows: list[dict] = []
-    try:
-        with path.open() as fh:
-            header = fh.readline().strip().split(",")
-            for line in fh:
-                parts = line.strip().split(",")
-                if len(parts) == len(header):
-                    rows.append({k: int(v) if v.isdigit() else v for k, v in zip(header, parts)})
-    except OSError:
-        pass
+    required = {"start_us", "period_us", "sleep_us", "scene_us", "submit_us", "testctl_us", "painted"}
+    with path.open() as fh:
+        header = fh.readline().strip().split(",")
+        if len(set(header)) != len(header) or not required <= set(header):
+            raise ValueError(f"{path}: missing or duplicate frame trace columns")
+        for line_number, line in enumerate(fh, 2):
+            parts = line.strip().split(",")
+            if len(parts) != len(header):
+                raise ValueError(f"{path}:{line_number}: truncated frame trace row")
+            row = {k: int(v) if v.isdigit() else v for k, v in zip(header, parts)}
+            if (any(type(row[k]) is not int for k in required)
+                    or row["painted"] not in (0, 1)):
+                raise ValueError(f"{path}:{line_number}: invalid frame trace measurement")
+            rows.append(row)
     return rows
 
 
@@ -309,6 +314,10 @@ def frame_stats(rows: list[dict], lo_us: int, hi_us: int) -> dict:
 # --------------------------------------------------------------------------
 
 
+class ControlError(RuntimeError):
+    """The compositor rejected a command; retain its diagnostic for callers."""
+
+
 class Control:
     def __init__(self, path: Path):
         self.path = path
@@ -324,7 +333,14 @@ class Control:
                 if not chunk:
                     break
                 buf += chunk
-        return json.loads(buf or b"{}")
+        if not buf.endswith(b"\n"):
+            raise RuntimeError(f"{obj['op']}: control connection closed without a complete response")
+        reply = json.loads(buf)
+        if not isinstance(reply, dict) or not reply:
+            raise RuntimeError(f"{obj['op']}: invalid control response: {reply!r}")
+        if "err" in reply:
+            raise ControlError(f"{obj['op']}: {reply['err']}")
+        return reply
 
     def mods(self, logo: bool = False) -> None:
         self.send({"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": logo})
@@ -340,7 +356,9 @@ def foreign_frames(ctl: Control) -> list[dict]:
     body = reply.get("foreign_frames", reply)
     if isinstance(body, dict):
         body = body.get("frames", body)
-    return body if isinstance(body, list) else []
+    if not isinstance(body, list):
+        raise RuntimeError(f"foreign_frames: invalid control response: {reply!r}")
+    return body
 
 
 def max_refresh_hz(outputs: str) -> float:
@@ -354,9 +372,10 @@ def launch(ctl: Control, app_id: str, timeout: float) -> tuple[bool, float]:
     before = {f.get("surface_id") for f in foreign_frames(ctl)}
     invoked = False
     while not invoked and time.monotonic() < deadline:
-        reply = ctl.send({"op": "actions_invoke", "provider": "applications", "id": app_id})
-        invoked = "err" not in reply
-        if not invoked:
+        try:
+            ctl.send({"op": "actions_invoke", "provider": "applications", "id": app_id})
+            invoked = True
+        except ControlError:
             time.sleep(0.5)  # the application index is built off-thread
     while invoked and time.monotonic() < deadline:
         for frame in foreign_frames(ctl):
@@ -519,6 +538,8 @@ def run(args: argparse.Namespace) -> dict:
                 print(f"[resource-bench] launch {app}: {'painted' if ok else 'FAILED'} in {took:.1f}s",
                       flush=True)
                 result["apps"].append({"id": app, "painted": ok, "seconds": round(took, 2)})
+                if not ok:
+                    result["violations"].append(f"{app}: no painted frame within {args.app_timeout}s")
             time.sleep(args.settle)
             for name in PHASES[1:]:
                 if name not in args.skip.split(","):
