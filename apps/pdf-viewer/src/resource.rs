@@ -345,14 +345,7 @@ impl PdfMarkup {
         if copy.as_str().is_empty() || self.pages.contains(&copy) {
             return Err(Refusal::new("the copy needs an id of its own"));
         }
-        self.pages.insert(
-            at + 1,
-            copy,
-            PageOccurrence {
-                rotation: 0,
-                ..original
-            },
-        );
+        self.pages.insert(at + 1, copy, original);
         Ok(())
     }
 
