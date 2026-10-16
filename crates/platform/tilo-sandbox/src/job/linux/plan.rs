@@ -6,7 +6,7 @@
 //! arrays, mount operations, Landlock rules and BPF programs, so the child
 //! only reads them and makes system calls.
 
-use std::ffi::{CString, OsStr};
+use std::ffi::{CString, OsStr, OsString};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
@@ -43,6 +43,11 @@ pub enum Op {
         set: u64,
         recursive: bool,
     },
+    /// Create a file with these bytes (on the staging tmpfs).
+    Write {
+        path: CString,
+        content: Vec<u8>,
+    },
 }
 
 impl Op {
@@ -50,7 +55,7 @@ impl Op {
     pub fn fatal(&self) -> bool {
         matches!(
             self,
-            Op::Mount { .. } | Op::SetAttr { .. } | Op::Symlink { .. }
+            Op::Mount { .. } | Op::SetAttr { .. } | Op::Symlink { .. } | Op::Write { .. }
         )
     }
 
@@ -72,6 +77,7 @@ impl Op {
                 None => format!("binding {}", inside(dst)),
             },
             Op::SetAttr { path, .. } => format!("making {} read-only", inside(path)),
+            Op::Write { path, .. } => format!("writing {}", inside(path)),
         }
     }
 }
@@ -81,6 +87,14 @@ impl Op {
 pub struct Rule {
     pub path: CString,
     pub access: u64,
+}
+
+/// The command's own user namespace, beneath the job's: the job's init
+/// writes these maps for it (see [`crate::job::JobSpec::allow_nested_sandboxes`]).
+#[derive(Debug)]
+pub struct Nest {
+    /// Every id the job has, as the same id.
+    pub map: CString,
 }
 
 /// What the child does, all of it prepared.
@@ -102,6 +116,8 @@ pub struct Plan {
     /// Installed in order.
     pub seccomp: Vec<Vec<libc::sock_filter>>,
     pub cap_last: u32,
+    /// Set when the command runs in a user namespace of its own.
+    pub nest: Option<Nest>,
     /// Where the caller's environment and arguments sit in its memory
     /// (`/proc/self/stat` fields 48–51), to be blanked in the job's init.
     pub env_area: (usize, usize),
@@ -323,6 +339,60 @@ impl Builder {
         Ok(())
     }
 
+    /// `/etc/passwd` and `/etc/group` with an entry for the command's ids
+    /// where the root's lack one: tools look their user up (dbus-daemon,
+    /// ssh) and refuse to run as an id without a name. The files are made
+    /// on the staging tmpfs and bound read-only over the root's.
+    fn accounts(&mut self, spec: &JobSpec) -> Result<(), SpawnError> {
+        let (uid, gid) = spec.command_ids();
+        let home = spec
+            .env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == OsStr::new("HOME"))
+            .map_or_else(|| "/".to_owned(), |(_, v)| v.to_string_lossy().into_owned());
+        let files = [
+            (
+                "passwd",
+                uid,
+                format!("job:x:{uid}:{gid}:job:{home}:/bin/sh\n"),
+            ),
+            ("group", gid, format!("job:x:{gid}:\n")),
+        ];
+        for (name, id, line) in files {
+            let inside = Path::new("/etc").join(name);
+            let on_host = match &spec.root {
+                Root::Image(dir) => dir.join("etc").join(name),
+                Root::Host { .. } => inside.clone(),
+            };
+            // A link would resolve against the staging root; a missing
+            // file has no mount point in a read-only image.
+            if !std::fs::symlink_metadata(&on_host).is_ok_and(|m| m.is_file()) {
+                continue;
+            }
+            let Some(content) = std::fs::read(&on_host)
+                .ok()
+                .and_then(|text| with_account(text, id, &line))
+            else {
+                continue;
+            };
+            let staged = PathBuf::from(format!("/job-{name}"));
+            self.ops.push(Op::Write {
+                path: path_c(&staged)?,
+                content,
+            });
+            self.ops.push(Op::Mount {
+                src: Some(path_c(&staged)?),
+                dst: under(NEW, &inside)?,
+                fstype: None,
+                flags: libc::MS_BIND,
+                data: None,
+            });
+            self.attr(&inside, RO, false)?;
+        }
+        Ok(())
+    }
+
     /// `/proc` and a minimal `/dev` with its device nodes and links.
     fn proc_and_dev(&mut self, spec: &JobSpec) -> Result<(), SpawnError> {
         self.fs(
@@ -497,6 +567,25 @@ fn tmpfs_options(mode: &str, size: Option<u64>) -> String {
     }
 }
 
+/// `/etc/passwd`- or `/etc/group`-style `text` with `line` added, unless an
+/// entry already has `id` in its third field. `None` when nothing changes.
+fn with_account(mut text: Vec<u8>, id: u32, line: &str) -> Option<Vec<u8>> {
+    let id = id.to_string();
+    let known = text.split(|b| *b == b'\n').any(|l| {
+        l.split(|b| *b == b':')
+            .nth(2)
+            .is_some_and(|f| f == id.as_bytes())
+    });
+    if known {
+        return None;
+    }
+    if !text.is_empty() && !text.ends_with(b"\n") {
+        text.push(b'\n');
+    }
+    text.extend_from_slice(line.as_bytes());
+    Some(text)
+}
+
 /// An existing directory to mount the staging tmpfs on. It is covered only
 /// inside the job's mount namespace.
 fn stage_dir() -> &'static str {
@@ -517,12 +606,22 @@ fn filesystem(spec: &JobSpec) -> Result<(Vec<Op>, Vec<Rule>), SpawnError> {
         }],
     };
     b.root(&spec.root)?;
+    b.accounts(spec)?;
     b.proc_and_dev(spec)?;
     b.tmp_and_sys(spec)?;
     let mut mounts: Vec<_> = spec.mounts.iter().collect();
     mounts.sort_by_key(|m| m.dst.components().count());
     for m in mounts {
         b.caller_mount(m)?;
+    }
+    if let Some(dir) = spec.runtime_dir() {
+        b.fs(
+            "tmpfs",
+            &dir,
+            libc::MS_NOSUID | libc::MS_NODEV,
+            Some("mode=0700"),
+        )?;
+        b.writable(&dir, true)?;
     }
     if b.root_writable {
         b.attr(Path::new("/"), sys::MOUNT_ATTR_RDONLY, false)?;
@@ -640,9 +739,40 @@ fn landlock_mode(spec: &JobSpec) -> Landlock {
     }
 }
 
+/// The command's own user namespace, if it gets one.
+fn nest(spec: &JobSpec) -> Result<Option<Nest>, SpawnError> {
+    let Some(range) = spec.ids.range.filter(|_| spec.own_user_namespace()) else {
+        return Ok(None);
+    };
+    if spec.ids.inside_uid != 0 || spec.ids.inside_gid != 0 {
+        return Err(SpawnError::Invalid(
+            "a job with a range of ids is root inside (inside_uid and inside_gid 0)".into(),
+        ));
+    }
+    // One line per line of the job's own map: the kernel maps each line
+    // through a single line of the parent's.
+    let map = format!("0 0 1\n1 1 {}\n", range.count);
+    Ok(Some(Nest {
+        map: cstr(map.as_bytes(), "the id map")?,
+    }))
+}
+
+/// The command's environment: the caller's, and `XDG_RUNTIME_DIR` where
+/// the job has a runtime directory the caller named none for.
+fn environment(spec: &JobSpec) -> Vec<(OsString, OsString)> {
+    let mut env = spec.env.clone();
+    if let Some(dir) = spec.runtime_dir()
+        && !env.iter().any(|(k, _)| k == OsStr::new("XDG_RUNTIME_DIR"))
+    {
+        env.push(("XDG_RUNTIME_DIR".into(), dir.into_os_string()));
+    }
+    env
+}
+
 impl Plan {
     pub fn new(spec: &JobSpec) -> Result<Self, SpawnError> {
         let cwd = normal(&spec.cwd, "working directory")?;
+        let nest = nest(spec)?;
         let (ops, rules) = filesystem(spec)?;
         let stage = stage_dir();
         let (arg_area, env_area) = areas();
@@ -664,8 +794,7 @@ impl Plan {
                 .iter()
                 .map(|a| cstr(a.as_bytes(), "an argument"))
                 .collect::<Result<_, _>>()?,
-            envp: spec
-                .env
+            envp: environment(spec)
                 .iter()
                 .map(|(k, v)| {
                     let mut kv = k.as_bytes().to_vec();
@@ -677,8 +806,29 @@ impl Plan {
             landlock: landlock(landlock_mode(spec), rules)?,
             seccomp: seccomp_filters(spec.seccomp)?,
             cap_last,
+            nest,
             env_area,
             arg_area,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_account;
+
+    #[test]
+    fn an_account_is_added_only_for_an_unknown_id() {
+        let passwd =
+            b"root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534::/:/sbin/nologin".to_vec();
+        assert_eq!(
+            with_account(passwd.clone(), 0, "job:x:0:0::/:/bin/sh\n"),
+            None
+        );
+        let added = with_account(passwd, 1000, "job:x:1000:1000:job:/tmp:/bin/sh\n").unwrap();
+        assert!(added.ends_with(b"/sbin/nologin\njob:x:1000:1000:job:/tmp:/bin/sh\n"));
+        // The id is the third field, not any number on the line.
+        let group = b"wheel:x:10:1000\n".to_vec();
+        assert!(with_account(group, 1000, "job:x:1000:\n").is_some());
     }
 }

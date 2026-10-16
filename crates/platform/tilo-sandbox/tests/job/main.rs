@@ -18,6 +18,8 @@ mod isolation;
 #[cfg(target_os = "linux")]
 mod limits;
 #[cfg(target_os = "linux")]
+mod nested;
+#[cfg(target_os = "linux")]
 mod seccomp;
 #[cfg(target_os = "linux")]
 mod startup;

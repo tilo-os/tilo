@@ -6,7 +6,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
 
-use super::plan::{Op, Plan};
+use super::plan::{Nest, Op, Plan};
 use super::sys;
 use crate::job::{ExitStatus, SpawnError, Started};
 
@@ -30,13 +30,14 @@ enum Step {
     Seccomp,
     Fork,
     Exec,
+    Nest,
 }
 
 impl Step {
     fn from_u32(n: u32) -> Option<Self> {
         use Step::{
-            Caps, Cwd, Exec, Fork, Hostname, Landlock, LandlockRule, Loopback, NoNewPrivs, Op,
-            Pivot, PivotStage, Private, Seccomp, Stage,
+            Caps, Cwd, Exec, Fork, Hostname, Landlock, LandlockRule, Loopback, Nest, NoNewPrivs,
+            Op, Pivot, PivotStage, Private, Seccomp, Stage,
         };
         [
             Private,
@@ -54,6 +55,7 @@ impl Step {
             Seccomp,
             Fork,
             Exec,
+            Nest,
         ]
         .into_iter()
         .find(|s| *s as u32 == n)
@@ -204,7 +206,7 @@ impl Child<'_> {
                     plan.stage.as_ptr(),
                     c"tmpfs".as_ptr(),
                     libc::MS_NOSUID | libc::MS_NODEV,
-                    c"mode=0755,size=64k".as_ptr().cast(),
+                    c"mode=0755,size=1m".as_ptr().cast(),
                 )),
                 Step::Stage,
                 0,
@@ -483,6 +485,93 @@ impl Child<'_> {
         }
     }
 
+    /// Run the command in a user and mount namespace of its own, as root
+    /// over every id the job has. The init stays in the job's namespace,
+    /// writes the command's id maps (which takes `CAP_SETUID` there), then
+    /// drops its own capabilities and reaps. Copying the mount namespace
+    /// into a less privileged user namespace locks every mount the init
+    /// made: the command can't unmount them or make them writable, and
+    /// holds no capability over the job's network.
+    fn run_nested(&self, nest: &Nest) -> ! {
+        // SAFETY: prctl with constants.
+        let rc = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+        self.check(libc::c_long::from(rc), Step::NoNewPrivs, 0);
+        self.landlock();
+        self.seccomp();
+        let (mut up, mut down) = ([-1; 2], [-1; 2]);
+        // SAFETY (this block): pipes into stack arrays, then a plain fork
+        // (no namespace flags) as raw `clone`, so no libc fork handler runs
+        // in this copy of a threaded process.
+        let pid = unsafe {
+            self.check(
+                libc::c_long::from(libc::pipe2(up.as_mut_ptr(), libc::O_CLOEXEC)),
+                Step::Nest,
+                0,
+            );
+            self.check(
+                libc::c_long::from(libc::pipe2(down.as_mut_ptr(), libc::O_CLOEXEC)),
+                Step::Nest,
+                0,
+            );
+            libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0, 0, 0, 0)
+        };
+        self.check(pid, Step::Fork, 0);
+        if pid == 0 {
+            // SAFETY (this block): calls on this process's own descriptors
+            // and constants.
+            unsafe {
+                libc::close(up[0]);
+                libc::close(down[1]);
+                let rc = libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS);
+                self.check(libc::c_long::from(rc), Step::Nest, 1);
+                let byte = 0_u8;
+                libc::write(up[1], (&raw const byte).cast(), 1);
+                libc::close(up[1]);
+                let mut go = 0_u8;
+                if libc::read(down[0], (&raw mut go).cast(), 1) != 1 {
+                    libc::_exit(EXIT_UNREPORTED);
+                }
+                libc::close(down[0]);
+                // The worker's supplementary groups, unmapped here; where
+                // the job's namespace denies setgroups they stay.
+                libc::setgroups(0, std::ptr::null());
+            }
+            self.exec();
+        }
+        let pid = libc::pid_t::try_from(pid).unwrap_or(-1);
+        // SAFETY (this block): reads and writes on this process's pipes and
+        // on files of the command's /proc directory, with stack buffers.
+        unsafe {
+            libc::close(up[1]);
+            libc::close(down[0]);
+            let mut byte = 0_u8;
+            if libc::read(up[0], (&raw mut byte).cast(), 1) == 1 {
+                for (i, file) in [(2, b"uid_map\0"), (3, b"gid_map\0")] {
+                    let mut path = [0_u8; 40];
+                    proc_path(&mut path, pid, file);
+                    let fd = libc::open(path.as_ptr().cast(), libc::O_WRONLY | libc::O_CLOEXEC);
+                    self.check(libc::c_long::from(fd), Step::Nest, i);
+                    let map = nest.map.as_bytes();
+                    let n = libc::write(fd, map.as_ptr().cast(), map.len());
+                    self.check(n as libc::c_long, Step::Nest, i);
+                    libc::close(fd);
+                }
+            }
+        }
+        // Only now: a non-dumpable command's /proc files belong to a root
+        // the job's namespace doesn't map, and the init couldn't open them.
+        self.hide_worker();
+        self.drop_capabilities();
+        // SAFETY: a stack byte to our own pipe, then closing it.
+        unsafe {
+            let go = 0_u8;
+            libc::write(down[1], (&raw const go).cast(), 1);
+            libc::close(down[1]);
+            libc::close(up[0]);
+        }
+        self.reap(pid)
+    }
+
     /// The job's init, from `clone3` to `_exit`.
     ///
     /// # Safety
@@ -497,6 +586,9 @@ impl Child<'_> {
         Self::reset_signals();
         self.build_root();
         self.name_and_network();
+        if let Some(nest) = &self.plan.nest {
+            self.run_nested(nest);
+        }
         self.drop_capabilities();
         self.landlock();
         self.seccomp();
@@ -509,6 +601,31 @@ impl Child<'_> {
             self.exec();
         }
         self.reap(libc::pid_t::try_from(pid).unwrap_or(-1))
+    }
+}
+
+/// `/proc/<pid>/<file>` into `buf`, NUL-terminated, without allocating.
+/// `file` ends in a NUL.
+fn proc_path(buf: &mut [u8; 40], pid: libc::pid_t, file: &[u8]) {
+    let mut digits = [0_u8; 10];
+    let mut n = pid.unsigned_abs();
+    let mut first = digits.len();
+    for slot in digits.iter_mut().rev() {
+        *slot = b'0'.wrapping_add(u8::try_from(n % 10).unwrap_or(0));
+        first = first.saturating_sub(1);
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    let parts = [
+        b"/proc/".as_slice(),
+        digits.get(first..).unwrap_or_default(),
+        b"/",
+        file,
+    ];
+    for (slot, b) in buf.iter_mut().zip(parts.into_iter().flatten()) {
+        *slot = *b;
     }
 }
 
@@ -550,6 +667,31 @@ unsafe fn run_op(op: &Op) -> libc::c_long {
                 *flags,
                 opt(data).cast(),
             )),
+            Op::Write { path, content } => {
+                let fd = libc::open(
+                    path.as_ptr(),
+                    libc::O_WRONLY
+                        | libc::O_CREAT
+                        | libc::O_TRUNC
+                        | libc::O_CLOEXEC
+                        | libc::O_NOFOLLOW,
+                    0o644,
+                );
+                if fd < 0 {
+                    return libc::c_long::from(fd);
+                }
+                let mut rest = content.as_slice();
+                while !rest.is_empty() {
+                    let n = libc::write(fd, rest.as_ptr().cast(), rest.len());
+                    let Ok(n) = usize::try_from(n) else {
+                        libc::close(fd);
+                        return -1;
+                    };
+                    rest = rest.get(n..).unwrap_or_default();
+                }
+                libc::close(fd);
+                0
+            }
             Op::SetAttr {
                 path,
                 set,
@@ -597,6 +739,59 @@ fn write_proc(pid: libc::pid_t, file: &str, content: &str) -> Result<(), SpawnEr
             content.trim()
         ))
     })
+}
+
+/// Map root to the caller's ids and `1..=count` to the range, in the job's
+/// namespace: directly where the caller may (`CAP_SETUID` and `CAP_SETGID`
+/// in its own namespace), through `newuidmap` and `newgidmap` otherwise.
+/// `setgroups` stays allowed: the range's owner granted it.
+fn map_range(
+    pid: libc::pid_t,
+    ids: crate::job::spec::IdMap,
+    range: crate::job::spec::IdRange,
+) -> Result<(), SpawnError> {
+    for (file, helper, outside, first) in [
+        ("uid_map", "newuidmap", ids.outside_uid, range.uid),
+        ("gid_map", "newgidmap", ids.outside_gid, range.gid),
+    ] {
+        let map = format!("0 {outside} 1\n1 {first} {}\n", range.count);
+        match std::fs::write(format!("/proc/{pid}/{file}"), &map) {
+            Ok(()) => continue,
+            Err(e) if e.raw_os_error() == Some(libc::EPERM) => {}
+            Err(e) => {
+                return Err(SpawnError::Setup(format!(
+                    "writing the job's {file} ({}): {e}",
+                    map.trim().replace('\n', ", ")
+                )));
+            }
+        }
+        let args = [
+            pid.to_string(),
+            "0".into(),
+            outside.to_string(),
+            "1".into(),
+            "1".into(),
+            first.to_string(),
+            range.count.to_string(),
+        ];
+        let out = std::process::Command::new(helper)
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| {
+                SpawnError::Setup(format!(
+                    "running {helper} to map the job's subordinate ids: {e} (install shadow-utils' {helper}, or run the worker as root)"
+                ))
+            })?;
+        if !out.status.success() {
+            return Err(SpawnError::Setup(format!(
+                "{helper} {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// A started job's init, until it is reaped.
@@ -839,6 +1034,12 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
         Some(Step::Landlock) => "enforcing Landlock".into(),
         Some(Step::Seccomp) => "installing the seccomp filter".into(),
         Some(Step::Fork) => "starting the command".into(),
+        Some(Step::Nest) => match index {
+            0 => "making the command's pipes".into(),
+            1 => "making the command's user namespace".into(),
+            2 => "writing the command's uid_map".into(),
+            _ => "writing the command's gid_map".into(),
+        },
         Some(Step::Exec) => {
             let program = plan
                 .argv
@@ -990,17 +1191,21 @@ fn finish(
     setup: Option<SetupFn<'_>>,
 ) -> Result<(), SpawnError> {
     let pid = job.pid();
-    write_proc(
-        pid,
-        "uid_map",
-        &format!("{} {} 1\n", ids.inside_uid, ids.outside_uid),
-    )?;
-    write_proc(pid, "setgroups", "deny\n")?;
-    write_proc(
-        pid,
-        "gid_map",
-        &format!("{} {} 1\n", ids.inside_gid, ids.outside_gid),
-    )?;
+    if let Some(range) = ids.range.filter(|_| plan.nest.is_some()) {
+        map_range(pid, ids, range)?;
+    } else {
+        write_proc(
+            pid,
+            "uid_map",
+            &format!("{} {} 1\n", ids.inside_uid, ids.outside_uid),
+        )?;
+        write_proc(pid, "setgroups", "deny\n")?;
+        write_proc(
+            pid,
+            "gid_map",
+            &format!("{} {} 1\n", ids.inside_gid, ids.outside_gid),
+        )?;
+    }
     if let Some(setup) = setup {
         setup(&Started { pid }).map_err(SpawnError::Setup)?;
     }
@@ -1099,4 +1304,21 @@ pub fn spawn(
     // From here on, an error drops `job`, which kills and reaps the init.
     finish(&job, plan, ids, sync_w, report_r, setup)?;
     Ok(job)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proc_path;
+
+    #[test]
+    fn a_proc_path_is_written_without_allocating() {
+        let mut buf = [0xff_u8; 40];
+        proc_path(&mut buf, 4_194_304, b"uid_map\0");
+        let end = buf.iter().position(|b| *b == 0).unwrap();
+        assert_eq!(&buf[..end], b"/proc/4194304/uid_map");
+        let mut buf = [0xff_u8; 40];
+        proc_path(&mut buf, 7, b"gid_map\0");
+        let end = buf.iter().position(|b| *b == 0).unwrap();
+        assert_eq!(&buf[..end], b"/proc/7/gid_map");
+    }
 }

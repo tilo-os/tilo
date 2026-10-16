@@ -34,7 +34,9 @@ pub mod vm;
 
 use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
 
-pub use spec::{CiProfile, IdMap, JobSpec, Landlock, Mount, MountKind, Root, Seccomp, Tmp};
+pub use spec::{
+    CiProfile, IdMap, IdRange, JobSpec, Landlock, Mount, MountKind, Root, Seccomp, Tmp,
+};
 
 #[cfg(target_os = "linux")]
 pub use linux::runner::Job;
@@ -211,6 +213,9 @@ pub fn prepare_mount_points(spec: &JobSpec) -> std::io::Result<()> {
     if spec.cgroup_view {
         points.push(("/sys".into(), false));
     }
+    if let Some(dir) = spec.runtime_dir() {
+        points.push((dir, false));
+    }
     for m in &spec.mounts {
         let file = m
             .source()
@@ -240,4 +245,37 @@ pub fn prepare_mount_points(spec: &JobSpec) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Remove `dir` and everything in it, also what a job with a range of ids
+/// left there owned by its subordinate ids, which the caller itself can't
+/// remove. What the caller can remove goes directly; the rest is removed by
+/// a job that is root over `ids`, with `dir` mounted.
+///
+/// # Errors
+/// The job's failure, or the error removing what is left.
+#[cfg(target_os = "linux")]
+pub fn remove_tree(dir: &std::path::Path, ids: IdMap) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && ids.range.is_some() => {}
+        done => return done,
+    }
+    let mut spec = JobSpec::new(
+        Root::Host { extra: vec![] },
+        ["find", "/tree", "-mindepth", "1", "-delete"],
+    );
+    spec.allow_nested_sandboxes();
+    spec.ids = ids;
+    spec.mount(Mount::read_write(dir, "/tree"));
+    let status = Launch::new(&spec)
+        .spawn()
+        .map_err(std::io::Error::other)?
+        .wait()?;
+    if !status.success() {
+        return Err(std::io::Error::other(format!(
+            "removing {} as the job's ids ended with {status:?}",
+            dir.display()
+        )));
+    }
+    std::fs::remove_dir_all(dir)
 }
