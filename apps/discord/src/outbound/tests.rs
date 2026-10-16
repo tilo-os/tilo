@@ -195,6 +195,67 @@ fn edits_and_deletes_follow_the_map() {
 }
 
 #[test]
+fn clearing_an_attachment_caption_queues_an_empty_discord_edit() {
+    use crate::record::{guild, tests};
+
+    let mut bot = tests::connected();
+    for action in [
+        tests::map(MappedKind::Channel, "c1", "d_general"),
+        tests::map(MappedKind::Webhook, "c1", "wh1"),
+    ] {
+        bot.apply(action).unwrap();
+    }
+    let attachment = json!({"attachment": {"File": {
+        "name": "notes.txt", "blob": "ff", "size": 5
+    }}});
+    let before = chat(&[msg("m1", "u_ada", "old caption", &attachment)]);
+    let post = plan_post(&bot.state().unwrap(), &before, "m1", &context());
+    assert_eq!(post.sends.len(), 1);
+    assert_eq!(post.sends[0].op.attachments.len(), 1);
+    bot.apply(Guild::SEND.with(guild::Send {
+        op: post.sends[0].op.clone(),
+    }))
+    .unwrap();
+    bot.apply(tests::map(MappedKind::Message, "m1", "dm1"))
+        .unwrap();
+
+    let after = chat(&[msg("m1", "u_ada", "", &attachment)]);
+    let edits = plan_edit(&bot.state().unwrap(), &after, "m1", &context());
+    assert_eq!(edits.len(), 1, "clearing a caption must reach Discord");
+    assert_eq!(edits[0].message, "dm1");
+    assert_eq!(edits[0].content, "");
+    bot.apply(Guild::EDIT.with(guild::Edit {
+        op: edits[0].clone(),
+    }))
+    .unwrap();
+    let state = bot.state().unwrap();
+    let queued: Vec<_> = state
+        .outbox
+        .pending()
+        .filter_map(|(_, queued)| match &queued.op {
+            discord_wire::op::DiscordOp::Edit(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(queued, [&edits[0]]);
+    let mut oversized = edits[0].clone();
+    oversized.content = "x".repeat(MAX_CONTENT_CHARS + 1);
+    assert!(
+        bot.apply(Guild::EDIT.with(guild::Edit { op: oversized }))
+            .is_err(),
+        "empty captions must not relax Discord's length limit"
+    );
+
+    let empty_post = chat(&[msg("m2", "u_ada", "", &json!({}))]);
+    assert!(
+        plan_post(&state, &empty_post, "m2", &context())
+            .sends
+            .is_empty(),
+        "an empty new post still has nothing to send"
+    );
+}
+
+#[test]
 fn the_bot_reacts_once_per_emoji_while_tilo_people_have_it() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
