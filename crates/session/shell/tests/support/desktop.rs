@@ -628,6 +628,35 @@ impl Desktop {
         }
     }
 
+    /// Send `request` on the control socket without waiting for a reply,
+    /// for a request whose answer is the compositor's fate, not a line.
+    pub fn send(&self, request: &Value) {
+        let mut stream = UnixStream::connect(&self.control).expect("connect to the control socket");
+        let mut line = serde_json::to_vec(request).expect("encode the request");
+        line.push(b'\n');
+        stream.write_all(&line).expect("write the request");
+        // Held open until the compositor is gone: closing it early would
+        // only race the request with a hang-up.
+        std::mem::forget(stream);
+    }
+
+    /// Wait up to `within` for the compositor to exit on its own; its exit
+    /// status, or `None` while it still runs.
+    pub fn wait_for_exit(&self, within: Duration) -> Option<std::process::ExitStatus> {
+        let started = Instant::now();
+        loop {
+            let exited = self
+                .child
+                .lock()
+                .ok()
+                .and_then(|mut child| child.try_wait().ok().flatten());
+            if exited.is_some() || started.elapsed() >= within {
+                return exited;
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
     /// The last `n` lines the compositor wrote.
     pub fn recent_log(&self, n: usize) -> String {
         self.log
@@ -963,7 +992,18 @@ fn drain_log_pipes(
     let stderr = child.stderr.take().expect("compositor stderr");
     let log_writer = Arc::clone(log);
     std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+        // Bytes, not `lines()`: one line that is not UTF-8 would end the
+        // read and silently drop everything the compositor says after it.
+        let mut reader = BufReader::new(stderr);
+        let mut raw = Vec::new();
+        while reader
+            .read_until(b'\n', &mut raw)
+            .is_ok_and(|read| read > 0)
+        {
+            let line = String::from_utf8_lossy(&raw)
+                .trim_end_matches(['\n', '\r'])
+                .to_string();
+            raw.clear();
             for (marker, key) in [
                 ("tilo compositor listening on ", "public"),
                 ("tilo compositor test_control listening on ", "control"),

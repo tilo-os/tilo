@@ -6049,6 +6049,18 @@ fn dispatch_control_command(
         test_control::Command::ProvisionTestIdentity => {
             (crate::compositor::dev_test_identity::respond(), Vec::new())
         }
+        test_control::Command::DeadlockMainLoop => {
+            if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
+                crate::compositor::watchdog::deadlock_this_thread_for_test();
+            }
+            (
+                test_control::Response::Err {
+                    code: crate::compositor::dev_test_identity::DEV_IMAGE_ONLY.into(),
+                    message: "a main-loop deadlock is injected only by development builds".into(),
+                },
+                Vec::new(),
+            )
+        }
         cmd => {
             let state = FrameBuilderControlState {
                 fb: frame_builder,
@@ -10357,6 +10369,17 @@ pub fn run() {
             }
         }};
     }
+    // From here the compositor thread turns this loop. A turn that stops for
+    // good is recorded and ends the process, so a hang hands the display back
+    // and the session returns to the login screen instead of needing the
+    // power button (`watchdog`). Start-up before it may wait without a bound
+    // on purpose: the seat is not ours until logind activates the session.
+    let watchdog = crate::compositor::watchdog::Watchdog::watch_this_thread(
+        crate::compositor::watchdog::Policy::COMPOSITOR,
+        crate::compositor::watchdog::end_process,
+    )
+    .map_err(|error| eprintln!("tilo compositor: the main-loop watchdog did not start: {error}"))
+    .ok();
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -13455,14 +13478,19 @@ pub fn run() {
                                 }),
                             );
                         }
-                        CaptureOutcome::ScreenshotSendRequested { path, target } => {
+                        CaptureOutcome::ScreenshotSendRequested { device, screenshot } => {
+                            // The capture worker read the screenshot; the
+                            // offer reads no file on the loop.
                             let mut bridge = crate::shell::screenshot_send::FabricSendBridge {
                                 network: peer_sync.as_deref(),
                                 workspace_root: crate::shell::screenshot_send::workspace_files_root(
                                 ),
                             };
-                            let sent =
-                                crate::shell::screenshot_send::route(&path, &target, &mut bridge);
+                            let sent = crate::shell::screenshot_send::offer(
+                                &device,
+                                screenshot.take(),
+                                &mut bridge,
+                            );
                             notify_screenshot_sent(&mut frame_builder, sent);
                         }
                         CaptureOutcome::ScreenshotSent(sent) => {
@@ -14221,7 +14249,14 @@ pub fn run() {
             ticks_since_trim = 0;
         }
         let t_sleep_start = Instant::now();
-        if let Err(err) = event_loop.dispatch(park, &mut state) {
+        if let Some(watchdog) = &watchdog {
+            watchdog.parking();
+        }
+        let dispatched = event_loop.dispatch(park, &mut state);
+        if let Some(watchdog) = &watchdog {
+            watchdog.unparked();
+        }
+        if let Err(err) = dispatched {
             eprintln!("tilo compositor: event loop dispatch error: {err}");
             break;
         }
@@ -14261,7 +14296,11 @@ pub fn run() {
     // The session is ending (logout, a close request, a run deadline): every
     // layout change queued for the state writer reaches the disk before the
     // next session can read it.
-    crate::shell::persist::wait_for_saves_within(Duration::from_secs(10));
+    // The watchdog still watches teardown and counts this wait among the
+    // bounded ones it lets pass.
+    crate::shell::persist::wait_for_saves_within(
+        crate::compositor::watchdog::SESSION_END_SAVE_FLUSH,
+    );
 
     // Stop the render thread and wait for the frame in flight, so a
     // half-presented frame cannot outlive its device or race backend teardown.

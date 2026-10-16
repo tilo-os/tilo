@@ -52,7 +52,7 @@ class GeneratorTests(unittest.TestCase):
         sign = c["sign-svc"]
         self.assertEqual(sign["on"], ["stable"])
         self.assertEqual(sign["needs"], ["image-svc"])
-        self.assertEqual(sign["requires"], ["arch=any"])
+        self.assertEqual(sign["requires"], products.CREDENTIAL_REQUIRES)
         self.assertNotIn("isolation", sign)
         publish = c["publish-svc"]
         self.assertEqual(publish["on"], ["main", "stable"])
@@ -70,6 +70,15 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(c["publish-tool"]["on"], ["main"])
         self.assertNotIn("optional_needs", c["publish-tool"])
         self.assertIn("oci-anonymous.sh r/tool /target/publish/tool", c["publish-tool"]["run"])
+
+    def test_dispatched_products_publish_development_tags_only_when_asked(self):
+        c = checks({"family": "f", "name": "big", "repository": "r/big", "dev": ["{commit}"],
+                    "release": ["sha-{commit}"], "dispatch": True, "build": {"run": "build {out}"}})
+        self.assertEqual(c["publish-big"]["on"], ["dispatch", "stable"])
+        self.assertEqual(c["sign-big"]["on"], ["stable"])
+        c = checks({"family": "f", "name": "dev", "repository": "r/dev", "dev": ["{commit}"],
+                    "dispatch": True, "build": {"run": "build {out}"}})
+        self.assertEqual(c["publish-dev"]["on"], ["dispatch"])
 
     def test_release_only_products_need_their_signature(self):
         c = checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["{version}"],
@@ -143,7 +152,7 @@ class GeneratorTests(unittest.TestCase):
                 self.assertNotIn(c["name"], names)
                 names.add(c["name"])
                 if "id_token" in c:
-                    self.assertEqual(c["requires"], ["arch=any"], c["name"])
+                    self.assertEqual(c["requires"], products.CREDENTIAL_REQUIRES, c["name"])
 
 
 def publish_scripts(script: str, seen: set[str]) -> set[str]:

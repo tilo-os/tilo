@@ -33,10 +33,14 @@ COSIGN_INPUTS = ["os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.
                  "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 SIGN_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-sign.sh", "os/dev/configure-cosign-kms.sh", *COSIGN_INPUTS]
 PUBLISH_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-publish.sh", *COSIGN_INPUTS]
+# Signing and publishing read only what the build produced, so any architecture would do, but a
+# check holding an identity token runs as a micro-VM step, and t finds no guest kernel for
+# `arch=any`: they run on x86_64, where the most micro-VM capacity is.
+CREDENTIAL_REQUIRES = ["arch=x86_64"]
 # Keys of a product table, and of its `context` and `build` tables, that are not check fields.
 PRODUCT_KEYS = {"name", "about", "repository", "arches", "index", "dev", "release", "release_on",
                 "tlog", "context", "build", "gates", "anonymous", "after_publish", "publish",
-                "dir", "out"}
+                "dir", "out", "dispatch"}
 STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "about"}
 # Fields the generator writes itself, so a product can't set them by accident.
 OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secrets"}
@@ -150,6 +154,10 @@ class Product:
         self.release_on: list[str] = data.get("release_on", ["stable"])
         self.dir: str = data.get("dir", f"/target/publish/{self.name}")
         self.gates: list[str] = data.get("gates", [])
+        # Development tags are pushed when main changes, or with `dispatch = true` only when
+        # someone asks (`t dispatch publish-<name> --ref main`): for builds too costly to run
+        # on every change of their inputs.
+        self.dev_on: list[str] = ["dispatch"] if data.get("dispatch") else ["main"]
         for field in ("anonymous", "after_publish", "publish", "tlog"):
             if field in data and not (self.dev or self.release):
                 raise ProductError(f"{self.name}: {field} without tags to publish (dev, release)")
@@ -277,7 +285,9 @@ class Product:
             env["TILO_SIGN_TLOG"] = "1"
         outputs = []
         for d, _ in self.published:
-            outputs += [f"{d}/payload.json", f"{d}/signature"]
+            # dry-run.pub exists only in a dry run (TILO_PUBLISH_DRY_RUN): the throwaway key's
+            # public half, which the publishing check's dry run verifies the signature against.
+            outputs += [f"{d}/payload.json", f"{d}/signature", f"{d}/dry-run.pub"]
             if self.data.get("tlog"):
                 outputs.append(f"{d}/bundle.json")
         return {
@@ -290,7 +300,7 @@ class Product:
             "outputs": outputs,
             "id_token": ["sts.amazonaws.com"],
             "env": env,
-            "requires": ["arch=any"],
+            "requires": CREDENTIAL_REQUIRES,
             "on": self.release_on,
         }
 
@@ -300,9 +310,9 @@ class Product:
             raise ProductError(f"{self.name}: publish takes run, inputs, outputs and pointers")
         if self.dev and self.release:
             channel = "any"
-            on = ["main", *self.release_on]
+            on = [*self.dev_on, *self.release_on]
         elif self.dev:
-            channel, on = "dev", ["main"]
+            channel, on = "dev", self.dev_on
         else:
             channel, on = "release", self.release_on
         lines, outputs = [], []
@@ -333,7 +343,7 @@ class Product:
             "needs": [*self.last, *self.gates, *([f"sign-{self.name}"] if channel == "release" else [])],
             "outputs": dedupe([*outputs, *spec.get("outputs", [])]),
             "id_token": ["registry.tilo.so"],
-            "requires": ["arch=any"],
+            "requires": CREDENTIAL_REQUIRES,
             "on": on,
         }
         if channel == "any":
