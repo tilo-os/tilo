@@ -9,8 +9,18 @@
 //! [`install`] puts a private pipe in front of fd 2. A relay thread drains it
 //! into the original stderr and drops whatever the original refuses, so a
 //! write to fd 2 only fails if this process itself is broken.
+//!
+//! The relay is a thread, so it dies with the process: what is still in its
+//! pipe when the process ends without unwinding (`_exit`) is lost. Last words
+//! written just before such an end go past it, through [`write_final`].
 
 use std::io::{ErrorKind, Read, Write};
+use std::os::fd::OwnedFd;
+use std::sync::OnceLock;
+
+/// The stderr the process started with, once [`install`] put the relay in
+/// front of it.
+static ORIGINAL: OnceLock<OwnedFd> = OnceLock::new();
 
 /// Route fd 2 through the relay. Leaves stderr untouched if any step fails.
 pub fn install() {
@@ -18,6 +28,9 @@ pub fn install() {
         return;
     };
     let Ok((reader, writer)) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC) else {
+        return;
+    };
+    let Ok(direct) = rustix::io::fcntl_dupfd_cloexec(&original, 3) else {
         return;
     };
     // The reader must exist before fd 2 points at the pipe; otherwise the
@@ -29,7 +42,32 @@ pub fn install() {
         return;
     }
     // On failure fd 2 stays as it was and the relay ends when `writer` drops.
-    let _ = rustix::stdio::dup2_stderr(&writer);
+    if rustix::stdio::dup2_stderr(&writer).is_ok() {
+        let _ = ORIGINAL.set(direct);
+    }
+}
+
+/// Write `text` to the process's stderr past the relay, when the process is
+/// about to end without unwinding and the relay thread would not live to
+/// forward it. Whatever the destination refuses is dropped, as the relay
+/// drops it.
+pub fn write_final(text: &str) {
+    match ORIGINAL.get() {
+        Some(original) => {
+            let mut rest = text.as_bytes();
+            while !rest.is_empty() {
+                match rustix::io::write(original, rest) {
+                    Ok(0) | Err(rustix::io::Errno::PIPE | rustix::io::Errno::BADF) => return,
+                    Ok(written) => rest = rest.get(written..).unwrap_or_default(),
+                    Err(rustix::io::Errno::INTR | rustix::io::Errno::AGAIN) => {}
+                    Err(_) => return,
+                }
+            }
+        }
+        None => {
+            let _ = std::io::stderr().lock().write_all(text.as_bytes());
+        }
+    }
 }
 
 fn relay(mut from: std::fs::File, mut to: std::fs::File) {
