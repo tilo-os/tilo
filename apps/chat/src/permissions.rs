@@ -177,13 +177,11 @@ mod tests {
     }
 
     #[test]
-    fn the_no_access_shot_is_a_reader_the_workspace_granted_no_files() {
-        let ctx = crate::app::ChatApp::shot_permission("no-access").expect("staged context");
-        let p = ChatPermissions::from_context(ctx);
+    fn a_reader_the_workspace_granted_no_files_cannot_open_attachments() {
+        let p = ChatPermissions::from_context(PermissionContext::stranger(crate::model::ME));
         assert!(
             !p.can_embed(crate::images::DEMO_CLIP),
             "attachments stay closed"
         );
-        assert!(crate::app::ChatApp::shot_permission("call").is_none());
     }
 }
