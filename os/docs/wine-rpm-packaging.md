@@ -57,10 +57,9 @@ It retains acquisition/signature logs and publishes only verified inputs to
 a new directory. Failed attempts retain their staging directory and logs.
 This acquisition step does not resolve or build either target environment.
 
-The `native-inputs` job in `.forgejo/workflows/build-windows-compat.yml` runs this stage
-on the native `runner` lane. It publishes a run-specific candidate tooling
-image, consumes that exact digest, and retains the signed source and acquisition
-evidence as a CI artifact.
+t's `wine-source` check runs this stage (`tools/ci/publish/wine.sh`), on the
+`image-wine-tools` image, and keeps the signed source and acquisition evidence as its
+outputs.
 
 ### CI producer: locked Mock builds
 

@@ -1,14 +1,15 @@
 # CI-built FEX candidate for ARM Windows apps
 
-Dispatch `build-windows-compat.yml` with `payload=fex` on `main`. The workflow
-uses native ARM64 and x86-64 CI runners: it publishes a native FEX toolchain candidate, a
-complete x86 development SDK candidate, and the portable ARM FEX payload. It
+Run `t dispatch publish-fex-payload --ref main`. t builds on native ARM64 and x86-64
+nodes and publishes a native FEX toolchain candidate, a complete x86 development SDK
+candidate, and the portable ARM FEX payload, then sets main's `fex-payload-candidate`
+pointer to the payload's digest (docs/publishing-on-t.md, `tools/ci/products.toml`). It
 clones the reviewed FEX revision and recursive submodules from
 `os/external-assets/fex-source.env`, applies the checked-in hash-pinned patches,
 and validates the installed payload before publishing it. All references use
-immutable OCI digests. The final payload receives a CI KMS signature and a
-provenance attestation that names both input digests and states that runtime
-acceptance has **not** been verified.
+immutable OCI digests. The final payload is signed with the development key
+(`keys/cosign-dev.pub`, KMS `alias/tilo-dev-signing`), which no release verification
+accepts; runtime acceptance has **not** been verified.
 
 The SDK and native toolchain still resolve live Fedora RPMs. These artifacts
 are development candidates, not frozen production inputs. Their unique tags

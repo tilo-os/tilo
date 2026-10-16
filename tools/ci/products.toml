@@ -653,7 +653,7 @@ timeout_secs = 3600
 default = false
 
 # ---------------------------------------------------------------------------
-# Windows compatibility payloads (build-windows-compat.yml): development candidates for Windows
+# Windows compatibility payloads: development candidates for Windows
 # apps on ARM, which os/dev/build-image.sh takes by digest (FEX_PAYLOAD_REF, WINDOWS_GUEST_REF)
 # from the receipts, or from the `fex-payload-candidate` and `windows-guest-candidate` pointers.
 # Building them takes long, so main publishes them only when asked: `t dispatch
