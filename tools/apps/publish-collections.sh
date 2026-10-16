@@ -113,7 +113,8 @@ fi
 publish_collections() {
   collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
   python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
-  source_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+  # t's release steps pass the commit's time, as they run without Git (tools/apps/t-release.sh).
+  source_epoch=${TILO_SOURCE_EPOCH:-$(git show -s --format=%ct "$GITHUB_SHA")}
   [[ $source_epoch =~ ^[0-9]+$ ]]
   channel_url=
   channel_sha=
@@ -385,7 +386,7 @@ registry_identity="$RUNNER_TEMP/tilo-registry-publisher.json"
 (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$registry_identity")
 trap 'rm -f "$registry_identity"' EXIT
 export SOURCE_DATE_EPOCH
-SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+SOURCE_DATE_EPOCH=${TILO_SOURCE_EPOCH:-$(git log -1 --format=%ct)}
 snapshot="$RUNNER_TEMP/tilo-registry-snapshot.json"
 response="$RUNNER_TEMP/tilo-registry-response.txt"
 publication_plan="$RUNNER_TEMP/tilo-registry-publication.tsv"
