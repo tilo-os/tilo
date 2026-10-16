@@ -22,6 +22,11 @@ pub fn check_local(backend: &dyn ClipboardBackend) {
         backend.name()
     );
     assert!(
+        !backend.set_secret_text("secret"),
+        "{}: a clipboard private to the process must not claim a secret copy",
+        backend.name()
+    );
+    assert!(
         !backend.set_image(1, 1, &[0; 4]),
         "{}: a text-only clipboard must refuse images",
         backend.name()

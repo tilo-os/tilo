@@ -66,6 +66,9 @@ impl NoWayland {
         let _ = reply.send(None);
         result
     }
+    fn set_secret_text(&self, _text: &str) -> bool {
+        false
+    }
     fn set_image(&self, _width: usize, _height: usize, _rgba: &[u8]) -> bool {
         false
     }
@@ -120,6 +123,40 @@ fn set_arboard_text(handle: &mut arboard::Clipboard, _target: ClipboardTarget, t
     handle.set_text(text.to_string()).is_ok()
 }
 
+/// A copy clipboard managers are asked to leave out of their histories:
+/// `x-kde-passwordManagerHint` on X11, the `nspasteboard.org` marker on
+/// macOS, and Windows' history and cloud-sync exclusion formats.
+#[cfg(target_os = "linux")]
+fn set_arboard_secret_text(handle: &mut arboard::Clipboard, text: &str) -> bool {
+    use arboard::SetExtLinux;
+    handle
+        .set()
+        .exclude_from_history()
+        .text(text.to_string())
+        .is_ok()
+}
+
+#[cfg(target_os = "macos")]
+fn set_arboard_secret_text(handle: &mut arboard::Clipboard, text: &str) -> bool {
+    use arboard::SetExtApple;
+    handle
+        .set()
+        .exclude_from_history()
+        .text(text.to_string())
+        .is_ok()
+}
+
+#[cfg(windows)]
+fn set_arboard_secret_text(handle: &mut arboard::Clipboard, text: &str) -> bool {
+    use arboard::SetExtWindows;
+    handle
+        .set()
+        .exclude_from_history()
+        .exclude_from_cloud()
+        .text(text.to_string())
+        .is_ok()
+}
+
 #[cfg(target_os = "linux")]
 fn arboard_text(handle: &mut arboard::Clipboard, target: ClipboardTarget) -> Option<String> {
     use arboard::{GetExtLinux, LinuxClipboardKind};
@@ -166,6 +203,21 @@ impl ClipboardBackend for NativeClipboard {
             return wayland.set_text(target, text);
         }
         Self::set_shared(target, text)
+    }
+
+    fn set_secret_text(&self, text: &str) -> bool {
+        // Like `set_shared_text`: an attached Wayland connection is
+        // authoritative, and nothing falls back to the in-process buffer.
+        if let Some(wayland) = wayland() {
+            return wayland.set_secret_text(text);
+        }
+        let Some(cb) = arboard_clipboard() else {
+            return false;
+        };
+        let Ok(mut handle) = cb.lock() else {
+            return false;
+        };
+        set_arboard_secret_text(&mut handle, text)
     }
 
     fn text(&self, target: ClipboardTarget) -> Option<String> {
