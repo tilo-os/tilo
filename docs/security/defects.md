@@ -970,7 +970,7 @@ against the member's own modified client.
 
 **Resolved for records, apps and patterns of records.** Stewards admit per channel
 (`ChannelDirectory::allowed_devices(room, channel, route, now)`; the relay's
-`StatePeer::withheld_record_readers`), deciding Read on the channel's record with the same decision
+`PeerGovernance::withheld_record_readers`), deciding Read on the channel's record with the same decision
 every door applies. A channel id is a hash of its record's route, so the steward names the record
 from a grant naming it or from the route a device sends beside its access request
 (`NeighbourMsg::MlsRoutedAccessRequest`), which it keeps only if the route hashes to the channel's

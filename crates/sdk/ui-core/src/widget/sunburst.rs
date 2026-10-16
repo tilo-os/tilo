@@ -516,15 +516,13 @@ impl Widget for SunburstChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        let Some(id) = crate::widget::chart_navigation::activated_id(
+        let segments = self.segments();
+        crate::widget::chart_navigation::activate(
+            &mut self.activated,
             action,
             key_path,
-            self.segments().into_iter().map(|segment| segment.id),
-        ) else {
-            return false;
-        };
-        self.activated = Some(id);
-        true
+            segments.into_iter().map(|segment| segment.id),
+        )
     }
     fn name(&self) -> &'static str {
         "SunburstChart"

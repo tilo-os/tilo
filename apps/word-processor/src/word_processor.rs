@@ -253,11 +253,7 @@ impl WordProcessor {
             let Some(id) = self.region_blocks_in_order(state).into_iter().next() else {
                 return String::new();
             };
-            self.caret = Caret {
-                block: id.clone(),
-                offset: 0,
-            };
-            self.selection_anchor = None;
+            self.collapse_at(id.clone(), 0);
             return id;
         }
         if blocks.contains(&self.caret.block) {
@@ -266,11 +262,7 @@ impl WordProcessor {
                 self.caret.offset = len;
             }
         } else if let Some(first) = blocks.first() {
-            self.caret = Caret {
-                block: first.clone(),
-                offset: 0,
-            };
-            self.selection_anchor = None;
+            self.collapse_at(first.clone(), 0);
         }
         self.caret.block.clone()
     }
@@ -282,6 +274,12 @@ impl WordProcessor {
         if self.selection_anchor.is_none() {
             self.selection_anchor = Some(self.caret.clone());
         }
+    }
+
+    /// Put a collapsed caret at `offset` in `block`, dropping any selection.
+    fn collapse_at(&mut self, block: String, offset: usize) {
+        self.caret = Caret { block, offset };
+        self.selection_anchor = None;
     }
 
     pub fn clear_anchor(&mut self) {
@@ -1398,11 +1396,7 @@ impl WordProcessor {
         let Some(first) = blocks.get(pos + 1) else {
             return;
         };
-        self.caret = Caret {
-            block: first.clone(),
-            offset: 0,
-        };
-        self.selection_anchor = None;
+        self.collapse_at(first.clone(), 0);
     }
 
     /// Insert an image block carrying `bytes` at the caret; the bytes go in the
@@ -1478,104 +1472,6 @@ impl WordProcessor {
             .map_or((0, 0), |(_, r, c)| (*r, *c))
     }
 
-    /// Add a row below the caret's row (toolbar `+Row`).
-    pub fn table_add_row(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.insert_row(state, true);
-    }
-
-    /// Insert a blank row immediately above the caret's row.
-    pub fn insert_row_above(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.insert_row(state, false);
-    }
-
-    /// Insert a blank row immediately below the caret's row.
-    pub fn insert_row_below(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.insert_row(state, true);
-    }
-
-    /// Insert a full-width blank row adjacent to the caret's row. `below` selects
-    /// the side (`true` → below the caret row, `false` → above it). The table is
-    /// kept rectangular: the new row has exactly `ncols` cells and every row at or
-    /// past the insertion point has its `row` attr bumped by one. The caret moves
-    /// to the first cell of the new row.
-    fn insert_row(&mut self, state: &mut ui::widget::Edits<'_>, below: bool) {
-        let Some((tid, cells)) = self.caret_table(state) else {
-            return;
-        };
-        let (cur_row, _) = self.caret_rc(&cells);
-        let new_row = if below { cur_row + 1 } else { cur_row };
-        let action = crate::actions::edit_table_action(
-            &tid,
-            crate::actions::TableEdit::InsertRow { at: new_row },
-        );
-        if !self.apply_rich(state, action) {
-            return;
-        }
-        let Some((_, cells)) = self.caret_table(state) else {
-            return;
-        };
-        let Some((id, _, _)) = cells
-            .iter()
-            .find(|(_, row, col)| *row == new_row && *col == 0)
-        else {
-            return;
-        };
-        self.caret = Caret {
-            block: id.clone(),
-            offset: 0,
-        };
-        self.selection_anchor = None;
-    }
-
-    /// Add a column to the right of the caret's column (toolbar `+Col`).
-    pub fn table_add_col(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.insert_col(state, true);
-    }
-
-    /// Insert a blank column immediately to the left of the caret's column.
-    pub fn insert_col_left(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.insert_col(state, false);
-    }
-
-    /// Insert a blank column immediately to the right of the caret's column.
-    pub fn insert_col_right(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.insert_col(state, true);
-    }
-
-    /// Insert a blank column adjacent to the caret's column. `right` selects the
-    /// side (`true` → right of the caret column, `false` → left). The table stays
-    /// rectangular: one cell is added per row at `new_col`, and every existing
-    /// cell at or past `new_col` has its `col` attr bumped. The caret moves to the
-    /// new cell in the caret's row.
-    fn insert_col(&mut self, state: &mut ui::widget::Edits<'_>, right: bool) {
-        let Some((tid, cells)) = self.caret_table(state) else {
-            return;
-        };
-        let (cur_row, cur_col) = self.caret_rc(&cells);
-        let new_col = if right { cur_col + 1 } else { cur_col };
-        let action = crate::actions::edit_table_action(
-            &tid,
-            crate::actions::TableEdit::InsertColumn { at: new_col },
-        );
-        if !self.apply_rich(state, action) {
-            return;
-        }
-        let Some((_, cells)) = self.caret_table(state) else {
-            return;
-        };
-        let Some((id, _, _)) = cells
-            .iter()
-            .find(|(_, row, col)| *row == cur_row && *col == new_col)
-        else {
-            return;
-        };
-        self.caret = Caret {
-            block: id.clone(),
-            offset: 0,
-        };
-        self.selection_anchor = None;
-    }
-
     /// `true` when the caret currently sits inside a table cell.
     pub fn caret_in_cell(&self, state: &AutoCommit) -> bool {
         self.caret_table(state).is_some()
@@ -1603,20 +1499,12 @@ impl WordProcessor {
         };
         if forward {
             if let Some((next, ..)) = ordered.get(pos + 1).cloned() {
-                self.caret = Caret {
-                    block: next,
-                    offset: 0,
-                };
-                self.selection_anchor = None;
+                self.collapse_at(next, 0);
             }
         } else if let Some((prev, ..)) = pos.checked_sub(1).and_then(|i| ordered.get(i).cloned()) {
             // Land at the end of the previous cell's text (natural Shift-Tab feel).
             let off = self.block_len(state, &prev);
-            self.caret = Caret {
-                block: prev,
-                offset: off,
-            };
-            self.selection_anchor = None;
+            self.collapse_at(prev, off);
         }
         true
     }
@@ -1652,130 +1540,10 @@ impl WordProcessor {
             .map(|(id, _, _)| id.clone());
         if let Some(id) = pick {
             let off = self.caret.offset.min(self.block_len(state, &id));
-            self.caret = Caret {
-                block: id,
-                offset: off,
-            };
-            self.selection_anchor = None;
+            self.collapse_at(id, off);
             return true;
         }
         false
-    }
-
-    /// Delete the caret's row (deletes the whole table if it was the last row).
-    pub fn table_del_row(&mut self, state: &mut ui::widget::Edits<'_>) {
-        let Some((tid, cells)) = self.caret_table(state) else {
-            return;
-        };
-        let nrows = cells.iter().map(|(_, r, _)| *r).max().unwrap_or(0) + 1;
-        if nrows <= 1 {
-            self.table_delete(state);
-            return;
-        }
-        let (cur_row, cur_col) = self.caret_rc(&cells);
-        let target_row = if cur_row + 1 < nrows {
-            cur_row + 1
-        } else {
-            cur_row - 1
-        };
-        let new_caret = cells
-            .iter()
-            .find(|(_, r, c)| *r == target_row && *c == cur_col)
-            .map(|(id, _, _)| id.clone());
-        let action = crate::actions::edit_table_action(
-            &tid,
-            crate::actions::TableEdit::DeleteRow { row: cur_row },
-        );
-        if !self.apply_rich(state, action) {
-            return;
-        }
-        if let Some(nc) = new_caret {
-            self.caret = Caret {
-                block: nc,
-                offset: 0,
-            };
-            self.selection_anchor = None;
-        }
-    }
-
-    /// Delete the caret's column (deletes the whole table if it was the last).
-    pub fn table_del_col(&mut self, state: &mut ui::widget::Edits<'_>) {
-        let Some((tid, cells)) = self.caret_table(state) else {
-            return;
-        };
-        let ncols = cells.iter().map(|(_, _, c)| *c).max().unwrap_or(0) + 1;
-        if ncols <= 1 {
-            self.table_delete(state);
-            return;
-        }
-        let (cur_row, cur_col) = self.caret_rc(&cells);
-        let target_col = if cur_col + 1 < ncols {
-            cur_col + 1
-        } else {
-            cur_col - 1
-        };
-        let new_caret = cells
-            .iter()
-            .find(|(_, r, c)| *r == cur_row && *c == target_col)
-            .map(|(id, _, _)| id.clone());
-        let action = crate::actions::edit_table_action(
-            &tid,
-            crate::actions::TableEdit::DeleteColumn { column: cur_col },
-        );
-        if !self.apply_rich(state, action) {
-            return;
-        }
-        if let Some(nc) = new_caret {
-            self.caret = Caret {
-                block: nc,
-                offset: 0,
-            };
-            self.selection_anchor = None;
-        }
-    }
-
-    /// Delete the whole table the caret is in; caret moves to the block before it.
-    pub fn table_delete(&mut self, state: &mut ui::widget::Edits<'_>) {
-        let Some((tid, cells)) = self.caret_table(state) else {
-            return;
-        };
-        let order = self.ordered_blocks(state);
-        let first_idx = cells
-            .iter()
-            .filter_map(|(id, _, _)| order.iter().position(|b| b == id))
-            .min();
-        let before = first_idx.and_then(|i| {
-            if i > 0 {
-                order.get(i - 1).cloned()
-            } else {
-                None
-            }
-        });
-        let action = crate::actions::edit_table_action(&tid, crate::actions::TableEdit::Delete);
-        if !self.apply_rich(state, action) {
-            return;
-        }
-        let remaining = self.ordered_blocks(state);
-        if let Some(t) = before.or_else(|| remaining.first().cloned()) {
-            let off = self.block_len(state, &t);
-            self.caret = Caret {
-                block: t,
-                offset: off,
-            };
-        } else {
-            let action = crate::actions::RichTextAction::EnsureRegionBlock {
-                region: crate::actions::RegionKind::Body,
-            };
-            if self.apply_rich(state, action)
-                && let Some(id) = self.ordered_blocks(state).into_iter().next()
-            {
-                self.caret = Caret {
-                    block: id,
-                    offset: 0,
-                };
-            }
-        }
-        self.selection_anchor = None;
     }
 
     /// Insert text, splitting on newlines into new paragraphs (multi-line paste).
@@ -1815,11 +1583,7 @@ impl WordProcessor {
             // Nothing seated yet, or the block the caret was on is gone. The
             // first position of this region is where to be, and an anchor
             // into a vanished block must not survive it.
-            self.caret = Caret {
-                block: first,
-                offset: 0,
-            };
-            self.selection_anchor = None;
+            self.collapse_at(first, 0);
         }
     }
 
@@ -2644,6 +2408,7 @@ impl WordProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::TableEdit;
     use automerge::ReadDoc;
     use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ROOT};
@@ -3537,15 +3302,15 @@ mod tests {
                     .count()
             };
             assert_eq!(count(&wp, &state), 4);
-            wp.table_add_row(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::InsertRow { at: 1 });
             assert_eq!(count(&wp, &state), 6);
-            wp.table_add_col(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::InsertColumn { at: 1 });
             assert_eq!(count(&wp, &state), 9);
-            wp.table_del_row(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::DeleteRow { row: 1 });
             assert_eq!(count(&wp, &state), 6);
-            wp.table_del_col(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::DeleteColumn { column: 1 });
             assert_eq!(count(&wp, &state), 4);
-            wp.table_delete(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::Delete);
             assert_eq!(count(&wp, &state), 0);
         }
 
@@ -3645,36 +3410,19 @@ mod tests {
             wp.insert_table(&mut Edits::lend(&mut state), 2, 3);
             assert_rectangular(&table_grid(&wp, &state), 2, 3);
             // Caret is in the first cell (row 0) after insert_table.
-            wp.insert_row_below(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::InsertRow { at: 1 });
             let grid = table_grid(&wp, &state);
             let rows = grid.iter().map(|(r, _)| *r).max().unwrap() + 1;
             assert_eq!(rows, 3, "row count increased by one");
             assert_rectangular(&grid, 3, 3);
-            // The caret landed on the freshly-inserted row (row 1, below row 0).
-            let (cr, _) = wp.caret_rc(&wp.caret_table(&state).unwrap().1);
-            assert_eq!(cr, 1, "caret moved into the new row");
         }
 
-        // Phase: insert_row_above_inserts_before_caret_row.
+        // Phase: insert_row_between_rows_stays_rectangular.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
-            // Move caret to row 1.
-            let (_, cells) = wp.caret_table(&state).unwrap();
-            let r1c0 = cells
-                .iter()
-                .find(|(_, r, c)| *r == 1 && *c == 0)
-                .unwrap()
-                .0
-                .clone();
-            wp.set_caret(Caret {
-                block: r1c0,
-                offset: 0,
-            });
-            wp.insert_row_above(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::InsertRow { at: 1 });
             assert_rectangular(&table_grid(&wp, &state), 3, 2);
-            let (cr, _) = wp.caret_rc(&wp.caret_table(&state).unwrap().1);
-            assert_eq!(cr, 1, "the new row took row 1's slot; caret is on it");
         }
 
         // Phase: delete_col_removes_one_cell_per_row.
@@ -3683,7 +3431,7 @@ mod tests {
             wp.insert_table(&mut Edits::lend(&mut state), 3, 3);
             let before = table_grid(&wp, &state).len();
             assert_eq!(before, 9);
-            wp.table_del_col(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::DeleteColumn { column: 0 });
             let grid = table_grid(&wp, &state);
             assert_eq!(grid.len(), before - 3, "exactly one cell removed per row");
             assert_rectangular(&grid, 3, 2);
@@ -3693,21 +3441,9 @@ mod tests {
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
-            // Move to col 1 so left/right are unambiguous.
-            let (_, cells) = wp.caret_table(&state).unwrap();
-            let r0c1 = cells
-                .iter()
-                .find(|(_, r, c)| *r == 0 && *c == 1)
-                .unwrap()
-                .0
-                .clone();
-            wp.set_caret(Caret {
-                block: r0c1,
-                offset: 0,
-            });
-            wp.insert_col_left(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::InsertColumn { at: 1 });
             assert_rectangular(&table_grid(&wp, &state), 2, 3);
-            wp.insert_col_right(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::InsertColumn { at: 3 });
             assert_rectangular(&table_grid(&wp, &state), 2, 4);
         }
 
@@ -3715,15 +3451,24 @@ mod tests {
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 1, 2);
-            wp.table_del_row(&mut Edits::lend(&mut state));
+            edit_caret_table(&wp, &mut state, TableEdit::DeleteRow { row: 0 });
             let c = wp.containers.as_ref().unwrap();
             let snap = tilo_doc::model::materialize(&state, c);
             assert!(
                 snap.blocks.iter().all(|b| b.kind != "cell"),
                 "deleting the last row removed the whole table"
             );
-            assert!(!wp.caret_in_cell(&state), "caret is no longer in a cell");
         }
+    }
+
+    /// Apply a structural edit to the table the caret is in.
+    fn edit_caret_table(wp: &WordProcessor, state: &mut AutoCommit, edit: TableEdit) {
+        let (table, _) = wp.caret_table(state).expect("the caret is in a table");
+        let action = crate::actions::edit_table_action(&table, edit);
+        assert!(
+            wp.apply_rich(&mut Edits::lend(state), action),
+            "the table edit applies"
+        );
     }
 
     /// A minimal 2×3 RGB PNG (red pixels) — small enough to embed yet a real,

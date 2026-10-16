@@ -808,3 +808,68 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
         Some(&serde_json::json!("bob"))
     );
 }
+
+/// In a public room a node stewards, guests seal every chat post. A bot
+/// (the Discord bridge, say) still answers in that chat: the room decides
+/// its post as the bot's own, it reaches the chat sealed, and a guest
+/// opens it.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its room stay live for the whole test"
+)]
+async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
+    use crate::rooms::sealed_records::tests::{SealingMember, governor_published, member_device};
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = crate::rooms::tests::governor_with(
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let (room, general) = chat_room(&rooms, &cert).await;
+    let guest = member_device(&rooms, &room, (&key, &cert), 3).await;
+    let guest = SealingMember::join(&rooms, &room, (CHAT, ""), guest).await;
+    let mut runner = member_runner(
+        &rooms,
+        &room,
+        &cert,
+        greeter(general.as_str()),
+        scratch.path().join("greeter.json"),
+    )
+    .await;
+    assert!(runner.step().await.unwrap().is_empty());
+
+    // Ada's post leaves the guest's page sealed: the chat is sealed now.
+    let ada = hex::encode(ADA);
+    guest
+        .writes(&rooms, &room, |doc| {
+            chat::demo::say(doc, &ada, &general, "hello").unwrap();
+        })
+        .await;
+    let reports = runner.step().await.unwrap();
+    assert!(
+        matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
+        "the room admits the bot's post to the sealed chat: {reports:?}"
+    );
+
+    // The guest opens what the room published, as its page does.
+    let post = governor_published(&rooms, &room, "", &cert)
+        .await
+        .expect("the bot's post was published");
+    assert!(post.encryption.is_some(), "never in the clear");
+    guest.take_in(&post);
+    let read = chat_of(&guest.document().save());
+    let answers: Vec<_> = read
+        .messages
+        .values()
+        .filter(|message| message.text == "welcome!")
+        .collect();
+    assert_eq!(answers.len(), 1, "the guest reads the bot's answer");
+    assert_eq!(answers[0].author.0, format!("bot:{GREETER}"));
+    assert!(
+        read.messages
+            .values()
+            .any(|message| message.text == "hello"),
+        "beside Ada's post"
+    );
+}

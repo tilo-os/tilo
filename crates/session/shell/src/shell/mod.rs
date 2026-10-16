@@ -164,6 +164,7 @@ pub mod speaker_group_runtime;
 pub mod speaker_settings;
 pub mod state;
 pub mod status;
+pub mod storage_notice;
 pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;

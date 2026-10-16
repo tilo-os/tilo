@@ -185,7 +185,7 @@ channel stewards admit devices per channel, that is per record
 (`ChannelDirectory::allowed_devices(room, channel, route, now)`). A device is
 admitted to a record's channel only while its person reads the room and the
 same read decision allows the record (`Workspace::answer_at` on a desktop
-steward, `StatePeer::withheld_record_readers` over `check_document_read` on a
+steward, `PeerGovernance::withheld_record_readers` over `check_document_read` on a
 relay steward). So a Read Deny on a record, on its app, or on any pattern of
 records covering it withholds that record's key: the steward never admits the
 denied person's devices, and a device that already held the key is removed in

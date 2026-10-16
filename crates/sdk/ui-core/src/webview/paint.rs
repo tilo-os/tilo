@@ -770,8 +770,12 @@ pub struct PageCanvas<'a> {
 }
 
 impl PageRenderer {
+    /// A renderer for a page about to be shown. Where the image decoder is
+    /// fetched on first use, this starts fetching it, so it is in by the time
+    /// the page's first frame arrives rather than after its first image.
     #[must_use]
     pub fn new() -> Self {
+        let _ = image_decoder::decoder();
         Self::default()
     }
 
@@ -1216,8 +1220,9 @@ mod tests {
         );
     }
 
-    /// Before the decoder is in, an image is left out and not remembered as
-    /// undecodable; once it is in, the same image decodes.
+    /// A new renderer starts fetching the decoder; before it is in, an image
+    /// is left out and not remembered as undecodable; once it is in, the same
+    /// image decodes.
     #[cfg(feature = "lazy-image-decode")]
     #[test]
     fn images_wait_for_a_deferred_decoder() {
@@ -1229,14 +1234,15 @@ mod tests {
 
         let hash = [7_u8; 32];
         let blobs = |_: &[u8; 32]| Some(Arc::new(TOP_PNG.to_vec()));
-        let mut renderer = PageRenderer::default();
         defer_page_image_decoder(load);
-        assert!(renderer.image(&blobs, &hash).is_none());
+        let mut renderer = PageRenderer::new();
         assert_eq!(
             LOADS.load(Ordering::SeqCst),
             1,
-            "the first image fetches it"
+            "a page about to be shown starts fetching it"
         );
+        assert!(renderer.image(&blobs, &hash).is_none());
+        assert_eq!(LOADS.load(Ordering::SeqCst), 1, "one fetch at a time");
         install_page_image_decoder(builtin_page_image_decoder);
         let image = renderer
             .image(&blobs, &hash)

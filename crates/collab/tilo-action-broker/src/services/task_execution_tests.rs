@@ -84,19 +84,20 @@ fn policy_fixture(room: &str) -> (StatePeer, DeviceCert, SigningKey, std::time::
         now,
     )
     .unwrap();
-    peer.put_governed_grants(
-        &[Grant::new(
-            "agent",
-            Subject::agent("scribe"),
-            TreePath::room(room),
-            KindSet::ALL,
-            Answer::Allow,
-            Subject::person("governor"),
-        )],
-        &key,
-        now,
-    )
-    .unwrap();
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "agent",
+                Subject::agent("scribe"),
+                TreePath::room(room),
+                KindSet::ALL,
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
 
     (peer, starter, key, now)
 }
@@ -107,6 +108,7 @@ fn approve_task(
     now: std::time::SystemTime,
 ) -> NativeTaskActionRequirement {
     let (_, result) = peer
+        .workspace_mut()
         .apply_workspace_task_command(
             uuid::Uuid::from_u128(1),
             [1; 32],
@@ -123,19 +125,20 @@ fn approve_task(
     let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = result else {
         panic!("queue result")
     };
-    peer.apply_workspace_task_command(
-        uuid::Uuid::from_u128(2),
-        [2; 32],
-        authority,
-        &WorkspaceTaskCommand::ApproveRun {
-            task_id: task_id.clone(),
-            agent_id: "scribe".into(),
-            expected_run_epoch: 0,
-            after_revision: 0,
-        },
-        now,
-    )
-    .unwrap();
+    peer.workspace_mut()
+        .apply_workspace_task_command(
+            uuid::Uuid::from_u128(2),
+            [2; 32],
+            authority,
+            &WorkspaceTaskCommand::ApproveRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+                expected_run_epoch: 0,
+                after_revision: 0,
+            },
+            now,
+        )
+        .unwrap();
     NativeTaskActionRequirement {
         binding: Some(super::NativeTaskBinding {
             task_id,
@@ -194,19 +197,20 @@ fn assert_frozen_starter(
 ) {
     let node = action_node(room, requirement);
     // A later grant to the starter cannot widen an already running task.
-    peer.put_governed_grants(
-        &[Grant::new(
-            "starter-new-outside",
-            Subject::person(hex::encode(starter.user_public_key)),
-            node,
-            KindSet::OUTSIDE,
-            Answer::Allow,
-            Subject::person("governor"),
-        )],
-        key,
-        now,
-    )
-    .unwrap();
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "starter-new-outside",
+                Subject::person(hex::encode(starter.user_public_key)),
+                node,
+                KindSet::OUTSIDE,
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            key,
+            now,
+        )
+        .unwrap();
     let mut widened = requirement.clone();
     widened.need.kind = tilo_action_policy::ActionKind::Outside;
     assert!(
@@ -227,6 +231,7 @@ fn assert_independent_task_grants(
 ) {
     // A second task for the same agent has an independent grant set.
     let (_, queued) = peer
+        .workspace_mut()
         .apply_workspace_task_command(
             uuid::Uuid::from_u128(3),
             [3; 32],
@@ -243,32 +248,34 @@ fn assert_independent_task_grants(
     let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id: other } = queued else {
         panic!("queue result")
     };
-    peer.apply_workspace_task_command(
-        uuid::Uuid::from_u128(4),
-        [4; 32],
-        authority,
-        &WorkspaceTaskCommand::ApproveRun {
-            task_id: other.clone(),
-            agent_id: "scribe".into(),
-            expected_run_epoch: 0,
-            after_revision: 0,
-        },
-        now,
-    )
-    .unwrap();
-    peer.put_governed_grants(
-        &[Grant::new(
-            "other-task-deny",
-            Subject::task(&other),
-            TreePath::room(room),
-            KindSet::ALL,
-            Answer::Deny,
-            Subject::person("governor"),
-        )],
-        key,
-        now,
-    )
-    .unwrap();
+    peer.workspace_mut()
+        .apply_workspace_task_command(
+            uuid::Uuid::from_u128(4),
+            [4; 32],
+            authority,
+            &WorkspaceTaskCommand::ApproveRun {
+                task_id: other.clone(),
+                agent_id: "scribe".into(),
+                expected_run_epoch: 0,
+                after_revision: 0,
+            },
+            now,
+        )
+        .unwrap();
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "other-task-deny",
+                Subject::task(&other),
+                TreePath::room(room),
+                KindSet::ALL,
+                Answer::Deny,
+                Subject::person("governor"),
+            )],
+            key,
+            now,
+        )
+        .unwrap();
     requirement.check(peer, room, "scribe", now).unwrap();
     let mut other_requirement = requirement.clone();
     other_requirement.binding.as_mut().unwrap().task_id = other;
@@ -284,19 +291,20 @@ fn assert_live_starter_revocation(
     authority: &WorkspaceTaskAuthority,
     requirement: &NativeTaskActionRequirement,
 ) {
-    peer.put_governed_grants(
-        &[Grant::new(
-            "starter-no-append",
-            Subject::person(hex::encode(starter.user_public_key)),
-            action_node(room, requirement),
-            KindSet::UNDOABLE,
-            Answer::Deny,
-            Subject::person("governor"),
-        )],
-        key,
-        now,
-    )
-    .unwrap();
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "starter-no-append",
+                Subject::person(hex::encode(starter.user_public_key)),
+                action_node(room, requirement),
+                KindSet::UNDOABLE,
+                Answer::Deny,
+                Subject::person("governor"),
+            )],
+            key,
+            now,
+        )
+        .unwrap();
     // Room write and the agent's own grant remain valid: only this exact
     // operation is revoked from the person who consciously started the run.
     assert!(
@@ -328,6 +336,7 @@ fn assert_live_starter_revocation(
         },
     ] {
         let error = peer
+            .workspace_mut()
             .apply_workspace_task_command(uuid::Uuid::new_v4(), [9; 32], authority, &command, now)
             .unwrap_err();
         assert!(error.contains("every execution permission"), "{error}");

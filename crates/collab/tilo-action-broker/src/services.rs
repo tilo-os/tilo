@@ -1,5 +1,7 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
+mod own_device;
 mod task_execution;
+pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use task_execution::{NativeTaskActionRequirement, NativeTaskBinding, WorkspaceTaskExecution};
 
 use std::sync::Arc;
@@ -1230,4 +1232,7 @@ pub struct HostServices {
     /// (`tilo_actions::offload`). Without it every one runs here, through
     /// the app's own handler.
     pub action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
+    /// Carries an application's action to another of the person's own
+    /// devices. Without it no app reaches another device's actions.
+    pub own_device: Option<Arc<dyn OwnDeviceActions>>,
 }

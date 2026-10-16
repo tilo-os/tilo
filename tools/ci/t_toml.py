@@ -10,6 +10,8 @@ so t.toml carries both, generated between markers:
   * `package_inputs` of the cargo families, so a change to a file a package
     reads through include_str! or a test fixture path runs its checks again;
   * one `suite-<group>` check per suite group;
+  * the publishing chains of tools/ci/products.toml, one block per family
+    (`products-<family>`; docs/publishing-on-t.md, "Products");
   * the `goldens` family, which runs .config/nextest-filters.toml's golden
     filter in the image .config/visual-goldens-image names, and the nightly
     `nightly-arm64-goldens` check, which runs it there on aarch64.
@@ -25,6 +27,7 @@ import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import products  # noqa: E402
 import suites  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -143,7 +146,13 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
     return {"test-package-inputs": inputs, "clippy-package-inputs": inputs,
             "check-package-inputs": inputs, "suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
-            "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip())}
+            "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
+            **product_blocks(products.load())}
+
+
+def product_blocks(manifest: dict) -> dict[str, str]:
+    return {f"products-{family}": products.render(manifest, family)
+            for family in products.families(manifest)}
 
 
 def render(text: str, blocks: dict[str, str]) -> str:
@@ -174,11 +183,11 @@ def main(argv: list[str]) -> int:
             T_TOML.write_text(expected, encoding="utf-8")
         return 0
     if expected != text:
-        print("t.toml is out of date with tools/ci/suites.toml or .config/: "
+        print("t.toml is out of date with tools/ci/suites.toml, tools/ci/products.toml or .config/: "
               "run python3 tools/ci/t_toml.py write",
               file=sys.stderr)
         return 1
-    print("t.toml matches tools/ci/suites.toml and .config/")
+    print("t.toml matches tools/ci/suites.toml, tools/ci/products.toml and .config/")
     return 0
 
 

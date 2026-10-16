@@ -413,6 +413,133 @@ impl<L: RemoteActionLink> ActionHost for PeerActionHost<L> {
     }
 }
 
+/// The longest an invocation is followed on a peer before it is given up as
+/// unanswered.
+pub const FOLLOW_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Most long-polls one followed invocation sends. A peer holds each for up
+/// to [`CHANGE_WAIT_MS`] unless the invocation moves, so this bounds only a
+/// peer that answers at once with nothing new.
+const MAX_FOLLOW_ROUNDS: u32 = 64;
+
+/// What is left of following one invocation.
+#[derive(Clone, Copy)]
+struct FollowBudget {
+    until: Instant,
+    rounds: u32,
+}
+
+fn unanswered() -> ActionHostError {
+    ActionHostError::Unavailable {
+        reason: "the peer did not answer in time".into(),
+    }
+}
+
+/// The terminal update a receipt amounts to; `None` while it runs.
+fn settled_receipt(
+    invocation: InvocationId,
+    status: tilo_actions::remote::ReceiptStatus,
+) -> Result<Option<tilo_actions::InvocationUpdate>, ActionHostError> {
+    use tilo_actions::InvocationUpdate;
+    use tilo_actions::remote::ReceiptStatus;
+    match status {
+        ReceiptStatus::Accepted => Ok(None),
+        ReceiptStatus::Completed { output } => {
+            Ok(Some(InvocationUpdate::Succeeded { invocation, output }))
+        }
+        ReceiptStatus::Failed { error } => Ok(Some(InvocationUpdate::Failed { invocation, error })),
+        ReceiptStatus::Cancelled { message } => Ok(Some(InvocationUpdate::Cancelled {
+            invocation,
+            message,
+        })),
+        ReceiptStatus::Rejected { error } => Err(error),
+    }
+}
+
+impl<L: RemoteActionLink + 'static> PeerActionHost<L> {
+    /// Invoke `request` on the peer and follow it until it settles there:
+    /// its terminal update, or why it was refused or lost. No thread waits:
+    /// the receipt is held by the peer until the invocation moves, and each
+    /// answer sends the next long-poll. A peer that leaves a round
+    /// unanswered for [`REPLY_DEADLINE`], or the invocation unsettled for
+    /// `follow_for`, is reported unavailable.
+    pub fn invoke_until_settled(
+        self: std::sync::Arc<Self>,
+        mut request: InvokeRequest,
+        follow_for: Duration,
+    ) -> Pending<Result<tilo_actions::InvocationUpdate, ActionHostError>> {
+        let now = Instant::now();
+        let budget = FollowBudget {
+            until: now.checked_add(follow_for).unwrap_or(now),
+            rounds: MAX_FOLLOW_ROUNDS,
+        };
+        let invocation = request.invocation;
+        request.wait_ms = Some(CHANGE_WAIT_MS);
+        let (done, answer) = tilo_actions::remote::pending();
+        let host = std::sync::Arc::clone(&self);
+        self.ask(
+            RemoteActionMessage::Invoke(request),
+            |answer| match answer {
+                RemoteActionMessage::Receipt(receipt) => Ok(receipt),
+                _ => Err(unexpected()),
+            },
+        )
+        .then(move |receipt| match receipt {
+            Some(Ok(receipt)) => match settled_receipt(invocation, receipt.status) {
+                Ok(Some(update)) => done.complete(Ok(update)),
+                Ok(None) => follow(&host, invocation, Some(UpdateMark::Accepted), budget, done),
+                Err(error) => done.complete(Err(error)),
+            },
+            Some(Err(error)) => done.complete(Err(error)),
+            None => done.complete(Err(unanswered())),
+        });
+        answer
+    }
+}
+
+/// Ask the peer for `invocation`'s next move past `seen`, and keep asking
+/// until it settles or `budget` runs out.
+fn follow<L: RemoteActionLink + 'static>(
+    host: &std::sync::Arc<PeerActionHost<L>>,
+    invocation: InvocationId,
+    seen: Option<UpdateMark>,
+    budget: FollowBudget,
+    done: Completer<Result<tilo_actions::InvocationUpdate, ActionHostError>>,
+) {
+    if budget.rounds == 0 || Instant::now() >= budget.until {
+        done.complete(Err(ActionHostError::Unavailable {
+            reason: "the peer did not finish the action in time".into(),
+        }));
+        return;
+    }
+    let next = FollowBudget {
+        rounds: budget.rounds.saturating_sub(1),
+        ..budget
+    };
+    let again = std::sync::Arc::clone(host);
+    host.ask(
+        RemoteActionMessage::Observe {
+            invocation,
+            wait_ms: Some(CHANGE_WAIT_MS),
+            seen,
+        },
+        |answer| match answer {
+            RemoteActionMessage::Update { state, .. } => Ok(state),
+            _ => Err(unexpected()),
+        },
+    )
+    .then(move |answer| match answer {
+        Some(Ok(Some(state))) if state.is_terminal() => done.complete(Ok(state.update)),
+        Some(Ok(Some(state))) => {
+            let seen = Some(UpdateMark::of(&state.update));
+            follow(&again, invocation, seen, next, done);
+        }
+        Some(Ok(None)) => done.complete(Err(ActionHostError::UnknownInvocation)),
+        Some(Err(error)) => done.complete(Err(error)),
+        None => done.complete(Err(unanswered())),
+    });
+}
+
 impl<L: RemoteActionLink> RemoteActionLink for std::sync::Arc<L> {
     fn request(
         &self,
@@ -466,6 +593,156 @@ mod tests {
             });
             asked
         }
+    }
+
+    impl HeldLink {
+        /// Answer the oldest unanswered request with `reply`, returning it.
+        fn reply(&self, reply: RemoteActionMessage) -> RemoteActionMessage {
+            let (asked, answer) = self.sent.lock().unwrap().remove(0);
+            answer.complete(reply);
+            asked
+        }
+    }
+
+    /// Following an invocation on a peer: the invocation asks the peer to
+    /// hold its receipt, each answer sends the next long-poll past what was
+    /// seen, and the peer's terminal update is the answer. No thread waits
+    /// between rounds.
+    #[test]
+    fn an_invocation_is_followed_on_the_peer_until_it_settles() {
+        use tilo_actions::remote::{
+            InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
+        };
+        let (link, host) = peer_host();
+        let id = InvocationId::new();
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: id,
+            target: tilo_actions::remote::application_action_target(
+                "room",
+                "so.tilo.settings",
+                "settings.storage",
+                "storage-summary",
+            ),
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let mut settled = Arc::new(host).invoke_until_settled(request, Duration::from_secs(60));
+        assert!(matches!(settled.poll_ready(), PendingPoll::Waiting));
+        let RemoteActionMessage::Invoke(sent) =
+            link.reply(RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation: id,
+                status: ReceiptStatus::Accepted,
+            }))
+        else {
+            panic!("the invocation is sent first");
+        };
+        assert_eq!(
+            sent.wait_ms,
+            Some(CHANGE_WAIT_MS),
+            "the peer holds the receipt"
+        );
+        let progress = InvocationUpdate::Progress {
+            invocation: id,
+            sequence: 1,
+            phase: "counting".into(),
+            completed: None,
+            total: None,
+            message: None,
+        };
+        assert_eq!(
+            link.answer(id, progress),
+            RemoteActionMessage::Observe {
+                invocation: id,
+                wait_ms: Some(CHANGE_WAIT_MS),
+                seen: Some(UpdateMark::Accepted),
+            }
+        );
+        assert!(matches!(settled.poll_ready(), PendingPoll::Waiting));
+        let done = InvocationUpdate::Succeeded {
+            invocation: id,
+            output: ActionOutput {
+                value: Some(serde_json::json!({"workspaces": []})),
+                resources: Vec::new(),
+            },
+        };
+        assert_eq!(
+            link.answer(id, done.clone()),
+            RemoteActionMessage::Observe {
+                invocation: id,
+                wait_ms: Some(CHANGE_WAIT_MS),
+                seen: Some(UpdateMark::Progress { sequence: 1 }),
+            }
+        );
+        assert!(matches!(settled.poll_ready(), PendingPoll::Ready(Ok(update)) if update == done));
+        assert!(
+            link.sent.lock().unwrap().is_empty(),
+            "nothing more is asked"
+        );
+    }
+
+    /// A peer's refusal, or a peer that never answers, settles the follow
+    /// with why; neither is taken for success.
+    #[test]
+    fn a_refused_or_unanswered_invocation_settles_as_an_error() {
+        use tilo_actions::remote::{
+            ActionHostError, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
+        };
+        let request = |id| InvokeRequest {
+            on_behalf_of: None,
+            invocation: id,
+            target: tilo_actions::remote::application_action_target("room", "app", "r", "a"),
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let (link, host) = peer_host();
+        let host = Arc::new(host);
+        let id = InvocationId::new();
+        let mut refused = Arc::clone(&host).invoke_until_settled(request(id), REPLY_DEADLINE);
+        link.reply(RemoteActionMessage::Receipt(InvocationReceipt {
+            invocation: id,
+            status: ReceiptStatus::Rejected {
+                error: ActionHostError::NotPermitted,
+            },
+        }));
+        assert!(matches!(
+            refused.poll_ready(),
+            PendingPoll::Ready(Err(ActionHostError::NotPermitted))
+        ));
+        let mut lost = host.invoke_until_settled(request(InvocationId::new()), REPLY_DEADLINE);
+        drop(link.sent.lock().unwrap().remove(0));
+        assert!(matches!(
+            lost.poll_ready(),
+            PendingPoll::Ready(Err(ActionHostError::Unavailable { .. }))
+        ));
+    }
+
+    /// An answer is delivered only to a request put to the device it came
+    /// from: another device answering the same invocation id wakes nobody.
+    #[test]
+    fn an_answer_from_another_device_does_not_answer_the_request() {
+        use tilo_actions::remote::{InvocationReceipt, ReceiptStatus};
+        let waiters = ReplyWaiters::default();
+        let asked = iroh::SecretKey::from_bytes(&[0xC4; 32]).public();
+        let other = iroh::SecretKey::from_bytes(&[0xC5; 32]).public();
+        let id = InvocationId::new();
+        let mut answer = waiters.register(asked, ReplyKey::Invoke(id));
+        let receipt = RemoteActionMessage::Receipt(InvocationReceipt {
+            invocation: id,
+            status: ReceiptStatus::Accepted,
+        });
+        assert!(!waiters.deliver(other, &receipt));
+        assert!(matches!(answer.poll_ready(), PendingPoll::Waiting));
+        assert!(waiters.deliver(asked, &receipt));
+        assert!(matches!(answer.poll_ready(), PendingPoll::Ready(reply) if reply == receipt));
     }
 
     fn peer_host() -> (Arc<HeldLink>, PeerActionHost<Arc<HeldLink>>) {

@@ -12,7 +12,7 @@
 //! [`RoomOperation::DelegateMembership`], with the agent's certificate: only a
 //! live delegated agent of this relay's own user, in a room the delegation
 //! names and governance owns here. If admitted, the agent goes on the roster
-//! bound to its delegation ([`tilo_peer_state::StatePeer::admit_agent`]); the
+//! bound to its delegation ([`tilo_peer_state::PeerGovernanceMut::admit_agent`]); the
 //! relay then admits it to the room and the steward to the channels it asks
 //! for, like any member. Every member admits its changes as its own: signed
 //! by its key, at its person's role but never above Editor, and only inside
@@ -104,7 +104,7 @@ impl Rooms {
         device: [u8; 32],
         offered: Option<&DeviceCert>,
     ) -> Result<(), String> {
-        let recorded = room.peer().governed_agent(&device);
+        let recorded = room.peer().governance().governed_agent(&device);
         let cert = match (&recorded, offered) {
             // Withdrawal is final.
             (Some((_, _, Some(_))), _) | (None, None) => return Ok(()),
@@ -130,9 +130,19 @@ impl Rooms {
         let changed = match (live, recorded) {
             (Some(delegation), recorded) => {
                 let known = recorded.is_some_and(|(_, known, _)| known == delegation);
-                !known && candidate.admit_agent(peer.cert, delegation, &self.inner.host.key, now)?
+                !known
+                    && candidate.governance_mut().admit_agent(
+                        peer.cert,
+                        delegation,
+                        &self.inner.host.key,
+                        now,
+                    )?
             }
-            (None, Some(_)) => candidate.withdraw_agent(device, &self.inner.host.key, now)?,
+            (None, Some(_)) => {
+                candidate
+                    .governance_mut()
+                    .withdraw_agent(device, &self.inner.host.key, now)?
+            }
             (None, None) => false,
         };
         if !changed {
