@@ -619,6 +619,43 @@ default = false
 
 [[product]]
 family = "windows-compat"
+name = "fex-buildroot"
+about = """
+The FEX toolchain (os/Containerfile.fex-buildroot), with the pinned NASM, built natively on
+aarch64: the image the payload compiles in."""
+repository = "registry.tilo.so/tilo/tilo-fex-buildroot-candidate"
+arches = ["aarch64"]
+dev = ["{commit}"]
+dispatch = true
+
+[product.build]
+run = "bash tools/ci/publish/windows-compat.sh fex-buildroot {out}"
+inputs = ["os/Containerfile.fex-buildroot", "os/base-snapshot.env", "os/tests/fex-assembler.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", ".containerignore"]
+cost = "heavy"
+cpus = 8
+memory = "32G"
+timeout_secs = 5400
+
+[[product]]
+family = "windows-compat"
+name = "fex-x86-sdk"
+about = """
+The x86 headers and libraries FEX's thunks compile against (os/Containerfile.fex-x86-sdk),
+installed natively on x86_64 so RPM scriptlets run."""
+repository = "registry.tilo.so/tilo/tilo-fex-x86-sdk-candidate"
+dev = ["{commit}"]
+dispatch = true
+
+[product.build]
+run = "bash tools/ci/publish/windows-compat.sh fex-x86-sdk {out}"
+inputs = ["os/Containerfile.fex-x86-sdk", "os/base-snapshot.env", ".containerignore"]
+cost = "heavy"
+cpus = 4
+memory = "16G"
+timeout_secs = 5400
+
+[[product]]
+family = "windows-compat"
 name = "wine-tools"
 about = """
 The tooling Wine is rebuilt in (os/Containerfile.wine-tools): Mock, podman and the producer
