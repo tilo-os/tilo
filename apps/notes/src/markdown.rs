@@ -450,7 +450,7 @@ fn parse_external_link(
     (bytes.get(at) == Some(&b'[') && bytes.get(at + 1) != Some(&b'[')).then_some(())?;
     let label_end = find_unescaped(bytes, at + 1, b']')?;
     (bytes.get(label_end + 1) == Some(&b'(')).then_some(())?;
-    let url_end = find_unescaped(bytes, label_end + 2, b')')?;
+    let url_end = link_destination_end(bytes, label_end + 2)?;
     let label = line.get(at + 1..label_end)?;
     let url = line.get(label_end + 2..url_end)?;
     (!label.is_empty() && safe_external_url(url)).then_some(())?;
@@ -468,6 +468,24 @@ fn parse_external_link(
         )
     }));
     Some(url_end + 1)
+}
+
+// Parentheses inside a destination belong to the URL until their matching
+// close. Stopping at the first ')' silently changes where a link opens.
+fn link_destination_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 1,
+            b'(' => depth += 1,
+            b')' if depth == 0 => return Some(i),
+            b')' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 fn parse_paired_mark(

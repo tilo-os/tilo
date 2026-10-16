@@ -495,6 +495,42 @@ fn importing_a_formatted_link_preserves_label_text_and_marks_on_export() {
     );
 }
 
+#[test]
+fn importing_a_link_keeps_balanced_parentheses_in_its_destination() {
+    let mut notebook = Replica::<Notebook>::new();
+    for url in [
+        "https://example.com/wiki/Function_(mathematics)",
+        "https://example.com/a_(b_(c))?q=1",
+    ] {
+        let id = Id::from(uuid::Uuid::new_v4().to_string());
+        let markdown = format!("See [reference]({url}).");
+        apply(
+            &mut notebook,
+            Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
+                title: "Reference".into(),
+                markdown: markdown.clone(),
+                images: Vec::new(),
+                note: Some(id.clone()),
+            }),
+        )
+        .unwrap();
+        let blocks = page(&notebook, &id).blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "See reference.");
+        assert_eq!(
+            blocks[0].marks,
+            [MarkSpan::new(4..13, Mark::ExternalLink(url.into()))]
+        );
+        assert_eq!(
+            crate::markdown::serialize_inline(&crate::markdown::InlineText::new(
+                blocks[0].text.clone(),
+                blocks[0].marks.clone(),
+            )),
+            markdown
+        );
+    }
+}
+
 /// A picture a note shows is kept by its digest — a small one inside the
 /// notebook — and shown in the note; anything but a picture is refused.
 #[test]
