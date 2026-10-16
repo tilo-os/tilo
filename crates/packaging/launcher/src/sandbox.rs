@@ -1010,25 +1010,6 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(dst.display().to_string());
 }
 
-/// Extract the `unix:path=<path>` from a D-Bus bus address, or `None`
-/// otherwise. Abstract sockets can't be bind-mounted, so callers
-/// surface that as "portal unavailable".
-pub fn parse_unix_path_bus_address(addr: &str) -> Option<String> {
-    for entry in addr.split(';') {
-        let Some(rest) = entry.strip_prefix("unix:") else {
-            continue;
-        };
-        for kv in rest.split(',') {
-            if let Some(path) = kv.strip_prefix("path=")
-                && !path.is_empty()
-            {
-                return Some(path.to_string());
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1924,24 +1905,6 @@ mod tests {
 
     #[test]
     fn session_bus_reaches_the_sandbox_only_through_a_proxy_plan() {
-        // Phase `parse_unix_path_bus_address_extracts_path`.
-        {
-            assert_eq!(
-                parse_unix_path_bus_address("unix:path=/run/user/1000/bus"),
-                Some("/run/user/1000/bus".to_string())
-            );
-            assert_eq!(
-                parse_unix_path_bus_address("unix:path=/run/user/1000/bus,guid=deadbeef"),
-                Some("/run/user/1000/bus".to_string())
-            );
-            // Abstract socket → None (can't be bind-mounted).
-            assert_eq!(
-                parse_unix_path_bus_address("unix:abstract=/tmp/dbus-xyz"),
-                None
-            );
-            // No unix transport.
-            assert_eq!(parse_unix_path_bus_address("tcp:host=127.0.0.1"), None);
-        }
         // Phase `argv_binds_dbus_proxy_socket_when_plan_is_supplied`.
         {
             let mut m = mk_manifest("off");
