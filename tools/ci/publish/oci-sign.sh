@@ -18,7 +18,19 @@ set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 repository=${1:?usage: oci-sign.sh REPOSITORY OUT}
 out=${2:?}
-[[ $(channel) == release ]] || die "only releases are signed; this run is for $T_REF"
+# A development candidate may be signed too, with the development key only (TILO_DEV_SIGNING=1,
+# `dev_signed` in products.toml): its signature says the candidate came from main's build, and
+# no release verification accepts that key.
+run_channel=$(channel)
+if [[ ${TILO_DEV_SIGNING:-} == 1 ]]; then
+  [[ $run_channel == dev ]] || die "the development key signs main's candidates only; this run is for $T_REF"
+  [[ ${COSIGN_KEY_REF:-} == *alias/tilo-dev-signing || -n ${TILO_PUBLISH_DRY_RUN:-} ]] \
+    || die 'development signing uses the development key alias/tilo-dev-signing'
+  public_key=$repo_root/keys/cosign-dev.pub
+else
+  [[ $run_channel == release ]] || die "only releases are signed; this run is for $T_REF"
+  public_key=$repo_root/keys/cosign.pub
+fi
 expected=$(cat "$out/digest")
 actual=$(archive_digest "$out/image.oci.tar")
 [[ $actual == "$expected" ]] || die "the archive is $actual, the build recorded $expected"
@@ -42,11 +54,11 @@ fi
 if [[ ${TILO_SIGN_TLOG:-} == 1 ]]; then
   cosign sign-blob --yes --key "$COSIGN_KEY_REF" --bundle "$out/bundle.json" \
     --output-signature "$out/signature" "$out/payload.json"
-  cosign verify-blob --key "$repo_root/keys/cosign.pub" --bundle "$out/bundle.json" "$out/payload.json"
+  cosign verify-blob --key "$public_key" --bundle "$out/bundle.json" "$out/payload.json"
 else
   cosign sign-blob --yes --tlog-upload=false --key "$COSIGN_KEY_REF" \
     --output-signature "$out/signature" "$out/payload.json"
-  cosign verify-blob --insecure-ignore-tlog=true --key "$repo_root/keys/cosign.pub" \
+  cosign verify-blob --insecure-ignore-tlog=true --key "$public_key" \
     --signature "$out/signature" "$out/payload.json"
 fi
 printf 'signed %s@%s\n' "$repository" "$expected"
