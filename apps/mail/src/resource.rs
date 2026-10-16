@@ -1035,11 +1035,58 @@ const SCENARIOS: &[&str] = &[
     "error",
 ];
 
+/// What the binary runs instead of opening a window.
+///
+/// `--probe-accounts-engine VALUE` and `--probe-contact-directory-engine
+/// VALUE` (the value is ignored) run the self-checks of account custody with
+/// the IMAP client, and of the contact directory, without a network or an
+/// account. They need `runtime-engine`, the release build, where that code is
+/// in `libtilo_accounts_engine.so` and `libtilo_contact_directory_engine.so`;
+/// the checks prove Mail loads those libraries and runs them.
+const COMMANDS: &[ui::framework::Command] = &[
+    ui::framework::Command {
+        option: "--probe-accounts-engine",
+        run: probe_accounts_engine,
+    },
+    ui::framework::Command {
+        option: "--probe-contact-directory-engine",
+        run: probe_contact_directory_engine,
+    },
+];
+
+#[cfg(feature = "runtime-engine")]
+fn probe_accounts_engine(_: &str) -> Result<(), String> {
+    let report = tilo_accounts_engine::self_check()?;
+    println!("mail --probe-accounts-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_accounts_engine(_: &str) -> Result<(), String> {
+    Err("the accounts engine library needs the `runtime-engine` feature".to_string())
+}
+
+#[cfg(feature = "runtime-engine")]
+fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
+    let report = tilo_contact_directory_engine::self_check()?;
+    println!("mail --probe-contact-directory-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
+    Err("the contact directory's engine library needs the `runtime-engine` feature".to_string())
+}
+
 impl ResourceApp for MailShell {
     type Resource = Mail;
     const ID: &'static str = "so.tilo.mail";
     const TITLE: &'static str = "Mail";
     const ICON: Option<&'static str> = Some("mail");
+
+    fn commands() -> &'static [ui::framework::Command] {
+        COMMANDS
+    }
 
     /// Only a live window reaches mail servers and the account store; History
     /// shows what each past version of the document held, and a screenshot

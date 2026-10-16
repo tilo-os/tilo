@@ -856,11 +856,15 @@ jobs:
             || { echo "music ran Spotify playback without loading libtilo_spotify_engine.so itself: ${arrival:-not loaded}" >&2; exit 1; }
           printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
           rm -rf "$runtime"
-      # Canvas's painting engines and the YouTube client of Music and Tube live
-      # in engine libraries beside the runtime. Each app's probe runs its
-      # engine's code without a document, display or network; the loader's
-      # trace says that the app, not the runtime, brought the engine in.
-      - name: Canvas, Music and Tube run their engine libraries
+      # Canvas's painting engines, the YouTube client of Music and Tube,
+      # account custody with the IMAP client (Mail, Settings), the time-zone
+      # database (Calendar, Clocks) and the contact directory (Contacts, Mail,
+      # Messages) live in engine libraries beside the runtime. Each app's
+      # probe runs its engine's code without a document, display or network;
+      # the loader's trace says that the app, not the runtime, brought the
+      # engine in. Settings has no probe, to keep its tapp as it is: for it
+      # only the trace of its start counts (it need not accept --help).
+      - name: Apps run their engine libraries
         # Each measurement below gates on its own subject: a tapp over its
         # budget must not hide the runtime's numbers, or the reverse.
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
@@ -871,7 +875,14 @@ jobs:
           failed=0
           for probe in "canvas libtilo_paint_engine.so --probe-paint-engine" \
                        "music libtilo_youtube_engine.so --probe-youtube-engine" \
-                       "tube libtilo_youtube_engine.so --probe-youtube-engine"; do
+                       "tube libtilo_youtube_engine.so --probe-youtube-engine" \
+                       "mail libtilo_accounts_engine.so --probe-accounts-engine" \
+                       "settings libtilo_accounts_engine.so" \
+                       "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
+                       "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
+                       "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
+                       "mail libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
+                       "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine"; do
             read -r app library option <<<"$probe"
             if [[ ! -x target/thin-app/$app ]]; then
               echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -882,23 +893,26 @@ jobs:
               failed=1
               continue
             fi
+            if [[ -n $option ]]; then arguments=("$option" check); else arguments=(--help); fi
             runtime=$(mktemp -d)
             chmod 700 "$runtime"
             status=0
             XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="target/thin-app:$libdir" LD_DEBUG=files \
-              timeout 120 "target/thin-app/$app" "$option" check \
+              timeout 120 "target/thin-app/$app" "${arguments[@]}" \
               >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
-            if (( status != 0 )); then
+            if [[ -n $option ]] && (( status != 0 )); then
               grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
               echo "$app could not run $library (exit $status)" >&2
               failed=1
             else
               arrival=$(grep -Eo "file=${library//./\\.} \[0\];  needed by [^ ]*" \
                 "$runtime/loader.log" | head -1 || true)
-              if [[ $arrival == */$app ]]; then
+              if [[ $arrival == */$app && -n $option ]]; then
                 printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
+              elif [[ $arrival == */$app ]]; then
+                printf '%s starts with %s\n' "$app" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
               else
-                echo "$app ran $option without loading $library itself: ${arrival:-not loaded}" >&2
+                echo "$app ${option:-started} without loading $library itself: ${arrival:-not loaded}" >&2
                 failed=1
               fi
             fi

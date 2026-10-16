@@ -986,6 +986,29 @@ fn project_scope(id: crate::model::Id) -> String {
     format!("{TASKS_SCOPE}/{}", crate::actions::project_resource_id(id))
 }
 
+/// What the binary runs instead of opening a window.
+///
+/// `--probe-timezone-engine VALUE` (the value is ignored) runs the time-zone
+/// database's self-check. It needs `runtime-engine`, the release build, where
+/// that code is in `libtilo_timezone_engine.so`; the check proves Calendar
+/// loads that library and runs it.
+const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
+    option: "--probe-timezone-engine",
+    run: probe_timezone_engine,
+}];
+
+#[cfg(feature = "runtime-engine")]
+fn probe_timezone_engine(_: &str) -> Result<(), String> {
+    let report = tilo_timezone_engine::self_check()?;
+    println!("calendar --probe-timezone-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_timezone_engine(_: &str) -> Result<(), String> {
+    Err("the time-zone engine library needs the `runtime-engine` feature".to_string())
+}
+
 impl ResourceApp for CalendarShell {
     type Resource = Calendar;
     const ID: &'static str = "so.tilo.calendar";
@@ -993,6 +1016,10 @@ impl ResourceApp for CalendarShell {
     const ICON: Option<&'static str> = Some("calendar");
     const OPENS: &'static [&'static str] = &["text/calendar"];
     const ARGUMENTS: usize = 1;
+
+    fn commands() -> &'static [ui::framework::Command] {
+        COMMANDS
+    }
 
     fn view(cx: &mut ViewCx<Calendar>) -> Element {
         // A search hit or an agent's `open` shows the item it names.
