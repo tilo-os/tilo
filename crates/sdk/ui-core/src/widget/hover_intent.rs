@@ -3,51 +3,60 @@
 //!
 //! Opening an item changes the row's geometry: the item grows rightward
 //! from its leading edge, so its own controls and everything after it move.
-//! That makes three rules, in priority order:
+//! The rules, in priority order:
 //!
-//! 1. **Pointing at a control is intent to click it.** A pointer resting on
-//!    a control that is clickable now (a ×, a revealed chip, "new tab"), or
-//!    on the spot where the item's controls will sit once open, never opens
-//!    anything. Nothing ever moves a control the pointer is on: an open item
-//!    whose collapse would shift the control under the pointer stays open
-//!    until the pointer is off it.
-//! 2. **Heading for a control is the same intent, early.** Each motion
-//!    sample is checked against the triangle (the convex hull) spanned by a
-//!    recent pointer position and a control. While the pointer travels inside
-//!    the hull toward a control that a change would move, that change waits:
-//!    an item the pointer crosses on its way to its own × does not open under
-//!    it, and an open item does not collapse (sliding its neighbours) while
-//!    the pointer heads for a neighbour's ×. This is the mega-menu "menu
-//!    aim" prediction, applied to what would move rather than to a timer
-//!    long enough for the slowest hand.
-//! 3. **Seeing more needs a clear signal**: the pointer resting on an item's
-//!    body, away from its controls, for a short [`DWELL`] counted from when it
-//!    entered (a sweep across the row spends less than that on each item, so
-//!    none opens). Once open, the item stays open while the pointer is in it
-//!    or heading for its revealed controls (menu aim again), and closes the
-//!    moment the pointer moves anywhere else.
+//! 1. **An aimed-at control never moves.** A pointer that settles on a
+//!    control (a ×, a revealed chip, "new tab") is aiming at it: its speed
+//!    drops toward zero with the trajectory ending inside the control. Until
+//!    it leaves, nothing opens or collapses that would move that control, so
+//!    the × stays under a pointer about to press it.
+//! 2. **Passing over a control is not hovering it.** A pointer still moving
+//!    with its trajectory continuing past the control is in transit: the
+//!    control lights no hover wash and holds nothing back, so a pointer that
+//!    crosses the × on its way to the chips still opens the pill. Whether a
+//!    pointer inside a control is passing or settling is only known once it
+//!    leaves or stops, so a change that would move that control waits at
+//!    most [`SETTLE`] for the answer.
+//! 3. **Heading for a control the change would move holds the change.** Each
+//!    motion sample from outside a control is checked against the triangle
+//!    (the convex hull) spanned by a recent pointer position and the control.
+//!    An item crossed on the way to its own × does not open under the
+//!    approaching pointer, and an open item does not collapse (sliding its
+//!    neighbours) while the pointer heads for a neighbour's ×.
+//! 4. **Seeing more takes a short rest on the item**: [`DWELL`], counted from
+//!    when the pointer entered it (a sweep across the row spends less than
+//!    that on each item, so none opens). Once open, the item stays open while
+//!    the pointer is in it or heading for its revealed controls (mega-menu
+//!    "menu aim", rather than a timer long enough for the slowest hand), and
+//!    closes the moment the pointer moves anywhere else.
 //!
-//! A held change resumes [`AIM_HOLD`] after the last sample that confirmed
-//! the heading, so a pointer that stops short of where it was heading lets
-//! go instead of pinning the row.
+//! A change held by heading resumes [`AIM_HOLD`] after the last sample that
+//! confirmed the heading, so a pointer that stops short lets go instead of
+//! pinning the row.
 //!
 //! The state is pure: every method takes the instant it reasons about, so
 //! slow and fast pointer paths are tested against a synthetic timeline.
 
 use crate::time::{Duration, Instant};
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::{Point, Rect, Vec2};
 
-/// How long the pointer rests on an item's body before it opens. Shorter
-/// than a deliberate pause, longer than the time a pointer sweeping across a
-/// row spends over any one item.
+/// How long the pointer rests on an item before it opens. Shorter than a
+/// deliberate pause, longer than the time a pointer sweeping across a row
+/// spends over any one item.
 pub(crate) const DWELL: Duration = Duration::from_millis(100);
 
-/// How long a change held by menu aim waits once the pointer stops moving
-/// toward what it was heading for without arriving. Also how long an item
-/// waits to open when the last sample over it was heading for a control.
+/// How long a change held by heading waits once the pointer stops moving
+/// toward what it was heading for without arriving.
 pub(crate) const AIM_HOLD: Duration = Duration::from_millis(300);
 
-/// Recent pointer positions kept; the oldest is the triangle's apex, so a
+/// A moving pointer reports at least every 16 ms; one silent this long has
+/// stopped where it last was.
+pub(crate) const SETTLE: Duration = Duration::from_millis(50);
+
+/// At or below this speed (px/ms, 50 px/s) a pointer is settling where it is.
+const SETTLE_SPEED: f64 = 0.05;
+
+/// Recent pointer samples kept; the oldest is the triangle's apex, so a
 /// single jittery sample cannot point the cone the wrong way.
 const APEX_SAMPLES: usize = 3;
 
@@ -59,8 +68,7 @@ pub(crate) struct Item {
     /// Where it starts. Items grow and shrink rightward from here, so a
     /// change in its width moves every control from this x on.
     pub(crate) edge: f64,
-    /// Where its controls sit once it has opened: the menu-aim target while
-    /// it is open, and the spot that never opens it while it is not.
+    /// Where its controls sit once it has opened: the menu-aim target.
     pub(crate) controls: Rect,
 }
 
@@ -88,8 +96,22 @@ enum Hold {
     /// Heading for its controls, or for a control its collapse would move;
     /// the instant of the last sample that confirmed it.
     Aim(Instant),
-    /// On a control its collapse would move: no time limit.
-    OnControl,
+    /// In a control its collapse would move: held until the pointer leaves.
+    InControl,
+}
+
+/// Where the last sample was, as far as the timers care.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Last {
+    at: Instant,
+    /// The pointer was already settling at that sample.
+    settling: bool,
+    /// The sample was inside a control, whose hover wash waits on whether
+    /// the pointer settles there.
+    in_control: bool,
+    /// The sample was inside a control that opening the pending item would
+    /// move.
+    in_moved_control: bool,
 }
 
 /// Menu-aim and dwell state for one row of hover-opening items.
@@ -97,15 +119,15 @@ enum Hold {
 pub(crate) struct HoverIntent {
     /// The item opened by the pointer.
     open: Option<usize>,
-    /// The item that opens at the given instant unless the pointer says
-    /// otherwise first.
+    /// The item that opens at the given instant, unless the pointer is
+    /// aiming at a control the opening would move by then.
     pending: Option<(usize, Instant)>,
     hold: Option<Hold>,
-    /// The item the last sample rested on, if it may open there (on its
-    /// body, not on or at a control).
+    /// The item the last sample was over.
     rest: Option<usize>,
+    last: Option<Last>,
     /// Newest last.
-    samples: Vec<Point>,
+    samples: Vec<(Point, Instant)>,
 }
 
 impl HoverIntent {
@@ -127,25 +149,44 @@ impl HoverIntent {
         *self = Self::default();
     }
 
+    /// Whether the pointer is settled (aiming at whatever it is on) rather
+    /// than passing through. A control's hover wash follows this, so a
+    /// control the pointer only crosses never lights up. Without motion seen
+    /// yet, the pointer is where it is.
+    pub(crate) fn settled(&self, now: Instant) -> bool {
+        self.last
+            .is_none_or(|l| l.settling || now.saturating_duration_since(l.at) >= SETTLE)
+    }
+
     /// A pointer sample.
     pub(crate) fn on_motion(&mut self, s: &Sample<'_>, now: Instant) {
         let p = s.p;
-        let apex = self.samples.first().copied();
+        let apex = self.samples.first().map(|(a, _)| *a);
         if self.samples.len() >= APEX_SAMPLES {
             self.samples.remove(0);
         }
-        self.samples.push(p);
+        self.samples.push((p, now));
         self.settle(now);
 
         // A repeated position says nothing about direction.
         let from = apex.filter(|a| *a != p);
-        let heading = |r: Rect| from.is_some_and(|a| in_aim_hull(p, a, r));
-        let on_control = s.controls.iter().any(|r| r.contains(p));
+        let toward = |r: Rect| from.is_some_and(|a| in_aim_hull(p, a, r));
+        // From inside a clickable control only settling counts, never
+        // heading: a pointer already on it is passing or aiming.
+        let heading = |r: Rect| !r.contains(p) && toward(r);
         let under = s.under.map(|u| u.idx);
-        self.rest = s
-            .under
-            .filter(|u| !on_control && !u.controls.contains(p))
-            .map(|u| u.idx);
+        let control = s.controls.iter().copied().find(|r| r.contains(p));
+        let settling = settling(&self.samples, control);
+        self.rest = under;
+        self.last = Some(Last {
+            at: now,
+            settling,
+            in_control: control.is_some(),
+            in_moved_control: s
+                .under
+                .zip(control)
+                .is_some_and(|(u, r)| Some(u.idx) != self.open && u.moves(r)),
+        });
 
         if under.is_some() && under == self.open {
             self.pending = None;
@@ -153,13 +194,13 @@ impl HoverIntent {
             return;
         }
         if let Some(open) = s.open.filter(|o| Some(o.idx) == self.open) {
-            if s.controls.iter().any(|r| r.contains(p) && open.moves(*r)) {
-                self.hold = Some(Hold::OnControl);
+            if control.is_some_and(|r| open.moves(r)) {
+                self.hold = Some(Hold::InControl);
                 self.pending = None;
                 return;
             }
             let aimed =
-                heading(open.controls) || s.controls.iter().any(|r| open.moves(*r) && heading(*r));
+                toward(open.controls) || s.controls.iter().any(|r| open.moves(*r) && heading(*r));
             if aimed {
                 self.hold = Some(Hold::Aim(now));
                 self.pending = None;
@@ -173,7 +214,6 @@ impl HoverIntent {
         self.open = None;
         self.pending = match s.under {
             None => None,
-            Some(u) if on_control || u.controls.contains(p) => None,
             Some(u) if s.controls.iter().any(|r| u.moves(*r) && heading(*r)) => {
                 // On its way to a control this item's opening would move:
                 // wait until the pointer has clearly stopped heading there.
@@ -188,36 +228,90 @@ impl HoverIntent {
     }
 
     /// Advance timers to `now` without a pointer sample: a matured dwell
-    /// opens its item, a lapsed aim hold hands over to the item the pointer
-    /// rests on.
+    /// opens its item unless the pointer is aiming at (or may be settling
+    /// on) a control that would move; a lapsed aim hold hands over to the
+    /// item the pointer rests on.
     pub(crate) fn settle(&mut self, now: Instant) {
         if let Some(Hold::Aim(confirmed)) = self.hold
             && now.saturating_duration_since(confirmed) >= AIM_HOLD
         {
             // The pointer has rested for the whole hold, longer than the
-            // dwell, so the body it rests on (if any) opens straight away.
+            // dwell, so the item it rests on opens straight away, unless it
+            // rests on a control that would move.
             self.hold = None;
-            self.open = self.rest;
-            self.pending = None;
+            self.open = None;
+            self.pending = self.rest.map(|idx| (idx, now));
         }
         if let Some((idx, due)) = self.pending
             && now >= due
+            && !self.last.is_some_and(|l| l.in_moved_control)
         {
             self.open = Some(idx);
             self.pending = None;
         }
     }
 
-    /// When [`settle`](Self::settle) next changes something with no further
-    /// input, so the host can sleep until then instead of pumping frames.
-    pub(crate) fn deadline(&self) -> Option<Instant> {
-        let dwell = self.pending.map(|(_, due)| due);
+    /// When [`settle`](Self::settle) or [`settled`](Self::settled) next
+    /// changes with no further input, so the host can sleep until then
+    /// instead of pumping frames. A pending item blocked by a control the
+    /// pointer has settled on has nothing to wait for.
+    pub(crate) fn deadline(&self, now: Instant) -> Option<Instant> {
+        let unsettled = self
+            .last
+            .filter(|l| l.in_control && !l.settling)
+            .map(|l| l.at + SETTLE)
+            .filter(|at| *at > now);
+        let dwell = self
+            .pending
+            .filter(|_| !self.last.is_some_and(|l| l.in_moved_control))
+            .map(|(_, due)| due);
         let hold = match self.hold {
             Some(Hold::Aim(at)) => Some(at + AIM_HOLD),
             _ => None,
         };
-        dwell.into_iter().chain(hold).min()
+        unsettled.into_iter().chain(dwell).chain(hold).min()
     }
+}
+
+/// Whether the newest sample shows the pointer settling: slow enough to be
+/// stopping where it is, or decelerating so hard that it will stop inside
+/// the `control` it is in.
+fn settling(samples: &[(Point, Instant)], control: Option<Rect>) -> bool {
+    let n = samples.len();
+    let Some((p, t)) = samples.last().copied() else {
+        return true;
+    };
+    let Some((q, tq)) = n.checked_sub(2).and_then(|i| samples.get(i)).copied() else {
+        // No motion seen yet: the pointer appeared where it is.
+        return true;
+    };
+    let speed = |a: Point, ta: Instant, b: Point, tb: Instant| {
+        let ms = tb.saturating_duration_since(ta).as_secs_f64() * 1000.0;
+        if ms <= 0.0 {
+            f64::INFINITY
+        } else {
+            (b - a).hypot() / ms
+        }
+    };
+    let v = speed(q, tq, p, t);
+    if v <= SETTLE_SPEED {
+        return true;
+    }
+    let (Some(control), Some((o, to))) = (
+        control,
+        n.checked_sub(3).and_then(|i| samples.get(i)).copied(),
+    ) else {
+        return false;
+    };
+    let v0 = speed(o, to, q, tq);
+    let dt = t.saturating_duration_since(tq).as_secs_f64() * 1000.0;
+    if !(v < v0 && v0.is_finite() && dt > 0.0) {
+        return false;
+    }
+    // Constant deceleration: the pointer stops `v² / 2a` further on.
+    let decel = (v0 - v) / dt;
+    let dir: Vec2 = (p - q) / (p - q).hypot();
+    control.contains(p + dir * (v * v / (2.0 * decel)))
 }
 
 /// Whether `p` lies in the convex hull of `apex` and `target`: inside the
@@ -308,7 +402,7 @@ mod tests {
         let mut h = HoverIntent::default();
         h.on_motion(&sample(Point::new(30.0, 10.0), Some(0), None, &[]), t0);
         assert_eq!(h.open(), None);
-        assert_eq!(h.deadline(), Some(t0 + DWELL));
+        assert_eq!(h.deadline(t0), Some(t0 + DWELL));
         // Steady motion inside the body, back and forth, away from its
         // controls, does not restart the dwell.
         for step in 1..10_u32 {
@@ -318,7 +412,11 @@ mod tests {
         }
         h.settle(t0 + DWELL);
         assert_eq!(h.open(), Some(0));
-        assert_eq!(h.deadline(), None, "nothing left to wake for");
+        assert_eq!(
+            h.deadline(t0 + DWELL + SETTLE),
+            None,
+            "nothing left to wake for"
+        );
     }
 
     #[test]
@@ -346,15 +444,110 @@ mod tests {
     }
 
     #[test]
-    fn resting_on_a_control_or_where_the_chips_will_be_never_opens() {
+    fn settling_on_a_control_never_opens_and_its_body_does() {
         let t0 = crate::time::now();
-        for p in [Point::new(85.0, 10.0), Point::new(60.0, 10.0)] {
-            let mut h = HoverIntent::default();
-            h.on_motion(&sample(p, Some(0), None, &[CLOSE_0]), t0);
-            h.settle(ms(t0, 10_000));
-            assert_eq!(h.open(), None, "opened while resting at {p:?}");
-            assert_eq!(h.deadline(), None, "nothing to wake for at {p:?}");
+        let mut h = HoverIntent::default();
+        h.on_motion(
+            &sample(Point::new(85.0, 10.0), Some(0), None, &[CLOSE_0]),
+            t0,
+        );
+        h.settle(ms(t0, 10_000));
+        assert_eq!(h.open(), None, "opened under a pointer resting on the ×");
+        assert_eq!(h.deadline(ms(t0, 10_000)), None, "nothing to wake for");
+
+        // Where the chips will sit is just the body until they are there.
+        let mut h = HoverIntent::default();
+        h.on_motion(
+            &sample(Point::new(60.0, 10.0), Some(0), None, &[CLOSE_0]),
+            t0,
+        );
+        h.settle(t0 + DWELL);
+        assert_eq!(h.open(), Some(0));
+    }
+
+    /// Entering through the × at speed, on the way to the body: transit, not
+    /// hovering. The pill opens on the dwell from entry as if the × were
+    /// not there.
+    #[test]
+    fn crossing_the_close_control_in_transit_still_opens() {
+        let t0 = crate::time::now();
+        let mut h = HoverIntent::default();
+        // Leftward at 2 px/ms from item 1, through item 0's ×, onto its body.
+        let mut entered = None;
+        for (k, x) in [124.0, 108.0, 92.0, 76.0, 60.0, 44.0, 28.0]
+            .into_iter()
+            .enumerate()
+        {
+            let at = ms(t0, u64::try_from(k).unwrap() * 8);
+            let under = if x < 100.0 {
+                Some(0)
+            } else if x >= 110.0 {
+                Some(1)
+            } else {
+                None
+            };
+            if under == Some(0) && entered.is_none() {
+                entered = Some(at);
+            }
+            let p = Point::new(x, 10.0);
+            h.on_motion(&sample(p, under, None, &[CLOSE_0]), at);
+            if CLOSE_0.contains(p) {
+                assert!(!h.settled(at), "crossing the × at speed is not hovering it");
+            }
         }
+        let entered = entered.unwrap();
+        h.settle(entered + DWELL);
+        assert_eq!(h.open(), Some(0), "the dwell counts from entry, × included");
+    }
+
+    /// A pointer drifting through the × whose dwell runs out while it is
+    /// still inside: the pill waits for it to leave (it was passing) rather
+    /// than move the × under a pointer that may be about to stop there.
+    #[test]
+    fn a_dwell_that_ends_inside_a_control_waits_for_the_pointer_to_leave() {
+        let t0 = crate::time::now();
+        let mut h = HoverIntent::default();
+        // Downward through the × at 0.1 px/ms, a sample every 10 ms.
+        let mut t = 0;
+        for y in 0..=19_u32 {
+            let p = Point::new(85.0, f64::from(y) * 1.0 + 0.5);
+            h.on_motion(&sample(p, Some(0), None, &[CLOSE_0]), ms(t0, t));
+            assert_eq!(h.open(), None, "opened with the pointer on the × at {t} ms");
+            t += 10;
+        }
+        // Out of the bottom of the ×, onto the body below it.
+        h.on_motion(
+            &sample(Point::new(85.0, 21.0), Some(0), None, &[]),
+            ms(t0, t),
+        );
+        assert_eq!(h.open(), Some(0), "opens the moment the pointer is off it");
+    }
+
+    /// Speed falling off so fast that the pointer will stop inside the × is
+    /// aim already, before it has come to rest.
+    #[test]
+    fn decelerating_into_a_control_is_aim() {
+        let t0 = crate::time::now();
+        let mut h = HoverIntent::default();
+        let path = [(40.0, 0), (64.0, 8), (78.0, 16), (84.0, 24)];
+        for (x, t) in path {
+            h.on_motion(
+                &sample(Point::new(x, 10.0), Some(0), None, &[CLOSE_0]),
+                ms(t0, t),
+            );
+        }
+        assert!(
+            h.settled(ms(t0, 24)),
+            "3 px/ms, then 1.75, then 0.75: stopping"
+        );
+        // A pointer at a steady 3 px/ms through the same × is passing.
+        let mut h = HoverIntent::default();
+        for (k, x) in [40.0, 64.0, 88.0].into_iter().enumerate() {
+            let at = ms(t0, u64::try_from(k).unwrap() * 8);
+            h.on_motion(&sample(Point::new(x, 10.0), Some(0), None, &[CLOSE_0]), at);
+        }
+        assert!(!h.settled(ms(t0, 16)));
+        assert!(h.settled(ms(t0, 16) + SETTLE), "until it goes quiet");
     }
 
     #[test]
