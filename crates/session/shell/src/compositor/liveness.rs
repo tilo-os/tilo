@@ -25,7 +25,10 @@
 //!
 //! Like the control socket this exists only where
 //! [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`] holds, and is bound only
-//! when the control socket is.
+//! when the control socket is. Every build, release included, also runs
+//! [`super::watchdog`], which needs no client: it notices a hung loop on its
+//! own, records the same thread dump and ends the process so the session
+//! recovers.
 //!
 //! # Backtraces of other threads
 //!
@@ -376,7 +379,7 @@ fn capture_signal() -> libc::c_int {
 /// sent so the handler never grows it.
 static CAPTURED: Mutex<Vec<(i32, Backtrace)>> = Mutex::new(Vec::new());
 
-fn gettid() -> i32 {
+pub(super) fn gettid() -> i32 {
     // SAFETY: `gettid` takes no arguments and cannot fail.
     i32::try_from(unsafe { libc::syscall(libc::SYS_gettid) }).unwrap_or(-1)
 }
@@ -391,7 +394,7 @@ extern "C" fn capture_backtrace(_signal: libc::c_int) {
     }
 }
 
-fn install_capture_handler() {
+pub(super) fn install_capture_handler() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         // SAFETY: a zeroed `sigaction` is valid; the handler is an
@@ -474,6 +477,39 @@ fn not_interruptible(syscall: &str) -> Option<String> {
     }
 }
 
+/// [`not_interruptible`] for a thread whose system call cannot be read,
+/// from the kernel function it sleeps in (`/proc/<tid>/wchan`): only the
+/// waits a blocked thread makes on a lock, a condvar, its event loop, a timer,
+/// a pipe or a socket, none of which the allocator makes with its lock held.
+fn not_interruptible_waiting_in(wchan: &str) -> Option<String> {
+    const BLOCKING_WAITS: [&str; 14] = [
+        "do_epoll_wait",
+        "ep_poll",
+        "do_sys_poll",
+        "do_poll",
+        "do_select",
+        "core_sys_select",
+        "do_nanosleep",
+        "hrtimer_nanosleep",
+        "pipe_read",
+        "pipe_wait_readable",
+        "wait_woken",
+        "unix_stream_data_wait",
+        "unix_stream_read_generic",
+        "skb_wait_for_more_packets",
+    ];
+    if wchan.starts_with("futex_") || BLOCKING_WAITS.contains(&wchan) {
+        None
+    } else if wchan.is_empty() || wchan == "0" {
+        Some("it was running, and its system call state is unreadable".into())
+    } else {
+        Some(format!(
+            "it was waiting in {wchan}, which may be inside the allocator, and its system \
+             call state is unreadable"
+        ))
+    }
+}
+
 /// Every thread of this process by its scheduler state and what it waits in,
 /// without interrupting any of them.
 fn list_threads() -> Vec<ThreadReport> {
@@ -522,7 +558,7 @@ fn report(tid: i32, backtrace: String) -> ThreadReport {
 /// Every thread of this process: its scheduler state, what it waits in and,
 /// for each one blocked where interrupting it is safe ([`not_interruptible`]),
 /// its backtrace.
-fn dump_threads() -> Vec<ThreadReport> {
+pub(super) fn dump_threads() -> Vec<ThreadReport> {
     // One dump at a time: they share the capture slot.
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
     let _one = ONE_AT_A_TIME.lock();
@@ -540,9 +576,18 @@ fn dump_threads() -> Vec<ThreadReport> {
     let mut signalled = 0usize;
     let mut left_alone: Vec<(i32, String)> = Vec::new();
     for &tid in tids.iter().filter(|&&tid| tid != me) {
-        let syscall =
-            std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")).unwrap_or_default();
-        if let Some(why) = not_interruptible(&syscall) {
+        // A process that holds key material makes itself undumpable, which
+        // hands its `/proc` entries to root: `syscall` (0400) can no longer
+        // be read, `wchan` (0444) still can.
+        let why = match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
+            Ok(syscall) => not_interruptible(&syscall),
+            Err(_) => not_interruptible_waiting_in(
+                std::fs::read_to_string(format!("/proc/self/task/{tid}/wchan"))
+                    .unwrap_or_default()
+                    .trim(),
+            ),
+        };
+        if let Some(why) = why {
             left_alone.push((tid, why));
             continue;
         }
@@ -688,6 +733,24 @@ mod tests {
             "on a core, perhaps allocating"
         );
         assert!(not_interruptible("").is_some(), "unreadable");
+        // An undumpable process cannot read its threads' system calls; the
+        // wait channel stands in.
+        for wait in [
+            "futex_do_wait",
+            "futex_wait_queue",
+            "do_epoll_wait",
+            "do_nanosleep",
+        ] {
+            assert_eq!(not_interruptible_waiting_in(wait), None, "{wait}");
+        }
+        for wait in [
+            "",
+            "0",
+            "rwsem_down_write_slowpath",
+            "folio_wait_bit_common",
+        ] {
+            assert!(not_interruptible_waiting_in(wait).is_some(), "{wait:?}");
+        }
     }
 
     #[test]
