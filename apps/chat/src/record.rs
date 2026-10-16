@@ -745,13 +745,16 @@ impl Chat {
                 "the attachment is not a valid content reference",
             ));
         }
-        if let Some(parent) = &posting.parent
-            && let Some(parent) = self.messages.get(parent)
-            && (parent.parent.is_some() || parent.channel != *channel)
-        {
-            return Err(Refusal::new(
-                "a reply answers a top-level message of its channel",
-            ));
+        if let Some(parent) = &posting.parent {
+            let parent = self
+                .messages
+                .get(parent)
+                .ok_or_else(|| Refusal::new("the message being answered no longer exists"))?;
+            if parent.parent.is_some() || parent.channel != *channel {
+                return Err(Refusal::new(
+                    "a reply answers a top-level message of its channel",
+                ));
+            }
         }
         if posting
             .source_provider
