@@ -10,6 +10,7 @@ kilobytes.
 import argparse
 import difflib
 import hashlib
+import gzip
 import io
 import json
 import os
@@ -25,6 +26,7 @@ from urllib.request import Request, urlopen
 
 MANIFEST_PATH = "repo/tilo-direct-package-specs.txt"
 MAX_METADATA_LAYER = 64 * 1024 * 1024
+MAX_METADATA_CONTENT = 256 * 1024 * 1024
 MANIFEST_TYPES = {"application/vnd.oci.image.manifest.v1+json",
                   "application/vnd.docker.distribution.manifest.v2+json"}
 INDEX_TYPES = {"application/vnd.oci.image.index.v1+json",
@@ -129,8 +131,14 @@ def verify(ref):
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(last.get("digest")))):
         raise ValueError("frozen RPM snapshot has no bounded metadata layer last")
     blob = fetch_blob(match["host"], match["repo"], last["digest"], last["size"])
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as layer:
-        members = [m for m in layer.getmembers() if m.name.lstrip("./") == MANIFEST_PATH]
+    # A compressed-byte limit alone does not bound tar parsing or extraction.
+    with gzip.GzipFile(fileobj=io.BytesIO(blob)) as compressed:
+        content = compressed.read(MAX_METADATA_CONTENT + 1)
+    if len(content) > MAX_METADATA_CONTENT:
+        raise ValueError("expanded metadata layer exceeds its size bound")
+    with tarfile.open(fileobj=io.BytesIO(content), mode="r:") as layer:
+        members = [m for m in layer.getmembers()
+                   if m.name in (MANIFEST_PATH, "./" + MANIFEST_PATH)]
         if len(members) != 1 or not members[0].isreg():
             raise ValueError("frozen RPM snapshot has no regular package manifest")
         actual = layer.extractfile(members[0]).read().decode("utf-8")
