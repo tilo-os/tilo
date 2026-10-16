@@ -281,7 +281,10 @@ mod tests {
     }
 }
 
+// Damaged frames are published through the Linux capture seam
+// (`publish_damaged_rgba_for_test`).
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 mod capture_tests {
     use super::*;
     use vello::peniko::{Fill, ImageBrush};

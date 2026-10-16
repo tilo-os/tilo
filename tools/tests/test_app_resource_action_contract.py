@@ -19,13 +19,13 @@ class AppResourceActionContractTests(unittest.TestCase):
             ("let ratio = α / β;\n", "let ratio = α / β;\n"),
             ("fn f<'a>(x: &'a str) {}", "fn f<'a>(x: &'a str) {}"),
             ("a// hidden\nb", "a         \nb"),
-            ("a/* hidden */b", "a          b"),
+            ("a/* hidden */b", "a            b"),
             ('a"hidden\\\"text"b', "a              b"),
-            ("a'/' + '\"'b", "a    +    b"),
+            ("a('/', '\"')b", "a(   ,    )b"),
         ]
         for source, expected in cases:
             with self.subTest(source=source):
-                self.assertEqual(contract.rust_code_only(source), expected)
+                self.assertEqual(contract.code_only(source), expected)
 
     def fixture(
         self,
@@ -48,7 +48,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         return root
 
     def test_char_literals_do_not_hide_the_code_after_them(self):
-        code = contract.rust_code_only(
+        code = contract.code_only(
             "fn f<'a>(s: &'a str) -> String { s.replace('\"', \"\").trim_matches('\\'') }\n"
             "fn handler() { start_operation(); }\n"
         )
@@ -160,6 +160,43 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("no toolkit resource descriptor" in item.reason for item in violations))
+
+    def test_only_a_compute_package_publishes_no_surface_of_its_own(self):
+        compute_manifest = (
+            '[package]\nid="so.tilo.sample"\nkind="service"\n'
+            '[entrypoint]\nbin="bin/sample-batch"\ntype="cli"\n'
+            '[cli]\ncommands=["sample-batch"]\n'
+        )
+        with self.subTest(phase='a cli service with commands needs no facade or resources'):
+            root = self.fixture("fn main() {}\n", dependencies="")
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(
+                compute_manifest, encoding="utf-8"
+            )
+            violations, apps = contract.audit(root)
+            self.assertEqual(violations, [])
+            self.assertEqual(apps, 1)
+        with self.subTest(phase='a compute package still may not bypass the facade'):
+            root = self.fixture(
+                "fn main() {}\n",
+                dependencies='ui_core={package="ui",path="../../crates/sdk/ui-core"}\n',
+            )
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(
+                compute_manifest, encoding="utf-8"
+            )
+            violations, _ = contract.audit(root)
+            self.assertTrue(any("direct ui-core dependency" in item.reason for item in violations))
+        for phase, manifest in (
+            ("a cli service without commands", compute_manifest.replace('"sample-batch"', "")),
+            ("a gui app with commands", compute_manifest.replace('type="cli"', 'type="gui"')),
+            ("a cli app that is not a service", compute_manifest.replace('"service"', '"app"')),
+        ):
+            with self.subTest(phase=f"{phase} must publish its own surface"):
+                root = self.fixture("fn main() {}\n", dependencies="")
+                (root / "apps" / "sample" / "tilo-app.toml").write_text(manifest, encoding="utf-8")
+                violations, _ = contract.audit(root)
+                reasons = "\n".join(item.reason for item in violations)
+                self.assertIn("tilo-app", reasons)
+                self.assertIn("Widget::resources", reasons)
 
     def test_search_providers_must_be_budgeted_paged_and_catalogue_stable(self):
         with self.subTest(phase='app search provider must override limited and paged queries'):

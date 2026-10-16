@@ -10,7 +10,11 @@ import unittest
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "usr/libexec/tilo-vm-install-proof.py"
+# The Python proof emitter is now only the seed the installer-code bootstrap
+# puts on old immutable media; the installer image runs the compiled one
+# (crates/system/install-helpers, tests/install_proof.rs).
+SCRIPT = Path(__file__).resolve().parents[1] / "dev/installer-code-bootstrap/tilo-vm-install-proof.py"
+BACKEND = Path(__file__).resolve().parents[1] / "usr/libexec/tilo-install"
 SPEC = importlib.util.spec_from_file_location("vm_install_proof", SCRIPT)
 proof = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(proof)
@@ -150,7 +154,7 @@ class ProofTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "VM-local bootc copy"):
                         proof.build_proof(args)
         with self.subTest(phase="backend_emits_proof_only_after_encrypted_finish"):
-            backend = (SCRIPT.parent / "tilo-install").read_text(encoding="utf-8")
+            backend = BACKEND.read_text(encoding="utf-8")
             prepared = backend.index("VM_INSTALL_PROOF=/run/tilo-installer/vm-install-proof.json")
             finished = backend.index('"$DISK_ENCRYPT" finish "$ENC_LUKS"')
             emitted = backend.index('proof_line="TILO_VM_INSTALL_PROOF_${proof_version}=')

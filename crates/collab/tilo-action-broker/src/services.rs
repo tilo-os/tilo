@@ -1,5 +1,7 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
+mod own_device;
 mod task_execution;
+pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use task_execution::{NativeTaskActionRequirement, NativeTaskBinding, WorkspaceTaskExecution};
 
 use std::sync::Arc;
@@ -26,7 +28,7 @@ pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration
 pub use crate::collab_broker_capnp::{
     AudioOutputFuture, AudioOutputServices, CertifiedPersonContext, DocumentBytes, HeldRevision,
     NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeMediaFuture,
-    NativeMediaRequestContext, NativeMediaServices,
+    NativeMediaRequestContext, NativeMediaServices, PreparedElsewhere, PreparingElsewhere,
 };
 
 /// One read-only host view lookup. The original admitted channel and exact
@@ -253,8 +255,8 @@ pub trait WorkspaceMemberships: Send + Sync {
 
     fn execute(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture;
+        request: tilo_owner_commit::OwnerCommitRequest,
+    ) -> tilo_owner_commit::CommitFuture;
 }
 
 /// Where the view of a launched app opens: next to where the actor that
@@ -458,6 +460,24 @@ impl ObservedApplicationLaunch {
 pub struct AuthenticatedApplicationLaunch {
     pub creation: Option<ApplicationCreationEvidence>,
     pub continuation_instance: Option<u64>,
+    /// The ticket [`LauncherServices::launch_content`] answered for the
+    /// launch that started this process ([`Launched::Started`]), read from
+    /// the host's own launch record. Correlation only, never authority.
+    pub launch_ticket: Option<u64>,
+}
+
+/// What [`LauncherServices::launch_content`] started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Launched {
+    /// A new instance, whose collaboration connection presents `ticket`
+    /// when it is authenticated
+    /// ([`AuthenticatedApplicationLaunch::launch_ticket`]): the launch can
+    /// name the instance it started without guessing.
+    Started { ticket: u64 },
+    /// Something the host cannot tie to a connection: an app another device
+    /// opens (a governed room), a host application, a launcher keeping no
+    /// tickets.
+    Unconfirmed,
 }
 
 /// Content-free progress of the existing executing-process custody handshake.
@@ -468,7 +488,9 @@ pub enum ExecutingBindingPhase {
     Answer,
     Admitted,
     Refused,
-    TimedOut,
+    /// The launch exited before the app answered. The binding waits for the
+    /// answer, not for a clock, so this is how an unanswered binding ends.
+    Abandoned,
 }
 
 pub trait LauncherServices: Send + Sync {
@@ -534,6 +556,9 @@ pub trait LauncherServices: Send + Sync {
     /// calling application's own scope. An empty hash is a plain launch. A
     /// host that cannot stage content refuses one.
     ///
+    /// Answers what it started: a ticket the started instance presents when
+    /// it connects, where the host keeps one.
+    ///
     /// # Errors
     ///
     /// Returns a message when the launch fails or content staging is unsupported.
@@ -543,9 +568,10 @@ pub trait LauncherServices: Send + Sync {
         workspace: &Workspace,
         content: LaunchContent<'_>,
         place: &LaunchPlace,
-    ) -> Result<(), String> {
+    ) -> Result<Launched, String> {
         if content.hash.is_empty() {
             self.launch(app, workspace, None, place)
+                .map(|()| Launched::Unconfirmed)
         } else {
             Err("opening launch content is unsupported on this host".into())
         }
@@ -568,6 +594,7 @@ pub trait LauncherServices: Send + Sync {
         Ok(Some(AuthenticatedApplicationLaunch {
             creation: self.application_creation_evidence(pid, app, room)?,
             continuation_instance: None,
+            launch_ticket: None,
         }))
     }
 
@@ -732,6 +759,88 @@ pub trait KeyboardShortcutServices: Send + Sync {
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
     ) -> Result<(tilo_actions::ActionOutput, bool), Box<tilo_actions::ActionFailure>>;
+}
+
+/// One pairing step the broker admitted: action `address` (on
+/// [`tilo_actions::remote::device_pairing::RESOURCE`]) for `actor` in
+/// `room`, with `argument` in its slot form.
+pub struct DevicePairingRequest<'a> {
+    pub room: &'a str,
+    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
+    pub address: &'a tilo_actions::ActionAddress,
+    pub argument: Option<&'a str>,
+}
+
+/// How a pairing step ended.
+pub type DevicePairingOutcome =
+    Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
+
+/// Pairing a nearby device with the person's identity, run by the host:
+/// LAN discovery, and the approval an administrator authenticates through
+/// the host's polkit helper. The broker answers it under
+/// [`tilo_actions::remote::device_pairing::PROVIDER`], only to a caller on
+/// this machine confined to a room, and checks each step against the
+/// caller's policy under [`Self::app_id`] before the host decides whether
+/// the actor may pair at all.
+pub trait DevicePairingServices: Send + Sync {
+    /// The application whose controls pair devices. It reaches the steps as
+    /// the person using it, as it does its own actions.
+    fn app_id(&self) -> &str;
+    /// Every step, described.
+    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Start one admitted step. Its outcome arrives on the returned answer:
+    /// at once, or once the LAN window or the administrator's
+    /// authentication ends, completed from another thread.
+    ///
+    /// # Errors
+    ///
+    /// Why the step may not start: the actor does not administer the
+    /// room's identity, the arguments are malformed, or another step runs.
+    fn start(
+        &self,
+        request: &DevicePairingRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<DevicePairingOutcome>, String>;
+}
+
+/// One identity-administration step the broker admitted: action `address`
+/// (on [`tilo_actions::remote::identity_admin::RESOURCE`]) for `actor` in
+/// `room`, with `argument` in its slot form.
+pub struct IdentityAdminRequest<'a> {
+    pub room: &'a str,
+    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
+    pub address: &'a tilo_actions::ActionAddress,
+    pub argument: Option<&'a str>,
+}
+
+/// How an identity-administration step ended.
+pub type IdentityAdminOutcome = DevicePairingOutcome;
+
+/// The person's identities and the devices trusted under them, administered
+/// by the host that keeps the identity store: listing, activating, removing
+/// and protecting an identity, listing and revoking its devices, and
+/// removing a home server. The root secret stays on the host, which signs
+/// every revocation. The broker answers it under
+/// [`tilo_actions::remote::identity_admin::PROVIDER`], only to a caller on
+/// this machine confined to a room, and checks each step against the
+/// caller's policy under [`Self::app_id`] before the host decides whether
+/// the actor may administer the identity at all.
+pub trait IdentityAdminServices: Send + Sync {
+    /// The application whose controls administer identities. It reaches
+    /// the steps as the person using it, as it does its own actions.
+    fn app_id(&self) -> &str;
+    /// Every step, described.
+    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Start one admitted step. Its outcome arrives on the returned answer:
+    /// at once, or once a step that reaches another device ends.
+    ///
+    /// # Errors
+    ///
+    /// Why the step may not start: the actor does not administer the
+    /// room's identity, or the arguments are malformed.
+    fn start(
+        &self,
+        request: &IdentityAdminRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<IdentityAdminOutcome>, String>;
 }
 
 pub trait ContinuationServices: Send + Sync {
@@ -948,7 +1057,27 @@ pub trait NearbyTransferServices: Send + Sync {
 
     /// Forgets every handle issued to `peer_id`.
     fn disconnect(&self, peer_id: u64);
+
+    /// Resolves once what a [`runtime_collab::NearbyTransferCommand::Snapshot`]
+    /// would show `context` may have changed since `after` (0 at first, then
+    /// the value the previous wait returned), with the value to wait from
+    /// next. It names nothing: the endpoint asks for a snapshot, which the
+    /// host checks as it checks every command. `None` when the host cannot
+    /// say when its state changes; the broker then answers unimplemented.
+    fn changed(
+        &self,
+        context: &NearbyTransferRequestContext,
+        after: u64,
+    ) -> Option<NearbyTransferChange> {
+        let _ = (context, after);
+        None
+    }
 }
+
+/// A wait for Nearby Send's next change, as [`NearbyTransferServices::changed`]
+/// returns it.
+pub type NearbyTransferChange =
+    std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send + 'static>>;
 
 /// A descriptor source sealed to the kernel-attested local process.
 pub(crate) type SelectedDescriptorSource =
@@ -1080,6 +1209,12 @@ pub struct HostServices {
     /// The device's keyboard shortcuts on the action door. Without it
     /// they are not offered.
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
+    /// Pairing a nearby device, run by the host. Without it no door offers
+    /// it.
+    pub device_pairing: Option<Arc<dyn DevicePairingServices>>,
+    /// The person's identities and their devices, administered by the
+    /// host. Without it no door offers them.
+    pub identity_admin: Option<Arc<dyn IdentityAdminServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
@@ -1112,4 +1247,12 @@ pub struct HostServices {
     /// endpoint when its channel keys changed (`channelKeysChanged`).
     /// Without it endpoints ask the identity service on a timer.
     pub channel_keys: Option<crate::channel_encryption::ChannelKeyProvider>,
+    /// Where an admitted invocation of an offloadable action runs: on the
+    /// person's best-placed device when another is
+    /// (`tilo_actions::offload`). Without it every one runs here, through
+    /// the app's own handler.
+    pub action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
+    /// Carries an application's action to another of the person's own
+    /// devices. Without it no app reaches another device's actions.
+    pub own_device: Option<Arc<dyn OwnDeviceActions>>,
 }

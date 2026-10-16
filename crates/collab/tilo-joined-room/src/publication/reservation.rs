@@ -52,7 +52,7 @@ impl Serialize for VirtualEntry<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let binding = CommitBinding {
             room: self.room.into(),
-            target: tilo_peer_state::owner_commit::CommitTarget::Document {
+            target: tilo_owner_commit::CommitTarget::Document {
                 app: self.app.into(),
                 record: self.record.into(),
             },
@@ -174,9 +174,11 @@ fn proof(
     if originals.is_empty() {
         return Ok(StoredReservation::default());
     }
-    let proof =
-        view.peer
-            .reserve_local_recovery(originals, None, view.device().device_public_key)?;
+    let proof = view.peer.outbox().reserve_local_recovery(
+        originals,
+        None,
+        view.device().device_public_key,
+    )?;
     if proof.entries() > MAX_ENTRIES || proof.max_encoded_bytes() > MAX_BYTES {
         return Err("native outgoing cannot reserve complete causal recovery".into());
     }

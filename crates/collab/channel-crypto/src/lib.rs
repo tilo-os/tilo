@@ -49,15 +49,6 @@
 //! Welcome/commit/key-history bytes; [`GovernanceJournal`] persists its
 //! targeted delivery outbox.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod content;
 pub mod crypto;
 pub mod endpoint;
@@ -80,7 +71,7 @@ pub use governance::{
 pub use group::{ChannelGroup, MemberAddition};
 pub use member::{Access, ChannelMember, MemberEvent};
 pub use persistence::VaultKey;
-pub use signer::{SignFuture, StewardSigner};
+pub use signer::{DeviceSigner, SignFuture};
 pub use steward::{ChannelSteward, Outgoing, Reconciled};
 pub use store::{FileStewardStore, MemoryStewardStore, StewardRecord, StewardStore};
 // Re-exported so callers can take/return KeyPackage values without

@@ -1178,6 +1178,11 @@ impl BatchApply {
 
     pub(crate) fn apply(&mut self, doc: &mut Automerge, log: &mut PatchLog) -> Result<(), Refusal> {
         let new_actors = self.insert_new_actors(doc);
+        // TILO(op-id-index): the check and the walks look ops up by id. (A
+        // load applies its trailing changes, often none, through here.)
+        if !self.changes.is_empty() {
+            doc.ops_mut().index_op_ids();
+        }
 
         // TILO(map-apply-skip): the objects this batch makes, looked up before
         // the document's own, rather than a copy of every object's info.
@@ -1487,8 +1492,7 @@ impl BatchApply {
             });
             let follows = match previous {
                 Some((seq, hash)) => {
-                    c.seq() == seq.saturating_add(1)
-                        && self.descends(doc, &earlier, i, (hash, seq))
+                    c.seq() == seq.saturating_add(1) && self.descends(doc, &earlier, i, (hash, seq))
                 }
                 None => c.seq() == 1,
             };
@@ -1599,11 +1603,18 @@ impl BatchApply {
                 Some((pred_obj, key, _)) => pred_obj == obj && key == op.elemid_or_key(),
                 None => {
                     let index = batch_ops.get_or_insert_with(|| {
-                        self.ops.iter().enumerate().map(|(i, o)| (o.id(), i)).collect()
+                        self.ops
+                            .iter()
+                            .enumerate()
+                            .map(|(i, o)| (o.id(), i))
+                            .collect()
                     });
-                    index.get(&pred).and_then(|&i| self.ops.get(i)).is_some_and(|p| {
-                        p.bld.obj == obj && p.elemid_or_key() == op.elemid_or_key()
-                    })
+                    index
+                        .get(&pred)
+                        .and_then(|&i| self.ops.get(i))
+                        .is_some_and(|p| {
+                            p.bld.obj == obj && p.elemid_or_key() == op.elemid_or_key()
+                        })
                 }
             };
             if !same_place {
@@ -1783,10 +1794,12 @@ impl Automerge {
         let actors: Vec<_> = change
             .actors()
             .map(|a| {
-                self.ops.lookup_actor(a).ok_or(AutomergeError::InvalidChange {
-                    hash: change.hash(),
-                    reason: "names an actor the document does not have",
-                })
+                self.ops
+                    .lookup_actor(a)
+                    .ok_or(AutomergeError::InvalidChange {
+                        hash: change.hash(),
+                        reason: "names an actor the document does not have",
+                    })
             })
             .collect::<Result<_, _>>()?;
 

@@ -20,7 +20,7 @@ use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_index,
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
 };
 
 #[derive(Clone, Debug)]
@@ -568,23 +568,14 @@ impl InteractiveChart for CategoryChart {
         self.activated = Some((series.id.clone(), category.id.clone()));
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+    fn keyboard_items(&self) -> Vec<(usize, usize)> {
         let bars = self.bars();
-        let current = self.inspection.hovered.and_then(|selected| {
-            bars.iter()
-                .position(|bar| (bar.category, bar.series) == selected)
-        });
-        self.inspection.hovered = moved_index(current, bars.len(), action)
-            .and_then(|index| bars.get(index))
-            .map(|bar| (bar.category, bar.series));
-        if let Some((category, series)) = self.inspection.hovered
-            && let Some(bar) = bars
-                .iter()
-                .find(|bar| bar.category == category && bar.series == series)
-        {
-            self.inspection.pointer = bar.rect.center();
-        }
-        self.inspection.hovered.is_some()
+        bars.iter().map(|bar| (bar.category, bar.series)).collect()
+    }
+    fn anchor(&self, &item: &(usize, usize)) -> Option<Point> {
+        let bars = self.bars();
+        let bar = bars.iter().find(|bar| (bar.category, bar.series) == item)?;
+        Some(bar.rect.center())
     }
     fn toggle_legend_at(&mut self, point: Point) -> bool {
         if !self.style.interactive_legend {
@@ -616,25 +607,8 @@ impl Widget for CategoryChart {
     ) {
         let plot = self.plot_rect();
         let range = self.range();
-        if self.inspection.keyboard
-            && let Some((category, series)) = self.inspection.hovered
-            && let Some(bar) = self
-                .bars()
-                .into_iter()
-                .find(|bar| bar.category == category && bar.series == series)
-        {
-            self.inspection.pointer = bar.rect.center();
-        }
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        self.follow_keyboard_anchor();
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         for value in crate::charts::nice_ticks(range.0, range.1, 5) {
             let y = self.y(value, range);
             if self.style.show_grid {

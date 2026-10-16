@@ -15,6 +15,53 @@ pub struct HistoryResourceTarget {
     pub label: String,
 }
 
+impl HistoryResourceTarget {
+    /// The name a person can read for this resource: its own label when that
+    /// is a title, else the app that holds it. `None` when only identifiers
+    /// are known, so no surface falls back to showing a record id.
+    pub fn display_name(&self) -> Option<&str> {
+        human_label(&self.label, &self.id).or_else(|| {
+            self.app_label
+                .as_deref()
+                .and_then(|label| human_label(label, self.app_id.as_deref().unwrap_or_default()))
+        })
+    }
+}
+
+/// `label` when a person could read it as a name; `None` when it is empty,
+/// repeats the machine `id`, or carries an identifier such as a hash or uuid.
+/// Producers fall back to ids when a record has no title yet, and those must
+/// not reach anyone reading the activity feed.
+pub fn human_label<'a>(label: &'a str, id: &str) -> Option<&'a str> {
+    let trimmed = label.trim();
+    (!trimmed.is_empty() && trimmed != id.trim() && !contains_opaque_id(trimmed)).then_some(label)
+}
+
+/// Whether `text` contains a machine identifier: a long hex run (hashes,
+/// actor and record ids), a uuid, or a long mixed letter/digit token.
+pub fn contains_opaque_id(text: &str) -> bool {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .any(is_opaque_token)
+}
+
+fn is_opaque_token(token: &str) -> bool {
+    let has_digit = token.bytes().any(|b| b.is_ascii_digit());
+    let is_uuid = token.len() == 36
+        && token.char_indices().all(|(index, c)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                c == '-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        });
+    let is_hex = token.len() >= 12 && has_digit && token.bytes().all(|b| b.is_ascii_hexdigit());
+    let is_mixed = token.len() >= 20
+        && has_digit
+        && token.bytes().any(|b| b.is_ascii_alphabetic())
+        && token.bytes().all(|b| b.is_ascii_alphanumeric());
+    is_uuid || is_hex || is_mixed
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistorySelectionDetail {
     pub entry_ids: Vec<HistoryEntryId>,
@@ -138,5 +185,31 @@ mod tests {
         assert_eq!(detail.group_label.as_deref(), Some("Launch"));
         assert_eq!(detail.title, "Launch");
         assert!(detail.can_compare && detail.can_undo);
+    }
+
+    #[test]
+    fn identifiers_are_not_names() {
+        for opaque in [
+            "3f2a9c41d0b7e8aa",
+            "notes.note/3f2a9c41d0b7e8aa5c1d",
+            "8d0c6a8e-2f1b-4c3d-9e4f-5a6b7c8d9e0f",
+            "bafkreigh2akiscaildc4qp7k3ak7w3y6p4",
+        ] {
+            assert!(contains_opaque_id(opaque), "{opaque}");
+            assert_eq!(human_label(opaque, "other"), None, "{opaque}");
+        }
+        for readable in ["Launch brief", "Q3 2026 plan", "brief.md", "Notes"] {
+            assert!(!contains_opaque_id(readable), "{readable}");
+        }
+        assert_eq!(human_label("note-7", "note-7"), None);
+        assert_eq!(human_label("  ", "x"), None);
+        let target = HistoryResourceTarget {
+            app_id: Some("org.tilo.Notes".into()),
+            app_label: Some("Notes".into()),
+            id: "3f2a9c41d0b7e8aa".into(),
+            kind: "notes.note".into(),
+            label: "3f2a9c41d0b7e8aa".into(),
+        };
+        assert_eq!(target.display_name(), Some("Notes"));
     }
 }

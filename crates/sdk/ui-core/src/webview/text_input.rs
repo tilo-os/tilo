@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Lease(String, bool);
@@ -96,10 +97,7 @@ impl Receipt {
     }
 
     pub fn poll(&self) -> Option<Result<Option<Lease>, Failure>> {
-        let mut result = self
-            .result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut result = self.result.lock_recover();
         if result.is_none() && crate::time::now() >= self.deadline {
             *result = Some(Err(Failure::Unknown));
         }
@@ -120,10 +118,7 @@ impl Receipt {
     }
 
     pub(crate) fn complete(&self, value: Result<Option<Lease>, Failure>) {
-        let mut result = self
-            .result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut result = self.result.lock_recover();
         if result.is_none() {
             *result = Some(value);
         }
@@ -252,10 +247,7 @@ impl Transactions {
                 (history["can_undo"].as_bool(), history["can_redo"].as_bool())
                 && history.as_object().is_some_and(|fields| fields.len() == 2)
             {
-                *receipt
-                    .history
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+                *receipt.history.lock_recover() = Some((
                     crate::undo::UndoStatus {
                         can_undo,
                         can_redo,

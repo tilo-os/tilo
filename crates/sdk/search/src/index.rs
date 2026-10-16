@@ -1,49 +1,19 @@
-//! [`SearchIndex`]: a retained set of records, searchable through tantivy.
+//! [`SearchIndex`]: a retained set of records, searchable through the
+//! engine ([`crate::engine`]).
 
-use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::io::Write as _;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
-use tantivy::collector::TopDocs;
-use tantivy::directory::{Directory as _, TerminatingWrite as _};
-use tantivy::merge_policy::{LogMergePolicy, MergeCandidate, MergePolicy, NoMergePolicy};
-use tantivy::schema::{
-    FAST, Field, INDEXED, IndexRecordOption, Schema, TextFieldIndexing, TextOptions,
-};
-use tantivy::{
-    DocId, Index, IndexReader, IndexSettings, IndexWriter, ReloadPolicy, Score, SegmentMeta,
-    SegmentReader, SingleSegmentIndexWriter, TantivyDocument, TantivyError, Term,
-};
-
-use crate::query::{FIELD_BASE, Matching, Used, compile};
-use crate::tokenizer::{GramTokenizer, WordTokenizer};
-use crate::weight::{FieldWeight, INDEXED_WEIGHTS, MatchTier, Ranks};
-
-const KEY_FIELD: &str = "key";
-const SEGMENT_FIELD: &str = "segment";
-const BOOST_FIELD: &str = "boost";
-const LENGTH_FIELD: &str = "length";
-const GRAMS: &str = "tilo_grams";
-const WORDS: &str = "tilo_words";
+use crate::direct::{DIRECT_LIMIT, Direct};
+use crate::engine::{self, Engine, IndexError, MakeEngine, Records, ScoreFn};
+use crate::query::{Matching, Used};
+use crate::typo::Typos;
+use crate::weight::{FieldWeight, MatchTier, Ranks};
+use tilo_lock::RwLockRecover as _;
 
 /// The segment value of a record's own document.
 pub(crate) const RECORD_SEGMENT: u64 = u64::MAX;
-
-/// Heap for one bulk build. The build is a single segment, so this only
-/// sizes the term table it starts with.
-const BUILD_HEAP_BYTES: usize = 3_000_000;
-/// Heap of the kept writer's one indexing thread: tantivy's minimum. The
-/// thread never indexes (a batch is built as its own segment), so this is
-/// never allocated.
-const WRITER_HEAP_BYTES: usize = 15_000_000;
-/// Heap for one incremental batch's segment. It sizes the term table the
-/// segment starts with (128K slots) and grows as a large batch needs.
-const BATCH_HEAP_BYTES: usize = 400_000;
-/// A commit touching more than one in this many records rebuilds instead:
-/// a bulk build is cheaper than deleting and re-adding most of the index.
-const REBUILD_FRACTION: usize = 8;
 
 /// One contiguous run of body text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,10 +45,10 @@ pub trait BodySource: Send + Sync {
 /// One record: a caller-chosen key, weighted fields, and optionally a body.
 #[derive(Clone)]
 pub struct Document {
-    key: u64,
-    fields: Vec<(String, FieldWeight)>,
-    body: Option<Arc<dyn BodySource>>,
-    signals: (i32, u32),
+    pub(crate) key: u64,
+    pub(crate) fields: Vec<(String, FieldWeight)>,
+    pub(crate) body: Option<Arc<dyn BodySource>>,
+    pub(crate) signals: (i32, u32),
 }
 
 impl fmt::Debug for Document {
@@ -137,6 +107,11 @@ impl Document {
     pub fn fields(&self) -> &[(String, FieldWeight)] {
         &self.fields
     }
+
+    /// The record's [`Self::signals`]: its boost and length.
+    pub(crate) const fn signals_pair(&self) -> (i32, u32) {
+        self.signals
+    }
 }
 
 /// One match.
@@ -185,161 +160,75 @@ impl Page {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Fields {
-    pub key: Field,
-    pub segment: Field,
-    pub boost: Field,
-    pub length: Field,
-    pub grams: [Field; INDEXED_WEIGHTS.len()],
-    /// Words of title fields, for typo matching.
-    pub title_words: Field,
-    pub body_grams: Field,
-    pub body_words: Field,
+/// What a commit changes, and the engine that indexes it: the part of a
+/// [`SearchIndex`] a search may still have to commit (see
+/// [`SearchIndex::search_scored`]).
+#[derive(Default)]
+pub(crate) struct State {
+    pub(crate) pending: BTreeSet<u64>,
+    /// Pending keys the committed index has never held, so their records
+    /// need no delete. Emptied by a failed commit, which may have applied
+    /// some of its records: every pending key then gets its delete.
+    pub(crate) fresh: BTreeSet<u64>,
+    pub(crate) rebuild: bool,
+    /// A commit was asked for before the engine's code was in: the first
+    /// search after it arrives makes it.
+    pub(crate) deferred: bool,
+    /// Made by the first commit.
+    pub(crate) engine: Option<Box<dyn Engine>>,
 }
 
-fn schema() -> (Schema, Fields) {
-    let mut builder = Schema::builder();
-    let grams = TextOptions::default().set_indexing_options(
-        TextFieldIndexing::default()
-            .set_tokenizer(GRAMS)
-            .set_index_option(IndexRecordOption::WithFreqsAndPositions),
-    );
-    let words = TextOptions::default().set_indexing_options(
-        TextFieldIndexing::default()
-            .set_tokenizer(WORDS)
-            .set_index_option(IndexRecordOption::WithFreqs),
-    );
-    let key = builder.add_u64_field(KEY_FIELD, INDEXED | FAST);
-    let segment = builder.add_u64_field(SEGMENT_FIELD, INDEXED | FAST);
-    let boost = builder.add_i64_field(BOOST_FIELD, FAST);
-    let length = builder.add_u64_field(LENGTH_FIELD, FAST);
-    let gram_fields =
-        std::array::from_fn(|slot| builder.add_text_field(&format!("grams{slot}"), grams.clone()));
-    let title_words = builder.add_text_field("title_words", words.clone());
-    let body_grams = builder.add_text_field("body_grams", grams);
-    let body_words = builder.add_text_field("body_words", words);
-    (
-        builder.build(),
-        Fields {
-            key,
-            segment,
-            boost,
-            length,
-            grams: gram_fields,
-            title_words,
-            body_grams,
-            body_words,
-        },
-    )
-}
-
-/// An index in memory that never starts a thread of its own: its writes go
-/// through [`SingleSegmentIndexWriter`] (and, natively, an incremental
-/// writer), and no doc store compressor thread runs, since nothing is
-/// stored. Threads cannot start in the browser.
-fn in_memory(schema: Schema) -> Index {
-    let settings = IndexSettings {
-        docstore_compress_dedicated_thread: false,
-        ..IndexSettings::default()
-    };
-    let index = Index::builder()
-        .schema(schema.clone())
-        .settings(settings)
-        .create_in_ram()
-        .unwrap_or_else(|_| Index::create_in_ram(schema));
-    index.tokenizers().register(GRAMS, GramTokenizer::default());
-    index.tokenizers().register(WORDS, WordTokenizer::default());
-    index
-}
-
-fn manual_reader(index: &Index) -> tantivy::Result<IndexReader> {
-    index
-        .reader_builder()
-        .reload_policy(ReloadPolicy::Manual)
-        .try_into()
-}
-
-/// Merge what tantivy's default policy would merge after a commit, and wait
-/// for it, as a writer closed after each commit did: every commit returns a
-/// settled index, so the segments a search sees, and with them the body
-/// statistics BM25 orders by, do not depend on a merge's timing.
-fn settle_merges(index: &Index, writer: &mut IndexWriter) -> tantivy::Result<()> {
-    /// Each round merges a level into one segment, so a cascade is a few
-    /// rounds; the bound only keeps a policy surprise from spinning.
-    const MAX_ROUNDS: usize = 16;
-    let policy = LogMergePolicy::default();
-    for _ in 0..MAX_ROUNDS {
-        let candidates = policy.compute_merge_candidates(&index.searchable_segment_metas()?);
-        if candidates.is_empty() {
-            break;
-        }
-        for MergeCandidate(segments) in candidates {
-            writer.merge(&segments).wait()?;
-        }
+impl State {
+    fn is_dirty(&self) -> bool {
+        self.rebuild || !self.pending.is_empty()
     }
-    Ok(())
-}
-
-fn segment_text(body: &dyn BodySource, segment: usize) -> String {
-    let mut text = String::new();
-    for piece in 0..body.piece_count(segment) {
-        let Some(piece) = body.piece(segment, piece) else {
-            continue;
-        };
-        if piece.space_before && !text.is_empty() {
-            text.push(' ');
-        }
-        text.push_str(piece.text);
-    }
-    text
 }
 
 /// A retained, in-memory search index over [`Document`]s.
 ///
-/// Records are kept by key; tantivy holds their postings in a RAM
-/// directory. Mutations are cheap and deferred: [`commit`](Self::commit)
-/// applies them in one batch, as an incremental tantivy commit or, when
-/// much changed, a bulk rebuild. Searches read the last commit.
+/// Records are kept by key; the engine (tantivy, with its postings in a
+/// RAM directory) indexes them. Mutations are cheap and deferred:
+/// [`commit`](Self::commit) applies them in one batch, as an incremental
+/// commit or, when much changed, a bulk rebuild. Searches read the last
+/// commit.
 ///
 /// Every field is found by substring, folded (see [`fold`](crate::fold)):
 /// the query as a phrase of grams. The best field and tier rank a hit
 /// (see [`MatchTier`](crate::MatchTier)); hits of equal rank come in key
 /// order, and body hits follow by BM25.
+///
+/// A small index without body text is answered by reading its records
+/// ([`Direct`]), ranked and ordered as the engine would.
+///
+/// Where the engine's code is fetched on demand (the `lazy-engine`
+/// feature), such an index never needs it. A larger index's commit before
+/// the engine is in waits, and the first search once it is in makes that
+/// commit; searches before then find nothing.
 pub struct SearchIndex {
-    fields: Fields,
-    index: Index,
-    /// `None` only if tantivy could not open a reader on an index in
-    /// memory; searches then find nothing.
-    reader: Option<IndexReader>,
     matching: Matching,
     ranks: Ranks,
     used: Used,
+    /// The words of the records' titles and keywords, which typos are
+    /// matched against; kept only when [`Matching::typos`] is on.
+    typos: Typos,
+    /// The committed records read directly, while they are few and have no
+    /// body ([`Direct`]); searches then skip the engine.
+    direct: Option<Direct>,
+    /// Most records [`Self::direct`] holds; zero answers through the engine.
+    direct_limit: usize,
     documents: BTreeMap<u64, Document>,
-    pending: BTreeSet<u64>,
-    /// Pending keys the committed index has never held, so their records
-    /// need no delete. Emptied by a failed commit, which may have applied
-    /// some of its records: every pending key then gets its delete.
-    fresh: BTreeSet<u64>,
-    rebuild: bool,
-    /// The incremental writer, opened by the first incremental commit and
-    /// kept for every later one (see [`Self::commit`]).
-    writer: Option<IndexWriter>,
-    /// Incremental writers opened over this index's life.
-    writers_opened: u32,
-    /// Fail the next incremental commit between its two commits.
-    #[cfg(test)]
-    fail_between_commits: bool,
+    state: RwLock<State>,
 }
 
 impl fmt::Debug for SearchIndex {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = self.read();
         formatter
             .debug_struct("SearchIndex")
             .field("records", &self.documents.len())
-            .field("pending", &self.pending.len())
-            .field("rebuild", &self.rebuild)
-            .field("writer", &self.writer.is_some())
+            .field("pending", &state.pending.len())
+            .field("rebuild", &state.rebuild)
+            .field("engine", &state.engine.is_some())
             .field("matching", &self.matching)
             .finish_non_exhaustive()
     }
@@ -355,27 +244,24 @@ impl SearchIndex {
     /// An empty index matching as `matching` says.
     #[must_use]
     pub fn new(matching: Matching) -> Self {
-        let (schema, fields) = schema();
-        let index = in_memory(schema);
-        let reader = manual_reader(&index)
-            .inspect_err(|error| tracing::error!(%error, "could not open a search index"))
-            .ok();
         Self {
-            fields,
-            index,
-            reader,
             matching,
             ranks: MatchTier::rank_in,
             used: Used::default(),
+            typos: Typos::default(),
+            direct: None,
+            direct_limit: DIRECT_LIMIT,
             documents: BTreeMap::new(),
-            pending: BTreeSet::new(),
-            fresh: BTreeSet::new(),
-            rebuild: false,
-            writer: None,
-            writers_opened: 0,
-            #[cfg(test)]
-            fail_between_commits: false,
+            state: RwLock::default(),
         }
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, State> {
+        self.state.read_recover()
+    }
+
+    pub(crate) fn state_mut(&mut self) -> &mut State {
+        self.state.get_mut().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// An independent copy of the retained records, indexed on the next
@@ -383,9 +269,11 @@ impl SearchIndex {
     #[must_use]
     pub fn detached(&self) -> Self {
         let mut copy = Self::new(self.matching).with_ranks(self.ranks);
+        copy.direct_limit = self.direct_limit;
         copy.documents.clone_from(&self.documents);
         copy.used = self.used;
-        copy.rebuild = true;
+        copy.typos.clone_from(&self.typos);
+        copy.state_mut().rebuild = true;
         copy
     }
 
@@ -429,23 +317,39 @@ impl SearchIndex {
     /// Insert or replace the record with `document`'s key.
     pub fn upsert(&mut self, document: Document) {
         self.note_used(&document);
+        let held = self.documents.contains_key(&document.key);
+        let state = self.state_mut();
         // Since the last commit every change is pending: a key neither held
         // nor pending was not committed either.
-        if !self.documents.contains_key(&document.key) && !self.pending.contains(&document.key) {
-            self.fresh.insert(document.key);
+        if !held && !state.pending.contains(&document.key) {
+            state.fresh.insert(document.key);
         }
-        self.pending.insert(document.key);
-        self.documents.insert(document.key, document);
+        state.pending.insert(document.key);
+        if self.matching.typos {
+            self.typos.add(&document);
+        }
+        if let Some(replaced) = self.documents.insert(document.key, document)
+            && self.matching.typos
+        {
+            self.typos.remove(&replaced);
+        }
     }
 
     /// Remove a record. Returns whether it existed.
     pub fn remove(&mut self, key: u64) -> bool {
-        let existed = self.documents.remove(&key).is_some();
-        if existed && self.fresh.remove(&key) {
+        let removed = self.documents.remove(&key);
+        if let Some(removed) = &removed
+            && self.matching.typos
+        {
+            self.typos.remove(removed);
+        }
+        let existed = removed.is_some();
+        let state = self.state_mut();
+        if existed && state.fresh.remove(&key) {
             // Never committed: nothing to delete.
-            self.pending.remove(&key);
+            state.pending.remove(&key);
         } else if existed {
-            self.pending.insert(key);
+            state.pending.insert(key);
         }
         existed
     }
@@ -454,223 +358,90 @@ impl SearchIndex {
     pub fn replace_all(&mut self, documents: impl IntoIterator<Item = Document>) {
         self.documents.clear();
         self.used = Used::default();
+        self.typos = Typos::default();
         for document in documents {
             self.note_used(&document);
-            self.documents.insert(document.key, document);
+            if self.matching.typos {
+                self.typos.add(&document);
+            }
+            if let Some(replaced) = self.documents.insert(document.key, document)
+                && self.matching.typos
+            {
+                self.typos.remove(&replaced);
+            }
         }
-        self.pending.clear();
-        self.fresh.clear();
-        self.rebuild = true;
+        let state = self.state_mut();
+        state.pending.clear();
+        state.fresh.clear();
+        state.rebuild = true;
     }
 
     /// Whether mutations wait for [`commit`](Self::commit).
     #[must_use]
     pub fn is_dirty(&self) -> bool {
-        self.rebuild || !self.pending.is_empty()
+        self.read().is_dirty()
     }
 
     /// Make every mutation searchable.
     ///
-    /// A few changes commit incrementally through one tantivy writer the
-    /// index keeps from its first incremental commit on: opening a writer
-    /// (its lock, its meta and six threads) costs more than the records a
-    /// typical commit carries. Between commits the writer holds nothing
-    /// staged and its threads sleep without a timeout, so a kept writer
-    /// costs no wakeups and no arena; dropping the index drops it.
+    /// A few changes commit incrementally through one writer the index
+    /// keeps from its first incremental commit on; much change rebuilds.
+    /// A small index without body text is then answered from its records.
+    /// Where the engine's code is still to come (the `lazy-engine`
+    /// feature), such an index does not ask for it; a larger one's commit
+    /// waits for the first search after the engine arrived.
     ///
     /// # Errors
     ///
-    /// Returns tantivy's error when indexing fails; the index then still
-    /// answers from its last commit and the mutations stay pending. A
-    /// failed writer is dropped with whatever it had staged, and the next
-    /// commit opens a new one.
-    pub fn commit(&mut self) -> tantivy::Result<()> {
+    /// Returns the engine's error when indexing fails; the index then still
+    /// answers from its last commit and the mutations stay pending.
+    pub fn commit(&mut self) -> Result<(), IndexError> {
         if !self.is_dirty() {
             return Ok(());
         }
-        let incremental = !cfg!(target_arch = "wasm32")
-            && !self.rebuild
-            && self.pending.len().saturating_mul(REBUILD_FRACTION) < self.documents.len();
-        let committed = if incremental {
-            match self.commit_incremental() {
-                // A writer lock nothing will release (a writer leaked by a
-                // panic, say) would refuse every incremental commit from
-                // now on: a rebuild gives the records an index without it.
-                Err(TantivyError::LockFailure(..)) => self.rebuild_index(),
-                other => other,
-            }
+        let direct = !self.used.body && self.documents.len() <= self.direct_limit;
+        let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
+        // A small index is answered from its records: it indexes into an
+        // engine only where one is linked or already made, and never asks
+        // for one.
+        let make = if direct && state.engine.is_none() {
+            engine::installed()
         } else {
-            self.rebuild_index()
+            engine::make()
         };
-        self.fresh.clear();
-        committed?;
-        self.pending.clear();
-        self.rebuild = false;
+        match make {
+            Some(make) => commit(
+                state,
+                make,
+                &self.documents,
+                self.used,
+                self.matching,
+                self.ranks,
+                &self.typos,
+            )?,
+            None if direct => {
+                // The engine made later indexes every record anyway.
+                state.pending.clear();
+                state.fresh.clear();
+                state.rebuild = false;
+                state.deferred = false;
+            }
+            None => {
+                state.deferred = true;
+                self.direct = None;
+                return Ok(());
+            }
+        }
+        self.direct = direct.then(|| Direct::new(&self.documents, self.matching.typos));
         Ok(())
     }
 
-    fn tantivy_documents(&self, document: &Document, out: &mut impl FnMut(TantivyDocument)) {
-        let fields = &self.fields;
-        let mut record = TantivyDocument::default();
-        record.add_u64(fields.key, document.key);
-        record.add_u64(fields.segment, RECORD_SEGMENT);
-        record.add_i64(fields.boost, i64::from(document.signals.0));
-        record.add_u64(fields.length, u64::from(document.signals.1));
-        for (text, weight) in &document.fields {
-            let slot = weight.slot();
-            if let Some(grams) = fields.grams.get(slot) {
-                record.add_text(*grams, text);
-            }
-            // Only title words are matched by typo.
-            if slot == 0 && self.matching.typos {
-                record.add_text(fields.title_words, text);
-            }
-        }
-        if let Some(body) = &document.body {
-            let mut inline = String::new();
-            for segment in 0..body.segment_count() {
-                let text = segment_text(body.as_ref(), segment);
-                if body.locates(segment) {
-                    let mut located = TantivyDocument::default();
-                    located.add_u64(fields.key, document.key);
-                    located.add_u64(fields.segment, segment as u64);
-                    located.add_text(fields.body_grams, &text);
-                    located.add_text(fields.body_words, &text);
-                    out(located);
-                } else if !text.is_empty() {
-                    if !inline.is_empty() {
-                        inline.push(' ');
-                    }
-                    inline.push_str(&text);
-                }
-            }
-            if !inline.is_empty() {
-                record.add_text(fields.body_grams, &inline);
-                record.add_text(fields.body_words, &inline);
-            }
-        }
-        out(record);
-    }
-
-    /// `documents` indexed as the one segment of a new index in memory.
-    fn build<'a>(
-        &self,
-        heap_bytes: usize,
-        documents: impl Iterator<Item = &'a Document>,
-    ) -> tantivy::Result<Index> {
-        let index = in_memory(self.index.schema());
-        let mut writer = SingleSegmentIndexWriter::<TantivyDocument>::new(index, heap_bytes)?;
-        let mut failed = None;
-        for document in documents {
-            self.tantivy_documents(document, &mut |built| {
-                if failed.is_none()
-                    && let Err(error) = writer.add_document(built)
-                {
-                    failed = Some(error);
-                }
-            });
-        }
-        if let Some(error) = failed {
-            return Err(error);
-        }
-        writer.finalize()
-    }
-
-    fn rebuild_index(&mut self) -> tantivy::Result<()> {
-        let index = self.build(BUILD_HEAP_BYTES, self.documents.values())?;
-        let reader = manual_reader(&index)?;
-        // The kept writer writes to the index this one replaces.
-        self.writer = None;
-        self.index = index;
-        self.reader = Some(reader);
-        Ok(())
-    }
-
-    /// One indexing thread, which never indexes: [`Self::batch_segment`]
-    /// does. It never merges on its own either: [`settle_merges`] merges as
-    /// each commit ends.
-    fn open_writer(&mut self) -> tantivy::Result<IndexWriter> {
-        let writer: IndexWriter = self.index.writer_with_num_threads(1, WRITER_HEAP_BYTES)?;
-        writer.set_merge_policy(Box::new(NoMergePolicy));
-        self.writers_opened = self.writers_opened.saturating_add(1);
-        Ok(writer)
-    }
-
-    /// The pending records that still exist, as a segment of this index
-    /// that no segment list names yet: built in an index of its own sized to
-    /// the batch, then its files moved into this index's directory.
-    ///
-    /// The writer's own indexing thread would start every segment with the
-    /// term table of its 15 MB minimum heap, 4 MB written and read back even
-    /// for one record, which costs more than the record.
-    fn batch_segment(&self) -> tantivy::Result<Option<SegmentMeta>> {
-        let mut documents = self
-            .pending
-            .iter()
-            .filter_map(|key| self.documents.get(key))
-            .peekable();
-        if documents.peek().is_none() {
-            return Ok(None);
-        }
-        let built = self.build(BATCH_HEAP_BYTES, documents)?;
-        let Some(segment) = built.searchable_segment_metas()?.into_iter().next() else {
-            return Ok(None);
-        };
-        // A meta of this index first: while it lives, its files are never
-        // collected as garbage.
-        let meta = self.index.new_segment_meta(segment.id(), segment.max_doc());
-        let (from, to) = (built.directory(), self.index.directory());
-        for path in segment.list_files() {
-            if !from.exists(&path)? {
-                continue;
-            }
-            // Read without its footer, which the write adds back.
-            let bytes = from.open_read(&path)?.read_bytes()?;
-            let mut file = to.open_write(&path)?;
-            file.write_all(&bytes)?;
-            file.terminate()?;
-        }
-        Ok(Some(meta))
-    }
-
-    /// Delete the pending records from the index, then add their segment,
-    /// commit and merge on the kept writer, then move the reader onto the
-    /// commit. The writer is taken out for the commit and put back only once
-    /// it has succeeded: on an error it drops here, discarding what it
-    /// staged and releasing the index's lock.
-    fn commit_incremental(&mut self) -> tantivy::Result<()> {
-        let mut writer = match self.writer.take() {
-            Some(writer) => writer,
-            None => self.open_writer()?,
-        };
-        let mut replaces = false;
-        for key in self.pending.difference(&self.fresh) {
-            writer.delete_term(Term::from_field_u64(self.fields.key, *key));
-            replaces |= self.documents.contains_key(key);
-        }
-        if let Some(segment) = self.batch_segment()? {
-            // An added segment takes every delete the writer has queued but
-            // not yet applied as its own. Deletes of removed records find
-            // nothing in it, but a replaced record would lose its new
-            // version: apply those to the old segments first. The commit
-            // between is never read; the reader moves once the batch is in.
-            if replaces {
-                writer.commit()?;
-                #[cfg(test)]
-                if std::mem::take(&mut self.fail_between_commits) {
-                    return Err(TantivyError::SystemError("injected".into()));
-                }
-            }
-            writer.add_segment(segment)?;
-        }
-        writer.commit()?;
-        settle_merges(&self.index, &mut writer)?;
-        self.writer = Some(writer);
-        if let Some(reader) = &self.reader {
-            return reader.reload();
-        }
-        self.reader = Some(manual_reader(&self.index)?);
-        Ok(())
+    /// Answer every search through the engine, however few the records:
+    /// what the direct path is tested against.
+    #[cfg(test)]
+    pub(crate) fn through_tantivy(mut self) -> Self {
+        self.direct_limit = 0;
+        self
     }
 
     /// One page of matches for `query`, from the last commit.
@@ -692,104 +463,108 @@ impl SearchIndex {
         page: Page,
         score: impl Fn(Signals) -> i32 + Clone + Send + Sync + 'static,
     ) -> Hits {
-        let Some(reader) = &self.reader else {
-            return Hits::default();
-        };
-        let searcher = reader.searcher();
-        // Never ask the collector for more slots than there are documents.
-        let documents = usize::try_from(searcher.num_docs()).unwrap_or(usize::MAX);
-        let limit = page.limit.min(documents.saturating_sub(page.offset));
-        if limit == 0 {
-            return Hits::default();
+        if let Some(direct) = &self.direct {
+            return direct.search(self.matching, self.ranks, query, page, &score);
         }
-        let Some(compiled) = compile(&self.fields, self.used, self.matching, self.ranks, query)
-        else {
+        let score: ScoreFn = Arc::new(score);
+        {
+            let state = self.read();
+            if !state.deferred {
+                return self.search_in(&state, query, page, &score);
+            }
+        }
+        // A commit waits for the engine's code.
+        let Some(make) = engine::make() else {
             return Hits::default();
         };
-        let collector = TopDocs::with_limit(limit.saturating_add(1))
-            .and_offset(page.offset)
-            .tweak_score(move |segment_reader: &SegmentReader| {
-                let fast = segment_reader.fast_fields();
-                let u64s = |name: &str| {
-                    fast.u64(name)
-                        .ok()
-                        .map(|column| column.first_or_default_col(0))
-                };
-                let keys = u64s(KEY_FIELD);
-                let segments = u64s(SEGMENT_FIELD);
-                let lengths = u64s(LENGTH_FIELD);
-                let boosts = fast
-                    .i64(BOOST_FIELD)
-                    .ok()
-                    .map(|column| column.first_or_default_col(0));
-                let score = score.clone();
-                move |doc: DocId, raw: Score| {
-                    let value = |column: &Option<Arc<dyn tantivy::columnar::ColumnValues<u64>>>,
-                                 default| {
-                        column
-                            .as_ref()
-                            .map_or(default, |column| column.get_val(doc))
-                    };
-                    let signals = Signals {
-                        rank: (raw >= FIELD_BASE).then(|| rank_of(raw)),
-                        boost: boosts.as_ref().map_or(0, |column| {
-                            i32::try_from(column.get_val(doc)).unwrap_or_default()
-                        }),
-                        length: u32::try_from(value(&lengths, 0)).unwrap_or(u32::MAX),
-                    };
-                    let ordered = signals.rank.map_or(0, |_| score(signals));
-                    (
-                        signals.rank.is_some(),
-                        ordered,
-                        raw,
-                        Reverse(value(&keys, 0)),
-                        Reverse(value(&segments, RECORD_SEGMENT)),
-                        signals.rank,
-                    )
-                }
-            });
-        let found = match searcher.search(compiled.as_ref(), &collector) {
-            Ok(found) => found,
-            Err(error) => {
-                tracing::warn!(%error, "search failed");
-                return Hits::default();
-            }
-        };
-        let more = found.len() > limit;
-        let hits = found
-            .into_iter()
-            .take(limit)
-            .map(
-                |((_, score, _, Reverse(key), Reverse(segment), rank), _)| Hit {
-                    key,
-                    segment: (segment != RECORD_SEGMENT)
-                        .then(|| usize::try_from(segment).unwrap_or(usize::MAX)),
-                    rank,
-                    score,
-                },
+        let mut state = self.state.write_recover();
+        if state.deferred
+            && let Err(error) = commit(
+                &mut state,
+                make,
+                &self.documents,
+                self.used,
+                self.matching,
+                self.ranks,
+                &self.typos,
             )
-            .collect();
-        Hits { hits, more }
+        {
+            tracing::error!(%error, "could not index search records");
+        }
+        let hits = self.search_in(&state, query, page, &score);
+        drop(state);
+        hits
+    }
+
+    fn search_in(&self, state: &State, query: &str, page: Page, score: &ScoreFn) -> Hits {
+        let Some(engine) = &state.engine else {
+            // Never committed: nothing to find.
+            return Hits::default();
+        };
+        engine.search(self.records(state), query, page, score)
+    }
+
+    fn records<'a>(&'a self, state: &'a State) -> Records<'a> {
+        Records {
+            documents: &self.documents,
+            pending: &state.pending,
+            fresh: &state.fresh,
+            rebuild: state.rebuild,
+            used: self.used,
+            matching: self.matching,
+            ranks: self.ranks,
+            typos: &self.typos,
+        }
     }
 
     /// Bytes the committed index occupies.
     #[must_use]
     pub fn index_bytes(&self) -> u64 {
-        self.reader.as_ref().map_or(0, |reader| {
-            reader
-                .searcher()
-                .space_usage()
-                .map_or(0, |usage| usage.total().get_bytes())
-        })
+        self.read()
+            .engine
+            .as_ref()
+            .map_or(0, |engine| engine.index_bytes())
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "a field score is FIELD_BASE plus a rank of at most a few hundred"
-)]
-fn rank_of(score: Score) -> i32 {
-    (score - FIELD_BASE).floor() as i32
+/// Commit `state`'s changes to `documents`, making its engine first.
+fn commit(
+    state: &mut State,
+    make: MakeEngine,
+    documents: &BTreeMap<u64, Document>,
+    used: Used,
+    matching: Matching,
+    ranks: Ranks,
+    typos: &Typos,
+) -> Result<(), IndexError> {
+    let State {
+        pending,
+        fresh,
+        rebuild,
+        deferred,
+        engine,
+    } = state;
+    if engine.is_none() {
+        // A new engine holds nothing: it indexes every record.
+        *rebuild = true;
+    }
+    let engine = engine.get_or_insert_with(make);
+    let committed = engine.commit(Records {
+        documents,
+        pending,
+        fresh,
+        rebuild: *rebuild,
+        used,
+        matching,
+        ranks,
+        typos,
+    });
+    fresh.clear();
+    *deferred = false;
+    committed?;
+    pending.clear();
+    *rebuild = false;
+    Ok(())
 }
 
 #[cfg(test)]

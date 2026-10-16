@@ -28,6 +28,7 @@ path = "src/main.rs"
 # in-band blobs and the .tapp's PackageId.
 
 [dependencies]
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-app-package = { path = "../tilo-app-package" }
 app-registry = { path = "../app-registry" }
 # Signed `/entries` rows for `tilo-app-package entry`; `rand` for `keygen`.

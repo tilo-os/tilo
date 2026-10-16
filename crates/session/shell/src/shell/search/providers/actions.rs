@@ -21,6 +21,9 @@ use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
+mod device_pairing;
+mod enrollment_tokens;
+mod identity_admin;
 mod native_identity;
 
 use crate::shell::shared_display_actions;
@@ -172,23 +175,7 @@ const PRESENCE_SHARING_PARAMS: &[ActionParam] = &[ActionParam::required(
     "off, manual, or automatic.",
 )];
 
-const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
-    ActionParam::required(
-        "device",
-        ParamType::Text,
-        "The enrolled device's 64-character public-key fingerprint.",
-    ),
-    ActionParam::optional(
-        "reason",
-        ParamType::Text,
-        "lost, stolen, retired, or compromised (defaults to retired).",
-    ),
-    ActionParam::required(
-        "confirm",
-        ParamType::Boolean,
-        "Explicit confirmation that this permanent administrative revocation should run.",
-    ),
-];
+const DEVICE_REVOKE_PARAMS: &[ActionParam] = crate::shell::identity_admin::REVOKE_PARAMS;
 
 fn workspace_create_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
@@ -259,6 +246,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     if let Some(contract) = dedicated_contract(id) {
         return contract;
     }
+    if let Some(contract) = super::system_settings::contract_for(id) {
+        return contract;
+    }
     let mut contract = ActionContract::default();
     match id {
         "shortcut-help.toggle" | "overview.toggle" => {
@@ -273,11 +263,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.risk = RiskLevel::Privileged;
             contract.confirmation = ConfirmationPolicy::Confirm;
         }
-        "identity.devices.copy"
-        | "identity.device.enroll"
-        | "identity.home-peer.enroll"
-        | "peer.invite.named"
-        | "agent.invite" => {
+        id if enrollment_tokens::role_of(id).is_some() => contract = enrollment_tokens::contract(),
+        id if device_pairing::is_pair_action(id) => contract = device_pairing::contract(id),
+        id if identity_admin::is_identity_action(id) => contract = identity_admin::contract(id),
+        "identity.devices.copy" | "peer.invite.named" | "agent.invite" => {
             contract.kind = ActionKind::Outside;
         }
         "peer.invite" | "peer.connect" => {
@@ -638,12 +627,6 @@ fn apply_ownership_cancellation(state: &ChromeState) -> Result<(), ActionError> 
 /// pre-checks. One lock scope reads and destructures the workspace
 /// (`WorkspaceId` and `RoomId` are `Copy`; `actor` is cloned out), so the
 /// tree's read guard is already gone before the caller does anything else.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the read guard's last use is the tuple that ends the block it's scoped to; \
-              there is nothing after it to hoist the drop past without cloning the \
-              workspace out for no real gain"
-)]
 /// Let the identity `principal` govern `workspace_id` as fully as `actor`:
 /// a member of the room, granted everything in it.
 fn delegate_room_to_identity(
@@ -711,6 +694,15 @@ fn active_admin_workspace(
     Ok((workspace_id, room, actor))
 }
 
+/// The pairing steps answer through a ticket, never through a plain apply.
+fn pairing_needs_lifecycle() -> ActionError {
+    ActionError::Refused("device pairing requires lifecycle dispatch".into())
+}
+
+fn identity_needs_lifecycle() -> ActionError {
+    ActionError::Refused("identity administration requires lifecycle dispatch".into())
+}
+
 fn require_explicit_confirmation(args: &ActionArgs, action: &str) -> Result<(), ActionError> {
     if args.boolean("confirm") == Some(true) {
         Ok(())
@@ -755,26 +747,6 @@ fn name_invited_peer(state: &ChromeState, args: &ActionArgs) -> Result<String, A
         )));
     }
     Ok(name)
-}
-
-fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
-    let value = value.trim();
-    if value.len() != 64 {
-        return Err(ActionError::Refused(
-            "device fingerprint must be 64 hex characters".into(),
-        ));
-    }
-    let mut key = [0_u8; 32];
-    for (index, slot) in key.iter_mut().enumerate() {
-        let start = index.saturating_mul(2);
-        let end = start.saturating_add(2);
-        let chunk = value
-            .get(start..end)
-            .ok_or_else(|| ActionError::Refused("device fingerprint is not hex".into()))?;
-        *slot = u8::from_str_radix(chunk, 16)
-            .map_err(|_| ActionError::Refused("device fingerprint is not hex".into()))?;
-    }
-    Ok(key)
 }
 
 /// What `peer.invite.named` must be told. Both required — an invite to
@@ -1143,7 +1115,7 @@ fn persist_appearance(
 
 /// Dark or light mode, keeping whichever theme the person chose for it.
 /// Choosing a mode leaves high contrast.
-fn set_mode(st: &mut ChromeState, action: &str, mode: &str) -> Result<(), ActionError> {
+pub(super) fn set_mode(st: &mut ChromeState, action: &str, mode: &str) -> Result<(), ActionError> {
     use settings_store::appearance::{HIGH_CONTRAST, MODE};
     let write = settings_store::SectionWrite::new()
         .set(&MODE, &Some(mode.to_string()))
@@ -1433,69 +1405,109 @@ impl Action {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+                // The clipboard is out of sight and search closes on choose,
+                // so confirm in passing rather than with a notification.
                 ui::text_selection::clipboard_copy(&lines);
-                st.push_notification(
-                    t("search-action-device-list-copied"),
-                    t_args(
-                        "search-action-device-list-copied-body",
-                        &[("count", fleet.certificates.len().into())],
-                    ),
-                );
+                st.acknowledge(t("search-action-device-list-copied"));
                 Ok(())
             },
         ),
-        chrome(
-            "identity.device.enroll",
-            "search-action-identity-device-enroll",
-            "search-action-identity-device-enroll-subtitle",
-            |st, _| {
-                let (_, profile) = active_identity(st)?;
-                let now = tilo_clock::unix_now_ns();
-                let expires = now.saturating_add(5 * 60 * 1_000_000_000);
-                let token = crate::device_fleet::DeviceFleetStore::from_env()
-                    .and_then(|store| {
-                        store.mint_enrollment(
-                            &profile.id,
-                            tilo_user_identity::DeviceCapabilities::member(),
-                            now,
-                            expires,
-                        )
-                    })
-                    .map_err(|error| ActionError::Refused(error.to_string()))?;
-                ui::text_selection::clipboard_copy(&token);
-                st.push_notification(
-                    t("search-action-enrollment-copied"),
-                    t("search-action-enrollment-copied-body"),
-                );
-                Ok(())
+        Action {
+            id: enrollment_tokens::DEVICE_ENROLL_ID,
+            label: "search-action-identity-device-enroll",
+            subtitle: "search-action-identity-device-enroll-subtitle",
+            params: enrollment_tokens::ENROLL_PARAMS,
+            apply: |st, args| {
+                enrollment_tokens::mint_for_person(
+                    st,
+                    args,
+                    tilo_identity_host::enrollment::EnrollmentRole::PersonalDevice,
+                )
             },
-        ),
-        chrome(
-            "identity.home-peer.enroll",
-            "search-action-identity-home-peer-enroll",
-            "search-action-identity-home-peer-enroll-subtitle",
-            |st, _| {
-                let (_, profile) = active_identity(st)?;
-                let now = tilo_clock::unix_now_ns();
-                let expires = now.saturating_add(5 * 60 * 1_000_000_000);
-                let token = crate::device_fleet::DeviceFleetStore::from_env()
-                    .and_then(|store| {
-                        store.mint_enrollment(
-                            &profile.id,
-                            tilo_user_identity::DeviceCapabilities::host(),
-                            now,
-                            expires,
-                        )
-                    })
-                    .map_err(|error| ActionError::Refused(error.to_string()))?;
-                ui::text_selection::clipboard_copy(&token);
-                st.push_notification(
-                    t("search-action-home-server-copied"),
-                    t("search-action-home-server-copied-body"),
-                );
-                Ok(())
+        },
+        Action {
+            id: enrollment_tokens::HOME_PEER_ENROLL_ID,
+            label: "search-action-identity-home-peer-enroll",
+            subtitle: "search-action-identity-home-peer-enroll-subtitle",
+            params: enrollment_tokens::ENROLL_PARAMS,
+            apply: |st, args| {
+                enrollment_tokens::mint_for_person(
+                    st,
+                    args,
+                    tilo_identity_host::enrollment::EnrollmentRole::HomePeer,
+                )
             },
-        ),
+        },
+        Action {
+            id: device_pairing::DISCOVER_ID,
+            label: "search-action-identity-device-pair-discover",
+            subtitle: "search-action-identity-device-pair-discover-subtitle",
+            params: device_pairing::DISCOVER_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
+            id: device_pairing::APPROVE_ID,
+            label: "search-action-identity-device-pair-approve",
+            subtitle: "search-action-identity-device-pair-approve-subtitle",
+            params: device_pairing::APPROVE_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
+            id: device_pairing::REJECT_ID,
+            label: "search-action-identity-device-pair-reject",
+            subtitle: "search-action-identity-device-pair-reject-subtitle",
+            params: device_pairing::REJECT_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::LIST_ID,
+            label: "search-action-identity-list",
+            subtitle: "search-action-identity-list-subtitle",
+            params: crate::shell::identity_admin::LIST_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::ACTIVATE_ID,
+            label: "search-action-identity-activate",
+            subtitle: "search-action-identity-activate-subtitle",
+            params: crate::shell::identity_admin::ACTIVATE_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::REMOVE_ID,
+            label: "search-action-identity-remove",
+            subtitle: "search-action-identity-remove-subtitle",
+            params: crate::shell::identity_admin::REMOVE_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::PROTECT_ID,
+            label: "search-action-identity-protect",
+            subtitle: "search-action-identity-protect-subtitle",
+            params: crate::shell::identity_admin::PROTECT_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::DEVICES_ID,
+            label: "search-action-identity-devices-list",
+            subtitle: "search-action-identity-devices-list-subtitle",
+            params: crate::shell::identity_admin::DEVICES_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::HOME_PEER_REMOVE_ID,
+            label: "search-action-identity-home-peer-remove",
+            subtitle: "search-action-identity-home-peer-remove-subtitle",
+            params: crate::shell::identity_admin::HOME_PEER_REMOVE_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::HOME_PEER_RETRY_ID,
+            label: "search-action-identity-home-peer-retry",
+            subtitle: "search-action-identity-home-peer-retry-subtitle",
+            params: crate::shell::identity_admin::HOME_PEER_RETRY_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
         Action {
             id: "identity.device.revoke",
             label: "search-action-identity-device-revoke",
@@ -1508,28 +1520,10 @@ impl Action {
                     ));
                 }
                 let (_, profile) = active_identity(st)?;
-                let key = parse_device_key(args.text("device").unwrap_or_default())?;
-                let reason = match args
-                    .text("reason")
-                    .unwrap_or("retired")
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str()
-                {
-                    "lost" => tilo_user_identity::RevocationReason::Lost,
-                    "stolen" => tilo_user_identity::RevocationReason::Stolen,
-                    "retired" => tilo_user_identity::RevocationReason::Retired,
-                    "compromised" => tilo_user_identity::RevocationReason::Compromised,
-                    _ => {
-                        return Err(ActionError::Refused(
-                            "reason must be lost, stolen, retired, or compromised".into(),
-                        ));
-                    }
-                };
-                let now = tilo_clock::unix_now_ns();
-                crate::device_fleet::DeviceFleetStore::from_env()
-                    .and_then(|store| store.revoke(&profile.id, key, reason, now))
-                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                let store = crate::shell::identity_admin::Store::from_env()
+                    .map_err(ActionError::Refused)?;
+                crate::shell::identity_admin::revoke(&store, &profile, args)
+                    .map_err(ActionError::Refused)?;
                 // Revoking this machine must immediately withdraw any
                 // device-key filesystem grants exported for it.
                 st.tree().export_fs_capabilities();
@@ -1966,11 +1960,11 @@ impl Action {
             "search-action-tab-new-terminal-here",
             "search-action-tab-new-terminal-here-subtitle",
             |st, _| {
-                crate::shell::window_actions::open_terminal(
+                crate::shell::window_actions::new_terminal(
                     st,
                     crate::shell::window_actions::Destination::Here,
-                );
-                Ok(())
+                )
+                .map_err(|error| ActionError::Refused(error.to_string()))
             },
         ),
         chrome(
@@ -1978,11 +1972,11 @@ impl Action {
             "search-action-window-new-terminal",
             "search-action-window-new-terminal-subtitle",
             |st, _| {
-                crate::shell::window_actions::open_terminal(
+                crate::shell::window_actions::new_terminal(
                     st,
                     crate::shell::window_actions::Destination::Beside,
-                );
-                Ok(())
+                )
+                .map_err(|error| ActionError::Refused(error.to_string()))
             },
         ),
         chrome(
@@ -2985,6 +2979,13 @@ struct CatalogueState {
     collab: bool,
     active_workspace: Option<crate::shell::state::WorkspaceId>,
     quick_settings: QuickSettingsKey,
+    /// What the rows that show a setting's state say: Wi-Fi, Bluetooth,
+    /// airplane mode, Do Not Disturb, axis navigation.
+    states: [bool; 5],
+    /// The settings document the rows read: the appearance mode and high
+    /// contrast their badges show, and the shortcuts and keyboard layout
+    /// their keycaps spell.
+    settings: Option<settings_store::SettingsStamp>,
     /// The search sources and whether each is on, for their switches.
     search_sources: Vec<(String, String, bool)>,
 }
@@ -3089,12 +3090,30 @@ impl SearchProvider for ActionsProvider {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return None;
         }
-        let catalogue = self.catalogue(&ctx);
-        let found = match catalogue.by_id.get(id) {
-            Some(&at) => catalogue.rows.get(at).cloned(),
-            None => crate::shell::notification::alarm_action_rows(ctx.chrome)
-                .into_iter()
-                .find(|row| row.id == id),
+        let found = if let Some(action) = Action::ALL.iter().find(|action| action.id == id) {
+            // Workspace navigation bumps the chrome revision on each invocation.
+            // Rebuilding the whole palette here also rebuilt the shortcut table
+            // for every bound row, synchronously on the compositor's loop.
+            let invite_offered = matches!(id, "peer.invite" | "peer.invite.named")
+                && ctx.chrome.peer_sync_enabled
+                && crate::shell::invite_policy::active_invite_route(ctx.chrome)
+                    .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here);
+            self.static_action(action, ctx, invite_offered)
+                .map(|mut row| {
+                    if ACTION_SHORTCUTS.iter().any(|(action, _)| *action == id) {
+                        row.shortcut =
+                            action_shortcut(&settings_store::hardware::ShortcutConfig::load(), id);
+                    }
+                    row
+                })
+        } else {
+            let catalogue = self.catalogue(&ctx);
+            match catalogue.by_id.get(id) {
+                Some(&at) => catalogue.rows.get(at).cloned(),
+                None => crate::shell::notification::alarm_action_rows(ctx.chrome)
+                    .into_iter()
+                    .find(|row| row.id == id),
+            }
         };
         found.map(|mut row| {
             // What an empty query scores it.
@@ -3164,6 +3183,15 @@ impl SearchProvider for ActionsProvider {
                 out.push(row);
             }
         }
+        // Equal matches: what is chosen most comes first, then the action
+        // that does it in one step before the one asking for input, and a
+        // switch before a view of the same thing, so "wi-fi" finds the
+        // switch ahead of the setter it drives and the list of networks.
+        crate::shell::search::usage::order_ties_by(&mut out, |row| {
+            i32::from(row.params.is_empty())
+                .saturating_mul(2)
+                .saturating_add(i32::from(toggles_in_place(&row.id)))
+        });
         out
     }
 }
@@ -3205,6 +3233,14 @@ impl ActionsProvider {
             collab: ctx.chrome.collab_available(),
             active_workspace,
             quick_settings: self.qs_actions.catalogue_key(),
+            states: [
+                ctx.chrome.quick_settings.wifi,
+                ctx.chrome.quick_settings.bluetooth,
+                ctx.chrome.quick_settings.radios.airplane_mode,
+                ctx.chrome.dnd(),
+                ctx.chrome.axis_navigation_enabled(),
+            ],
+            settings: settings_store::stamp(),
             search_sources: self.search_sources(),
         }
     }
@@ -3224,6 +3260,456 @@ impl ActionsProvider {
             .collect();
         drop(preferences);
         sources
+    }
+
+    /// Build one table action, shared by palette enumeration and exact invocation.
+    /// Exact addresses must not build unrelated rows after every chrome mutation.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the table action's synchronous and lifecycle callbacks share one construction path"
+    )]
+    fn static_action(
+        &self,
+        action: &Action,
+        ctx: SearchContext<'_>,
+        invite_offered: bool,
+    ) -> Option<SearchResult> {
+        if action.id == "topbar.editor.open"
+            && ctx.chrome.fullscreen_group().is_some()
+            && ctx.chrome.is_fullscreen()
+        {
+            return None;
+        }
+        // A session not running peer sync has nothing to invite into.
+        if (action.id.starts_with("peer.") || INVITATION_ACTION_IDS.contains(&action.id))
+            && !ctx.chrome.peer_sync_enabled
+        {
+            return None;
+        }
+        // The one invitation policy: no row for an invitation the issuer
+        // would refuse from here, as there is no composer for it.
+        if matches!(action.id, "peer.invite" | "peer.invite.named") && !invite_offered {
+            return None;
+        }
+        // Needs a room to record the capability in and a working
+        // broker (peer sync is not required — an agent uses this
+        // session's own broker socket).
+        if action.id.starts_with("agent.")
+            && (!ctx.chrome.collab_available()
+                || ctx.chrome.tree().desktop.active_workspace().is_none())
+        {
+            return None;
+        }
+        let label = t(action.label);
+        let subtitle = t(action.subtitle);
+        {
+            let score = 0;
+            let apply = action.apply;
+            let (on_open, on_begin_invoke) = if action.id == "record.bring" {
+                let on_open = Rc::new(
+                    |_doc: &mut ui::widget::Edits<'_>,
+                     _root: &automerge::ObjId,
+                     _chrome: &Chrome,
+                     _args: &ActionArgs| {
+                        Err(ActionError::Refused(
+                            "record.bring requires lifecycle dispatch".into(),
+                        ))
+                    },
+                ) as Rc<crate::shell::search::OpenFn>;
+                let begin = Rc::new(
+                    |_doc: &mut ui::widget::Edits<'_>,
+                     _root: &automerge::ObjId,
+                     chrome: &Chrome,
+                     args: &ActionArgs| {
+                        let id = args.text("id").unwrap_or_default();
+                        let kind = args.text("kind").unwrap_or("document");
+                        let (workspace_id, room, actor) = {
+                            let state = chrome.borrow();
+                            let tree = state.tree();
+                            let Some(workspace) = tree.desktop.active_workspace() else {
+                                return Err(ActionError::Refused("no active workspace".into()));
+                            };
+                            let user = state.local_user_for_room(&workspace.room);
+                            let actor = workspace.actor_for_person(&user);
+                            if !shell_action_authorized_for(workspace, &actor, "record.bring") {
+                                return Err(ActionError::Refused(
+                                    "current workspace authority no longer permits record.bring"
+                                        .into(),
+                                ));
+                            }
+                            let located = (workspace.id, workspace.room, actor);
+                            drop(tree);
+                            located
+                        };
+                        let request_id = chrome.borrow_mut().push_tracked_record_request(
+                            id.to_string(),
+                            kind.to_string(),
+                            workspace_id,
+                            room,
+                            actor,
+                        );
+                        let chrome = chrome.clone();
+                        let ticket: crate::shell::search::PendingInvocation = Rc::new(move || {
+                            match chrome.borrow_mut().take_record_request_result(request_id) {
+                                None => Ok(None),
+                                Some(Ok(())) => {
+                                    Ok(Some(crate::shell::search::ActionReceipt::completed()))
+                                }
+                                Some(Err(error)) => Err(ActionError::Refused(error)),
+                            }
+                        });
+                        Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>;
+                (on_open, Some(begin))
+            } else if matches!(
+                action.id,
+                "peer.invite" | "peer.connect" | "peer.invite.named"
+            ) {
+                let action_id = action.id;
+                let on_open = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          _chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        Err(ActionError::Refused(format!(
+                            "{action_id} requires lifecycle dispatch"
+                        )))
+                    },
+                ) as Rc<crate::shell::search::OpenFn>;
+                let begin = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          args: &ActionArgs| {
+                        let request_id = {
+                            let mut state = chrome.borrow_mut();
+                            if !current_shell_action_authorized(&state, action_id) {
+                                return Err(ActionError::Refused(format!(
+                                    "current workspace authority no longer permits {action_id}"
+                                )));
+                            }
+                            if action_id != "peer.connect"
+                                && let Some(refusal) =
+                                    crate::shell::invite_policy::active_invite_route(&state)
+                                        .map_or(Some("no active workspace"), |route| {
+                                            route.refusal()
+                                        })
+                            {
+                                return Err(ActionError::Refused(refusal.into()));
+                            }
+                            let request = match action_id {
+                                "peer.invite" => {
+                                    crate::shell::overlay_host::PeerSyncAction::PromptInvite
+                                }
+                                "peer.connect" => {
+                                    crate::shell::overlay_host::PeerSyncAction::PromptConnect
+                                }
+                                "peer.invite.named" => {
+                                    let name = name_invited_peer(&state, args)?;
+                                    state.bump();
+                                    crate::shell::overlay_host::PeerSyncAction::IssueInviteFor {
+                                        name,
+                                        copy: false,
+                                    }
+                                }
+                                #[expect(
+                                    clippy::unreachable,
+                                    reason = "this closure is only built for the peer lifecycle ids matched above"
+                                )]
+                                _ => unreachable!("matched peer lifecycle action"),
+                            };
+                            state.begin_peer_sync_request(request)
+                        };
+                        Ok(crate::shell::search::InvocationDisposition::Pending(
+                            peer_sync_ticket(chrome.clone(), request_id),
+                        ))
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>;
+                (on_open, Some(begin))
+            } else if device_pairing::is_pair_action(action.id) {
+                let action_id = action.id;
+                let on_open = Rc::new(
+                    |_doc: &mut ui::widget::Edits<'_>,
+                     _root: &automerge::ObjId,
+                     _chrome: &Chrome,
+                     _args: &ActionArgs| { Err(pairing_needs_lifecycle()) },
+                ) as Rc<crate::shell::search::OpenFn>;
+                let begin = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          args: &ActionArgs| {
+                        device_pairing::begin(
+                            crate::shell::device_pairing::Pairing::session(),
+                            chrome,
+                            action_id,
+                            args,
+                        )
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>;
+                (on_open, Some(begin))
+            } else if identity_admin::is_identity_action(action.id) {
+                let action_id = action.id;
+                let on_open = Rc::new(
+                    |_doc: &mut ui::widget::Edits<'_>,
+                     _root: &automerge::ObjId,
+                     _chrome: &Chrome,
+                     _args: &ActionArgs| { Err(identity_needs_lifecycle()) },
+                ) as Rc<crate::shell::search::OpenFn>;
+                let begin = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          args: &ActionArgs| {
+                        identity_admin::begin(
+                            crate::shell::identity_admin::IdentityAdmin::session(),
+                            chrome,
+                            action_id,
+                            args,
+                        )
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>;
+                (on_open, Some(begin))
+            } else if INVITATION_ACTION_IDS.contains(&action.id) {
+                let action_id = action.id;
+                let on_open = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          _chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        Err(ActionError::Refused(format!(
+                            "{action_id} requires lifecycle dispatch"
+                        )))
+                    },
+                ) as Rc<crate::shell::search::OpenFn>;
+                let begin = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          args: &ActionArgs| {
+                        let request = invitation_request(action_id, args)?;
+                        let request_id = {
+                            let mut state = chrome.borrow_mut();
+                            if !current_shell_action_authorized(&state, action_id) {
+                                return Err(ActionError::Refused(format!(
+                                    "current workspace authority no longer permits {action_id}"
+                                )));
+                            }
+                            let workspace = active_workspace_id(&state)?;
+                            state.begin_peer_sync_request(
+                                crate::shell::overlay_host::PeerSyncAction::Network {
+                                    workspace,
+                                    request,
+                                },
+                            )
+                        };
+                        Ok(crate::shell::search::InvocationDisposition::Pending(
+                            peer_sync_ticket(chrome.clone(), request_id),
+                        ))
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>;
+                (on_open, Some(begin))
+            } else if let Some(mode) = action
+                .id
+                .strip_prefix("display.layout.")
+                .and_then(DisplayLayoutMode::from_id)
+            {
+                let action_id = action.id;
+                let on_open = Rc::new(
+                    |_doc: &mut ui::widget::Edits<'_>,
+                     _root: &automerge::ObjId,
+                     _chrome: &Chrome,
+                     _args: &ActionArgs| {
+                        Err(ActionError::Refused(
+                            "display layouts require lifecycle dispatch".into(),
+                        ))
+                    },
+                ) as Rc<crate::shell::search::OpenFn>;
+                let begin = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        if !current_shell_action_authorized(&chrome.borrow(), action_id) {
+                            return Err(ActionError::Refused(
+                                "current workspace authority no longer permits this display layout"
+                                    .into(),
+                            ));
+                        }
+                        let pending = crate::shell::display_persistence::stage_layout(mode)
+                            .map_err(|error| ActionError::Refused(error.to_string()))?;
+                        {
+                            let mut state = chrome.borrow_mut();
+                            state.open_projection_for_action();
+                            state.bump();
+                        }
+                        let chrome = chrome.clone();
+                        // The sheet this opened follows the stored change
+                        // and closes once it settles; a refused layout
+                        // leaves nothing to answer, so it closes at once.
+                        let ticket: crate::shell::search::PendingInvocation =
+                            Rc::new(move || match pending.poll() {
+                                Ok(done) => Ok(done.map(|transaction| {
+                                    let mut state = chrome.borrow_mut();
+                                    state.projection_staged(transaction.id);
+                                    state.bump();
+                                    // The change to answer with Keep or
+                                    // Revert, for the caller to follow.
+                                    crate::shell::search::ActionReceipt::completed_with(
+                                        serde_json::json!({ "transaction": transaction.id }),
+                                    )
+                                })),
+                                Err(error) => {
+                                    let mut state = chrome.borrow_mut();
+                                    state.projection_refused();
+                                    state.bump();
+                                    Err(ActionError::Refused(error.to_string()))
+                                }
+                            });
+                        Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>;
+                (on_open, Some(begin))
+            } else if matches!(action.id, DISPLAY_KEEP_ID | DISPLAY_REVERT_ID) {
+                use crate::shell::display_persistence::{Answer, answer};
+                let action_id = action.id;
+                let on_open = Rc::new(
+                    |_doc: &mut ui::widget::Edits<'_>,
+                     _root: &automerge::ObjId,
+                     _chrome: &Chrome,
+                     _args: &ActionArgs| {
+                        Err(ActionError::Refused(
+                            "display answers require lifecycle dispatch".into(),
+                        ))
+                    },
+                ) as Rc<crate::shell::search::OpenFn>;
+                let begin = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        if !current_shell_action_authorized(&chrome.borrow(), action_id) {
+                            return Err(ActionError::Refused(
+                                "current workspace authority no longer permits this display answer"
+                                    .into(),
+                            ));
+                        }
+                        let pending = answer(if action_id == DISPLAY_KEEP_ID {
+                            Answer::Keep
+                        } else {
+                            Answer::Revert
+                        })
+                        .map_err(|error| ActionError::Refused(error.to_string()))?;
+                        let chrome = chrome.clone();
+                        let ticket: crate::shell::search::PendingInvocation = Rc::new(move || {
+                            pending
+                                .poll()
+                                .map(|done| {
+                                    done.map(|()| {
+                                        chrome.borrow_mut().bump();
+                                        crate::shell::search::ActionReceipt::completed()
+                                    })
+                                })
+                                .map_err(|error| ActionError::Refused(error.to_string()))
+                        });
+                        Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>;
+                (on_open, Some(begin))
+            } else {
+                let action_id = action.id;
+                let creation_context = (action_id == "workspace.create")
+                    .then(|| workspace_create_context(ctx.chrome).ok());
+                let on_open = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          args: &ActionArgs| {
+                        let mut st = chrome.borrow_mut();
+                        if !current_shell_action_authorized(&st, action_id) {
+                            return Err(ActionError::Refused(format!(
+                                "current workspace authority no longer permits {action_id}"
+                            )));
+                        }
+                        if let Some(expected) = &creation_context
+                            && workspace_create_context(&st).ok().as_ref() != expected.as_ref()
+                        {
+                            return Err(ActionError::Refused(
+                                "workspace creation context changed; resolve the action again"
+                                    .into(),
+                            ));
+                        }
+                        let outcome = apply(&mut st, args);
+                        // Repaint only on success; a refusal changed nothing.
+                        if outcome.is_ok() {
+                            st.bump();
+                        }
+                        outcome
+                    },
+                ) as Rc<crate::shell::search::OpenFn>;
+                (on_open, None)
+            };
+            Some(SearchResult {
+                shortcut: None,
+                kind: ResourceKind::Action,
+                operation_kind: shell_action_kind(action.id),
+                provider_id: self.id().to_string(),
+                id: action.id.to_string(),
+                title: label,
+                subtitle: Some(subtitle),
+                badge: state_badge(action.id, ctx.chrome),
+                score,
+                params: action.params.to_vec(),
+                contract: Some(shell_action_contract(action.id)),
+                on_open,
+                on_invoke: match action.id {
+                    shared_display_actions::INSPECT_ID => Some(Rc::new(
+                        |_: &mut ui::widget::Edits<'_>,
+                         _: &automerge::ObjId,
+                         _: &Chrome,
+                         _: &ActionArgs| {
+                            shared_display_actions::inspect()
+                                .map(crate::shell::search::ActionReceipt::completed_with)
+                        },
+                    )
+                        as Rc<crate::shell::search::InvokeFn>),
+                    DISPLAY_OUTPUTS_INSPECT_ID => Some(Rc::new(
+                        |_: &mut ui::widget::Edits<'_>,
+                         _: &automerge::ObjId,
+                         _: &Chrome,
+                         _: &ActionArgs| {
+                            inspect_display_outputs()
+                                .map(crate::shell::search::ActionReceipt::completed_with)
+                        },
+                    )
+                        as Rc<crate::shell::search::InvokeFn>),
+                    // The setup code is the action's answer, for a script
+                    // or agent to hand to the joining device.
+                    id if enrollment_tokens::role_of(id).is_some() => Some(Rc::new(
+                        move |_: &mut ui::widget::Edits<'_>,
+                              _: &automerge::ObjId,
+                              chrome: &Chrome,
+                              args: &ActionArgs| {
+                            let role = enrollment_tokens::role_of(id).ok_or_else(|| {
+                                ActionError::Refused(format!("{id} mints no setup code"))
+                            })?;
+                            let state = chrome.borrow();
+                            if !current_shell_action_authorized(&state, id) {
+                                return Err(ActionError::Refused(format!(
+                                    "current workspace authority no longer permits {id}"
+                                )));
+                            }
+                            enrollment_tokens::mint(&state, args, role)
+                                .map(crate::shell::search::ActionReceipt::completed_with)
+                        },
+                    )
+                        as Rc<crate::shell::search::InvokeFn>),
+                    _ => None,
+                },
+                on_begin_invoke,
+            })
+        }
     }
 
     /// Build every row the provider offers, whatever the needle; see
@@ -3277,376 +3763,13 @@ impl ActionsProvider {
         // together to keep the matches and score them.
         let mut candidates = ActionCandidates::default();
         for action in Action::ALL {
-            if action.id == "topbar.editor.open"
-                && ctx.chrome.fullscreen_group().is_some()
-                && ctx.chrome.is_fullscreen()
-            {
-                continue;
-            }
-            // A session not running peer sync has nothing to invite into.
-            if (action.id.starts_with("peer.") || INVITATION_ACTION_IDS.contains(&action.id))
-                && !ctx.chrome.peer_sync_enabled
-            {
-                continue;
-            }
-            // The one invitation policy: no row for an invitation the issuer
-            // would refuse from here, as there is no composer for it.
-            if matches!(action.id, "peer.invite" | "peer.invite.named") && !key.state.invite_offered
-            {
-                continue;
-            }
-            // Needs a room to record the capability in and a working
-            // broker (peer sync is not required — an agent uses this
-            // session's own broker socket).
-            if action.id.starts_with("agent.")
-                && (!ctx.chrome.collab_available()
-                    || ctx.chrome.tree().desktop.active_workspace().is_none())
-            {
-                continue;
-            }
-            let label = t(action.label);
-            let subtitle = t(action.subtitle);
-            let label_lower = label.to_lowercase();
-            let subtitle_lower = subtitle.to_lowercase();
-            candidates.record(&label_lower, &subtitle_lower, action.id);
-            {
-                let score = 0;
-                let apply = action.apply;
-                let (on_open, on_begin_invoke) = if action.id == "record.bring" {
-                    let on_open = Rc::new(
-                        |_doc: &mut ui::widget::Edits<'_>,
-                         _root: &automerge::ObjId,
-                         _chrome: &Chrome,
-                         _args: &ActionArgs| {
-                            Err(ActionError::Refused(
-                                "record.bring requires lifecycle dispatch".into(),
-                            ))
-                        },
-                    ) as Rc<crate::shell::search::OpenFn>;
-                    let begin = Rc::new(
-                        |_doc: &mut ui::widget::Edits<'_>,
-                         _root: &automerge::ObjId,
-                         chrome: &Chrome,
-                         args: &ActionArgs| {
-                            let id = args.text("id").unwrap_or_default();
-                            let kind = args.text("kind").unwrap_or("document");
-                            let (workspace_id, room, actor) = {
-                                let state = chrome.borrow();
-                                let tree = state.tree();
-                                let Some(workspace) = tree.desktop.active_workspace() else {
-                                    return Err(ActionError::Refused("no active workspace".into()));
-                                };
-                                let user = state.local_user_for_room(&workspace.room);
-                                let actor = workspace.actor_for_person(&user);
-                                if !shell_action_authorized_for(workspace, &actor, "record.bring") {
-                                    return Err(ActionError::Refused(
-                                        "current workspace authority no longer permits record.bring"
-                                            .into(),
-                                    ));
-                                }
-                                let located = (workspace.id, workspace.room, actor);
-                                drop(tree);
-                                located
-                            };
-                            let request_id = chrome.borrow_mut().push_tracked_record_request(
-                                id.to_string(),
-                                kind.to_string(),
-                                workspace_id,
-                                room,
-                                actor,
-                            );
-                            let chrome = chrome.clone();
-                            let ticket: crate::shell::search::PendingInvocation =
-                                Rc::new(move || {
-                                    match chrome.borrow_mut().take_record_request_result(request_id)
-                                    {
-                                        None => Ok(None),
-                                        Some(Ok(())) => Ok(Some(
-                                            crate::shell::search::ActionReceipt::completed(),
-                                        )),
-                                        Some(Err(error)) => Err(ActionError::Refused(error)),
-                                    }
-                                });
-                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
-                        },
-                    ) as Rc<crate::shell::search::BeginInvokeFn>;
-                    (on_open, Some(begin))
-                } else if matches!(
-                    action.id,
-                    "peer.invite" | "peer.connect" | "peer.invite.named"
-                ) {
-                    let action_id = action.id;
-                    let on_open = Rc::new(
-                        move |_doc: &mut ui::widget::Edits<'_>,
-                              _root: &automerge::ObjId,
-                              _chrome: &Chrome,
-                              _args: &ActionArgs| {
-                            Err(ActionError::Refused(format!(
-                                "{action_id} requires lifecycle dispatch"
-                            )))
-                        },
-                    ) as Rc<crate::shell::search::OpenFn>;
-                    let begin = Rc::new(
-                        move |_doc: &mut ui::widget::Edits<'_>,
-                              _root: &automerge::ObjId,
-                              chrome: &Chrome,
-                              args: &ActionArgs| {
-                            let request_id = {
-                                let mut state = chrome.borrow_mut();
-                                if !current_shell_action_authorized(&state, action_id) {
-                                    return Err(ActionError::Refused(format!(
-                                        "current workspace authority no longer permits {action_id}"
-                                    )));
-                                }
-                                if action_id != "peer.connect"
-                                    && let Some(refusal) =
-                                        crate::shell::invite_policy::active_invite_route(&state)
-                                            .map_or(Some("no active workspace"), |route| {
-                                                route.refusal()
-                                            })
-                                {
-                                    return Err(ActionError::Refused(refusal.into()));
-                                }
-                                let request = match action_id {
-                                    "peer.invite" => {
-                                        crate::shell::overlay_host::PeerSyncAction::PromptInvite
-                                    }
-                                    "peer.connect" => {
-                                        crate::shell::overlay_host::PeerSyncAction::PromptConnect
-                                    }
-                                    "peer.invite.named" => {
-                                        let name = name_invited_peer(&state, args)?;
-                                        state.bump();
-                                        crate::shell::overlay_host::PeerSyncAction::IssueInviteFor {
-                                            name,
-                                            copy: false,
-                                        }
-                                    }
-                                    #[expect(
-                                        clippy::unreachable,
-                                        reason = "this closure is only built for the peer lifecycle ids matched above"
-                                    )]
-                                    _ => unreachable!("matched peer lifecycle action"),
-                                };
-                                state.begin_peer_sync_request(request)
-                            };
-                            Ok(crate::shell::search::InvocationDisposition::Pending(
-                                peer_sync_ticket(chrome.clone(), request_id),
-                            ))
-                        },
-                    ) as Rc<crate::shell::search::BeginInvokeFn>;
-                    (on_open, Some(begin))
-                } else if INVITATION_ACTION_IDS.contains(&action.id) {
-                    let action_id = action.id;
-                    let on_open = Rc::new(
-                        move |_doc: &mut ui::widget::Edits<'_>,
-                              _root: &automerge::ObjId,
-                              _chrome: &Chrome,
-                              _args: &ActionArgs| {
-                            Err(ActionError::Refused(format!(
-                                "{action_id} requires lifecycle dispatch"
-                            )))
-                        },
-                    ) as Rc<crate::shell::search::OpenFn>;
-                    let begin = Rc::new(
-                        move |_doc: &mut ui::widget::Edits<'_>,
-                              _root: &automerge::ObjId,
-                              chrome: &Chrome,
-                              args: &ActionArgs| {
-                            let request = invitation_request(action_id, args)?;
-                            let request_id = {
-                                let mut state = chrome.borrow_mut();
-                                if !current_shell_action_authorized(&state, action_id) {
-                                    return Err(ActionError::Refused(format!(
-                                        "current workspace authority no longer permits {action_id}"
-                                    )));
-                                }
-                                let workspace = active_workspace_id(&state)?;
-                                state.begin_peer_sync_request(
-                                    crate::shell::overlay_host::PeerSyncAction::Network {
-                                        workspace,
-                                        request,
-                                    },
-                                )
-                            };
-                            Ok(crate::shell::search::InvocationDisposition::Pending(
-                                peer_sync_ticket(chrome.clone(), request_id),
-                            ))
-                        },
-                    ) as Rc<crate::shell::search::BeginInvokeFn>;
-                    (on_open, Some(begin))
-                } else if let Some(mode) = action
-                    .id
-                    .strip_prefix("display.layout.")
-                    .and_then(DisplayLayoutMode::from_id)
-                {
-                    let action_id = action.id;
-                    let on_open = Rc::new(
-                        |_doc: &mut ui::widget::Edits<'_>,
-                         _root: &automerge::ObjId,
-                         _chrome: &Chrome,
-                         _args: &ActionArgs| {
-                            Err(ActionError::Refused(
-                                "display layouts require lifecycle dispatch".into(),
-                            ))
-                        },
-                    ) as Rc<crate::shell::search::OpenFn>;
-                    let begin = Rc::new(
-                        move |_doc: &mut ui::widget::Edits<'_>,
-                              _root: &automerge::ObjId,
-                              chrome: &Chrome,
-                              _args: &ActionArgs| {
-                            if !current_shell_action_authorized(&chrome.borrow(), action_id) {
-                                return Err(ActionError::Refused("current workspace authority no longer permits this display layout".into()));
-                            }
-                            let pending = crate::shell::display_persistence::stage_layout(mode)
-                                .map_err(|error| ActionError::Refused(error.to_string()))?;
-                            {
-                                let mut state = chrome.borrow_mut();
-                                state.open_projection_for_action();
-                                state.bump();
-                            }
-                            let chrome = chrome.clone();
-                            // The sheet this opened follows the stored change
-                            // and closes once it settles; a refused layout
-                            // leaves nothing to answer, so it closes at once.
-                            let ticket: crate::shell::search::PendingInvocation =
-                                Rc::new(move || match pending.poll() {
-                                    Ok(done) => Ok(done.map(|transaction| {
-                                        let mut state = chrome.borrow_mut();
-                                        state.projection_staged(transaction.id);
-                                        state.bump();
-                                        // The change to answer with Keep or
-                                        // Revert, for the caller to follow.
-                                        crate::shell::search::ActionReceipt::completed_with(
-                                            serde_json::json!({ "transaction": transaction.id }),
-                                        )
-                                    })),
-                                    Err(error) => {
-                                        let mut state = chrome.borrow_mut();
-                                        state.projection_refused();
-                                        state.bump();
-                                        Err(ActionError::Refused(error.to_string()))
-                                    }
-                                });
-                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
-                        },
-                    ) as Rc<crate::shell::search::BeginInvokeFn>;
-                    (on_open, Some(begin))
-                } else if matches!(action.id, DISPLAY_KEEP_ID | DISPLAY_REVERT_ID) {
-                    use crate::shell::display_persistence::{Answer, answer};
-                    let action_id = action.id;
-                    let on_open = Rc::new(
-                        |_doc: &mut ui::widget::Edits<'_>,
-                         _root: &automerge::ObjId,
-                         _chrome: &Chrome,
-                         _args: &ActionArgs| {
-                            Err(ActionError::Refused(
-                                "display answers require lifecycle dispatch".into(),
-                            ))
-                        },
-                    ) as Rc<crate::shell::search::OpenFn>;
-                    let begin = Rc::new(
-                        move |_doc: &mut ui::widget::Edits<'_>,
-                              _root: &automerge::ObjId,
-                              chrome: &Chrome,
-                              _args: &ActionArgs| {
-                            if !current_shell_action_authorized(&chrome.borrow(), action_id) {
-                                return Err(ActionError::Refused("current workspace authority no longer permits this display answer".into()));
-                            }
-                            let pending = answer(if action_id == DISPLAY_KEEP_ID {
-                                Answer::Keep
-                            } else {
-                                Answer::Revert
-                            })
-                            .map_err(|error| ActionError::Refused(error.to_string()))?;
-                            let chrome = chrome.clone();
-                            let ticket: crate::shell::search::PendingInvocation =
-                                Rc::new(move || {
-                                    pending
-                                        .poll()
-                                        .map(|done| {
-                                            done.map(|()| {
-                                                chrome.borrow_mut().bump();
-                                                crate::shell::search::ActionReceipt::completed()
-                                            })
-                                        })
-                                        .map_err(|error| ActionError::Refused(error.to_string()))
-                                });
-                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
-                        },
-                    ) as Rc<crate::shell::search::BeginInvokeFn>;
-                    (on_open, Some(begin))
-                } else {
-                    let action_id = action.id;
-                    let creation_context = (action_id == "workspace.create")
-                        .then(|| workspace_create_context(ctx.chrome).ok());
-                    let on_open = Rc::new(
-                        move |_doc: &mut ui::widget::Edits<'_>,
-                              _root: &automerge::ObjId,
-                              chrome: &Chrome,
-                              args: &ActionArgs| {
-                            let mut st = chrome.borrow_mut();
-                            if !current_shell_action_authorized(&st, action_id) {
-                                return Err(ActionError::Refused(format!(
-                                    "current workspace authority no longer permits {action_id}"
-                                )));
-                            }
-                            if let Some(expected) = &creation_context
-                                && workspace_create_context(&st).ok().as_ref() != expected.as_ref()
-                            {
-                                return Err(ActionError::Refused(
-                                    "workspace creation context changed; resolve the action again"
-                                        .into(),
-                                ));
-                            }
-                            let outcome = apply(&mut st, args);
-                            // Repaint only on success; a refusal changed nothing.
-                            if outcome.is_ok() {
-                                st.bump();
-                            }
-                            outcome
-                        },
-                    ) as Rc<crate::shell::search::OpenFn>;
-                    (on_open, None)
-                };
-                out.push(SearchResult {
-                    kind: ResourceKind::Action,
-                    operation_kind: shell_action_kind(action.id),
-                    provider_id: self.id().to_string(),
-                    id: action.id.to_string(),
-                    title: label,
-                    subtitle: Some(subtitle),
-                    badge: None,
-                    score,
-                    params: action.params.to_vec(),
-                    contract: Some(shell_action_contract(action.id)),
-                    on_open,
-                    on_invoke: match action.id {
-                        shared_display_actions::INSPECT_ID => Some(Rc::new(
-                            |_: &mut ui::widget::Edits<'_>,
-                             _: &automerge::ObjId,
-                             _: &Chrome,
-                             _: &ActionArgs| {
-                                shared_display_actions::inspect()
-                                    .map(crate::shell::search::ActionReceipt::completed_with)
-                            },
-                        )
-                            as Rc<crate::shell::search::InvokeFn>),
-                        DISPLAY_OUTPUTS_INSPECT_ID => Some(Rc::new(
-                            |_: &mut ui::widget::Edits<'_>,
-                             _: &automerge::ObjId,
-                             _: &Chrome,
-                             _: &ActionArgs| {
-                                inspect_display_outputs()
-                                    .map(crate::shell::search::ActionReceipt::completed_with)
-                            },
-                        )
-                            as Rc<crate::shell::search::InvokeFn>),
-                        _ => None,
-                    },
-                    on_begin_invoke,
-                });
+            if let Some(row) = self.static_action(action, ctx, key.state.invite_offered) {
+                candidates.record(
+                    &row.title.to_lowercase(),
+                    &row.subtitle.as_deref().unwrap_or_default().to_lowercase(),
+                    &row.id,
+                );
+                out.push(row);
             }
         }
         let descriptors = tilo_desktop::activity::view_actions::workspace_view_descriptors(
@@ -3663,6 +3786,7 @@ impl ActionsProvider {
             let score = 0;
             let request = descriptor.request;
             out.push(SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::View,
                 provider_id: self.id().into(),
@@ -3711,6 +3835,7 @@ impl ActionsProvider {
                 };
                 let request = id.clone();
                 out.push(SearchResult {
+                    shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: kind,
                     provider_id: self.id().into(),
@@ -3786,6 +3911,7 @@ impl ActionsProvider {
                 id,
             );
             out.push(SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::View,
                 provider_id: self.id().into(),
@@ -3868,6 +3994,7 @@ impl ActionsProvider {
                 ) as Rc<crate::shell::search::BeginInvokeFn>
             });
             out.push(SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 badge: None,
@@ -3948,6 +4075,61 @@ impl ActionsProvider {
                 on_begin_invoke,
             });
         }
+        // One-step switches for the radios: "wifi" finds "Wi-Fi: turn off", not a
+        // form asking for `enabled`, and the row says what it is now. They run
+        // the same set-enabled action with the opposite of the live state.
+        for toggle in QS_TOGGLES {
+            let (set_enabled_id, toggle_id) = (toggle.set_enabled, toggle.id);
+            let Some(base) = out.iter().find(|row| row.id == set_enabled_id).cloned() else {
+                continue;
+            };
+            if !self.qs_actions.action_available(set_enabled_id) {
+                continue;
+            }
+            let on = radio_is_on(ctx.chrome, set_enabled_id);
+            let title = t(if on { toggle.turn_off } else { toggle.turn_on });
+            let subtitle = t(toggle.subtitle);
+            let params = base.params.clone();
+            let opposite = move |chrome: &Chrome| -> Result<ActionArgs, ActionError> {
+                let enabled = !radio_is_on(&chrome.borrow(), set_enabled_id);
+                let mut arguments = serde_json::Map::new();
+                arguments.insert("enabled".into(), serde_json::Value::Bool(enabled));
+                ActionArgs::bind_json(&params, &arguments).map_err(ActionError::Arguments)
+            };
+            let on_open = {
+                let run = Rc::clone(&base.on_open);
+                let opposite = opposite.clone();
+                Rc::new(
+                    move |doc: &mut ui::widget::Edits<'_>,
+                          root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        run(doc, root, chrome, &opposite(chrome)?)
+                    },
+                ) as Rc<crate::shell::search::OpenFn>
+            };
+            let on_begin_invoke = base.on_begin_invoke.clone().map(|begin| {
+                Rc::new(
+                    move |doc: &mut ui::widget::Edits<'_>,
+                          root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        begin(doc, root, chrome, &opposite(chrome)?)
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>
+            });
+            candidates.record(&title.to_lowercase(), &subtitle.to_lowercase(), toggle_id);
+            out.push(SearchResult {
+                id: toggle_id.to_string(),
+                title,
+                subtitle: Some(subtitle),
+                badge: Some(on_off_badge(on)),
+                params: Vec::new(),
+                on_open,
+                on_begin_invoke,
+                ..base
+            });
+        }
         let actor = key.actor.clone();
         let ownership_resource = {
             let tree = ctx.chrome.tree();
@@ -3971,6 +4153,7 @@ impl ActionsProvider {
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
+                        shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Document,
                         provider_id: self.id().to_string(),
@@ -4022,6 +4205,7 @@ impl ActionsProvider {
                     let spec = action.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
+                        shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Document,
                         provider_id: self.id().to_string(),
@@ -4054,6 +4238,7 @@ impl ActionsProvider {
                 let score = 0;
                 let preferences = Rc::clone(preferences);
                 out.push(SearchResult {
+                    shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: tilo_actions::OperationKind::Effect,
                     provider_id: self.id().to_string(),
@@ -4125,6 +4310,7 @@ impl ActionsProvider {
                     let preferences = Rc::clone(preferences);
                     let provider_id = provider_id.clone();
                     out.push(SearchResult {
+                        shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: self.id().to_string(),
@@ -4157,6 +4343,12 @@ impl ActionsProvider {
                 }
                 source_switches.end = out.len();
             }
+        }
+        // Each row that has a shortcut shows it, as the keyboard layout in use
+        // spells it.
+        let shortcuts = settings_store::hardware::ShortcutConfig::load();
+        for row in &mut out {
+            row.shortcut = action_shortcut(&shortcuts, &row.id);
         }
         let mut by_id = std::collections::HashMap::with_capacity(out.len());
         for (at, row) in out.iter().enumerate() {
@@ -4219,6 +4411,197 @@ fn workspace_view_copy(
     }
 }
 
+/// The words people use for the action `id`, in every language the shell
+/// has ("dark mode", "dunkelmodus", "night"): what a person types who does
+/// not know what the row is called. Missing for an action means it is found
+/// by its label alone.
+pub(crate) fn action_keywords(id: &str) -> Vec<String> {
+    crate::shell::i18n::words_in_every_locale(&format!(
+        "{}{}",
+        crate::shell::i18n::KEYWORD_PREFIX,
+        id.replace(['.', '_', ':'], "-")
+    ))
+}
+
+/// Actions that change a setting the row itself shows, so choosing one
+/// leaves the palette open on the row's new state: a person flipping Wi-Fi
+/// or Do Not Disturb wants to see it flip, not lose the palette.
+pub(crate) fn toggles_in_place(id: &str) -> bool {
+    matches!(
+        id,
+        "notifications.dnd.toggle"
+            | "appearance.theme.dark"
+            | "appearance.theme.light"
+            | "appearance.high-contrast"
+            | "navigation.axis.enable"
+            | "navigation.axis.disable"
+    ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
+}
+
+/// The shortcut that does what an action does, as the active keyboard
+/// layout spells it, when the desktop has one: the catalogue id in
+/// [`settings_store::keyboard_shortcuts`] and the action it matches.
+const ACTION_SHORTCUTS: &[(&str, &str)] = &[
+    ("overview.toggle", "workspace-overview"),
+    ("quick-settings.open", "quick-settings"),
+    ("quick-settings.clipboard", "clipboard-history"),
+    ("shortcut-help.toggle", "shortcut-help"),
+    ("window.focus-previous", "focus-previous-window"),
+    ("window.focus-next", "focus-next-window"),
+    ("tab.previous", "previous-tab"),
+    ("tab.next", "next-tab"),
+    ("tab.menu", "tab-menu"),
+    ("tab.reopen", "reopen-closed-tab"),
+    ("strip.focus-previous", "previous-strip"),
+    ("strip.focus-next", "next-strip"),
+    ("workspace.previous", "previous-workspace"),
+    ("workspace.next", "next-workspace"),
+    ("group.move-left", "move-group-left"),
+    ("group.move-right", "move-group-right"),
+    (
+        "group.move-to-strip-previous",
+        "move-group-to-previous-strip",
+    ),
+    ("group.move-to-strip-next", "move-group-to-next-strip"),
+    (
+        "group.move-to-display-previous",
+        "move-group-to-previous-display",
+    ),
+    ("group.move-to-display-next", "move-group-to-next-display"),
+    ("group.maximize", "toggle-maximize"),
+    ("group.fullscreen", "toggle-fullscreen"),
+    ("group.narrower", "resize-narrower"),
+    ("group.wider", "resize-wider"),
+    ("window.new.terminal", "open-terminal"),
+    ("dictation.toggle", "dictation-toggle"),
+    ("dictation.finish", "dictation-finish"),
+    ("dictation.cancel", "dictation-cancel"),
+    ("capture.open", "fixed-capture-screenshot"),
+    ("room.activity.open", "fixed-workspace-history"),
+    ("lock", "lock"),
+    ("emoji.picker", "emoji-picker"),
+];
+
+/// `shortcut_id`'s current chord as the active layout's keycaps spell it,
+/// from `config`.
+pub(crate) fn shortcut_text(
+    config: &settings_store::hardware::ShortcutConfig,
+    shortcut_id: &str,
+) -> Option<String> {
+    // `entry` constructs every shortcut and its defaults before selecting one.
+    // A palette row needs only its current chord, not that entire catalogue.
+    if let Some(action) = ShortcutAction::ALL
+        .into_iter()
+        .find(|action| action.id() == shortcut_id)
+    {
+        return config
+            .bindings
+            .get(&action)
+            .map(crate::shell::keyboard_shortcuts::chord_text);
+    }
+    settings_store::keyboard_shortcuts::FIXED_SHORTCUTS
+        .iter()
+        .find(|shortcut| shortcut.id == shortcut_id)?
+        .chords()
+        .first()
+        .map(crate::shell::keyboard_shortcuts::chord_text)
+}
+
+/// The shortcut shown beside the action `id`, if it has one.
+pub(crate) fn action_shortcut(
+    config: &settings_store::hardware::ShortcutConfig,
+    id: &str,
+) -> Option<String> {
+    ACTION_SHORTCUTS
+        .iter()
+        .find(|(action, _)| *action == id)
+        .and_then(|(_, shortcut)| shortcut_text(config, shortcut))
+}
+
+/// A Quick Settings radio offered as a one-step toggle: the set-enabled
+/// action it drives, its own id, and the catalogue keys of its row's title
+/// (to turn the radio on, or off) and subtitle.
+struct QsToggle {
+    set_enabled: &'static str,
+    id: &'static str,
+    turn_on: &'static str,
+    turn_off: &'static str,
+    subtitle: &'static str,
+}
+
+/// The Quick Settings radios offered as one-step toggles.
+const QS_TOGGLES: &[QsToggle] = &[
+    QsToggle {
+        set_enabled: QS_WIFI_ID,
+        id: "quick-settings.wifi.toggle",
+        turn_on: "search-toggle-wifi-on",
+        turn_off: "search-toggle-wifi-off",
+        subtitle: "search-toggle-wifi-subtitle",
+    },
+    QsToggle {
+        set_enabled: QS_BLUETOOTH_ID,
+        id: "quick-settings.bluetooth.toggle",
+        turn_on: "search-toggle-bluetooth-on",
+        turn_off: "search-toggle-bluetooth-off",
+        subtitle: "search-toggle-bluetooth-subtitle",
+    },
+    QsToggle {
+        set_enabled: QS_AIRPLANE_ID,
+        id: "quick-settings.airplane-mode.toggle",
+        turn_on: "search-toggle-airplane-mode-on",
+        turn_off: "search-toggle-airplane-mode-off",
+        subtitle: "search-toggle-airplane-mode-subtitle",
+    },
+];
+
+/// Whether the radio `set_enabled_id` drives is on now.
+fn radio_is_on(state: &ChromeState, set_enabled_id: &str) -> bool {
+    match set_enabled_id {
+        QS_WIFI_ID => state.quick_settings.wifi,
+        QS_BLUETOOTH_ID => state.quick_settings.bluetooth,
+        _ => state.quick_settings.radios.airplane_mode,
+    }
+}
+
+/// `ON` or `OFF`, as the search-source switches say it.
+fn on_off_badge(on: bool) -> String {
+    t(if on {
+        "search-action-provider-badge-on"
+    } else {
+        "search-action-provider-badge-off"
+    })
+}
+
+/// What a row shows of the setting it changes, so a toggle reads as a
+/// switch: on or off, or which mode is current.
+fn state_badge(id: &str, state: &ChromeState) -> Option<String> {
+    use settings_store::appearance::{HIGH_CONTRAST, MODE};
+    match id {
+        "notifications.dnd.toggle" => Some(on_off_badge(state.dnd())),
+        "navigation.axis.enable" => state
+            .axis_navigation_enabled()
+            .then(|| t("search-badge-state-current")),
+        "navigation.axis.disable" => {
+            (!state.axis_navigation_enabled()).then(|| t("search-badge-state-current"))
+        }
+        "appearance.high-contrast" => HIGH_CONTRAST
+            .from_document(&settings_store::load())
+            .then(|| on_off_badge(true)),
+        "appearance.theme.dark" | "appearance.theme.light" => {
+            let document = settings_store::load();
+            let mode = MODE.from_document(&document);
+            let wanted = if id.ends_with("dark") {
+                "dark"
+            } else {
+                "light"
+            };
+            (mode.as_deref() == Some(wanted) && !HIGH_CONTRAST.from_document(&document))
+                .then(|| t("search-badge-state-current"))
+        }
+        _ => None,
+    }
+}
+
 /// A typed action id is a verbatim identity — scripts and power users name
 /// actions by it — so it weighs close to the label.
 pub(super) const ACTION_ID_WEIGHT: FieldWeight = FieldWeight::new(90);
@@ -4230,11 +4613,17 @@ struct ActionCandidates(Vec<Vec<(String, FieldWeight)>>);
 impl ActionCandidates {
     /// Record the searchable text of the row pushed next.
     fn record(&mut self, label: &str, subtitle: &str, id: &str) {
-        self.0.push(vec![
+        let mut row = vec![
             (label.to_owned(), FieldWeight::TITLE),
             (id.to_owned(), ACTION_ID_WEIGHT),
             (subtitle.to_owned(), FieldWeight::SUBTITLE),
-        ]);
+        ];
+        row.extend(
+            action_keywords(id)
+                .into_iter()
+                .map(|word| (word, FieldWeight::KEYWORD)),
+        );
+        self.0.push(row);
     }
 }
 
@@ -5388,7 +5777,11 @@ mod tests {
             .expect("the tour resolves by its address");
         assert_eq!(tour.id, "desktop-tour.open");
         assert_eq!(tour.title, t("search-action-desktop-tour-open"));
-        assert_eq!(provider.builds.get(), 1);
+        assert_eq!(
+            provider.builds.get(),
+            0,
+            "an exact action builds only its row"
+        );
         assert!(
             provider.resolve("shortcut-help.toggle", ctx("")).is_some()
                 && provider.resolve("no.such.action", ctx("")).is_none()
@@ -5423,6 +5816,141 @@ mod tests {
                 .is_none(),
             "a lookup that does not want actions finds none"
         );
+    }
+
+    #[test]
+    fn exact_table_actions_keep_the_palette_contract_and_presentation() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        for peer_sync in [false, true] {
+            chrome.borrow_mut().peer_sync_enabled = peer_sync;
+            let state = chrome.borrow();
+            let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            let offered = provider.query(ctx);
+            for action in Action::ALL {
+                let listed = row(&offered, action.id);
+                let resolved = provider.resolve(action.id, ctx);
+                assert_eq!(listed.is_some(), resolved.is_some(), "{}", action.id);
+                if let Some((listed, resolved)) = listed.zip(resolved) {
+                    assert_eq!(listed.title, resolved.title, "{}", action.id);
+                    assert_eq!(listed.subtitle, resolved.subtitle, "{}", action.id);
+                    assert_eq!(listed.badge, resolved.badge, "{}", action.id);
+                    assert_eq!(listed.shortcut, resolved.shortcut, "{}", action.id);
+                    assert_eq!(listed.params, resolved.params, "{}", action.id);
+                    assert_eq!(listed.contract, resolved.contract, "{}", action.id);
+                    assert_eq!(
+                        listed.operation_kind, resolved.operation_kind,
+                        "{}",
+                        action.id
+                    );
+                    assert_eq!(
+                        listed.on_invoke.is_some(),
+                        resolved.on_invoke.is_some(),
+                        "{}",
+                        action.id
+                    );
+                    assert_eq!(
+                        listed.on_begin_invoke.is_some(),
+                        resolved.on_begin_invoke.is_some(),
+                        "{}",
+                        action.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shortcut_text_matches_rebound_fixed_and_unassigned_chords() {
+        let mut config = settings_store::hardware::ShortcutConfig::default();
+        config.bindings.insert(
+            ShortcutAction::NextWorkspace,
+            settings_store::hardware::KeyChord::parse("Super+Alt+n").expect("valid test chord"),
+        );
+        config.bindings.remove(&ShortcutAction::PreviousWorkspace);
+        for entry in settings_store::keyboard_shortcuts::catalogue(&config) {
+            assert_eq!(
+                shortcut_text(&config, entry.id),
+                entry
+                    .chords
+                    .first()
+                    .map(crate::shell::keyboard_shortcuts::chord_text),
+                "{} keeps its configured, fixed or unassigned chord",
+                entry.id,
+            );
+        }
+        assert_eq!(shortcut_text(&config, "no.such.shortcut"), None);
+    }
+
+    #[test]
+    fn workspace_action_invocations_do_not_rebuild_the_palette_catalogue() {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use crate::shell::state::{Workspace, WorkspaceId};
+
+        let provider = Rc::new(ActionsProvider::new());
+        let chrome = chrome_with_room();
+        let first = chrome.borrow().tree().desktop.active;
+        let second = WorkspaceId::new();
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let mut workspace = Workspace::new(second, "Second");
+            workspace.set_owner("shell-fixture");
+            tree.desktop.workspaces.push(workspace);
+        }
+        // The smoke journey searches before switching workspaces. Its retained
+        // palette rows become stale after each switch and chrome revision bump.
+        assert!(!rows_for(&provider, &chrome, "workspace").is_empty());
+        assert_eq!(provider.builds.get(), 1);
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(provider.clone());
+        let mut host = crate::shell::overlay_host::ShellOverlayHost::with_fixture_content(
+            Box::new(ui::widget::Container::new()),
+        )
+        .with_chrome(chrome.clone());
+        let mut doc = AutoCommit::new();
+        for _ in 0..40 {
+            for (id, expected) in [("workspace.next", second), ("workspace.previous", first)] {
+                let resource = ResourceRef::new("actions", id);
+                let catalogue = ActionCatalog::build_for_resource(
+                    &registry,
+                    &resource,
+                    crate::shell::search::SearchScope::All,
+                    None,
+                    &chrome.borrow(),
+                    &doc,
+                    &automerge::ROOT,
+                    &AllVisible,
+                );
+                catalogue
+                    .select(&resource)
+                    .expect("workspace action resolves even with stale palette rows")
+                    .invoke(
+                        &mut ui::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT,
+                        &chrome,
+                        [],
+                    )
+                    .expect("workspace action succeeds");
+                host.run_requested_shortcut_actions();
+                assert_eq!(chrome.borrow().tree().desktop.active, expected);
+                assert_eq!(
+                    provider.builds.get(),
+                    1,
+                    "invoking one addressed action must not rebuild every palette row"
+                );
+            }
+        }
+        drop(host);
     }
 
     #[test]

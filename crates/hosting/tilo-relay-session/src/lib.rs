@@ -3,7 +3,8 @@
 //! A device that talks to a relay needs the authenticated session client
 //! ([`RelayClient`]), the co-edit session over it ([`RelayCoeditSession`]),
 //! anti-entropy ([`antientropy`]), resume positions ([`position`]), room
-//! administration ([`rooms::RoomAdminClient`]) and the workspace join client
+//! administration ([`rooms`]: the names of the actions a relay serves, and
+//! the old [`rooms::RoomAdminClient`]) and the workspace join client
 //! ([`workspace_join::WorkspaceJoinClient`]). None of them needs the daemon's
 //! store, delivery or join records, so they live here and the daemon
 //! (`tilo-relay`) depends on this crate rather than the other way round.
@@ -14,15 +15,6 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod antientropy;
 pub mod client;
 pub mod coedit;

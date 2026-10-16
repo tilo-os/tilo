@@ -33,6 +33,28 @@ macro_rules! chart_leaf {
 }
 pub(crate) use chart_leaf;
 
+/// Paints a chart's title, if it has one, in the top-left corner of `rect`.
+pub(crate) fn draw_title(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    tr: &mut crate::text_render::TextRenderer,
+    theme: &crate::theme::Theme,
+    rect: vello::kurbo::Rect,
+    title: &str,
+) {
+    if title.is_empty() {
+        return;
+    }
+    tr.draw_style(
+        scene,
+        title,
+        theme.tokens.colors.text_primary,
+        transform * vello::kurbo::Affine::translate((rect.x0 + 12.0, rect.y0 + 8.0)),
+        None,
+        &theme.text(crate::tokens::TextRole::Heading),
+    );
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChartNavAction {
     Previous,
@@ -153,13 +175,13 @@ pub fn moved_index(current: Option<usize>, len: usize, action: ChartNavAction) -
 
 /// Move through a filtered list while preserving the caller's original item
 /// indices (for example, skipping invalid or zero-valued data).
-pub fn moved_item(
-    current: Option<usize>,
-    items: &[usize],
+pub fn moved_item<T: Clone + PartialEq>(
+    current: Option<T>,
+    items: &[T],
     action: ChartNavAction,
-) -> Option<usize> {
+) -> Option<T> {
     let position = current.and_then(|current| items.iter().position(|item| *item == current));
-    moved_index(position, items.len(), action).and_then(|position| items.get(position).copied())
+    moved_index(position, items.len(), action).and_then(|position| items.get(position).cloned())
 }
 
 /// The item key an accessibility `Activate` at `keys` targets: the last key.
@@ -172,14 +194,22 @@ pub(crate) fn activated_key(action: &crate::a11y::Action, keys: &[u64]) -> Optio
     }
 }
 
-/// The id among `ids` whose accessibility key an `Activate` at `keys` targets.
-pub(crate) fn activated_id<I: std::hash::Hash>(
+/// Record in `activated` the id among `ids` whose accessibility key an
+/// `Activate` at `keys` targets; whether one did.
+pub(crate) fn activate<I: std::hash::Hash + AsRef<str>>(
+    activated: &mut Option<String>,
     action: &crate::a11y::Action,
     keys: &[u64],
     ids: impl IntoIterator<Item = I>,
-) -> Option<I> {
-    let key = activated_key(action, keys)?;
-    ids.into_iter().find(|id| crate::a11y::hash_key(id) == key)
+) -> bool {
+    let Some(key) = activated_key(action, keys) else {
+        return false;
+    };
+    let Some(id) = ids.into_iter().find(|id| crate::a11y::hash_key(id) == key) else {
+        return false;
+    };
+    *activated = Some(id.as_ref().to_owned());
+    true
 }
 
 /// The pointer, hovered item and keyboard/touch state an interactive chart
@@ -217,8 +247,29 @@ impl<H> ChartInspection<H> {
 /// What a chart supplies so [`handle_chart_event`] can drive its hover,
 /// activation and keyboard inspection.
 pub(crate) trait InteractiveChart {
-    type Hover;
+    type Hover: Clone + PartialEq;
     fn inspection(&mut self) -> &mut ChartInspection<Self::Hover>;
+    /// The items the keyboard steps through, in order.
+    fn keyboard_items(&self) -> Vec<Self::Hover>;
+    /// Where inspecting `item` puts the pointer, so its tooltip shows there;
+    /// `None` leaves the pointer where it is.
+    fn anchor(&self, item: &Self::Hover) -> Option<Point>;
+    /// Puts the pointer on the hovered item's [`anchor`](Self::anchor).
+    fn anchor_hovered(&mut self) {
+        let Some(item) = self.inspection().hovered.clone() else {
+            return;
+        };
+        if let Some(anchor) = self.anchor(&item) {
+            self.inspection().pointer = anchor;
+        }
+    }
+    /// Keeps the pointer on an item the keyboard chose while the chart's
+    /// geometry changes under it; call before painting.
+    fn follow_keyboard_anchor(&mut self) {
+        if self.inspection().keyboard {
+            self.anchor_hovered();
+        }
+    }
     /// Hovers whatever lies under the pointer.
     fn update_hover(&mut self);
     fn clear_hover(&mut self) {
@@ -226,9 +277,16 @@ pub(crate) trait InteractiveChart {
     }
     /// Activates the hovered item; false when nothing activatable is hovered.
     fn activate_hovered(&mut self) -> bool;
-    /// Steps the hovered item for any action but `Activate` and anchors the
-    /// pointer on it; returns whether an item is now inspected.
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool;
+    /// Steps the hovered item through [`keyboard_items`](Self::keyboard_items)
+    /// for any action but `Activate` and anchors the pointer on it; returns
+    /// whether an item is now inspected.
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let items = self.keyboard_items();
+        let hovered = self.inspection().hovered.clone();
+        self.inspection().hovered = moved_item(hovered, &items, action);
+        self.anchor_hovered();
+        self.inspection().hovered.is_some()
+    }
     /// Toggles the legend entry under `point`, if the chart has one there.
     fn toggle_legend_at(&mut self, _point: Point) -> bool {
         false

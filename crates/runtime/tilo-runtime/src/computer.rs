@@ -288,9 +288,7 @@ impl Computer {
     }
 
     fn lock_agents(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Mutex<State>>>> {
-        self.agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.agents.lock_recover()
     }
 
     fn state_of(&self, agent: Option<&Agent>) -> Arc<Mutex<State>> {
@@ -481,9 +479,7 @@ impl Turn<'_> {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     fn cursor(&self) -> ((f64, f64), Option<Geometry>) {
@@ -901,6 +897,7 @@ fn encode(
 }
 
 use image::ImageEncoder as _;
+use tilo_lock::MutexRecover as _;
 
 /// MCP tool content for a run: each step's text, and the frames it produced.
 #[must_use]

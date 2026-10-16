@@ -13,6 +13,12 @@ impl Widget for ResponsiveNav {
         "ResponsiveNav"
     }
 
+    // This wrapper forwards no structure signal, so the shell's responsive
+    // recomposition reaches it only through a repeated pass on a resize.
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.0.as_ref()]
     }

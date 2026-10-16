@@ -28,7 +28,7 @@ under `web/`. It is reference material only; nothing is ported verbatim.
 | Accessibility | The toolkit's semantic routes projected into an accessible DOM tree; DOM actions invoked the real widget actions. |
 | Clipboard | Text only, and only inside trusted clipboard events. |
 | Fonts | The product fonts from `crates/sdk/ui-core/assets/fonts/manifest.toml`, copied into the bundle with a `fonts.json` (name, bytes, sha256, `browser_startup`). `font-loader.mjs` fetched same-origin, verified hashes, loaded startup fonts before first frame and optional ones on demand. |
-| Images and assets | Host-driven `ImageStore`; a `loadAsset` callback or same-origin fetch; qdoc blobs hash-checked. |
+| Images and assets | Host-driven `ImageStore`; a `loadAsset` callback or same-origin fetch; qdoc blobs hash-checked. The page decodes images with the browser's own decoders (`createImageBitmap`) and hands the module RGBA pixels, so app images need no decoder in the module. Pages a native peer paints still decode their images in the module (`webview::paint`), and the text renderer keeps a PNG decoder for bitmap emoji. |
 | Storage | IndexedDB with strict-durability transactions storing bytes and Automerge actor together, in a dedicated worker. An exclusive Web Lock per profile/device serialised tabs. A write counted as saved only after commit. Failed closes retained custody until `retryPendingRecovery()`. |
 | Identity | Browser-held keys (a Cloud owner root and a device key per Cloud machine) persisted in IndexedDB under Web Locks (`cloud-identity-custody.mjs`). Enrollment went through an injected `CloudEnrollmentAdapter` (`inspect`/`apply` against the Cloud Store); `signCloudMachineMesh` signed machine-link grants inside WASM. |
 | Peer transport | "One browser state owner with authenticated HTTPS delivery; no relay fallback": a long-poll HTTPS carrier (`tilo-delivery-protocol`) authenticated with the peer key. Live presence used a separate channel; media used MoQ over WebTransport. `iroh` was linked for wasm but not used as the state carrier. |
@@ -350,12 +350,12 @@ rather than a second host:
     `CoverageStatement` naming the retained entries (by digest of their
     body) it had delivered or published before the request. The host
     removes exactly those. Rooms whose replay a native shell selects
-    (`shell_authority`) are left to that selection. It runs for
+    (a bound shell retention authority) are left to that selection. It runs for
     checkpoints, room frames and before every replay, not per keystroke:
     a signed route increment that sorts after the route's
     accepted tails and applies to them is published as an original from an
     in-memory cursor the last clean selection left behind
-    (`store/shell_selection/tail_cache.rs`), since a selection could only
+    (`tilo-relay-shell`'s `selection/tail_cache.rs`), since a selection could only
     have listed it.
 - **Live plane over WebTransport.** It uses 541's `LIVE_V1` relay
   (`crates/hosting/tilo-moq`, ported from `qos-moq`), `moq-lite` at
@@ -469,7 +469,11 @@ other server.
 
 In the desktop this is **Pair a new device** (`identity-actions.mjs`). It
 copies a link that opens the current workspace with a `pair` link secret
-naming the person (`web-routing.md` §6.2). The new device asks for a
+naming the person (`web-routing.md` §6.2), and says "Link copied" in
+passing. When the clipboard refuses, a banner holds the link with **Copy
+link**, whose click may be allowed where the search choice was not; refused
+again, the page shows the link selected in a read-only field to copy by
+hand. Once copied, the banner is withdrawn. The new device asks for a
 certificate and shows its pairing code. The person's device then offers a
 banner that names the code, and choosing the banner approves the device.
 In a governed room the certificate alone admits no device. So where the
@@ -507,11 +511,12 @@ leaves the browser; the page also calls `navigator.storage.persist()`. It is
 a real identity from the start: it joins and owns
 workspaces like any other, and a host that prunes it lets the same person
 join again. Keeping it only adds wraps to its envelope, through the
-desktop's host actions (`identity-actions.mjs`: desktop search, and a banner
-when the person first posts or creates something, sets their name, or when
-`navigator.storage.persisted()` is false):
+desktop's host actions (`identity-actions.mjs`: desktop search, and one
+banner per browser session, never on arrival: after `ASK_AFTER_ACTIONS`
+separate actions or once the person sets their name, at a pause in their
+input):
 
-- **Keep this identity**: one passkey whose user handle is the root public
+- **Keep your name and work**: one passkey whose user handle is the root public
   key and whose PRF input is fixed (SHA-256 of `tilo-seal/v1/user-root-prf`).
 - **Save a recovery key**: to the password manager (`PasswordCredential`)
   where the browser has one, else as a file.
@@ -559,6 +564,7 @@ addPasskey(envelope, {identity?, rpId?, userName?, userId?}?): Promise<envelope>
 certifyDevice(nodeDevicePublicKey | {devicePublicKey, identity?, runtime?, label?, role?: 'node' | 'browser', encoding?: 'canonical' | 'json'})
   : Promise<string /* canonical DeviceCert, base64 (what a native device keeps on disk); or JSON */>;
 installNodeCertificate({origin, certificate, installToken}): Promise<{device_public_key, user_public_key}>;
+installNode({origin, devicePublicKey, installToken, identity?, label?, runtime?, onProgress?}): Promise<{device_public_key, user_public_key}>;
 // The page's own device, certified by the root itself against the host's
 // certificate (which must be a host of this root), no approver. Defaults:
 // a profile per identity, its device key, the page host's runtime.
@@ -582,6 +588,7 @@ peer.membership.list(): Promise<{room, name, generation,
   members: [{userPublicKey, name, role, owner, removed}],
   waiting: [{requestId, userPublicKey, devicePublicKey, name, role, requestedAtMs}],
   invitations: [{inviteId, role, expiresAtMs}]}>;
+peer.membership.requests(): Promise<[{requestId, userPublicKey, devicePublicKey, name, role, requestedAtMs}]>;  // waiting only, one request
 peer.membership.admit(requestId) / decline(requestId) / setRole(userPublicKey, role)
   / remove(userPublicKey) / cancelInvitation(inviteId);
 // The rooms the host governs, before the peer is in one (connect again with `room`):
@@ -630,6 +637,18 @@ A node provisioned without a certificate (`tilo-relay run --web …
 `x-tilo-install-token`; every other route answers `503`). Once a valid host
 certificate for its key is installed it starts as that identity's host on the
 same origin.
+
+`installNode` does the whole install (`nodeInstallInfo`, `certifyDevice`
+for the node and its session, `installNodeCertificate`), saying each step
+to `onProgress({phase: 'checking' | 'certifying' | 'installing'})`. A
+refusal is an `IdentityError`: `install-token-refused` (403), `not-waiting`
+(a host already serving answers no install route) or `install-refused`. The
+web desktop offers it to the person as "Set up a machine", typed in or
+filled in from an `install` link (`web/machine-setup.mjs`;
+web-routing.md §6.3). The node must allow the page's origin
+(`--allowed-origin`) for the page to reach its install route.
+The web desktop then makes workspaces on it, invites people into them and
+lets in who asks (`web/workspace-actions.mjs`; web-routing.md §6.4).
 
 Browsers accept a device as a room's governor when its certificate owns
 workspaces (`can_own_workspaces`), so such a node governs and stewards the
@@ -1262,7 +1281,12 @@ host running the portable toolkit can present:
   persisted Automerge log) and detached histories of the records its windows
   show. It retains author/time attribution and device-private seen frontiers;
   opening the pane does not mutate the live documents. Navigation publishes
-  `inSurface` when the shared pane draws the view.
+  `inSurface` when the shared pane draws the view. The surface reaches the
+  pane only through `open_activity`, which `HistorySource::activity_pane`
+  names; the desktop bundle (`tilo-web-desktop/src/activity.rs`) splits the
+  pane into its own module, fetched the first time someone opens Activity,
+  so the start module does not carry it. The request stays open while the
+  module loads; a failed load dismisses it.
 - Browser application notices use `AppNotifier` and the shared banner stack
   and centre. Expired and dismissed banners enter real retained history;
   the browser saves that bounded history through its profile's durable store.
@@ -1473,3 +1497,38 @@ cargo run -p tilo-relay --features web -- dev
 # in Cloud, with the user key the host printed
 npm run dev:tilo -- --port 9998 --host-origin https://localhost:9443 --user-public-key <hex>
 ```
+
+## Updating the engine without replacing the desktop SDK
+
+A worktree `tilo-vm swap userspace` assembles the native toolkit and apps in one
+Cargo graph. It does not build Chromium's optional runtime. Browser declares the
+exact engine reference in its signed `optional-runtimes`; a missing engine does
+not become available merely because the nine userspace components were updated.
+
+The Browser's **Install the browser engine** action opens the existing Store
+review for `so.tilo.runtime.chromium`. Store verifies the configured catalogue and
+uses its ordinary installation action. This does not replace Browser or its
+required core SDK.
+
+For an exact required version, the same canonical package flow is available as:
+
+```sh
+app runtime install tilo-runtime/2026.10.4-chromium --repo 'Tilo main'
+```
+
+The repository must already be enabled and pinned. The runtime offer must match
+this machine's architecture, system interfaces, release channel and the exact
+runtime reference. Download size, content hash, package root and publisher checks
+remain in the normal downloader/installer; the inner bundle must satisfy the
+installed immutable runtime-publisher policy. An existing package follows normal
+update, held-version and downgrade admission. No key is granted by this command.
+The installed engine coexists with the core SDK and becomes visible on the next
+Browser launch. No machine reboot is required.
+
+If the exact engine is not offered, this command fails. The maintained
+`Release / Apps` main-only dispatch can publish the engine alone with
+`engine_runtime_only=true`, `architectures=aarch64`, `apps=browser`, and
+`publish=true`. Publication and an installed, verified engine are separate
+prerequisites; an accepted Browser Open is not proof of either.
+
+The Browser's Install engine action opens `tilo-store:runtime/tilo-runtime/2026.10.4-chromium`. Store asks its launcher-issued AppHost capability to resolve that precise runtime from the person's enabled, independently pinned repositories, including retained versions. The ordinary details sheet shows the signed runtime reference and package version. Review installs nothing. The separate Install runtime action binds the selected signed root and uses the same exact-version InstallOffer downloader/installer as other Store packages, with no launch of the engine host. A changed review, missing offer or ambiguous repository selection refuses rather than choosing another runtime. Matching Store and AppHost schema versions must be delivered together.

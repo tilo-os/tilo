@@ -136,13 +136,15 @@ pub fn relative_time(notification: &Notification, now: Instant) -> String {
     ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
 }
 
-/// The retained notification's source line: its verified app, or System.
-pub fn source_label(notification: &Notification) -> String {
+/// The retained notification's source line: its verified app, or the
+/// part of the system that asks. `None` when nothing names one: a generic
+/// "System" would only repeat that the desktop showed it.
+pub fn source_label(notification: &Notification) -> Option<String> {
     notification
         .app_name
         .as_deref()
         .or(notification.app_id.as_deref())
-        .map_or_else(|| t("history-source-system"), str::to_string)
+        .map(str::to_string)
 }
 
 fn severity_label(severity: NotificationSeverity) -> String {
@@ -157,28 +159,18 @@ fn severity_label(severity: NotificationSeverity) -> String {
 /// same source and age the painted row shows.
 pub fn accessible_description(notification: &Notification, now: Instant) -> String {
     let severity = severity_label(notification.severity);
-    let source = source_label(notification);
     let time = relative_time(notification, now);
-    if notification.body.is_empty() {
-        t_args(
-            "history-notification-description",
-            &[
-                ("severity", severity.into()),
-                ("source", source.into()),
-                ("time", time.into()),
-            ],
-        )
-    } else {
-        t_args(
-            "history-notification-description-body",
-            &[
-                ("severity", severity.into()),
-                ("source", source.into()),
-                ("time", time.into()),
-                ("body", notification.body.as_str().into()),
-            ],
-        )
+    let mut args = vec![("severity", severity.into()), ("time", time.into())];
+    let mut key = String::from("history-notification-description");
+    if let Some(source) = source_label(notification) {
+        args.push(("source", source.into()));
+        key.push_str("-sourced");
     }
+    if !notification.body.is_empty() {
+        args.push(("body", notification.body.as_str().into()));
+        key.push_str("-body");
+    }
+    t_args(&key, &args)
 }
 
 #[cfg(test)]

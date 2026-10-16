@@ -94,7 +94,7 @@ pub fn apply_local_view(tree: &mut DesktopTree, intent: LocalViewIntent) {
                             LocalViewIntent::Tab { group, tab }
                                 if group == g.id && g.tabs.iter().any(|t| t.id == tab) =>
                             {
-                                g.active_tab = tab;
+                                g.activate_tab(tab);
                                 if w.id == tree.active {
                                     tree.active_strip.insert(w.id, s.id);
                                     tree.active_group.insert(s.id, g.id);

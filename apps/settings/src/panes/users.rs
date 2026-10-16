@@ -2,8 +2,9 @@
 //!
 //! A Unix login account owns a home/session; it may contain several Tilo
 //! identities (personal, work, pseudonymous). Local-account mutations go
-//! through `AccountsService` and polkit. Identity activation writes only a
-//! non-secret selector; the launcher mounts one exact record into new apps.
+//! through `AccountsService` and polkit. The identity store is the host's:
+//! Settings lists, activates, removes and protects identities through the
+//! host's identity actions, so no record or secret enters this process.
 //! Every change is a [`UsersEffect`] on the account or identity it names.
 
 use std::cell::OnceCell;
@@ -13,9 +14,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use runtime_identity::{IdentitySummary, KeyProtection};
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
+use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind, Widget};
 use zeroize::Zeroizing;
 
 use crate::effects::{SettingsEffect, effect};
@@ -25,7 +26,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, StatusTone, caption, card, error_caption, rows, semantic_status_pill, setting_row,
+    Item, SettingsSection, StatusTone, card, error_caption, field_row, item_row, note, row, rows,
+    semantic_status_pill,
 };
 
 /// Changes to this device's login accounts and the person's identities.
@@ -83,17 +85,23 @@ pub enum UsersEffect {
     },
 }
 
-/// Answer `effect` on a worker, then read the accounts again.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "every area answers through the effect vocabulary's one signature"
-)]
+/// Answer an account change on a worker, then read the accounts again; an
+/// identity change once the host has made it.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: UsersEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     let model = app.users().model();
+    // Identity changes are the host's: they answer once it has.
+    let change = model.borrow().start_identity_change(&effect);
+    if let Some(call) = change {
+        model
+            .borrow_mut()
+            .identity_changes
+            .push((call?, cx.reply()));
+        return Ok(Effected::Pending);
+    }
     let model = model.borrow();
     let backends = model.backends.clone();
     let users = model.users.clone();
@@ -124,15 +132,15 @@ pub(crate) fn answer(
     ))
 }
 
-/// The services that change accounts and identities.
+/// The service that changes accounts.
 #[derive(Clone)]
 struct Backends {
     users: Arc<dyn UserAdmin>,
-    identities: Option<Arc<dyn IdentityAdmin>>,
 }
 
-/// Carry out `effect`. Never called on the UI thread: `AccountsService`
-/// may wait on polkit.
+/// Carry out the account change `effect`. Never called on the UI thread:
+/// `AccountsService` may wait on polkit. Identity changes are the host's
+/// ([`UsersModel::start_identity_change`]).
 fn carry_out(
     backends: &Backends,
     users: &[DeviceUser],
@@ -144,12 +152,6 @@ fn carry_out(
             .iter()
             .find(|user| user.username == name && !user.current)
             .ok_or_else(|| t("settings-users-account-gone"))
-    };
-    let identities = || {
-        backends
-            .identities
-            .as_ref()
-            .ok_or_else(|| t("settings-users-identity-store-unavailable"))
     };
     match effect {
         UsersEffect::CreateUser {
@@ -178,9 +180,11 @@ fn carry_out(
         UsersEffect::RemoveUser { user, keep_files } => {
             backends.users.delete(other(user)?, !keep_files)
         }
-        UsersEffect::UseIdentity { identity } => identities()?.activate(identity),
-        UsersEffect::RemoveIdentity { identity } => identities()?.remove(identity),
-        UsersEffect::ProtectIdentity { identity } => identities()?.protect(identity),
+        UsersEffect::UseIdentity { .. }
+        | UsersEffect::RemoveIdentity { .. }
+        | UsersEffect::ProtectIdentity { .. } => {
+            Err(t("settings-users-identity-store-unavailable"))
+        }
     }
 }
 
@@ -252,28 +256,70 @@ impl UserAdmin for AccountsServiceAdmin {
     }
 }
 
-trait IdentityAdmin: Send + Sync {
-    fn activate(&self, id: &str) -> Result<(), String>;
-    fn remove(&self, id: &str) -> Result<(), String>;
-    fn protect(&self, id: &str) -> Result<(), String>;
+/// A call to the host's identity store, answering on its state.
+type IdentityCall = ui::LocalState<ui::InvocationCall>;
+
+/// What lists and changes the person's identities. Each call answers on
+/// the state it returns; nothing here waits.
+trait IdentityAdmin {
+    fn list(&self) -> IdentityCall;
+    fn activate(&self, id: &str) -> IdentityCall;
+    fn remove(&self, id: &str) -> IdentityCall;
+    fn protect(&self, id: &str) -> IdentityCall;
 }
 
-struct DiskIdentityAdmin {
-    dir: std::path::PathBuf,
+/// The host's identity actions, invoked through the action door as the
+/// person using Settings. The host checks that they administer the
+/// identity; each change carries their confirmation, given by choosing its
+/// row or button.
+struct RemoteIdentityAdmin {
+    remote: ui::RemoteActions,
 }
 
-impl IdentityAdmin for DiskIdentityAdmin {
-    fn activate(&self, id: &str) -> Result<(), String> {
-        runtime_identity::set_active_identity(&self.dir, id).map_err(|e| e.to_string())
+impl RemoteIdentityAdmin {
+    fn invoke(&self, step: &str, id: Option<&str>) -> IdentityCall {
+        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
+        let mut arguments = serde_json::Map::new();
+        if let Some(id) = id {
+            arguments.insert("id".into(), id.into());
+        }
+        // Choosing the row or button is the person's confirmation of a
+        // change; listing asks nothing.
+        let confirmation = id.is_some().then(|| {
+            arguments.insert("confirm".into(), true.into());
+            Confirmation::Confirmed
+        });
+        self.remote.invoke(
+            identity_admin::target(step),
+            if arguments.is_empty() {
+                InvokeArgument::None
+            } else {
+                InvokeArgument::Json(arguments)
+            },
+            confirmation,
+        )
     }
-    fn remove(&self, id: &str) -> Result<(), String> {
-        runtime_identity::remove_identity(&self.dir, id).map_err(|e| e.to_string())
+}
+
+impl IdentityAdmin for RemoteIdentityAdmin {
+    fn list(&self) -> IdentityCall {
+        self.invoke(ui::tilo_actions::remote::identity_admin::LIST, None)
     }
-    fn protect(&self, id: &str) -> Result<(), String> {
-        runtime_identity::secure_identity(&self.dir, id)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+    fn activate(&self, id: &str) -> IdentityCall {
+        self.invoke(ui::tilo_actions::remote::identity_admin::ACTIVATE, Some(id))
     }
+    fn remove(&self, id: &str) -> IdentityCall {
+        self.invoke(ui::tilo_actions::remote::identity_admin::REMOVE, Some(id))
+    }
+    fn protect(&self, id: &str) -> IdentityCall {
+        self.invoke(ui::tilo_actions::remote::identity_admin::PROTECT, Some(id))
+    }
+}
+
+/// The identities the host's list answered.
+fn identities_from(value: Option<serde_json::Value>) -> Result<Vec<IdentitySummary>, String> {
+    serde_json::from_value(value.unwrap_or(serde_json::Value::Array(Vec::new())))
+        .map_err(|error| format!("the identity list the host answered is not readable: {error}"))
 }
 
 pub fn admins_from_group(contents: &str) -> HashSet<String> {
@@ -355,18 +401,13 @@ fn users_and_error(read: Result<Vec<DeviceUser>, String>) -> (Vec<DeviceUser>, O
     }
 }
 
-fn identities_for_display() -> (Vec<IdentitySummary>, Option<DiskIdentityAdmin>) {
-    let Ok(dir) = runtime_identity::identity_dir_from_env() else {
-        return (Vec::new(), None);
-    };
-    let ids = runtime_identity::list_identities(&dir).unwrap_or_default();
-    (ids, Some(DiskIdentityAdmin { dir }))
-}
-
 /// What the users area keeps for the window: the model, read when first
 /// needed.
 pub struct UsersArea {
     cx: PaneCx,
+    /// The window's client for the action door, shared with the other
+    /// areas that act through the host.
+    remote: ui::RemoteActions,
     model: OnceCell<Shared<UsersModel>>,
     /// The device's accounts, read off the UI thread after the window's
     /// first frame ([`Self::start_read`]); `None` stands for the samples a
@@ -375,9 +416,10 @@ pub struct UsersArea {
 }
 
 impl UsersArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &PaneCx, remote: ui::RemoteActions) -> Self {
         Self {
             cx: cx.clone(),
+            remote,
             model: OnceCell::new(),
             read: crate::device_read::DeviceRead::default(),
         }
@@ -391,11 +433,25 @@ impl UsersArea {
                 .take()
                 .unwrap_or_else(|| self.cx.reaches_devices().then(UsersRead::of_device));
             let model = match read {
-                Some(read) => UsersModel::from_read(self.cx.clone(), read),
+                Some(read) => UsersModel::from_read(
+                    self.cx.clone(),
+                    read,
+                    Rc::new(RemoteIdentityAdmin {
+                        remote: self.remote.clone(),
+                    }),
+                ),
                 None => UsersModel::sample(self.cx.clone()),
             };
             Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    /// Take in what the host answered about the person's identities, if
+    /// the model exists.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get() {
+            model.borrow_mut().poll_identities();
+        }
     }
 
     /// Read the device's accounts off the UI thread; `false` when they have
@@ -517,7 +573,15 @@ pub struct UsersModel {
     /// Why the accounts could not be read; the list is then not "empty".
     users_error: Option<String>,
     identities: Vec<IdentitySummary>,
+    /// Why the host could not list the identities.
+    identities_error: Option<String>,
     backends: Backends,
+    /// The host's identity store, which lists and changes the identities.
+    identity_admin: Option<Rc<dyn IdentityAdmin>>,
+    /// The identity list the host is answering.
+    identity_list: Option<IdentityCall>,
+    /// The identity changes the host is making, and their callers.
+    identity_changes: Vec<(IdentityCall, EffectReply)>,
     /// Whether the accounts are this device's, read again after a change.
     of_device: bool,
     form: AccountForm,
@@ -526,43 +590,37 @@ pub struct UsersModel {
 }
 
 /// What the users area reads of the device: its login accounts (one
-/// `AccountsService` call per person for automatic login) and the person's
-/// identities. Plain data, so it is read off the UI thread.
+/// `AccountsService` call per person for automatic login). Plain data, so
+/// it is read off the UI thread; the identities are the host's to answer.
 struct UsersRead {
-    identities: Vec<IdentitySummary>,
-    identity_admin: Option<DiskIdentityAdmin>,
     users: Result<Vec<DeviceUser>, String>,
 }
 
 impl UsersRead {
     fn of_device() -> Self {
-        let (identities, identity_admin) = identities_for_display();
         Self {
-            identities,
-            identity_admin,
             users: read_users(),
         }
     }
 }
 
 impl UsersModel {
-    /// The model over what `read` found on this device.
-    fn from_read(cx: PaneCx, read: UsersRead) -> Self {
-        let UsersRead {
-            identities,
-            identity_admin,
-            users,
-        } = read;
-        let (users, users_error) = users_and_error(users);
+    /// The model over what `read` found on this device, asking
+    /// `identity_admin` for the person's identities.
+    fn from_read(cx: PaneCx, read: UsersRead, identity_admin: Rc<dyn IdentityAdmin>) -> Self {
+        let (users, users_error) = users_and_error(read.users);
         Self {
             cx,
             users,
             users_error,
-            identities,
+            identities: Vec::new(),
+            identities_error: None,
             backends: Backends {
                 users: Arc::new(AccountsServiceAdmin),
-                identities: identity_admin.map(|admin| Arc::new(admin) as Arc<dyn IdentityAdmin>),
             },
+            identity_list: Some(identity_admin.list()),
+            identity_admin: Some(identity_admin),
+            identity_changes: Vec::new(),
             of_device: true,
             form: AccountForm::default(),
             error: None,
@@ -597,10 +655,13 @@ impl UsersModel {
                 active: true,
                 protection: KeyProtection::BrokerFile,
             }],
+            identities_error: None,
             backends: Backends {
                 users: Arc::new(SampleAdmin),
-                identities: Some(Arc::new(SampleAdmin)),
             },
+            identity_admin: Some(Rc::new(SampleAdmin)),
+            identity_list: None,
+            identity_changes: Vec::new(),
             of_device: false,
             form: AccountForm::default(),
             error: None,
@@ -614,34 +675,99 @@ impl UsersModel {
             return;
         }
         (self.users, self.users_error) = users_and_error(read_users());
-        if let Ok(dir) = runtime_identity::identity_dir_from_env() {
-            self.identities = runtime_identity::list_identities(&dir).unwrap_or_default();
+        self.reload_identities();
+    }
+
+    /// Ask the host for the identities again, unless it is answering.
+    fn reload_identities(&mut self) {
+        if self.of_device && self.identity_list.is_none() {
+            self.identity_list = self.identity_admin.as_ref().map(|admin| admin.list());
+        }
+    }
+
+    /// Ask the host to make the identity change `effect`; `None` for an
+    /// account change, an error when no identity store answers here.
+    fn start_identity_change(&self, effect: &UsersEffect) -> Option<Result<IdentityCall, String>> {
+        let admin = self.identity_admin.as_deref();
+        let call = |start: &dyn Fn(&dyn IdentityAdmin) -> IdentityCall| {
+            Some(
+                admin
+                    .map(start)
+                    .ok_or_else(|| t("settings-users-identity-store-unavailable")),
+            )
+        };
+        match effect {
+            UsersEffect::UseIdentity { identity } => call(&|admin| admin.activate(identity)),
+            UsersEffect::RemoveIdentity { identity } => call(&|admin| admin.remove(identity)),
+            UsersEffect::ProtectIdentity { identity } => call(&|admin| admin.protect(identity)),
+            _ => None,
+        }
+    }
+
+    /// Take in the host's answers: the identity list, and each identity
+    /// change, whose caller hears how it ended before the list is read
+    /// again.
+    fn poll_identities(&mut self) {
+        if let Some(answer) = self
+            .identity_list
+            .as_ref()
+            .and_then(crate::device_fleet::settled)
+        {
+            self.identity_list = None;
+            match answer.and_then(|output| identities_from(output.value)) {
+                Ok(identities) => {
+                    self.identities = identities;
+                    self.identities_error = None;
+                }
+                Err(error) => self.identities_error = Some(error),
+            }
+            self.changed = true;
+        }
+        let mut answered = false;
+        for (call, reply) in std::mem::take(&mut self.identity_changes) {
+            match crate::device_fleet::settled(&call) {
+                None => self.identity_changes.push((call, reply)),
+                Some(answer) => {
+                    self.error = answer.as_ref().err().cloned();
+                    reply.finish(answer);
+                    answered = true;
+                }
+            }
+        }
+        if answered {
+            self.changed = true;
+            self.reload_identities();
         }
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut cards: Vec<El> = Vec::new();
+        let mut cards: Vec<SettingsSection> = Vec::new();
         if let Some(error) = &self.error {
             cards.push(card(
                 &t("settings-users-error-title"),
-                rows(vec![caption(error)]),
+                rows(vec![note(error)]),
             ));
         }
         let people = if let Some(error) = &self.users_error {
-            rows(vec![error_caption(&t_args(
+            rows(vec![row(error_caption(&t_args(
                 "settings-users-read-error",
                 &[("error", error.as_str().into())],
-            ))])
+            )))])
         } else if self.users.is_empty() {
-            rows(vec![caption(&t("settings-users-empty-accounts"))])
+            rows(vec![note(&t("settings-users-empty-accounts"))])
         } else {
-            rows(self.users.iter().map(|u| self.user_row(u)).collect())
+            rows(self.users.iter().flat_map(|u| self.user_row(u)).collect())
         };
         cards.push(card(&t("settings-users-login-accounts"), people));
         cards.push(self.add_form());
 
-        let identity_rows = if self.identities.is_empty() {
-            rows(vec![caption(&t("settings-users-empty-identities"))])
+        let identity_rows = if let Some(error) = &self.identities_error {
+            rows(vec![row(error_caption(&t_args(
+                "settings-users-identities-read-error",
+                &[("error", error.as_str().into())],
+            )))])
+        } else if self.identities.is_empty() {
+            rows(vec![note(&t("settings-users-empty-identities"))])
         } else {
             rows(
                 self.identities
@@ -651,21 +777,21 @@ impl UsersModel {
             )
         };
         cards.push(card(&t("settings-users-identities-title"), identity_rows));
-        let mut protection_rows: Vec<El> =
-            vec![caption(&t("settings-users-protection-secret-service"))];
+        let mut protection_rows: Vec<Item> =
+            vec![note(&t("settings-users-protection-secret-service"))];
         if self
             .identities
             .iter()
             .any(|identity| identity.protection == KeyProtection::BrokerFile)
         {
-            protection_rows.push(caption(&t("settings-users-protection-broker-file")));
+            protection_rows.push(note(&t("settings-users-protection-broker-file")));
         }
         if self
             .identities
             .iter()
             .any(|identity| identity.protection == KeyProtection::HardwareBacked)
         {
-            protection_rows.push(caption(&t("settings-users-protection-hardware")));
+            protection_rows.push(note(&t("settings-users-protection-hardware")));
         }
         cards.push(card(
             &t("settings-users-protection-title"),
@@ -673,12 +799,12 @@ impl UsersModel {
         ));
         cards.push(card(
             &t("settings-users-boundary-title"),
-            rows(vec![caption(&t("settings-users-boundary-body"))]),
+            rows(vec![note(&t("settings-users-boundary-body"))]),
         ));
         crate::widgets::cards(cards)
     }
 
-    fn add_form(&self) -> El {
+    fn add_form(&self) -> SettingsSection {
         let full = TextInput::local()
             .with_kind(TextInputKind::Name)
             .with_id("users.form.full_name")
@@ -712,24 +838,26 @@ impl UsersModel {
                 )
             }),
         );
-        let buttons = Row::new()
-            .push(Box::new(create))
-            .push(Box::new(Spacer::new()));
+        let buttons = row(Box::new(
+            Row::new()
+                .push(Box::new(create))
+                .push(Box::new(Spacer::new())),
+        ));
         card(
             &t("settings-users-add-form-title"),
             rows(vec![
-                setting_row(&t("settings-users-full-name"), Box::new(full)),
-                setting_row(&t("settings-users-username"), Box::new(user)),
-                setting_row(&t("settings-users-password"), Box::new(password)),
-                caption(&t("settings-users-password-note")),
-                Box::new(buttons),
+                field_row(&t("settings-users-full-name"), Box::new(full)),
+                field_row(&t("settings-users-username"), Box::new(user)),
+                field_row(&t("settings-users-password"), Box::new(password)),
+                note(&t("settings-users-password-note")),
+                buttons,
             ]),
         )
     }
 
     /// What can be done to `user`'s account: nothing for the signed-in one.
-    fn user_actions(&self, user: &DeviceUser) -> Row {
-        let mut actions = Row::new().push(Box::new(Spacer::new()));
+    fn user_actions(&self, user: &DeviceUser) -> Vec<Button> {
+        let mut actions: Vec<Button> = Vec::new();
         if !user.current {
             let role_action = if user.admin {
                 t("settings-users-make-standard")
@@ -742,49 +870,48 @@ impl UsersModel {
                 t("settings-users-enable-autologin")
             };
             let name = &user.username;
-            actions = actions.push(Box::new(self.cx.bind_invocation(
+            actions.push(self.cx.bind_invocation(
                 Button::new(&format!("settings.users.role.{name}"), &role_action),
                 UsersEffect::SetAdministrator {
                     user: name.clone(),
                     admin: !user.admin,
                 },
-            )));
+            ));
             // An unread automatic-login state offers no switch to flip.
             if user.automatic_login_error.is_none() {
-                actions = actions.push(Box::new(self.cx.bind_invocation(
+                actions.push(self.cx.bind_invocation(
                     Button::new(&format!("settings.users.autologin.{name}"), &auto_action),
                     UsersEffect::SetAutomaticLogin {
                         user: name.clone(),
                         on: !user.automatic_login,
                     },
-                )));
+                ));
             }
-            actions = actions
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.users.remove_keep.{name}"),
-                        &t("settings-users-remove-keep-files"),
-                    ),
-                    UsersEffect::RemoveUser {
-                        user: name.clone(),
-                        keep_files: true,
-                    },
-                )))
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.users.remove.{name}"),
-                        &t("settings-users-remove-account-and-files"),
-                    ),
-                    UsersEffect::RemoveUser {
-                        user: name.clone(),
-                        keep_files: false,
-                    },
-                )));
+            actions.push(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.users.remove_keep.{name}"),
+                    &t("settings-users-remove-keep-files"),
+                ),
+                UsersEffect::RemoveUser {
+                    user: name.clone(),
+                    keep_files: true,
+                },
+            ));
+            actions.push(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.users.remove.{name}"),
+                    &t("settings-users-remove-account-and-files"),
+                ),
+                UsersEffect::RemoveUser {
+                    user: name.clone(),
+                    keep_files: false,
+                },
+            ));
         }
         actions
     }
 
-    fn user_row(&self, user: &DeviceUser) -> El {
+    fn user_row(&self, user: &DeviceUser) -> Vec<Item> {
         let actions = self.user_actions(user);
         let role = if user.admin {
             t("settings-users-role-administrator")
@@ -796,46 +923,33 @@ impl UsersModel {
         } else {
             String::new()
         };
-        let mut row = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Text::new(&user.full_name).with_role(ui::TextRole::Body),
-                    ))
-                    .push(Box::new(Spacer::new()))
-                    .push(semantic_status_pill(
-                        &role,
-                        if user.admin {
-                            StatusTone::Success
-                        } else {
-                            StatusTone::Neutral
-                        },
-                    )),
-            ))
-            .push(Box::new(
-                Text::new(&t_args(
-                    "settings-users-uid-line",
-                    &[
-                        ("username", user.username.as_str().into()),
-                        ("uid", user.uid.into()),
-                        ("you", you.as_str().into()),
-                    ],
-                ))
-                .with_role(ui::TextRole::Caption)
-                .dimmed(),
-            ));
+        let detail = t_args(
+            "settings-users-uid-line",
+            &[
+                ("username", user.username.as_str().into()),
+                ("uid", user.uid.into()),
+                ("you", you.as_str().into()),
+            ],
+        );
+        let pill = semantic_status_pill(
+            &role,
+            if user.admin {
+                StatusTone::Success
+            } else {
+                StatusTone::Neutral
+            },
+        );
+        let mut items = vec![item_row(&user.full_name, vec![pill], &[detail], actions)];
         if let Some(error) = &user.automatic_login_error {
-            row = row.push(error_caption(&t_args(
+            items.push(row(error_caption(&t_args(
                 "settings-users-autologin-error",
                 &[("error", error.as_str().into())],
-            )));
+            ))));
         }
-        Box::new(row.push(Box::new(actions)))
+        items
     }
 
-    fn identity_row(&self, id: &IdentitySummary) -> El {
+    fn identity_row(&self, id: &IdentitySummary) -> Item {
         let name = if id.display_name.is_empty() {
             &id.id
         } else {
@@ -847,40 +961,37 @@ impl UsersModel {
         } else {
             t("settings-users-identity-available")
         };
-        let mut top = Row::new()
-            .push(Box::new(Text::new(name).with_role(ui::TextRole::Body)))
-            .push(Box::new(Spacer::new()))
-            .push(semantic_status_pill(
-                &status,
-                if id.active {
-                    StatusTone::Success
-                } else {
-                    StatusTone::Neutral
+        let pill = semantic_status_pill(
+            &status,
+            if id.active {
+                StatusTone::Success
+            } else {
+                StatusTone::Neutral
+            },
+        );
+        let mut actions: Vec<Button> = Vec::new();
+        if !id.active {
+            actions.push(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.users.identity.activate.{}", id.id),
+                    &t("settings-users-identity-use"),
+                ),
+                UsersEffect::UseIdentity {
+                    identity: id.id.clone(),
                 },
             ));
-        if !id.active {
-            top = top
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.users.identity.activate.{}", id.id),
-                        &t("settings-users-identity-use"),
-                    ),
-                    UsersEffect::UseIdentity {
-                        identity: id.id.clone(),
-                    },
-                )))
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("settings.users.identity.remove.{}", id.id),
-                        &t("settings-users-identity-remove"),
-                    ),
-                    UsersEffect::RemoveIdentity {
-                        identity: id.id.clone(),
-                    },
-                )));
+            actions.push(self.cx.bind_invocation(
+                Button::new(
+                    &format!("settings.users.identity.remove.{}", id.id),
+                    &t("settings-users-identity-remove"),
+                ),
+                UsersEffect::RemoveIdentity {
+                    identity: id.id.clone(),
+                },
+            ));
         }
         if id.protection == KeyProtection::LegacyPlaintext {
-            top = top.push(Box::new(self.cx.bind_invocation(
+            actions.push(self.cx.bind_invocation(
                 Button::new(
                     &format!("settings.users.identity.protect.{}", id.id),
                     &t("settings-users-identity-protect"),
@@ -888,29 +999,20 @@ impl UsersModel {
                 UsersEffect::ProtectIdentity {
                     identity: id.id.clone(),
                 },
-            )));
+            ));
         }
         let protection = id.protection.label();
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(top))
-                .push(Box::new(
-                    Text::new(&t_args(
-                        "settings-users-identity-detail",
-                        &[
-                            ("id", id.id.as_str().into()),
-                            ("key", key.as_str().into()),
-                            ("threshold", id.threshold.into()),
-                            ("total", id.total_shares.into()),
-                            ("protection", protection.into()),
-                        ],
-                    ))
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-                )),
-        )
+        let detail = t_args(
+            "settings-users-identity-detail",
+            &[
+                ("id", id.id.as_str().into()),
+                ("key", key.as_str().into()),
+                ("threshold", id.threshold.into()),
+                ("total", id.total_shares.into()),
+                ("protection", protection.into()),
+            ],
+        );
+        item_row(name, vec![pill], &[detail], actions)
     }
 }
 
@@ -948,15 +1050,31 @@ impl UserAdmin for SampleAdmin {
     }
 }
 
+/// A call the host already answered with `value`.
+fn answered(value: serde_json::Value) -> IdentityCall {
+    ui::LocalState::new(ui::RemoteCall::Done(
+        ui::tilo_actions::InvocationUpdate::Succeeded {
+            invocation: ui::tilo_actions::InvocationId::new(),
+            output: ui::tilo_actions::ActionOutput {
+                value: Some(value),
+                resources: Vec::new(),
+            },
+        },
+    ))
+}
+
 impl IdentityAdmin for SampleAdmin {
-    fn activate(&self, _: &str) -> Result<(), String> {
-        Ok(())
+    fn list(&self) -> IdentityCall {
+        answered(serde_json::Value::Array(Vec::new()))
     }
-    fn remove(&self, _: &str) -> Result<(), String> {
-        Ok(())
+    fn activate(&self, _: &str) -> IdentityCall {
+        answered(serde_json::Value::Null)
     }
-    fn protect(&self, _: &str) -> Result<(), String> {
-        Ok(())
+    fn remove(&self, _: &str) -> IdentityCall {
+        answered(serde_json::Value::Null)
+    }
+    fn protect(&self, _: &str) -> IdentityCall {
+        answered(serde_json::Value::Null)
     }
 }
 
@@ -995,17 +1113,21 @@ mod tests {
     #[derive(Default)]
     struct RecordingIds(Mutex<Vec<String>>);
     impl IdentityAdmin for RecordingIds {
-        fn activate(&self, id: &str) -> Result<(), String> {
+        fn list(&self) -> IdentityCall {
+            self.0.lock().unwrap().push("list".into());
+            answered(serde_json::json!([]))
+        }
+        fn activate(&self, id: &str) -> IdentityCall {
             self.0.lock().unwrap().push(format!("activate:{id}"));
-            Ok(())
+            answered(serde_json::Value::Null)
         }
-        fn remove(&self, id: &str) -> Result<(), String> {
+        fn remove(&self, id: &str) -> IdentityCall {
             self.0.lock().unwrap().push(format!("remove:{id}"));
-            Ok(())
+            answered(serde_json::Value::Null)
         }
-        fn protect(&self, id: &str) -> Result<(), String> {
+        fn protect(&self, id: &str) -> IdentityCall {
             self.0.lock().unwrap().push(format!("protect:{id}"));
-            Ok(())
+            answered(serde_json::Value::Null)
         }
     }
     fn user(name: &str, current: bool) -> DeviceUser {
@@ -1066,10 +1188,9 @@ mod tests {
         }
     }
 
-    fn backends(users: &Arc<RecordingAdmin>, ids: &Arc<RecordingIds>) -> Backends {
+    fn backends(users: &Arc<RecordingAdmin>) -> Backends {
         Backends {
             users: Arc::clone(users) as Arc<dyn UserAdmin>,
-            identities: Some(Arc::clone(ids) as Arc<dyn IdentityAdmin>),
         }
     }
 
@@ -1088,8 +1209,8 @@ mod tests {
         assert_eq!(parsed[0].uid, 1000);
 
         let users = Arc::new(RecordingAdmin::default());
-        let ids = Arc::new(RecordingIds::default());
-        let backends = backends(&users, &ids);
+        let ids = Rc::new(RecordingIds::default());
+        let backends = backends(&users);
         let people = [user("ada", true), user("bob", false)];
         let none = || "";
         for effect in [
@@ -1101,6 +1222,13 @@ mod tests {
                 user: "bob".into(),
                 admin: true,
             },
+        ] {
+            carry_out(&backends, &people, &effect, none()).unwrap();
+        }
+        let profile = tempfile::tempdir().unwrap();
+        let mut pane = UsersModel::sample(PaneCx::in_file(profile.path().join("settings.json")));
+        pane.identity_admin = Some(Rc::clone(&ids) as Rc<dyn IdentityAdmin>);
+        for effect in [
             UsersEffect::UseIdentity {
                 identity: "work".into(),
             },
@@ -1108,8 +1236,18 @@ mod tests {
                 identity: "personal".into(),
             },
         ] {
-            carry_out(&backends, &people, &effect, none()).unwrap();
+            pane.start_identity_change(&effect)
+                .expect("an identity change")
+                .expect("the store answers");
         }
+        assert!(
+            pane.start_identity_change(&UsersEffect::SetAdministrator {
+                user: "bob".into(),
+                admin: false,
+            })
+            .is_none(),
+            "account changes never reach the identity store"
+        );
         assert!(
             carry_out(
                 &backends,
@@ -1142,6 +1280,149 @@ mod tests {
             ["activate:work", "protect:personal"]
         );
         let _ = identity("work", false);
+    }
+
+    /// The host's identity actions, in process: it records what it was
+    /// asked and answers the list with one identity.
+    #[derive(Default)]
+    struct IdentityHost {
+        asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+    }
+
+    impl ui::tilo_actions::remote::ActionHost for IdentityHost {
+        fn query(
+            &self,
+            _: &ui::tilo_actions::remote::Caller,
+            _: ui::tilo_actions::remote::CatalogueQuery,
+        ) -> ui::tilo_actions::remote::Pending<
+            Result<
+                ui::tilo_actions::remote::CataloguePage,
+                ui::tilo_actions::remote::ActionHostError,
+            >,
+        > {
+            ui::tilo_actions::remote::Pending::ready(Err(
+                ui::tilo_actions::remote::ActionHostError::NotPermitted,
+            ))
+        }
+
+        fn invoke(
+            &self,
+            _: &ui::tilo_actions::remote::Caller,
+            request: ui::tilo_actions::remote::InvokeRequest,
+        ) -> ui::tilo_actions::remote::Pending<
+            Result<
+                ui::tilo_actions::remote::InvocationReceipt,
+                ui::tilo_actions::remote::ActionHostError,
+            >,
+        > {
+            use ui::tilo_actions::remote::identity_admin;
+            let invocation = request.invocation;
+            let value = if request.target.address.action == identity_admin::LIST {
+                serde_json::to_value(vec![identity("work", true)]).unwrap()
+            } else {
+                serde_json::json!({ "id": "old" })
+            };
+            self.asked.lock().unwrap().push(request);
+            ui::tilo_actions::remote::Pending::ready(Ok(
+                ui::tilo_actions::remote::InvocationReceipt {
+                    invocation,
+                    status: ui::tilo_actions::remote::ReceiptStatus::Completed {
+                        output: ui::tilo_actions::ActionOutput {
+                            value: Some(value),
+                            resources: Vec::new(),
+                        },
+                    },
+                },
+            ))
+        }
+
+        fn observe(
+            &self,
+            _: &ui::tilo_actions::remote::Caller,
+            _: &ui::tilo_actions::InvocationId,
+        ) -> Option<ui::tilo_actions::remote::InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _: &ui::tilo_actions::remote::Caller,
+            _: &ui::tilo_actions::InvocationId,
+        ) -> Result<(), ui::tilo_actions::remote::ActionHostError> {
+            Ok(())
+        }
+    }
+
+    /// The pane reads and changes identities only through the host's
+    /// identity actions: the list arrives as the host answers it, removal
+    /// carries the person's confirmation, and nothing reads the store.
+    #[test]
+    fn identities_are_listed_and_changed_through_the_host_actions() {
+        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
+        let host = Arc::new(IdentityHost::default());
+        let remote = ui::RemoteActions::with_host(
+            host.clone(),
+            ui::tilo_actions::remote::Caller::local_person("owner"),
+        );
+        let profile = tempfile::tempdir().unwrap();
+        let mut pane = UsersModel::from_read(
+            PaneCx::in_file(profile.path().join("settings.json")),
+            UsersRead {
+                users: Ok(Vec::new()),
+            },
+            Rc::new(RemoteIdentityAdmin { remote }),
+        );
+        pane.poll_identities();
+        assert_eq!(pane.identities, [identity("work", true)]);
+        assert!(pane.identity_list.is_none(), "the list has answered");
+
+        for effect in [
+            UsersEffect::RemoveIdentity {
+                identity: "old".into(),
+            },
+            UsersEffect::UseIdentity {
+                identity: "old".into(),
+            },
+        ] {
+            let call = pane
+                .start_identity_change(&effect)
+                .expect("an identity change")
+                .expect("the host answers");
+            assert_eq!(
+                crate::device_fleet::settled(&call).map(|answer| answer.is_ok()),
+                Some(true)
+            );
+        }
+        let asked = host.asked.lock().unwrap().clone();
+        let targets: Vec<_> = asked
+            .iter()
+            .map(|request| request.target.address.action.as_str())
+            .collect();
+        assert_eq!(
+            targets,
+            [
+                identity_admin::LIST,
+                identity_admin::REMOVE,
+                identity_admin::ACTIVATE
+            ]
+        );
+        assert!(
+            asked
+                .iter()
+                .all(|request| request.target.provider == identity_admin::PROVIDER)
+        );
+        assert_eq!(asked[1].confirmation, Some(Confirmation::Confirmed));
+        assert_eq!(
+            asked[1].argument,
+            InvokeArgument::Json(
+                serde_json::json!({ "id": "old", "confirm": true })
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            )
+        );
+        assert_eq!(asked[0].confirmation, None, "listing asks nothing");
+        assert_eq!(asked[2].confirmation, Some(Confirmation::Confirmed));
     }
 
     /// The password typed into the form is read once by the effect and

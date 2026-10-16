@@ -3,4 +3,3 @@
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 apps/osk/src/actions.rs to_uppercase 1
 apps/osk/src/autocorrect.rs to_uppercase 1
-apps/osk/src/layout.rs to_uppercase 1

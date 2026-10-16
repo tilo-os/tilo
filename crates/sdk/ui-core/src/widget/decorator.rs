@@ -230,10 +230,28 @@ decorator_trait! {
             super::StructureChange::of(Decorator::take_structure_dirty(self))
         }
 
+        /// A decorator composes from its allocation when anything it wraps does.
+        fn composition_follows_allocation(&self) -> bool {
+            crate::widget::layout::tree_composition_follows_allocation(self.inner())
+        }
+
         /// Decorators must opt in themselves: an outer handler can change what
         /// its inner widget declares even when the inner scroll is view-only.
         fn view_only_scroll(&self, _event: &WindowEvent) -> bool {
             false
+        }
+
+        /// Read from this decorator's own node: one that overrides
+        /// `accessibility` may hide (or reveal) what its inner widget reports.
+        fn accessibility_hidden(&self) -> bool {
+            Decorator::accessibility(self).is_some_and(|node| node.state.hidden)
+        }
+
+        /// Not forwarded: a decorator may change what its inner widget
+        /// reports through `accessibility`, so by default the tree reads
+        /// that. One that shares its children overrides both.
+        fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+            None
         }
     }
 
@@ -280,8 +298,20 @@ decorator_trait! {
             Decorator::take_structure_change(self)
         }
 
+        fn composition_follows_allocation(&self) -> bool {
+            Decorator::composition_follows_allocation(self)
+        }
+
         fn view_only_scroll(&self, event: &WindowEvent) -> bool {
             Decorator::view_only_scroll(self, event)
+        }
+
+        fn accessibility_hidden(&self) -> bool {
+            Decorator::accessibility_hidden(self)
+        }
+
+        fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+            Decorator::accessibility_shared(self)
         }
     }
 
@@ -339,6 +369,7 @@ decorator_trait! {
         fn appearance_intent() -> Option<crate::theme::AppearanceIntent>;
         fn needs_idle_sync() -> bool;
         fn wants_pointer_capture() -> bool;
+        fn animation_detail() -> Option<String>;
         fn needs_animation_frame() -> bool;
         fn next_wake_deadline() -> Option<Instant>;
         fn modal_capture() -> Option<vello::kurbo::Rect>;

@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
+use tilo_lock::MutexRecover as _;
 
 mod profiles;
 
@@ -354,9 +355,7 @@ pub fn publisher_identity_in(dir: &std::path::Path) -> std::io::Result<(u32, u64
     let start_ticks = process_start_ticks(pid)
         .ok_or_else(|| std::io::Error::other("this process has no readable start time"))?;
     let path = publisher_lease_path(dir, pid, start_ticks);
-    let mut leases = LEASES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut leases = LEASES.lock_recover();
     if !leases.iter().any(|(held, _)| *held == path) {
         tilo_files::native::create_dir_all(dir)?;
         let lease = advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive)
@@ -1565,8 +1564,19 @@ impl RichInputConfig {
     /// value only resets itself to its default. Old single-layout documents
     /// are then reconciled with the ordered source list, so
     /// `{"keyboard_layout":"de"}` becomes one German source instead of
-    /// German plus the default US.
+    /// German plus the default US. A section that names no layout at all
+    /// types the machine's own layout
+    /// ([`crate::keyboard_sources::system_sources`]), not US.
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
+        Self::from_section_or(section, &crate::keyboard_sources::system_sources)
+    }
+
+    /// [`Self::from_section`] with the machine's layouts supplied by `system`,
+    /// which is asked only when the section names none.
+    fn from_section_or(
+        section: &serde_json::Map<String, serde_json::Value>,
+        system: &dyn Fn() -> Vec<String>,
+    ) -> Self {
         let Ok(serde_json::Value::Object(mut fields)) = serde_json::to_value(Self::default())
         else {
             return Self::default();
@@ -1593,12 +1603,41 @@ impl RichInputConfig {
         ) {
             config.keyboard_model = "pc105".into();
         }
-        config.normalise_sources();
+        let names_layout = section
+            .get("keyboard_layout")
+            .is_some_and(serde_json::Value::is_string)
+            || section
+                .get("keyboard_layouts")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|values| values.iter().any(serde_json::Value::is_string));
+        if !names_layout {
+            // Nobody chose a layout: type what the machine was set up with
+            // (the installer's, localed's). Passing an explicit `us` here
+            // would also stop libxkbcommon applying `XKB_DEFAULT_LAYOUT`.
+            config.keyboard_layouts = system();
+            config.keyboard_layout = config.keyboard_layouts.first().cloned().unwrap_or_default();
+        }
+        config.normalise_sources_or(&|| system().into_iter().next());
         config
     }
 
+    /// Reconcile the active source with the ordered list. A document that
+    /// names no usable layout falls back to the machine's primary layout
+    /// ([`crate::keyboard_sources::fallback_layout`]).
     pub fn normalise_sources(&mut self) {
-        let active = InputSource::parse(&self.keyboard_layout).or_else(|| InputSource::parse("us"));
+        self.normalise_sources_or(&|| Some(crate::keyboard_sources::fallback_layout()));
+    }
+
+    /// [`Self::normalise_sources`] with the fallback layout supplied by
+    /// `fallback`, asked only when the document names no usable layout; US
+    /// when it has none either.
+    fn normalise_sources_or(&mut self, fallback: &dyn Fn() -> Option<String>) {
+        let fallback = || {
+            fallback()
+                .filter(|id| KeyboardInputSource::parse(id).is_some())
+                .unwrap_or_else(|| "us".into())
+        };
+        let active = InputSource::parse(&self.keyboard_layout);
         let mut sources = Vec::<String>::new();
         let mut layouts = 0_usize;
         for source in &self.keyboard_layouts {
@@ -1634,14 +1673,14 @@ impl RichInputConfig {
                 sources.push(engine.source_id());
                 engine.source_id()
             }
-            None => "us".into(),
+            None => sources.first().cloned().unwrap_or_else(fallback),
         };
         // An engine types on a layout, so the list always keeps one.
         if !sources
             .iter()
             .any(|id| InputMethodEngine::from_source_id(id).is_none())
         {
-            sources.insert(0, "us".into());
+            sources.insert(0, fallback());
         }
         self.keyboard_layout = active;
         self.keyboard_layouts = sources;
@@ -2433,6 +2472,7 @@ impl Default for ShortcutConfig {
 /// sorted order, key)`. Never remove an entry: a settings file written by
 /// any earlier release may still carry it.
 const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
+    (ShortcutAction::ReopenClosedTab, &["Shift", "Super"], "t"),
     (ShortcutAction::PreviousStrip, &["Shift", "Super"], "up"),
     (ShortcutAction::NextStrip, &["Shift", "Super"], "down"),
     (ShortcutAction::ToggleMaximize, &["Super"], "up"),
@@ -2939,6 +2979,24 @@ mod tests {
     }
 
     #[test]
+    fn reopening_migrates_the_old_default_and_preserves_custom_bindings() {
+        let action = ShortcutAction::ReopenClosedTab;
+        let mut old = ShortcutConfig::default();
+        old.bindings
+            .insert(action, KeyChord::parse("Super+Shift+T").unwrap());
+        let migrated = ShortcutConfig::normalise(old);
+        assert_eq!(
+            migrated.bindings[&action],
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
+        );
+        assert!(migrated.validate().is_ok());
+        let custom = KeyChord::parse("Ctrl+Alt+Shift+T").unwrap();
+        let mut edited = ShortcutConfig::default();
+        edited.set(action, custom.clone()).unwrap();
+        assert_eq!(ShortcutConfig::normalise(edited).bindings[&action], custom);
+    }
+
+    #[test]
     fn standard_desktop_chords_have_their_conventional_defaults() {
         let cfg = ShortcutConfig::default();
         let shown = |action| cfg.bindings[&action].display();
@@ -3257,6 +3315,40 @@ mod tests {
             assert_eq!(cfg.keyboard_layout, "de");
             assert_eq!(cfg.keyboard_layouts, ["de"]);
             assert_eq!(cfg.active_source_index(), 0);
+        }
+        // Phase `an_unset_layout_follows_the_machine_and_a_chosen_one_wins`.
+        {
+            let machine = || vec!["de".to_string(), "us".to_string()];
+            let unset = RichInputConfig::from_section_or(&serde_json::Map::new(), &machine);
+            assert_eq!(unset.keyboard_layouts, ["de", "us"]);
+            assert_eq!(unset.keyboard_layout, "de");
+            let chosen = serde_json::json!({ "keyboard_layout": "fr" })
+                .as_object()
+                .unwrap()
+                .clone();
+            let chosen = RichInputConfig::from_section_or(&chosen, &|| {
+                panic!("a chosen layout never asks the machine")
+            });
+            assert_eq!(chosen.keyboard_layouts, ["fr"]);
+            let bare = RichInputConfig::from_section_or(&serde_json::Map::new(), &Vec::new);
+            assert_eq!(bare.keyboard_layouts, ["us"], "no layout anywhere: US");
+            // A damaged document falls back to the machine, not to US.
+            let damaged = serde_json::json!({ "keyboard_layout": "../evil" })
+                .as_object()
+                .unwrap()
+                .clone();
+            let damaged = RichInputConfig::from_section_or(&damaged, &machine);
+            assert_eq!(damaged.keyboard_layouts, ["de"]);
+            assert_eq!(damaged.keyboard_layout, "de");
+            let engine_only = serde_json::json!({
+                "keyboard_layout": "ime/rime",
+                "keyboard_layouts": ["ime/rime"]
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let engine_only = RichInputConfig::from_section_or(&engine_only, &machine);
+            assert_eq!(engine_only.keyboard_layouts, ["de", "ime/rime"]);
         }
         // Phase `scroll_defaults_match_gnome`.
         {

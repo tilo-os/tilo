@@ -270,6 +270,10 @@ pub(super) unsafe fn compute_widget_layout_depth(
             taffy.mark_dirty(node)?;
         }
     }
+    // Outermost first: resetting a region dirties the regions inside it.
+    for (node, policy) in &policies {
+        super::manual::reset_region(policy, taffy, *node)?;
+    }
     for _ in 0..8 {
         taffy.compute_layout_with_measure(root, available, |known, available, node, _, _| {
             // SAFETY: caller owns the stable matching tree, each callback is
@@ -312,6 +316,19 @@ pub(super) unsafe fn compute_widget_layout_depth(
         }
     }
     Err(WidgetLayoutError::DidNotSettle)
+}
+
+/// Whether any widget under `root` composes from its allocation (see
+/// [`Widget::composition_follows_allocation`]): only then does a resize
+/// recompose the tree rather than re-solve it.
+pub(crate) fn tree_composition_follows_allocation(root: &(impl Widget + ?Sized)) -> bool {
+    root.composition_follows_allocation() || {
+        let mut found = false;
+        root.for_each_child(&mut |child| {
+            found = found || tree_composition_follows_allocation(child);
+        });
+        found
+    }
 }
 
 /// A solved tree in traversal order, independent of allocated `NodeId`s. Include

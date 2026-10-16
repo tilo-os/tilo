@@ -68,6 +68,10 @@ fn canonical_image_store(
     ui::ImageStore::with_max_dimension(&fetcher, 2048)
 }
 
+/// How long referenced image bytes that have not arrived wait before the
+/// notebook is read for them again.
+const CANONICAL_ASSETS_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
 type ImportedAssets = Vec<(String, Vec<u8>)>;
 
 /// One block of a note as the window's index keeps it.
@@ -292,11 +296,14 @@ pub struct NotesApp {
     /// The note's save + page/word status, surfaced on the save status
     /// surface (see `save_status`) instead of a permanent strip.
     status: StatusModel,
-    /// The framework's save status surface: "Saving…" and "Saved" (with
-    /// the note's length) in a transient bubble in the bottom-trailing
-    /// corner, shown again on a page switch and while the pointer rests
-    /// there; a failed save as an error toast with "Try again".
+    /// The framework's save status surface: a save that takes noticeable
+    /// time says "Saving…" and then "Saved" in the note's header row; one
+    /// that gives up says "Not saved" with "Try again" there; a failed save
+    /// is an error toast with "Try again", and the save that ends it a
+    /// one-time "Saved".
     save_surface: ui::SaveStatusSurface,
+    /// The notification a save that gave up raises out of sight.
+    save_notices: crate::save_notice::SaveNotices,
     /// "Try again" was chosen on a failed save; the host drains it.
     save_retry: bool,
     transfer_toasts: ui::widget::toast::ToastStack,
@@ -333,7 +340,7 @@ pub struct NotesApp {
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
-    canonical_asset_manifest: std::collections::BTreeMap<String, ui::tilo_resource::Bytes>,
+    canonical_asset_manifest: ui::tilo_resource::Map<ui::tilo_resource::Bytes>,
     /// Some referenced image's bytes are still on their way from a
     /// collaborator's device; retried at most once a second.
     canonical_assets_waiting: Option<ui::time::Instant>,
@@ -368,6 +375,11 @@ pub struct NotesApp {
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
     canonical_synced: Option<CanonicalProjectionKey>,
+    /// The committed heads of the document `reconcile_canonical` last
+    /// projected, while nothing has been presented since: one event asks
+    /// several times of a document that has not moved, and reading the
+    /// notebook whole costs every note.
+    reconciled_heads: Option<Vec<ChangeHash>>,
     /// Observer-only receipt that a canonical projection reached this surface.
     projection_adopted: bool,
     /// The framework presents every state of the notebook to this window
@@ -382,6 +394,9 @@ pub struct NotesApp {
     /// surface is attached. A notebook shown before (or without) it is read
     /// only.
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::Notebook>>,
+    /// The framework's live notebook, once hosted: an edit's own result is
+    /// read from it, which reads only what the edit changed.
+    live: Option<ui::framework::Live<crate::resource::Notebook>>,
     /// Local-only current tag browse/filter. It is deliberately not persisted
     /// or replicated: collaborators may inspect different tag slices.
     active_tag_filter: Option<TagId>,
@@ -486,6 +501,8 @@ impl NotesApp {
             })
         });
         let rect = editor.get_rect();
+        let sidebar_drawer_open = self.shell.geometry().sidebar == SidebarPlacement::Drawer
+            && self.shell.is_sidebar_open();
         let active_line = editor
             .focused_index()
             .and_then(|index| editor.blocks().get(index));
@@ -511,7 +528,8 @@ impl NotesApp {
             "active_line_disabled": active_line.is_some_and(|block| block.line.is_disabled()),
             "editor_read_only": editor.is_read_only(),
             "editor_composing": editor.is_composing(),
-            "editor_route_available": self.main_node.is_some() && self.main.editor_route_available(),
+            "editor_route_available": self.main_node.is_some() && self.main.editor_route_available() && !sidebar_drawer_open,
+            "sidebar_drawer_open": sidebar_drawer_open,
             "sidebar_renaming": self.sidebar.is_renaming(),
             "sidebar_menu_open": self.sidebar.menu_is_open(),
             "editor_menu_open": editor.slash_menu_visible() || editor.link_popover().is_visible(),
@@ -536,9 +554,9 @@ impl NotesApp {
         main.set_local_author(Some(author.0.clone()));
         let content = crate::notebook::content();
         let snapshot =
-            crate::notebook::image_snapshot(&workspace.notebook, |digest| content.read(digest));
-        let waiting = snapshot.len() < workspace.notebook.images.len();
-        let manifest = workspace.notebook.images.clone();
+            crate::notebook::image_snapshot(&workspace.images, |digest| content.read(digest));
+        let waiting = snapshot.len() < workspace.images.len();
+        let manifest = workspace.images.clone();
         let mut app = Self::build_widget(workspace, sidebar, main);
         if let Ok(mut assets) = app.canonical_assets.write() {
             *assets = snapshot;
@@ -553,12 +571,51 @@ impl NotesApp {
     }
 
     fn project_workspace(doc: &AutoCommit, selected: Option<PageId>) -> Result<Workspace, String> {
-        let mut workspace = Workspace::of(Rc::new(read_notebook(doc)?), &Workspace::default());
+        let notebook =
+            ui::tilo_resource::profiling::measure("read_notebook", || read_notebook(doc))?;
+        Ok(Self::select_in(
+            Workspace::of(&notebook, &Workspace::default()),
+            selected,
+        ))
+    }
+
+    /// The workspace a restored view shows of `doc`, after the one the
+    /// window shows: notes that did not change keep what it read of them.
+    /// Hosted, the framework read the notebook when it opened the record and
+    /// follows `doc` since: the restore takes that state, reading only what
+    /// changed after it, rather than every note a second time. A peer's
+    /// change that arrived in between is in it, because the live notebook is
+    /// synced to `doc` first.
+    fn project_restored(
+        &self,
+        doc: &AutoCommit,
+        selected: Option<PageId>,
+    ) -> Result<Workspace, String> {
+        let live = self
+            .live
+            .as_ref()
+            .filter(|live| live.unreadable().is_none());
+        let workspace = if let Some(live) = live {
+            ui::tilo_resource::profiling::measure("live_projection", || {
+                live.sync(doc).map_err(|error| error.to_string())?;
+                Ok::<_, String>(Workspace::of(&live.get(), &self.workspace))
+            })?
+        } else {
+            let notebook =
+                ui::tilo_resource::profiling::measure("read_notebook", || read_notebook(doc))?;
+            Workspace::of(&notebook, &self.workspace)
+        };
+        Ok(Self::select_in(workspace, selected))
+    }
+
+    /// `workspace` showing `selected` when it holds that note, else its first
+    /// top-level note.
+    fn select_in(mut workspace: Workspace, selected: Option<PageId>) -> Workspace {
         let selected = selected
             .filter(|page| workspace.get(*page).is_some())
             .or_else(|| workspace.children_of(None).first().map(|page| page.id));
         workspace.set_selected(selected);
-        Ok(workspace)
+        workspace
     }
 
     fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
@@ -611,6 +668,7 @@ impl NotesApp {
             main,
             status: StatusModel::new(),
             save_surface: ui::SaveStatusSurface::new(),
+            save_notices: crate::save_notice::SaveNotices::new(),
             save_retry: false,
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
             shots_save_status: None,
@@ -626,7 +684,7 @@ impl NotesApp {
             theme: Theme::dark(),
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            canonical_asset_manifest: std::collections::BTreeMap::new(),
+            canonical_asset_manifest: ui::tilo_resource::Map::new(),
             canonical_assets_waiting: None,
             pending_events: Vec::new(),
             last_mouse: Point::ZERO,
@@ -639,9 +697,11 @@ impl NotesApp {
             main_scroll_copy: None,
             status_over_main: Vec::new(),
             canonical_synced: None,
+            reconciled_heads: None,
             projection_adopted: false,
             presented: false,
             dispatcher: None,
+            live: None,
             active_tag_filter: None,
             route_history: ui::NavStack::new(initial_route),
             history_target: None,
@@ -673,10 +733,14 @@ impl NotesApp {
     /// `apply_event`. The status bar diffs internally so a no-op
     /// refresh doesn't dirty its render.
     pub(crate) fn take_save_retry_request(&mut self) -> bool {
-        std::mem::take(&mut self.save_retry)
+        // A save the store has not confirmed for a while is submitted again
+        // on the surface's behalf, as "Retrying…" says.
+        let stalled = self.save_surface.take_retry();
+        std::mem::take(&mut self.save_retry) || stalled
     }
 
     fn refresh_status(&mut self) {
+        let _profile = ui::tilo_resource::profiling::Phase::start("status_refresh");
         let path = match self.workspace.selected() {
             Some(id) => self.breadcrumb_for(id),
             None => String::new(),
@@ -707,9 +771,6 @@ impl NotesApp {
                 ui::record::RecordSaveStatus::Failed(_) => SaveStatus::Failed,
                 ui::record::RecordSaveStatus::MemoryOnly => SaveStatus::SessionOnly,
             });
-        let announce = self.status.state().save_status != save_status
-            || self.status.state().page_path != path
-            || self.status.state().page_count != self.workspace.pages().len();
         let save_problem = match &self.record_save_status {
             ui::record::RecordSaveStatus::Failed(reason) if self.shots_save_status.is_none() => {
                 Some(reason.clone())
@@ -724,13 +785,22 @@ impl NotesApp {
             word_count,
         });
         // A failure stays on the surface until the note saves or it is
-        // dismissed; "Saving…" and "Saved" pass. Counts stay live while the
-        // bubble shows, but a new word must not reopen it.
+        // dismissed; "Saving…" and "Saved" pass. The state and counts stay
+        // in the accessibility status.
         let now = ui::time::now();
-        self.save_surface.set_detail(self.status_detail());
         self.save_surface.set(self.save_state(), now);
-        if announce {
-            self.save_surface.poke(now);
+        self.deliver_save_notice(now);
+    }
+
+    /// Raise, take down or answer the notification of a save that gave up
+    /// while the note was out of sight.
+    fn deliver_save_notice(&mut self, now: ui::time::Instant) {
+        if self
+            .save_notices
+            .deliver(&mut self.save_surface, self.main.title(), now)
+        {
+            self.save_retry = true;
+            self.self_dirty = true;
         }
     }
 
@@ -745,37 +815,28 @@ impl NotesApp {
         }
     }
 
-    /// What the saved bubble adds: the note's length, where the window
-    /// has room for it. A phone keeps the bubble to the save state.
-    fn status_detail(&self) -> Option<String> {
-        if self.shell.geometry().sidebar != SidebarPlacement::Docked {
-            return None;
-        }
-        self.status.word_text()
-    }
-
-    /// `--shots`: stage the status bubble as a change just happened, so a
-    /// still frame captures the floating chip.
-    pub fn stage_status_bubble(&mut self) {
-        self.refresh_status();
-        self.save_surface.poke(ui::time::now());
-    }
-
     /// `--shots`: capture an actual save-state presentation deterministically,
-    /// without depending on a timing-sensitive filesystem failure.
-    pub fn set_save_status_for_shots(&mut self, status: SaveStatus) {
+    /// without depending on a timing-sensitive filesystem failure: the save
+    /// began `waited` ago, and a `Saved` one landed just now after that
+    /// wait.
+    pub fn set_save_status_for_shots(&mut self, status: SaveStatus, waited: ui::time::Duration) {
+        let now = ui::time::now();
+        let began = now.checked_sub(waited).unwrap_or(now);
+        self.save_surface = ui::SaveStatusSurface::new();
+        self.save_surface.set(ui::SaveState::Saving, began);
+        self.save_surface.advance(now);
         self.shots_save_status = Some(status);
         let mut state = self.status.state().clone();
         state.save_status = status;
         let _ = self.status.set_state(state);
-        self.stage_status_bubble();
+        self.refresh_status();
     }
 
-    /// Draw the transient floating status bubble at the bottom-right of the
-    /// window — the reclaimed home of the old bottom status strip. It shows
-    /// on a status change or while the pointer hovers the bottom-right band,
-    /// then fades. All colours come from the theme (via `draw_pill`).
-    /// Returns where it painted, `self.rect` when it painted without saying.
+    /// Draw the save status: in the header row beside the note's title,
+    /// where it covers none of the note, and a failed save's card in the
+    /// bottom-right corner. It shows on a status change or while the pointer
+    /// rests on it, then fades. Returns where it painted, `self.rect` when
+    /// it painted without saying.
     fn draw_status_bubble(
         &mut self,
         scene: &mut Scene,
@@ -785,6 +846,8 @@ impl NotesApp {
     ) -> Option<Rect> {
         let now = ui::time::now();
         let before = scene.encoding().draw_tags.len();
+        self.save_surface
+            .set_header_slot(self.shell.header_status_slot());
         let painted = self
             .save_surface
             .paint(scene, transform, tr, theme, self.rect, now);
@@ -979,7 +1042,7 @@ impl NotesApp {
             .selected()
             .into_iter()
             .filter_map(|page| self.workspace.bodies.get(&page))
-            .flatten()
+            .flat_map(|blocks| blocks.iter())
             .flat_map(|block| block.marks.clone())
             .filter_map(|span| match span.mark {
                 actions::InlineMark::Transclusion { page } => page.parse::<PageId>().ok(),
@@ -995,7 +1058,7 @@ impl NotesApp {
                     .bodies
                     .get(&page.id)
                     .into_iter()
-                    .flatten()
+                    .flat_map(|blocks| blocks.iter())
                     .map(|block| block.text.clone())
                     .find(|text| !text.trim().is_empty())
                     .unwrap_or_else(|| "Empty note".to_string());
@@ -1023,6 +1086,11 @@ impl NotesApp {
             };
             let result = fit_image_asset(request.image.bytes).and_then(|bytes| {
                 let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+                // The pasted picture is drawn from here at once, whatever the
+                // content store does with the notebook's copy.
+                if let Ok(mut assets) = self.canonical_assets.write() {
+                    assets.insert(source.clone(), bytes.clone());
+                }
                 // Replaces the selection the paste was made over, or goes
                 // after the block the caret was in, as one action.
                 let edit = self
@@ -1180,7 +1248,7 @@ impl NotesApp {
     /// we deliberately do NOT create it here, so binding can never fork
     /// the `pages` Map ahead of the handshake.
     fn bind_selected_page(&mut self, state: &AutoCommit, sel: PageId) {
-        if self.workspace.body_state(sel).is_none() {
+        if !self.workspace.has_stored_body(sel) {
             return; // page not in the shared doc yet — wait for sync
         }
         let title = self
@@ -1332,9 +1400,21 @@ impl NotesApp {
             self.load_images_for_capture();
         }
         match scenario {
-            Some("status") => self.set_save_status_for_shots(SaveStatus::Saved),
-            Some("saving") => self.set_save_status_for_shots(SaveStatus::Saving),
-            Some("save_error") => self.set_save_status_for_shots(SaveStatus::Failed),
+            Some("status") => {
+                self.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_NOTICEABLE);
+            }
+            Some("saving") => {
+                self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_NOTICEABLE);
+            }
+            Some("save_retrying") => {
+                self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_STALL);
+            }
+            Some("save_not_saved") => {
+                self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_GIVE_UP);
+            }
+            Some("save_error") => {
+                self.set_save_status_for_shots(SaveStatus::Failed, ui::SAVE_NOTICEABLE);
+            }
             Some("import_success") => self.transfer_toasts.push(
                 "Imported Project brief",
                 ui::widget::toast::ToastKind::Success,
@@ -1371,7 +1451,11 @@ impl NotesApp {
     pub(crate) fn adopt_resource_state(&mut self, state: &Rc<crate::Notebook>) {
         self.projection_adopted = true;
         self.presented = true;
-        self.adopt(Workspace::of(Rc::clone(state), &self.workspace));
+        self.reconciled_heads = None;
+        let workspace = ui::tilo_resource::profiling::measure("workspace_projection", || {
+            Workspace::of(state, &self.workspace)
+        });
+        self.adopt(workspace);
         let selected = self.workspace.selected();
         if self.bound_page != selected {
             self.bound_page = None;
@@ -1382,11 +1466,13 @@ impl NotesApp {
             self.open_when_present = None;
             self.navigate_to(page);
         }
-        self.sidebar.sync_from_workspace(&self.workspace);
+        ui::tilo_resource::profiling::measure("sidebar_projection", || {
+            self.sidebar.sync_from_workspace(&self.workspace);
+        });
         if let Some(page) = selected.and_then(|id| self.workspace.get(id)) {
             self.main.set_title(Some(page.title.clone()));
         }
-        self.refresh_link_pages();
+        ui::tilo_resource::profiling::measure("link_pages", || self.refresh_link_pages());
         self.self_dirty = true;
     }
 
@@ -1395,9 +1481,11 @@ impl NotesApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
         actions: ui::framework::Actions<crate::resource::Notebook>,
+        live: ui::framework::Live<crate::resource::Notebook>,
     ) {
         self.main.attach_notebook(dispatcher.clone(), actions);
         self.dispatcher = Some(dispatcher);
+        self.live = Some(live);
     }
 
     /// What opens a note the framework names by its item: a search hit, an
@@ -1465,7 +1553,7 @@ impl NotesApp {
             }
             self.index_search_page(
                 source,
-                bodies.get(&source).map(Vec::as_slice).unwrap_or_default(),
+                bodies.get(&source).map(AsRef::as_ref).unwrap_or_default(),
                 &known_pages,
             );
         }
@@ -1520,8 +1608,28 @@ impl NotesApp {
     fn reconcile_canonical(&mut self, doc: &AutoCommit) -> Result<(), String> {
         #[cfg(test)]
         let _profile = ui::tilo_resource::profiling::Phase::start("reconcile_canonical");
-        let workspace = Workspace::of(Rc::new(read_notebook(doc)?), &self.workspace);
-        self.adopt(workspace);
+        // An open transaction may hold writes the heads do not name yet.
+        let heads = (doc.pending_ops() == 0).then(|| doc.base_heads());
+        if heads.is_none() || heads != self.reconciled_heads {
+            let workspace = if let Some(live) = self.live.as_ref().filter(|_| self.presented) {
+                // Hosted, the framework's live notebook reads what changed
+                // since it last followed the document; the state is held
+                // only while it is projected, so the framework keeps
+                // updating it in place.
+                ui::tilo_resource::profiling::measure("live_projection", || {
+                    live.sync(doc).map_err(|error| error.to_string())?;
+                    Ok::<_, String>(Workspace::of(&live.get(), &self.workspace))
+                })?
+            } else {
+                let notebook =
+                    ui::tilo_resource::profiling::measure("read_notebook", || read_notebook(doc))?;
+                ui::tilo_resource::profiling::measure("workspace_projection", || {
+                    Workspace::of(&notebook, &self.workspace)
+                })
+            };
+            self.adopt(workspace);
+            self.reconciled_heads = heads;
+        }
         if self
             .active_tag_filter
             .is_some_and(|tag| self.workspace.get_tag(tag).is_none())
@@ -1545,8 +1653,26 @@ impl NotesApp {
         edits: &mut ui::widget::Edits<'_>,
         event: OutEvent,
     ) -> Result<(), String> {
-        self.reconcile_canonical(edits.doc())?;
         let gone = |app: &Self, id: PageId| app.workspace.get(id).is_none();
+        if let OutEvent::Select(id) = event
+            && !gone(self, id)
+        {
+            // Choosing a note the window shows writes nothing: it is taken
+            // against the workspace on screen, as `sync` takes it, without
+            // reading the notebook again. A note a collaborator removed since
+            // leaves the selection when the next projection arrives; one the
+            // window does not show yet (created before the next presentation)
+            // is looked up in the document below.
+            self.workspace.set_selected(Some(id));
+            self.sidebar.sync_from_workspace(&self.workspace);
+            if let Some(page) = self.workspace.get(id) {
+                self.main.set_title(Some(page.title.clone()));
+            }
+            self.record_current_route();
+            self.refresh_status();
+            return Ok(());
+        }
+        self.reconcile_canonical(edits.doc())?;
         match event {
             OutEvent::Select(id) => {
                 if gone(self, id) {
@@ -1710,6 +1836,21 @@ impl NotesApp {
 
     /// Open note `id` on the next sync, where its body binds.
     fn open_page(&mut self, id: PageId) {
+        // Explicit note navigation gives the body the keyboard. Keep a docked
+        // tree visible, but dismiss its modal drawer, including saved intent
+        // that has not yet been resolved against the first measured width.
+        self.pending_responsive_view = Some((false, false));
+        if self.shell.geometry().sidebar == SidebarPlacement::Drawer {
+            self.set_drawer_open(false);
+        }
+        self.sidebar.set_focus(false);
+        let outgoing_page = self.main.page_id();
+        self.main.focus_note_body();
+        if let Some(new_title) = self.main.take_title_rename()
+            && let Some(id) = outgoing_page
+        {
+            self.pending_events.push(OutEvent::Rename { id, new_title });
+        }
         self.pending_events.push(OutEvent::Select(id));
     }
 
@@ -1734,34 +1875,52 @@ impl NotesApp {
     /// and pick up referenced bytes that arrive from a collaborator's device
     /// after the reference did.
     fn refresh_canonical_assets(&mut self) {
-        let manifest = &self.workspace.notebook.images;
+        let manifest = self.workspace.images.clone();
         let retry = self
             .canonical_assets_waiting
-            .is_some_and(|since| since.elapsed() >= std::time::Duration::from_secs(1));
-        if *manifest == self.canonical_asset_manifest && !retry {
+            .is_some_and(|since| since.elapsed() >= CANONICAL_ASSETS_RETRY);
+        if manifest == self.canonical_asset_manifest && !retry {
             return;
         }
         let content = crate::notebook::content();
-        let snapshot = crate::notebook::image_snapshot(&self.workspace.notebook, |digest| {
-            content.read(digest)
-        });
-        let waiting = snapshot.len() < manifest.len();
+        let snapshot = crate::notebook::image_snapshot(&manifest, |digest| content.read(digest));
         let arrived = self
             .canonical_assets
             .read()
             .is_ok_and(|assets| snapshot.keys().any(|key| !assets.contains_key(key)));
+        let mut waiting = true;
         if let Ok(mut assets) = self.canonical_assets.write() {
-            *assets = snapshot;
+            // Bytes this window put in itself (a paste) stay while the
+            // notebook still names them, even where the store would not
+            // serve them back.
+            assets.retain(|key, _| {
+                key.strip_prefix("asset:")
+                    .is_some_and(|digest| manifest.contains_key(digest))
+            });
+            assets.extend(snapshot);
+            waiting = manifest
+                .keys()
+                .any(|digest| !assets.contains_key(&format!("asset:{digest}")));
         }
-        self.canonical_asset_manifest = manifest.clone();
+        self.canonical_asset_manifest = manifest;
         self.canonical_assets_waiting = waiting.then(ui::time::now);
-        if arrived && retry {
-            // The image store remembers a failed load; a fresh store draws the
-            // images that were placeholders while their bytes were on the way.
-            self.main
-                .set_image_store(Some(canonical_image_store(&self.canonical_assets)));
-            self.self_dirty = true;
+        if arrived {
+            // The image store remembers a failed load, and an image block is
+            // laid out (and asked for) in the frame it appears, before its
+            // bytes were in the snapshot: forget the failures so the images
+            // that were placeholders are fetched again.
+            if let Some(store) = self.main.image_store()
+                && store.forget_failed()
+            {
+                self.self_dirty = true;
+            }
         }
+    }
+
+    /// When the images still on their way are looked for again.
+    fn canonical_assets_retry_deadline(&self) -> Option<ui::time::Instant> {
+        self.canonical_assets_waiting
+            .map(|since| since + CANONICAL_ASSETS_RETRY)
     }
 
     fn drain_title_rename(&mut self, edits: &mut ui::widget::Edits<'_>) {
@@ -2033,6 +2192,23 @@ impl NotesApp {
         self.sidebar.context_menu_open_for_test()
     }
 
+    /// Test hook: whether the picture `source` (`asset:<digest>`) has
+    /// decoded in the notebook's image store, once its loads settle.
+    #[doc(hidden)]
+    pub fn image_decoded_for_test(&self, source: &str) -> bool {
+        self.main.image_store().is_some_and(|store| {
+            store.block_until_idle(ui::time::Duration::from_secs(2));
+            store.get(source).is_some()
+        })
+    }
+
+    /// Test hook: pictures still fetching or decoding in the notebook's image
+    /// store.
+    #[doc(hidden)]
+    pub fn images_pending_for_test(&self) -> usize {
+        self.main.image_store().map_or(0, ui::ImageStore::pending)
+    }
+
     /// Test hook: whether the editor's `/` block menu is visible.
     #[doc(hidden)]
     pub fn editor_slash_menu_visible_for_test(&self) -> bool {
@@ -2138,7 +2314,8 @@ impl ui::application_view::ApplicationViewState for NotesApp {
     ) -> Result<ui::application_view::ApplicationFocusRestore, ui::view::ThawError> {
         use crate::local_view::{NotesLocalViewV1, PreparedFocus};
         let local = NotesLocalViewV1::decode(local)?;
-        let workspace = Self::project_workspace(doc, local.selected_page)
+        let workspace = self
+            .project_restored(doc, local.selected_page)
             .map_err(ui::view::ThawError::State)?;
         let mut main = self
             .main
@@ -2151,7 +2328,7 @@ impl ui::application_view::ApplicationViewState for NotesApp {
                     .bodies
                     .get(&page)
                     .into_iter()
-                    .flatten()
+                    .flat_map(|blocks| blocks.iter())
                     .map(|block| block.id.clone())
                     .collect::<std::collections::HashSet<_>>()
             })
@@ -2166,7 +2343,9 @@ impl ui::application_view::ApplicationViewState for NotesApp {
             .filter(|id| workspace.tags().iter().any(|tag| tag.id == *id));
         // All validation/projection above precedes the first saved local change.
         self.main = main;
-        self.workspace = workspace;
+        // The notes that changed since the window last showed the notebook
+        // are indexed again for search and links.
+        self.adopt(workspace);
         self.sidebar = sidebar;
         self.active_tag_filter = active_tag;
         self.bound_page = self.workspace.selected();
@@ -2305,10 +2484,12 @@ impl Widget for NotesApp {
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= ui::time::now());
         self.self_dirty |= feedback_expired;
+        // A dragged block's pointer at the page's edge scrolls the page.
+        let dragged = self.main.autoscroll_block_drag();
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
-        self.shell.update(state, path) || feedback_expired
+        self.shell.update(state, path) || feedback_expired || dragged
     }
 
     fn native_input_snapshot(
@@ -2331,6 +2512,9 @@ impl Widget for NotesApp {
             self.record_save_status = saved;
             self.refresh_status();
         }
+        // A save that gave up is raised as a notification only if no frame
+        // paints this note: the person could lose work they cannot see.
+        self.deliver_save_notice(ui::time::now());
         self.refresh_canonical_assets();
         let requested = std::mem::take(&mut self.opened.borrow_mut().requests);
         for page in requested {
@@ -2339,17 +2523,24 @@ impl Widget for NotesApp {
         // Moving to another note writes nothing, so it is taken up here, in
         // the frame that asked; edits wait for the settle pass.
         let mut pending = std::mem::take(&mut self.pending_events);
+        let mut moved = false;
         pending.retain(|event| match event {
             OutEvent::Select(id) => {
                 if self.workspace.get(*id).is_some() {
                     self.workspace.set_selected(Some(*id));
                     self.record_current_route();
+                    moved = true;
                 }
                 false
             }
             _ => true,
         });
         self.pending_events = pending;
+        if moved {
+            // A presented window takes no projection for a move, so the
+            // page tree marks the note it now shows here.
+            self.sidebar.sync_from_workspace(&self.workspace);
+        }
         // Project the workspace only when its inputs moved: committed
         // heads, an open transaction (a settle pass may have written),
         // the selected page or the tag filter. Re-projecting every frame
@@ -2585,11 +2776,15 @@ impl Widget for NotesApp {
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
         (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
+            || self.main.block_drag_scrolling()
             || self.shell.needs_animation_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let mut earliest = self.save_surface.next_wake_deadline();
+        if let Some(deadline) = self.canonical_assets_retry_deadline() {
+            earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+        }
         for child in self.children() {
             if let Some(deadline) = child.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
@@ -2752,16 +2947,8 @@ impl Widget for NotesApp {
         children
     }
 
-    fn is_focusable(&self) -> bool {
-        false
-    }
-
     fn modal_capture(&self) -> Option<Rect> {
         self.children().into_iter().find_map(Widget::modal_capture)
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        None
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2826,13 +3013,7 @@ impl ui::presence::capability::PublishesPresence for NotesApp {
     }
 }
 
-impl ui::resources::PublishesResources for NotesApp {
-    /// The notebook is the framework root's publication; the surface adds
-    /// nothing beside it.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Vec::new()
-    }
-}
+impl ui::resources::PublishesResources for NotesApp {}
 
 impl NotesApp {
     /// Whether the page tree is part of the window: the shell shows its
@@ -3618,10 +3799,13 @@ mod tests {
     }
 
     /// The dispatcher the framework attaches to the notebook surface, for a
-    /// test that drives `NotesApp` over a document of its own.
+    /// test that drives `NotesApp` over a document of its own. The live
+    /// notebook follows the framework's record, so a surface over another
+    /// document is never presented and never reads it.
     fn framework_dispatcher() -> (
         ui::framework::Dispatcher<crate::resource::Notebook>,
         ui::framework::Actions<crate::resource::Notebook>,
+        ui::framework::Live<crate::resource::Notebook>,
     ) {
         let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
         let notes = app.surface_mut::<NotesApp>();
@@ -3631,6 +3815,7 @@ mod tests {
                 .clone()
                 .expect("the framework attaches its dispatcher"),
             notes.main.actions().expect("and its actions"),
+            notes.live.clone().expect("and its live notebook"),
         )
     }
 
@@ -3642,8 +3827,8 @@ mod tests {
             &ui::permissions::UserId("notes-app-test-author".into()),
         )
         .unwrap();
-        let (dispatcher, actions) = framework_dispatcher();
-        app.attach_framework(dispatcher, actions);
+        let (dispatcher, actions, live) = framework_dispatcher();
+        app.attach_framework(dispatcher, actions, live);
         app
     }
 
@@ -3872,13 +4057,13 @@ mod tests {
         let mut host =
             ui::prelude::TestApp::<crate::NotesShell>::open_data_dir(profile.path()).unwrap();
         host.flush().unwrap();
+        // Notes keeps one record per room: the room's own document.
+        assert!(host.record().is_package_primary());
         let directory = profile
             .path()
             .join("so.tilo.notes")
             .join("rooms")
-            .join("personal")
-            .join("records")
-            .join(host.record().storage_key());
+            .join("personal");
         assert!(directory.is_dir(), "observe the real record directory");
         let backup = profile.path().join("held-record");
         std::fs::rename(&directory, &backup).unwrap();
@@ -3943,6 +4128,58 @@ mod tests {
         );
     }
 
+    /// A note whose save gives up says "Not saved" with "Try again" in its
+    /// bubble while it is painted, and raises nothing; one that nothing
+    /// paints raises a notification whose "Try again" submits the note
+    /// again.
+    #[test]
+    fn a_save_that_gives_up_asks_in_place_in_view_and_notifies_out_of_sight() {
+        ui::i18n::I18nManager::init("en-US");
+        let later = || ui::time::now() + ui::time::Duration::from_secs(2);
+        let staged = |recording: &std::sync::Arc<ui::notify::conformance::Recording>| {
+            let (mut app, state, tmp, _) = app_seeded_into_doc();
+            app.save_notices.set_notifier(recording.clone());
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_GIVE_UP);
+            (app, state, tmp)
+        };
+
+        let in_view = std::sync::Arc::new(ui::notify::conformance::Recording::default());
+        let (mut app, _state, _tmp) = staged(&in_view);
+        app.draw_status_bubble(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+        )
+        .expect("the bubble is painted");
+        assert!(app.save_surface.gave_up());
+        assert_eq!(app.save_surface.bubble_text(), "Not saved");
+        assert!(app.save_surface.failure().is_none(), "no toast");
+        app.deliver_save_notice(later());
+        assert!(in_view.shown().is_empty(), "in view, nothing is notified");
+
+        let out_of_sight = std::sync::Arc::new(ui::notify::conformance::Recording::default());
+        let (mut app, _state, _tmp) = staged(&out_of_sight);
+        app.deliver_save_notice(later());
+        let shown = out_of_sight.shown();
+        assert_eq!(shown.len(), 1, "nothing painted it: notify");
+        let title = app.main.title().expect("the seeded note has a title");
+        assert_eq!(shown[0].title, format!("{title} wasn't saved"));
+        assert_eq!(shown[0].body, "Your changes are still in Notes.");
+        assert_eq!(shown[0].action.as_deref(), Some("Try again"));
+        assert_eq!(shown[0].severity, ui::notify::Severity::Warning);
+        let tag = shown[0].tag.clone();
+        // The retry the stall asked for on the way.
+        app.take_save_retry_request();
+        assert!(!app.take_save_retry_request());
+        app.save_notices.click();
+        app.deliver_save_notice(later());
+        assert!(app.take_save_retry_request(), "Try again submits the note");
+        assert_eq!(out_of_sight.withdrawn(), [tag], "and takes it down");
+        assert!(!app.save_surface.gave_up(), "the wait starts over");
+    }
+
     #[test]
     fn status_reports_live_word_counts_persistent_failures_and_calm_motion() {
         eprintln!(
@@ -3958,6 +4195,15 @@ mod tests {
             app.refresh_status();
             assert_eq!(app.status.state().word_count, Some(3));
             assert_eq!(app.save_surface.failure(), None);
+            for status in [SaveStatus::Saving, SaveStatus::Saved].repeat(3) {
+                app.shots_save_status = Some(status);
+                app.refresh_status();
+                assert!(
+                    !app.save_surface.is_visible(ui::time::now()),
+                    "autosave must not flash a bubble while typing"
+                );
+            }
+            assert_eq!(app.save_surface.state(), Some(&ui::SaveState::Saved));
 
             app.shots_save_status = Some(SaveStatus::Failed);
             app.refresh_status();
@@ -4002,9 +4248,7 @@ mod tests {
         {
             let (mut app, state, _tmp, _) = app_seeded_into_doc();
             app.theme.reduce_motion = false;
-            app.shots_save_status = Some(SaveStatus::Saved);
-            app.refresh_status();
-            app.save_surface.poke(ui::time::now());
+            app.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_NOTICEABLE);
             assert!(app.needs_animation_frame(), "normal fade requests frames");
 
             app.theme.reduce_motion = true;
@@ -4038,11 +4282,16 @@ mod tests {
     }
 
     fn assert_expired_save_feedback_presents(app: &mut NotesApp, state: &ui::State) {
-        app.save_surface.poke(
-            ui::time::now()
-                .checked_sub(ui::time::Duration::from_secs(3))
-                .expect("the test clock can age the transient chip"),
-        );
+        let landed = ui::time::now()
+            .checked_sub(ui::time::Duration::from_secs(3))
+            .expect("the test clock can age the transient chip");
+        let began = landed
+            .checked_sub(ui::SAVE_NOTICEABLE)
+            .expect("the test clock can age the save");
+        app.save_surface = ui::SaveStatusSurface::new();
+        app.save_surface.set(ui::SaveState::Saving, began);
+        app.save_surface.advance(landed);
+        app.save_surface.set(ui::SaveState::Saved, landed);
         app.mark_drawn();
         assert!(!app.self_dirty);
         assert!(

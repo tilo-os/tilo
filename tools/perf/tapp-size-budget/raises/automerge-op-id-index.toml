@@ -1,0 +1,5 @@
+reason = "the vendored Automerge fork keeps an index of where each op is, so a remote keystroke into a text typed at scattered places no longer searches the whole document for the element it follows. Settings went 2,560 B over its aarch64 budget: check run 112233 measured 5,253,632 B on aarch64"
+run = 112233
+
+[apps."so.tilo.settings"]
+aarch64 = 8192

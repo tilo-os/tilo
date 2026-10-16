@@ -10,8 +10,9 @@ use objc2::runtime::ProtocolObject;
 use objc2_av_foundation::AVCaptureAudioDataOutput;
 use objc2_core_media::CMSampleBuffer;
 use objc2_foundation::{NSDictionary, NSString};
+use tilo_lock::MutexRecover as _;
 
-use super::{Capture, SampleDelegate, Slot, lock, number, settle, state};
+use super::{Capture, SampleDelegate, Slot, number, settle, state};
 use crate::{
     AudioSource, CaptureError, CaptureState, DeviceKind, MAX_BUFFERED_SAMPLES, MicrophoneRequest,
 };
@@ -31,7 +32,8 @@ impl AudioSource for Audio {
     }
 
     fn read(&mut self) -> Vec<f32> {
-        lock(&self.slot)
+        self.slot
+            .lock_recover()
             .latest
             .take()
             .map(Vec::from)
@@ -75,7 +77,7 @@ pub(crate) fn microphone(
     let samples = Arc::clone(&slot);
     let delegate = SampleDelegate::new(Box::new(move |sample| {
         let Some(bytes) = bytes(sample) else { return };
-        let mut shared = lock(&samples);
+        let mut shared = samples.lock_recover();
         let queue = shared.latest.get_or_insert_with(VecDeque::new);
         queue.extend(
             bytes

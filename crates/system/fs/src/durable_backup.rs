@@ -322,13 +322,12 @@ fn hash(bytes: &[u8]) -> String {
 }
 
 fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
-    if fs::metadata(path)?.len() > MAX_DURABLE_STATE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{} exceeds the durable state byte bound", path.display()),
-        ));
-    }
-    fs::read(path)
+    let too_large = io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{} exceeds the durable state byte bound", path.display()),
+    );
+    tilo_files::native::bounded::read_or(path, MAX_DURABLE_STATE_BYTES, too_large)?
+        .ok_or_else(|| io::ErrorKind::NotFound.into())
 }
 
 fn hash_from_backup_name(path: &Path) -> Option<String> {

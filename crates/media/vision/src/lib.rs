@@ -49,16 +49,6 @@ pub struct LocalFaceCapability {
     pub revision: String,
 }
 
-/// Fixed Photos-only gateway request. The preview is bounded by
-/// [`PreparedImage`]; embeddings/geometry stay in the loopback runtime and
-/// are returned only as opaque local cluster membership there.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FaceClusterRequest {
-    pub operation: String,
-    pub source_content_hash: String,
-}
-
 /// Opaque membership returned by the verified face runtime.  Names,
 /// embeddings, crops, geometry, and confidences are intentionally absent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

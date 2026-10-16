@@ -74,9 +74,15 @@ REPAIR_EFI_NAME="tilo-repair.efi"
 # somewhere else — and a hard-coded path makes that impossible without a rebuild.
 UKI_CMDLINE="${TILO_UKI_CMDLINE:-/usr/libexec/tilo-uki-cmdline}"
 
+# Which image this is. Only a dev image (os/Containerfile.dev writes `dev` here)
+# boots composefs through split kernel/initrd entries; the sealed image boots
+# UKIs only, and on it anything else stays refused.
+IMAGE_FLAVOUR_FILE="${TILO_IMAGE_FLAVOUR_FILE:-/usr/lib/tilo/image-flavour}"
+
 # --- the ESP -----------------------------------------------------------------
 # Two layouts, both real. On the sealed composefs layout /boot IS the ESP and the
-# UKIs live beside the loader entries; on the ostree layout the ESP hangs off
+# UKIs live beside the loader entries; on an installed system (a separate ext4
+# /boot, tilo-esp-generator) and on the ostree layout the ESP hangs off
 # /boot/efi. Detect rather than assume — acting on the wrong directory silently
 # does nothing.
 esp_path() {
@@ -98,6 +104,28 @@ entry_id_of() {
   local base="${1##*/}"
   base="${base%.conf}"
   printf '%s.conf\n' "${base%%+*}"
+}
+
+# The composefs identity a dev image's kernel/initrd (Type #1) entry boots, or
+# failure.
+#
+# bootc writes `linux` and `initrd` under one `EFI/Linux/bootc_composefs-<id>/`
+# directory and the identity on the `options` line. The directory does not name
+# the deployment: bootc points a deployment whose kernel and initrd are unchanged
+# at an earlier deployment's directory. So the shape is checked strictly and the
+# identity is the single `composefs=` the entry hands the kernel.
+type1_entry_digest() {
+  local f="$1" linux initrd digests
+  [ "$(grep -c '^linux[[:space:]]' "$f")" = 1 ] \
+    && [ "$(grep -c '^initrd[[:space:]]' "$f")" = 1 ] \
+    && ! grep -qE '^(uki|efi)[[:space:]]' "$f" || return 1
+  linux="$(sed -n 's/^linux[[:space:]]\{1,\}//p' "$f" | sed 's/[[:space:]]*$//')"
+  initrd="$(sed -n 's/^initrd[[:space:]]\{1,\}//p' "$f" | sed 's/[[:space:]]*$//')"
+  [[ "$linux" =~ ^/?EFI/Linux/bootc_composefs-[[:xdigit:]]{128}/vmlinuz$ ]] || return 1
+  [ "$initrd" = "${linux%/vmlinuz}/initrd" ] || return 1
+  digests="$(sed -n 's/^options[[:space:]]//p' "$f" | tr ' \t' '\n\n' | sed -n 's/^composefs=//p')"
+  [[ "$digests" =~ ^[[:xdigit:]]{128}$ ]] || return 1
+  printf '%s\n' "$digests"
 }
 
 # --- writing the ESP -----------------------------------------------------------
@@ -483,7 +511,11 @@ cmd_entries() {
     *) cur="$(current_entry)"; [ -n "$cur" ] || die "cannot identify the booted entry" ;;
   esac
 
-  local f name id changed=0 directory uki_rel cmd digest proven=0
+  local f name id changed=0 directory uki_rel cmd digest proven=0 split_entries=0
+  if [ -n "$booted_digest" ] && [ -r "$IMAGE_FLAVOUR_FILE" ] \
+     && [ "$(cat "$IMAGE_FLAVOUR_FILE")" = dev ]; then
+    split_entries=1
+  fi
   esp_plan_reset
   for f in "$esp"/loader/entries/*.conf "$esp"/loader/entries.staged/*.conf; do
     [ -e "$f" ] || continue
@@ -494,10 +526,16 @@ cmd_entries() {
     case "$id" in bootc*) ;; *) continue ;; esac
     if [ -n "$booted_digest" ]; then
       uki_rel="$(sed -n 's/^uki *//p' "$f" | head -1)"
-      [[ "$uki_rel" =~ ^/?EFI/Linux/bootc/[A-Za-z0-9][A-Za-z0-9._+-]*\.efi$ ]] || die "not a managed UKI entry: $f"
-      cmd="$($UKI_CMDLINE show "$esp/${uki_rel#/}")" || die "cannot read entry identity: $f"
-      digest="$(printf '%s\n' "$cmd" | tr ' \t' '\n\n' | sed -n 's/^composefs=//p')"
-      [[ "$digest" =~ ^[[:xdigit:]]{128}$ ]] || die "invalid entry composefs identity: $f"
+      if [ -z "$uki_rel" ] && [ "$split_entries" = 1 ]; then
+        # A dev image's kernel/initrd entry. The sealed image never takes this
+        # branch: there every entry must name a managed UKI or the pass fails.
+        digest="$(type1_entry_digest "$f")" || die "not a managed kernel/initrd entry: $f"
+      else
+        [[ "$uki_rel" =~ ^/?EFI/Linux/bootc/[A-Za-z0-9][A-Za-z0-9._+-]*\.efi$ ]] || die "not a managed UKI entry: $f"
+        cmd="$($UKI_CMDLINE show "$esp/${uki_rel#/}")" || die "cannot read entry identity: $f"
+        digest="$(printf '%s\n' "$cmd" | tr ' \t' '\n\n' | sed -n 's/^composefs=//p')"
+        [[ "$digest" =~ ^[[:xdigit:]]{128}$ ]] || die "invalid entry composefs identity: $f"
+      fi
       if [ "$digest" = "$booted_digest" ]; then proven=1; continue; fi
     elif [ "$id" = "$cur" ]; then
       proven=1; continue

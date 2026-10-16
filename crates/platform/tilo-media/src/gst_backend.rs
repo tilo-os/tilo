@@ -370,6 +370,40 @@ pub struct GstState {
     copy_stage: Option<gst::Element>,
 }
 
+/// Do the process-wide part of a first [`GstState::new`] on a thread of its
+/// own: `GStreamer`'s init and plugin registry, and loading the plugins a
+/// playback pipeline is built from. A first engine otherwise pays all of it
+/// on the thread that builds it, which costs hundreds of milliseconds with a
+/// warm registry cache and more without one. Everything here is global and
+/// idempotent, so an engine built while it runs waits for the same work
+/// instead of repeating it. Once per process.
+pub(crate) fn prepare_in_background() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("media-prepare".into())
+            .spawn(|| {
+                if gst::init().is_err() {
+                    return;
+                }
+                crate::extensions::refresh_registry();
+                for name in [
+                    "playbin",
+                    "appsink",
+                    "videoconvert",
+                    "audioconvert",
+                    "audioresample",
+                    "volume",
+                    "autoaudiosink",
+                ] {
+                    if let Some(factory) = gst::ElementFactory::find(name) {
+                        let _ = factory.load();
+                    }
+                }
+            });
+    });
+}
+
 impl GstState {
     /// Build the pipeline with no source yet. `None` when `GStreamer` cannot
     /// initialise or the sink chain cannot be built, so the engine falls back

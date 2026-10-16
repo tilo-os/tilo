@@ -115,6 +115,76 @@ pub(crate) fn needs_refresh(
     });
     needed
 }
+/// One walk for a frame that changes nothing History reads: `None` when any
+/// surface is not at rest (`HistoryHost::at_rest`), otherwise whether any needs a
+/// refresh ([`needs_refresh`]). While every surface rests, entry capture,
+/// review service, focus return, control return and focus denial have
+/// nothing to do, so such a frame skips their walks.
+///
+/// `settled` says the previous frame already asked this of the same
+/// composition and owner documents, and nothing either reads has moved since
+/// (the frame witness held across it). Then a surface whose documents the
+/// witness follows ([`settled_checks_hold`]) is not asked again whether its
+/// live root still has the owners it registered or whether its committed
+/// frontier moved: both read only what the witness proves unchanged. What
+/// other threads deliver and what is queued for it are asked every frame.
+pub(crate) fn surfaces_at_rest(
+    root: &dyn Widget,
+    doc: &automerge::AutoCommit,
+    fallback_width: f64,
+    settled: bool,
+) -> Option<bool> {
+    let mut resting = true;
+    let mut needed = false;
+    crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
+        if !resting || !history.at_rest() {
+            resting = false;
+            return;
+        }
+        if needed {
+            return;
+        }
+        let width = if history.get_rect().width() > 0.0 {
+            history.get_rect().width()
+        } else {
+            fallback_width
+        };
+        needed = if settled && history.owners_followed_by_frame_witness() {
+            !history.sync_status_matches(None)
+                || history.refresh_without_owners(width).unwrap_or(false)
+        } else {
+            history.validate_root(live).is_err()
+                || !history.sync_status_matches(None)
+                || history.needs_refresh(doc, width)
+        };
+    });
+    resting.then_some(needed)
+}
+/// Whether what a settled [`surfaces_at_rest`] did not ask again still holds
+/// for every surface it skipped it for: each live root has the owners its
+/// surface registered, and no committed frontier asks for a refresh. A
+/// debug build proves every quiet frame with this.
+#[cfg(debug_assertions)]
+pub(crate) fn settled_checks_hold(
+    root: &dyn Widget,
+    doc: &automerge::AutoCommit,
+    fallback_width: f64,
+) -> bool {
+    let mut hold = true;
+    crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
+        if hold && history.owners_followed_by_frame_witness() {
+            let width = if history.get_rect().width() > 0.0 {
+                history.get_rect().width()
+            } else {
+                fallback_width
+            };
+            hold = history.validate_root(live).is_ok()
+                && (history.refresh_without_owners(width).is_some()
+                    || !history.heads_need_refresh(doc));
+        }
+    });
+    hold
+}
 pub(crate) fn capture_entries(root: &mut dyn Widget, doc: &automerge::AutoCommit) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.captures_input() {

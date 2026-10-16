@@ -15,11 +15,12 @@
 
 use std::sync::Arc;
 
+use neighbour_wire::NeighbourMsg;
 use tilo_connector::BlobAccess as _;
-use tilo_peer_state::{NeighbourMsg, peer_handle};
+use tilo_peer_state::peer_handle;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::room_bots::installed::FsBlobs;
-use tilo_relay::rooms::{RoomAdminClient, RoomCommand, RoomReply, RoomSummary};
+use tilo_relay::rooms::RoomSummary;
 use tilo_relay::{Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -35,26 +36,15 @@ async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
         .unwrap()
 }
 
-/// A room on `relay` that `member` created and entered, and the member's
+/// A room on `relay` that `member` entered as its owner's, and the member's
 /// live session in it.
 async fn member_in_a_new_room(
     relay: &Relay,
     member: &TestDevice,
 ) -> (RoomSummary, RelayCoeditSession) {
-    let admin = RoomAdminClient::new(device_endpoint(member).await, member.cert.clone());
-    let room = admin.create(relay.node_addr(), "Bridged").await.unwrap();
-    assert!(matches!(
-        admin
-            .send(
-                relay.node_addr(),
-                RoomCommand::Enter {
-                    room: room.room.clone()
-                }
-            )
-            .await
-            .unwrap(),
-        RoomReply::Entered { .. }
-    ));
+    let rooms = relay.rooms().unwrap();
+    let room = rooms.create("Bridged").await.unwrap();
+    rooms.enter(&room.room, &member.cert).await.unwrap();
     let client = RelayClient::connect_to_pinned_host(
         device_endpoint(member).await,
         relay.node_addr(),

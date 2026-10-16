@@ -41,6 +41,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, EndpointAddr, RelayConfig, RelayMap};
+use tilo_lock::MutexRecover as _;
 
 /// How long the relays stay up after the last thing that needed them: a
 /// collaborator who steps away and comes back within it, or an invite
@@ -243,10 +244,7 @@ impl Reachability {
 
 /// Run `f` on the state in `cell`, if it holds relays back, under its lock.
 fn with_held<T>(cell: &Cell, f: impl FnOnce(&mut Held) -> T) -> Option<T> {
-    cell.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_mut()
-        .map(f)
+    cell.lock_recover().as_mut().map(f)
 }
 
 impl Held {

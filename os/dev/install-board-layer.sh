@@ -32,6 +32,35 @@ install -D -m 0755 "$src/os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-
   /usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee
 test -x /usr/sbin/ethtool || { echo 'the EEE dispatcher needs /usr/sbin/ethtool' >&2; exit 1; }
 
+# Per-board firmware trim: remove the vendor firmware RPMs the board's reviewed
+# definition lists in `firmware_exclude` (os/dev/hardware_profile.py allows only
+# separable packages and refuses any whose tree the definition itself names).
+# --no-autoremove keeps dnf from widening the transaction; a package the base
+# does not carry is skipped; the board's own system_firmware must survive.
+definition=/usr/lib/tilo/hardware-profile-definition.json
+json_list() {
+  python3 -B -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1])).get(sys.argv[2], [])))' "$definition" "$1"
+}
+installed=()
+while IFS= read -r package; do
+  [ -n "$package" ] || continue
+  if rpm -q "$package" >/dev/null 2>&1; then installed+=("$package"); fi
+done < <(json_list firmware_exclude)
+if [ "${#installed[@]}" -gt 0 ]; then
+  dnf remove -y --no-autoremove "${installed[@]}"
+  for package in "${installed[@]}"; do
+    ! rpm -q "$package" >/dev/null 2>&1 || { echo "$package is still installed" >&2; exit 1; }
+  done
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if [ ! -e "/usr/lib/firmware/$path" ] && [ ! -e "/usr/lib/firmware/$path.xz" ] \
+        && [ ! -e "/usr/lib/firmware/$path.zst" ]; then
+      echo "firmware trim removed required $path" >&2
+      exit 1
+    fi
+  done < <(json_list system_firmware)
+fi
+
 always_on=$(python3 -B -c 'import json, sys; print(json.load(open(sys.argv[1])).get("always_on", False))' \
   /usr/lib/tilo/hardware-profile-definition.json)
 [ "$always_on" = True ] || exit 0

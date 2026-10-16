@@ -211,8 +211,7 @@ fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     std::fs::create_dir_all(dir)?;
     let metadata = std::fs::symlink_metadata(dir)?;
-    // SAFETY: geteuid cannot fail.
-    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+    if !metadata.is_dir() || metadata.uid() != rustix::process::geteuid().as_raw() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "not a directory of this worker's",

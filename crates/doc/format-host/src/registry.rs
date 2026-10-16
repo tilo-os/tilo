@@ -12,7 +12,7 @@ use crate::runner::Limits;
 pub struct ProviderEntry {
     /// MIME type the provider claims (e.g. `text/markdown`).
     pub mime: String,
-    /// Package identifier (e.g. `so.tilo.qdoc-md`). Also the provider id used
+    /// Package identifier (e.g. `so.tilo.markdown`). Also the provider id used
     /// by clients in `importAs`/`exportAs`.
     pub package: String,
     /// Path to the provider's core WebAssembly module.
@@ -149,7 +149,7 @@ mod tests {
         // A well-formed provider.
         let toml = provider(
             "text/markdown",
-            "so.tilo.qdoc-md",
+            "so.tilo.markdown",
             "/path/to/provider.wasm",
             "builtin",
             "1.0.0",
@@ -158,14 +158,14 @@ mod tests {
         assert_eq!(r.providers.len(), 1);
         let p = &r.providers[0];
         assert_eq!(p.mime, "text/markdown");
-        assert_eq!(p.package, "so.tilo.qdoc-md");
+        assert_eq!(p.package, "so.tilo.markdown");
         assert_eq!(p.tier, Tier::Builtin);
         assert_eq!(p.trust, vec!["tilo-curated/2025".to_string()]);
 
         // An unknown priority is refused.
         let weird = provider(
             "text/markdown",
-            "so.tilo.qdoc-md",
+            "so.tilo.markdown",
             "/x.wasm",
             "weird",
             "1.0.0",

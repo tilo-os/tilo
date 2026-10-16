@@ -22,7 +22,7 @@ pub(crate) enum Phase {
     BindingAnswer,
     BindingAdmitted,
     BindingRefused,
-    BindingTimedOut,
+    BindingAbandoned,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -266,7 +266,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .kernel_start_ticks += 1;
-        history.binding(pid, Phase::BindingTimedOut);
+        history.binding(pid, Phase::BindingAbandoned);
         let value = history.value();
         let attempt = value["attempts"].as_array().unwrap().last().unwrap();
         let events = attempt["events"].as_array().unwrap();
@@ -280,7 +280,7 @@ mod tests {
         assert!(
             !events
                 .iter()
-                .any(|event| event["phase"] == "binding_timed_out"
+                .any(|event| event["phase"] == "binding_abandoned"
                     || event["phase"] == "binding_refused")
         );
         assert!(

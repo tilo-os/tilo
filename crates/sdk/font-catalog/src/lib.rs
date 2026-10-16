@@ -267,8 +267,7 @@ mod immutable {
     const OVERFLOW_UID: u32 = 65_534;
 
     pub(super) fn file(path: &Path) -> bool {
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        let euid = unsafe { libc::geteuid() };
+        let euid = rustix::process::geteuid().as_raw();
         if euid == 0 {
             return false;
         }

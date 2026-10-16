@@ -404,7 +404,7 @@ impl Browser {
                     "ada",
                     tilo_agent_participant::ReplicaActor::Owner,
                     Seed::Existing {
-                        record: ui::record::RecordId::parse(&route.record).unwrap(),
+                        record: route_record(&route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                     },
                 ) {
@@ -827,6 +827,16 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     hosted.stop().await;
 }
 
+/// The record a document route names. A room-record app (Notes, Chat)
+/// publishes its package-primary record under the empty record id.
+fn route_record(record: &str) -> ui::record::RecordId {
+    if record.is_empty() {
+        ui::record::RecordId::package_primary()
+    } else {
+        ui::record::RecordId::parse(record).unwrap()
+    }
+}
+
 /// The sheets of a workbook, in order.
 fn sheet_names(app: &Replica) -> Vec<String> {
     app.read(|doc| {
@@ -897,7 +907,7 @@ impl Page {
                     "bea",
                     tilo_agent_participant::ReplicaActor::Owner,
                     Seed::Existing {
-                        record: ui::record::RecordId::parse(&creator.route.record).unwrap(),
+                        record: route_record(&creator.route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                     },
                 )
@@ -1065,7 +1075,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
                 "ada",
                 tilo_agent_participant::ReplicaActor::Owner,
                 Seed::Existing {
-                    record: ui::record::RecordId::parse(&page.route.record).unwrap(),
+                    record: route_record(&page.route.record),
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                 },
             );

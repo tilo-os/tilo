@@ -125,8 +125,9 @@ fn check_scaled_drawer_stays_inside_a_narrow_window() {
             .unwrap();
         assert!(
             app.harness()
-                .settle_for_capture(ui::time::Duration::from_secs(2)),
-            "the drawer's opening animation must settle before measuring its controls"
+                .settle_for_capture(ui::time::Duration::from_secs(5)),
+            "the drawer's opening animation and the new note's save must settle before \
+             measuring its controls"
         );
         // A surface visit advances the following frame. Sample both parts
         // together so the bounds and control describe the same layout.

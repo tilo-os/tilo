@@ -52,6 +52,9 @@ pub struct ManifestView {
     pub name: Option<String>,
     /// `[package.names]` — the name in other languages, by BCP 47 tag.
     pub localized_names: BTreeMap<String, String>,
+    /// `[package.keywords]` — the other words the app is known by, every
+    /// language's together: trimmed, de-duplicated and bounded.
+    pub keywords: Vec<String>,
     /// `[package].category` — freedesktop-style menu category.
     pub category: Option<String>,
     /// Payload-relative icon path, exported to the app as `TILO_APP_ICON`.
@@ -143,6 +146,7 @@ impl TryFrom<Manifest> for ManifestView {
             .map(|(tag, name)| (tag.trim().to_string(), name.trim().to_string()))
             .filter(|(tag, name)| !tag.is_empty() && !name.is_empty())
             .collect();
+        let keywords = search_keywords(package.keywords);
         // Normalised on decode: lowercase, no leading dot, no blanks — a
         // manifest writing `".ODT"` and one writing `"odt"` must resolve the same.
         let opens_ext = providers
@@ -167,6 +171,7 @@ impl TryFrom<Manifest> for ManifestView {
             package_id: package.id,
             name: package.name,
             localized_names,
+            keywords,
             category: package.category,
             icon: None,
             version: package.version,
@@ -182,6 +187,28 @@ impl TryFrom<Manifest> for ManifestView {
             continuity,
         })
     }
+}
+
+/// Most keywords an app may declare, and the longest, so a manifest cannot
+/// make the desktop's search index unbounded.
+const MAX_KEYWORDS: usize = 96;
+const MAX_KEYWORD_SCALARS: usize = 48;
+
+/// Every language's keywords as one list, trimmed, without blanks or
+/// repeats, in tag order.
+fn search_keywords(by_language: BTreeMap<String, Vec<String>>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    by_language
+        .into_values()
+        .flatten()
+        .map(|keyword| keyword.trim().to_owned())
+        .filter(|keyword| {
+            !keyword.is_empty()
+                && keyword.chars().count() <= MAX_KEYWORD_SCALARS
+                && seen.insert(keyword.to_lowercase())
+        })
+        .take(MAX_KEYWORDS)
+        .collect()
 }
 
 fn path_string(path: &Path) -> String {
@@ -635,5 +662,58 @@ mod tests {
                 "{kind:?} is not a kind"
             );
         }
+    }
+    #[test]
+    fn keywords_of_every_language_decode_trimmed_unique_and_bounded() {
+        let package = "id = \"so.example.tube\"\nversion = \"0.1.0\"\nkind = \"app\"";
+        let long = "x".repeat(MAX_KEYWORD_SCALARS + 1);
+        let tail = format!(
+            "[entrypoint]\nbin = \"bin/x\"\n[package.keywords]\nen = [\" YouTube \", \"video\", \"\", \"{long}\"]\n\
+             de = [\"Video\", \"filme\"]\n"
+        );
+        // `[package.keywords]` belongs to `[package]`; the helper puts `tail`
+        // after the other tables, which TOML allows.
+        let view = ManifestView::from_toml_str(&source(package, &tail)).expect("decodes");
+        assert_eq!(
+            view.keywords,
+            ["Video", "filme", "YouTube"],
+            "in tag order, a repeat dropped"
+        );
+        let none = ManifestView::from_toml_str(&source(package, "[entrypoint]\nbin = \"bin/x\"\n"))
+            .expect("decodes");
+        assert!(none.keywords.is_empty());
+    }
+
+    #[test]
+    fn every_app_has_english_and_german_keywords_and_no_copy_in_its_manifest() {
+        let apps = repo().join("apps");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&apps).expect("apps/") {
+            let dir = entry.expect("entry").path();
+            let Ok(text) = std::fs::read_to_string(dir.join("tilo-app.toml")) else {
+                continue;
+            };
+            let keywords = crate::search_keywords::read(&dir)
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            for language in ["en", "de"] {
+                assert!(
+                    keywords
+                        .get(language)
+                        .is_some_and(|words| !words.is_empty()),
+                    "{} lacks search/{language}.ftl",
+                    dir.display()
+                );
+            }
+            // One source: the words are joined at pack time, never committed.
+            let view = ManifestView::from_toml_str(&text)
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            assert!(
+                view.keywords.is_empty(),
+                "{} declares [package.keywords]; the words live in search/*.ftl",
+                dir.display()
+            );
+            checked += 1;
+        }
+        assert!(checked >= 40, "only {checked} apps checked");
     }
 }

@@ -179,18 +179,6 @@ enum Mode {
     Present,
 }
 
-/// One of the two surfaces a multi-output present produces. Returned by
-/// [`SlidesApp::present_output_plan`] so a compositor integration knows
-/// which view to paint on which output. See the multi-monitor seam doc on
-/// `present_output_plan`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PresentSurface {
-    /// The clean, letterboxed slide shown to the room (larger output).
-    Audience,
-    /// The presenter dashboard: current + next + notes + timer + position.
-    Presenter,
-}
-
 /// An on-canvas alignment guide produced by the snapping logic while a
 /// drag is live. Coordinates are in slide space; the renderer maps them
 /// to the destination rect.
@@ -530,6 +518,9 @@ pub struct SlidesApp {
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
     io_toast: Notice,
+    /// "Saved talk.odp", said in passing for a save that changed nothing on
+    /// screen; never a toast, since there is nothing to read or act on.
+    acknowledger: ui::widget::acknowledgement::Acknowledger,
 
     /// Right-click context menu (element / slide actions) — the shared
     /// [`ui::widget::ContextMenu`] primitive, driven standalone. `ctx_hits`
@@ -644,6 +635,7 @@ impl SlidesApp {
             inspector_scroll: Scrollable::new_vertical().always_visible(),
             tooltip_text: None,
             io_toast: Notice::default(),
+            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
             ctx_menu: ContextMenu::new(),
             ctx_hits: Vec::new(),
             font_input: NumberInput::new(40.0)
@@ -1123,12 +1115,6 @@ impl SlidesApp {
     /// fixed "SLIDES" header and the pinned Add/Dup/Del action row. This is the
     /// rect handed to the shared [`PageSidebar`]'s `begin_frame`; the widget
     /// owns the thumbnail geometry + scrollbar inside it.
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.rail_viewport(...) call site consistent with the \
-                  other rail geometry helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
     fn rail_viewport(&self, rail: Rect) -> Rect {
         self.rail_viewport_of(rail)
     }
@@ -1542,8 +1528,6 @@ impl SlidesApp {
             Ok(deck) => {
                 cx.apply(&actions::replace_deck_action(&deck));
                 self.show_opened_deck();
-                self.io_toast
-                    .show(tr("slides-toast-opened"), ToastKind::Success);
                 Ok(Effected::done())
             }
             Err(error) => {
@@ -1570,10 +1554,27 @@ impl SlidesApp {
         let deck = self.deck.clone();
         let content = self.content.clone();
         Ok(match path {
-            Some(path) => cx.thread(
-                move |_| save_presentation_to_path(&deck, std::path::Path::new(&path), &content),
-                |app: &mut Self, saved, _| app.finish_save(saved.map(|()| true)),
-            ),
+            Some(path) => {
+                let file = std::path::Path::new(&path)
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                cx.thread(
+                    move |_| {
+                        save_presentation_to_path(&deck, std::path::Path::new(&path), &content)
+                    },
+                    move |app: &mut Self, saved, _| {
+                        // Written straight to `path` with no chooser, so
+                        // nothing on screen changed: say so in passing.
+                        if saved.is_ok() {
+                            app.acknowledger.say(tr_args(
+                                "slides-saved-file",
+                                &[("file", ArgValue::from(file.as_str()))],
+                            ));
+                        }
+                        app.finish_save(saved.map(|()| true))
+                    },
+                )
+            }
             None => {
                 let name = format!("{}.odp", sanitize_filename(&deck.title));
                 cx.thread(
@@ -1591,15 +1592,11 @@ impl SlidesApp {
         })
     }
 
-    /// Show the outcome of saving: saved, cancelled (nothing to say) or
-    /// failed.
+    /// Show a failed save. A save through the chooser has nothing more to
+    /// say: the person just picked the file.
     fn finish_save(&mut self, saved: Result<bool, String>) -> EffectAnswer {
         match saved {
-            Ok(true) => {
-                self.io_toast.show("Presentation saved", ToastKind::Success);
-                Ok(Effected::done())
-            }
-            Ok(false) => Ok(Effected::done()),
+            Ok(_) => Ok(Effected::done()),
             Err(error) => {
                 self.io_toast
                     .show("Could not process the presentation", ToastKind::Error);
@@ -1758,27 +1755,6 @@ impl SlidesApp {
         self.mode == Mode::Present
     }
 
-    /// The *audience* surface description for a multi-output present: the
-    /// clean slide (no presenter chrome), letterboxed on a black field.
-    ///
-    /// Multi-monitor presenter mode (the design intent):
-    ///   * The compositor enumerates connected outputs. With two outputs, it
-    ///     fullscreens the clean **audience** presentation on the **larger**
-    ///     output, and paints the presentation's **presenter dashboard** on
-    ///     the other.
-    ///   * Both surfaces share one CRDT deck + one `cur_slide`, so advancing
-    ///     on either output is reflected on both instantly (the model is
-    ///     already per-deck, with `cur_slide` per-peer view state).
-    ///
-    /// `ui::App` turns this into a real second winit toplevel when the session
-    /// exposes a monitor distinct from this window. The primary window then
-    /// becomes this dashboard; a one-output session keeps the regular
-    /// fullscreen audience fallback. Both views are pure projections of the
-    /// same deck + `cur_slide` and therefore stay in lock-step.
-    pub fn present_output_plan(&self) -> (PresentSurface, PresentSurface) {
-        (PresentSurface::Audience, PresentSurface::Presenter)
-    }
-
     // --- text editing -------------------------------------------------------
 
     /// Start renaming the deck title inline via the shared [`TextInput`] (caret
@@ -1852,12 +1828,6 @@ impl SlidesApp {
     }
 
     /// The rect the inline title editor occupies in the toolbar.
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.title_input_rect(...) call site consistent with the \
-                  other chrome geometry helpers; converting to an associated function would \
-                  read worse at every call site for no benefit"
-    )]
     fn title_input_rect(&self, chrome: &Chrome) -> Rect {
         let m = &self.chrome_metrics;
         let pad = m.field_pad;
@@ -2652,19 +2622,19 @@ impl Widget for SlidesApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.widget_leaf(
-            Style {
-                size: Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            },
-            node_map,
-            self,
-        );
+        let node = taffy.fill_leaf(node_map, self);
         self.node = Some(node);
         node
     }
 
     ui::rect_geometry!();
+
+    /// The editor fills its node and lays its canvas out itself: there is
+    /// never a size for the layout solver to measure, so a frame that only
+    /// moves the window (a strip pan) solves none.
+    fn layout_needs_measure(&self) -> bool {
+        false
+    }
 
     fn draw(
         &mut self,
@@ -2748,6 +2718,11 @@ impl Widget for SlidesApp {
             self.rect,
             ToastAnchor::BottomCenter,
         );
+        let now = ui::time::now();
+        if let Some(ack) = self.acknowledger.current(now) {
+            let alpha = ack.alpha_at(now, theme.reduce_motion);
+            ack.draw(scene, transform, text_renderer, theme, self.rect, alpha);
+        }
         // Right-click context menu floats above everything else.
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
@@ -2769,6 +2744,8 @@ impl Widget for SlidesApp {
             // A live thumbnail reorder pumps frames so the ghost tracks the
             // cursor and the rail auto-scrolls at its edges.
             || self.page_sidebar.is_dragging()
+            // A passing "Saved …" holds, fades and goes on its own.
+            || self.acknowledger.current(ui::time::now()).is_some()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -3058,6 +3035,11 @@ impl Widget for SlidesApp {
                 .with_children(elements),
         ];
         children.extend(self.io_toast.access_node());
+        children.extend(
+            self.acknowledger
+                .current(ui::time::now())
+                .map(|ack| ack.accessibility()),
+        );
         Some(
             AccessNode::new(Role::Document)
                 .with_name(self.deck.title.clone())

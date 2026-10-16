@@ -6,6 +6,8 @@ mod support;
 
 use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::Host;
+use tilo_media::realtime::negotiate;
+use tilo_media::{CodecCapabilities, StreamCodec};
 use tilo_relay_client::{AttributedPresence, Envelope};
 use tilo_relay_protocol::legacy_window as wire;
 use tilo_relay_session::RelayClient;
@@ -331,6 +333,274 @@ async fn native_window_scenario() {
     assert!(
         refusal == "host unavailable: status 404: no such window",
         "revoked input is refused by the production carrier: {refusal}"
+    );
+    drop(live);
+    browser.close();
+    native.close().await;
+    drop(web);
+    relay.shutdown().await;
+}
+
+/// The next codec advert the host's device sends `native`, parsed as a
+/// session's `media_caps::record` parses it.
+async fn host_advert(native: &RelayClient, host: [u8; 32]) -> CodecCapabilities {
+    tilo_test_env::within("the host's codec advert", async {
+        loop {
+            let Some(Envelope::Presence { payload, .. }) = native.recv().await else {
+                continue;
+            };
+            let attributed = AttributedPresence::decode(&payload).unwrap();
+            if let Ok(NeighbourMsg::MediaCapabilities {
+                peer,
+                hardware_decode,
+                software_decode,
+                hardware_encode,
+                software_encode,
+            }) = postcard::from_bytes(&attributed.body)
+            {
+                assert_eq!(attributed.author, host);
+                assert_eq!(peer, tilo_peer_state::peer_handle(&host));
+                return CodecCapabilities {
+                    hardware_decode: CodecCapabilities::parse_labels(&hardware_decode),
+                    software_decode: CodecCapabilities::parse_labels(&software_decode),
+                    hardware_encode: CodecCapabilities::parse_labels(&hardware_encode),
+                    software_encode: CodecCapabilities::parse_labels(&software_encode),
+                    hardware_decode_max: std::collections::BTreeMap::new(),
+                };
+            }
+        }
+    })
+    .await
+}
+
+/// A stock session has no H.264 encoder (no hardware one, no codec pack),
+/// only software VP9. It shares a window with the host for a browser
+/// member: while the member's page has not said what it decodes the host
+/// claims H.264 only and the session has nothing to send; once the page
+/// says it decodes VP9, the session streams VP9 and the page receives it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one production cross-carrier scenario"
+)]
+async fn a_session_without_an_h264_encoder_streams_vp9_to_a_browser_that_decodes_it() {
+    let (root, _) = UserIdentity::generate("Legacy viewer", 1);
+    let host_device = enrol(&root, "host", DeviceCapabilities::host());
+    let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let TestHost { relay, web } = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let http = support::https::DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&laptop.key.to_bytes()))
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind()
+        .await
+        .unwrap();
+    let native = RelayClient::connect_to_pinned_host(
+        endpoint,
+        relay.node_addr(),
+        laptop.cert.clone(),
+        laptop.key.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    native
+        .send(Envelope::Subscribe {
+            workspace_id: workspace(),
+        })
+        .unwrap();
+    tilo_test_env::within("the native subscription", async {
+        loop {
+            if matches!(native.recv().await, Some(Envelope::Ready { .. })) {
+                break;
+            }
+        }
+    })
+    .await;
+    let browser = start_peer(
+        Host::Https(http),
+        browser_device.cert,
+        host_device.cert.clone(),
+        browser_device.key,
+    );
+    browser.join(workspace()).unwrap();
+    ready(&[&browser]).await;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    browser
+        .live_grant_then(
+            workspace(),
+            Box::new(move |result| {
+                let _ = tx.send(result);
+            }),
+        )
+        .unwrap();
+    let grant = tilo_test_env::within("the live grant", rx)
+        .await
+        .unwrap()
+        .unwrap();
+    let host = host_device.cert.device_public_key;
+    let stock_session = CodecCapabilities {
+        software_encode: [StreamCodec::Vp9].into(),
+        software_decode: [StreamCodec::Vp9].into(),
+        ..CodecCapabilities::default()
+    };
+    let with_codec_pack = CodecCapabilities {
+        software_encode: [StreamCodec::H264, StreamCodec::Vp9].into(),
+        ..stock_session.clone()
+    };
+    // The member is in the live plane but has not said: H.264 only, which
+    // the stock session cannot encode.
+    let advert = host_advert(&native, host).await;
+    assert_eq!(
+        advert.software_decode,
+        [StreamCodec::H264].into(),
+        "a page that never said counts as H.264 only"
+    );
+    assert_eq!(negotiate(&stock_session, &[advert]), None);
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    browser
+        .legacy_codecs_then(
+            wire::CodecsRequest {
+                workspace_id: workspace(),
+                decode: vec!["h264".into(), "vp9".into(), "av1".into()],
+            },
+            Box::new(move |result| {
+                let _ = tx.send(result);
+            }),
+        )
+        .unwrap();
+    assert!(
+        tilo_test_env::within("the codec advert receipt", rx)
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    let advert = tilo_test_env::within("the advert naming VP9", async {
+        loop {
+            let advert = host_advert(&native, host).await;
+            if advert.software_decode.contains(&StreamCodec::Vp9) {
+                return advert;
+            }
+        }
+    })
+    .await;
+    assert_eq!(
+        advert.software_decode,
+        [StreamCodec::H264, StreamCodec::Vp9, StreamCodec::Av1].into()
+    );
+    assert!(
+        advert.hardware_decode.is_empty(),
+        "a browser's hardware is unknown"
+    );
+    assert_eq!(
+        negotiate(&with_codec_pack, std::slice::from_ref(&advert)).map(|n| n.codec),
+        Some(StreamCodec::H264),
+        "H.264 stays the choice when the session can encode it"
+    );
+    let chosen = negotiate(&stock_session, &[advert]).unwrap().codec;
+    assert_eq!(chosen, StreamCodec::Vp9);
+
+    let url = format!("https://127.0.0.1:{}/moq/live", web.addr.port())
+        .parse()
+        .unwrap();
+    let trust =
+        tilo_moq::carrier::Trust::Fingerprints(vec![web.certificate_sha256.clone().unwrap()]);
+    let live = tilo_moq::live::peer::Peer::connect(&url, &trust, &grant.token, None)
+        .await
+        .unwrap();
+    let author = laptop.cert.device_public_key;
+    publish(
+        &native,
+        author,
+        &NeighbourMsg::PermissionGrant {
+            peer: tilo_peer_state::peer_handle(&host),
+            capability: "workspace-control:7:granted".into(),
+        },
+    );
+    publish(
+        &native,
+        author,
+        &NeighbourMsg::SurfaceStreamStart {
+            surface: 7,
+            source_peer: tilo_peer_state::peer_handle(&author),
+            width: 640,
+            height: 480,
+            codec: chosen.wire_label().into(),
+            ts: 1,
+            sender_monotonic_ns_at_send: 0,
+            colorimetry: None,
+            hdr_static_metadata: None,
+            bit_depth: 0,
+            app_id: "org.chromium.Chromium".into(),
+            tab: 0,
+        },
+    );
+    // The first bytes of a libvpx key frame.
+    let key_frame = [0x82, 0x49, 0x83, 0x42, 0x00, 0x00, 0xf0, 0x00];
+    publish(
+        &native,
+        author,
+        &NeighbourMsg::SurfaceFrame {
+            surface: 7,
+            source_peer: tilo_peer_state::peer_handle(&author),
+            encoded_h264: key_frame.to_vec(),
+            ts: 5000,
+        },
+    );
+    let path = tilo_moq::live::namespace_path(&grant.room, &hex::encode(author)).unwrap();
+    let namespace = tilo_test_env::within("the native stream namespace", live.member(&path))
+        .await
+        .unwrap();
+    let track = |record: &tilo_relay_protocol::live::LiveRecord| {
+        format!("ops/{}", hex::encode(record.digest()))
+    };
+    let mut index = namespace
+        .track(&track(&wire::index_record()))
+        .unwrap()
+        .subscribe(None)
+        .await
+        .unwrap();
+    let expected = wire::Stream::new(7, "org.chromium.Chromium", wire::VP9, 640, 480);
+    tilo_test_env::within("the VP9 stream index", async {
+        loop {
+            if let Some(mut group) = index.recv_group().await.unwrap()
+                && let Some(frame) = group.read_frame().await.unwrap()
+                && wire::Frame::decode(&frame.payload).unwrap()
+                    == wire::Frame::Index(vec![expected.clone()])
+            {
+                break;
+            }
+        }
+    })
+    .await;
+    let mut video = namespace
+        .track(&track(&wire::stream_record(7)))
+        .unwrap()
+        .subscribe(None)
+        .await
+        .unwrap();
+    let mut group = tilo_test_env::within("the replayed VP9 group", video.recv_group())
+        .await
+        .unwrap()
+        .unwrap();
+    let start = group.read_frame().await.unwrap().unwrap();
+    assert_eq!(
+        wire::Frame::decode(&start.payload).unwrap(),
+        wire::Frame::Start(expected)
+    );
+    let chunk = group.read_frame().await.unwrap().unwrap();
+    assert!(
+        matches!(wire::Frame::decode(&chunk.payload).unwrap(), wire::Frame::Chunk { flags, data, .. }
+        if flags == wire::CHUNK_KEY | wire::CHUNK_FIRST | wire::CHUNK_LAST && data == key_frame)
     );
     drop(live);
     browser.close();

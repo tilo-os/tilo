@@ -16,9 +16,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tilo_lock::MutexRecover as _;
 
-/// The desktop name Tilo itself announces.
-pub const CURRENT_DESKTOP: &str = "tilo";
 /// `XDG_CURRENT_DESKTOP` as a colon list: Tilo plus GNOME, so
 /// `OnlyShowIn=GNOME` entries remain visible without claiming to *be* GNOME.
 pub const CURRENT_DESKTOP_VALUE: &str = "tilo:GNOME";
@@ -45,7 +44,7 @@ impl SessionEnvironment {
         let mut assignments = vec![
             format!("WAYLAND_DISPLAY={}", self.wayland_display),
             format!("XDG_CURRENT_DESKTOP={CURRENT_DESKTOP_VALUE}"),
-            format!("XDG_SESSION_DESKTOP={CURRENT_DESKTOP}"),
+            format!("XDG_SESSION_DESKTOP={}", tilo_paths::login::TILO_DESKTOP),
             "XDG_SESSION_TYPE=wayland".to_string(),
         ];
         if let (Some(display), Some(authority)) = (&self.x11_display, &self.x11_authority) {
@@ -67,11 +66,7 @@ impl SessionEnvironment {
 /// starting the compositor. A nested or host-desktop run must never repoint the
 /// surrounding desktop's user manager at its own socket.
 pub fn is_tilo_login() -> bool {
-    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|value| {
-        value
-            .split(':')
-            .any(|part| part.eq_ignore_ascii_case(CURRENT_DESKTOP))
-    })
+    tilo_paths::login::names_tilo(std::env::var_os("XDG_CURRENT_DESKTOP").as_deref())
 }
 
 /// Export the environment for `wayland_socket` on a worker thread; failures are
@@ -84,9 +79,7 @@ pub fn export(wayland_socket: &Path) {
         return;
     };
     let wayland_display = name.to_string_lossy().into_owned();
-    *LAST_WAYLAND
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wayland_display.clone());
+    *LAST_WAYLAND.lock_recover() = Some(wayland_display.clone());
     let environment = SessionEnvironment {
         wayland_display,
         x11_display: None,
@@ -102,19 +95,13 @@ pub fn export_x11(display: &str, authority: &Path) {
     }
     let next = (display.to_string(), authority.to_path_buf());
     {
-        let mut last = LAST_X11
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut last = LAST_X11.lock_recover();
         if last.as_ref() == Some(&next) {
             return;
         }
         *last = Some(next.clone());
     }
-    let Some(wayland_display) = LAST_WAYLAND
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-    else {
+    let Some(wayland_display) = LAST_WAYLAND.lock_recover().clone() else {
         return;
     };
     spawn_export(SessionEnvironment {

@@ -149,8 +149,6 @@ mod tests {
                 "slides-toast-export-failed",
                 "slides-toast-chooser-failed",
                 "slides-toast-export-limit",
-                "slides-toast-opened",
-                "slides-toast-saved",
                 "slides-toast-process-failed",
                 "slides-toast-image-chooser-failed",
                 "slides-toast-image-import-failed",
@@ -188,6 +186,8 @@ mod tests {
                 &[("hex", ArgValue::from("#ff0000"))],
             );
             assert_eq!(custom, "Custom colour #ff0000");
+            let saved = tr_args("slides-saved-file", &[("file", ArgValue::from("talk.odp"))]);
+            assert_eq!(saved, "Saved talk.odp");
         }
     }
 }

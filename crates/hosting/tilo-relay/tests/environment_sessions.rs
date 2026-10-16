@@ -181,6 +181,8 @@ pub(crate) async fn expect_output(
 pub(crate) struct Worker {
     pub(crate) client: ComputeClient,
     pub(crate) serving: tokio::task::JoinHandle<()>,
+    /// Read for the legacy launch route, which exists only on Linux.
+    #[cfg(target_os = "linux")]
     pub(crate) environments: WorkerEnvironments,
 }
 
@@ -197,6 +199,7 @@ pub(crate) async fn start_worker(
 }
 
 /// [`start_worker`] for the workspace `workspace`.
+#[cfg(target_os = "linux")]
 pub(crate) async fn start_worker_in(
     relay: &Relay,
     provider: &TestUser,
@@ -276,8 +279,12 @@ pub(crate) async fn start_worker_with(
             root.to_path_buf(),
             MemberQuota::default(),
         )),
+        // Guests' own legacy launches reach the relay through the route, as
+        // on a production worker; like `ush`, it exists only on Linux.
+        #[cfg(target_os = "linux")]
         legacy_route: Some(tilo_relay::legacy_route::LegacyLaunchRoute::new()),
     };
+    #[cfg(target_os = "linux")]
     if let (Some(route), Some(host)) = (&environments.legacy_route, &environments.host) {
         route.set_host(host.downgrade());
         route.set_relay(client.connection());
@@ -296,6 +303,7 @@ pub(crate) async fn start_worker_with(
     Worker {
         client,
         serving,
+        #[cfg(target_os = "linux")]
         environments,
     }
 }
@@ -644,6 +652,10 @@ async fn a_relay_says_whether_its_workers_run_environments() {
 /// A device asks its relays what they run, within a budget, and Terminal's
 /// relay list follows the answers: a relay without a worker is not offered,
 /// and one that does not answer does not hold the others up.
+///
+/// Linux only: Terminal's relay list (`ush::relay`) lives in the `ush`
+/// supervisor, which the relay links only on Linux.
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::too_many_lines,

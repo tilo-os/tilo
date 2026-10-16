@@ -6,7 +6,7 @@ use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::action::ActionCx;
 use crate::delta::{Delta, Touch};
@@ -125,13 +125,74 @@ pub(crate) const VALUE: &str = "v";
 /// A collection read from a document remembers each item's order key, so a
 /// later change re-reads only the items it touched
 /// ([`Model::refresh`]) instead of the whole collection.
-#[derive(Clone, Debug)]
+///
+/// Cloning a collection shares its items: a clone copies one pointer per
+/// item, and an item is copied only when one of the collections sharing it
+/// changes it. A view holding the state it was shown therefore costs the
+/// next change one copied item, not a copy of every item.
+#[derive(Debug)]
 pub struct Collection<T> {
     items: Vec<Entry<T>>,
     /// Each id's position, built on the first lookup after the order
     /// changed, so finding an item by id is constant time.
     index: Index,
     membership: Membership,
+    /// How to copy an item another collection still shares.
+    copier: Copier<T>,
+}
+
+impl<T: Clone> Clone for Collection<T> {
+    fn clone(&self) -> Self {
+        let copy: fn(&T) -> T = T::clone;
+        // Sharing starts here, so from here on either side may need to copy.
+        let _ = self.copier.0.set(copy);
+        Self {
+            items: self.items.clone(),
+            index: self.index.clone(),
+            membership: self.membership,
+            copier: Copier(OnceLock::from(copy)),
+        }
+    }
+}
+
+/// How a collection copies an item it shares with a clone. Recorded by the
+/// first clone: items are shared by cloning alone, and only a collection of
+/// `Clone` items clones.
+struct Copier<T>(OnceLock<fn(&T) -> T>);
+
+impl<T> Default for Copier<T> {
+    fn default() -> Self {
+        Self(OnceLock::new())
+    }
+}
+
+impl<T> fmt::Debug for Copier<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Copier")
+    }
+}
+
+impl<T> Copier<T> {
+    /// The item `item` holds, to change: copied first when another
+    /// collection still shares it, so that one keeps seeing it unchanged.
+    /// `None` only for a shared item with no copier, which cannot be.
+    fn unshare<'a>(&self, item: &'a mut Arc<T>) -> Option<&'a mut T> {
+        if Arc::get_mut(item).is_none()
+            && let Some(copy) = self.0.get()
+        {
+            *item = Arc::new(copy(item));
+        }
+        Arc::get_mut(item)
+    }
+
+    /// The item `item` holds, taken out of the collection: copied when
+    /// another collection still shares it.
+    fn take(&self, item: Arc<T>) -> Option<T> {
+        match Arc::try_unwrap(item) {
+            Ok(item) => Some(item),
+            Err(shared) => self.0.get().map(|copy| copy(&shared)),
+        }
+    }
 }
 
 /// Which ids a [`Collection`] holds, in which order, as one value to
@@ -153,8 +214,9 @@ impl Membership {
     }
 }
 
+/// Shared between clones until one of them moves an item.
 #[derive(Clone, Default)]
-struct Index(OnceLock<HashMap<Id, usize>>);
+struct Index(OnceLock<Arc<HashMap<Id, usize>>>);
 
 impl fmt::Debug for Index {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -188,7 +250,7 @@ impl Index {
                 index.insert(entry.clone(), position);
             }
         }
-        let _ = self.0.set(index);
+        let _ = self.0.set(Arc::new(index));
         self.0.get()?.get(id).copied()
     }
 
@@ -198,19 +260,37 @@ impl Index {
 
     /// Note an item appended at `position`, keeping a built index.
     fn appended(&mut self, id: &Id, position: usize) {
-        if let Some(index) = self.0.get_mut() {
-            index.insert(id.clone(), position);
+        let Some(index) = self.0.get_mut() else {
+            return;
+        };
+        match Arc::get_mut(index) {
+            Some(index) => {
+                index.insert(id.clone(), position);
+            }
+            // A clone still looks items up in it: build a new one when next
+            // asked rather than copy this one now.
+            None => self.reset(),
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct Entry<T> {
     id: Id,
     /// The stored order key, when this entry was read from a document and
     /// has not been moved since.
     key: Option<String>,
-    item: T,
+    item: Arc<T>,
+}
+
+impl<T> Clone for Entry<T> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            key: self.key.clone(),
+            item: Arc::clone(&self.item),
+        }
+    }
 }
 
 impl<T> Entry<T> {
@@ -218,21 +298,23 @@ impl<T> Entry<T> {
         Self {
             id,
             key: None,
-            item,
+            item: Arc::new(item),
         }
     }
 }
 
 impl<T: PartialEq> PartialEq for Collection<T> {
     /// Equal items in equal order; where each item's order key came from is
-    /// bookkeeping, not content.
+    /// bookkeeping, not content. An item two clones still share is the same
+    /// value and is not compared field by field.
     fn eq(&self, other: &Self) -> bool {
         if self.items.len() != other.items.len() {
             return false;
         }
         for at in 0..self.items.len() {
             match (self.items.get(at), other.items.get(at)) {
-                (Some(a), Some(b)) if a.id == b.id && a.item == b.item => {}
+                (Some(a), Some(b))
+                    if a.id == b.id && (Arc::ptr_eq(&a.item, &b.item) || a.item == b.item) => {}
                 _ => return false,
             }
         }
@@ -246,6 +328,7 @@ impl<T> Default for Collection<T> {
             items: Vec::new(),
             index: Index::default(),
             membership: Membership::EMPTY,
+            copier: Copier::default(),
         }
     }
 }
@@ -288,7 +371,7 @@ impl<T> Collection<T> {
     pub fn at(&self, position: usize) -> Option<(&Id, &T)> {
         self.items
             .get(position)
-            .map(|entry| (&entry.id, &entry.item))
+            .map(|entry| (&entry.id, &*entry.item))
     }
 
     #[allow(
@@ -296,7 +379,10 @@ impl<T> Collection<T> {
         reason = "a collection iterates its items by id; `for` over it would hide which"
     )]
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
-        IterMut(self.items.iter_mut())
+        IterMut {
+            entries: self.items.iter_mut(),
+            copier: &self.copier,
+        }
     }
 
     pub fn values(&self) -> Values<'_, T> {
@@ -317,19 +403,24 @@ impl<T> Collection<T> {
 
     pub fn get(&self, id: &Id) -> Option<&T> {
         let position = self.position(id)?;
-        self.items.get(position).map(|entry| &entry.item)
+        self.items.get(position).map(|entry| &*entry.item)
     }
 
+    /// The item `id`, to change. Copies it first when a clone of this
+    /// collection still shares it; no other item is copied.
     pub fn get_mut(&mut self, id: &Id) -> Option<&mut T> {
         let position = self.position(id)?;
-        self.items.get_mut(position).map(|entry| &mut entry.item)
+        let entry = self.items.get_mut(position)?;
+        self.copier.unshare(&mut entry.item)
     }
 
     /// Append an item. Returns its id for chaining. An id already present
     /// is replaced in place.
     pub fn push(&mut self, id: Id, item: T) -> Id {
-        if let Some(existing) = self.get_mut(&id) {
-            *existing = item;
+        if let Some(position) = self.position(&id)
+            && let Some(existing) = self.items.get_mut(position)
+        {
+            existing.item = Arc::new(item);
             return id;
         }
         self.items.push(Entry::new(id.clone(), item));
@@ -354,7 +445,7 @@ impl<T> Collection<T> {
         let index = self.position(id)?;
         self.index.reset();
         self.moved();
-        Some(self.items.remove(index).item)
+        self.copier.take(self.items.remove(index).item)
     }
 
     /// Move an item to `index` (clamped to the end). Returns whether it exists.
@@ -373,7 +464,7 @@ impl<T> Collection<T> {
 
     pub fn retain(&mut self, mut keep: impl FnMut(&Id, &T) -> bool) {
         let before = self.items.len();
-        self.items.retain(|entry| keep(&entry.id, &entry.item));
+        self.items.retain(|entry| keep(&entry.id, &*entry.item));
         // Retaining only removes: the same length is the same ids.
         if self.items.len() != before {
             self.index.reset();
@@ -382,7 +473,7 @@ impl<T> Collection<T> {
     }
 
     pub fn sort_by(&mut self, mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering) {
-        self.items.sort_by(|a, b| compare(&a.item, &b.item));
+        self.items.sort_by(|a, b| compare(&*a.item, &*b.item));
         for entry in &mut self.items {
             entry.key = None;
         }
@@ -396,8 +487,12 @@ impl<T> Collection<T> {
 
 /// The items of a [`Collection`] with their ids, in order.
 pub struct Iter<'a, T>(std::slice::Iter<'a, Entry<T>>);
-/// The items of a [`Collection`], to change, with their ids.
-pub struct IterMut<'a, T>(std::slice::IterMut<'a, Entry<T>>);
+/// The items of a [`Collection`], to change, with their ids. Each item a
+/// clone of the collection still shares is copied as it is reached.
+pub struct IterMut<'a, T> {
+    entries: std::slice::IterMut<'a, Entry<T>>,
+    copier: &'a Copier<T>,
+}
 /// The items of a [`Collection`], in order.
 pub struct Values<'a, T>(std::slice::Iter<'a, Entry<T>>);
 /// The ids of a [`Collection`], in order.
@@ -407,7 +502,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     type Item = (&'a Id, &'a T);
     fn next(&mut self) -> Option<Self::Item> {
         let entry = self.0.next()?;
-        Some((&entry.id, &entry.item))
+        Some((&entry.id, &*entry.item))
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.0.size_hint()
@@ -419,7 +514,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 impl<T> DoubleEndedIterator for Iter<'_, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         let entry = self.0.next_back()?;
-        Some((&entry.id, &entry.item))
+        Some((&entry.id, &*entry.item))
     }
 }
 impl<T> ExactSizeIterator for Iter<'_, T> {}
@@ -427,18 +522,24 @@ impl<T> ExactSizeIterator for Iter<'_, T> {}
 impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = (&'a Id, &'a mut T);
     fn next(&mut self) -> Option<Self::Item> {
-        let entry = self.0.next()?;
-        Some((&entry.id, &mut entry.item))
+        // An item is skipped only if it could not be unshared, which an
+        // item shared by cloning always can.
+        for entry in self.entries.by_ref() {
+            if let Some(item) = self.copier.unshare(&mut entry.item) {
+                return Some((&entry.id, item));
+            }
+        }
+        None
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.0.size_hint()
+        self.entries.size_hint()
     }
 }
 
 impl<'a, T> Iterator for Values<'a, T> {
     type Item = &'a T;
     fn next(&mut self) -> Option<Self::Item> {
-        Some(&self.0.next()?.item)
+        Some(&*self.0.next()?.item)
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.0.size_hint()
@@ -449,7 +550,7 @@ impl<'a, T> Iterator for Values<'a, T> {
 }
 impl<T> DoubleEndedIterator for Values<'_, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        Some(&self.0.next_back()?.item)
+        Some(&*self.0.next_back()?.item)
     }
 }
 impl<T> ExactSizeIterator for Values<'_, T> {}
@@ -1027,7 +1128,7 @@ impl<T: 'static> ItemList for Collection<T> {
 
     fn item(&self, at: usize) -> Option<(Id, &dyn Any)> {
         let entry = self.items.get(at)?;
-        Some((entry.id.clone(), &entry.item as &dyn Any))
+        Some((entry.id.clone(), &*entry.item as &dyn Any))
     }
 }
 
@@ -1178,13 +1279,15 @@ impl<T: 'static> Entries for Collection<T> {
     }
 
     fn item_at(&self, at: usize) -> Option<&dyn Any> {
-        self.items.get(at).map(|entry| &entry.item as &dyn Any)
+        self.items.get(at).map(|entry| &*entry.item as &dyn Any)
     }
 
+    /// Copies the item first when a clone of the collection still shares
+    /// it: a refresh changes only the items a change touched.
     fn item_at_mut(&mut self, at: usize) -> Option<&mut dyn Any> {
-        self.items
-            .get_mut(at)
-            .map(|entry| &mut entry.item as &mut dyn Any)
+        let entry = self.items.get_mut(at)?;
+        let item = self.copier.unshare(&mut entry.item)?;
+        Some(item as &mut dyn Any)
     }
 
     fn find(&self, id: &Id) -> Option<usize> {
@@ -1205,7 +1308,7 @@ impl<T: 'static> Entries for Collection<T> {
             self.items.push(Entry {
                 id,
                 key: order,
-                item,
+                item: Arc::new(item),
             });
             self.index.reset();
         }
@@ -1222,7 +1325,7 @@ impl<T: 'static> Entries for Collection<T> {
         fill(&mut slot)?;
         let item = crate::table::filled(slot)?;
         if let Some(entry) = self.items.get_mut(at) {
-            entry.item = item;
+            entry.item = Arc::new(item);
             entry.key = order;
         }
         Ok(())
@@ -1253,10 +1356,6 @@ impl<T: 'static> Entries for Collection<T> {
 }
 
 /// What `Collection<T>`'s table reaches into one with.
-#[allow(
-    clippy::type_complexity,
-    reason = "each field reaches into the collection one way"
-)]
 pub struct CollectionDesc {
     /// `T`'s table.
     item: &'static ModelTable,
@@ -1449,7 +1548,9 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
                 was.item_at(at),
             ) {
                 (Some(id), Some(was_id), Some(item), Some(was_item))
-                    if id == was_id && (desc.item.ops.stores_as)(desc.item, item, was_item) => {}
+                    if id == was_id
+                        && (one_item(item, was_item)
+                            || (desc.item.ops.stores_as)(desc.item, item, was_item)) => {}
                 _ => return false,
             }
         }
@@ -1480,7 +1581,9 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
             dirty,
             &EntryWrites {
                 same: &|at_now, at_was| match (now.item_at(at_now), was.item_at(at_was)) {
-                    (Some(now), Some(was)) => (item.ops.stores_as)(item, now, was),
+                    (Some(now), Some(was)) => {
+                        one_item(now, was) || (item.ops.stores_as)(item, now, was)
+                    }
                     _ => false,
                 },
                 store: &|at_now, doc, slot| match now.item_at(at_now) {
@@ -1631,6 +1734,13 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
     },
 };
 
+/// Whether two items are one item, which two clones of a collection still
+/// share: it stores as it is without being compared, however its fields
+/// compare (a value stored as JSON text compares only by writing it).
+fn one_item(item: &dyn Any, other: &dyn Any) -> bool {
+    std::ptr::addr_eq(item, other)
+}
+
 /// Whether every entry has a stored order key, each above the one before:
 /// the keys a write keeps all of.
 fn strictly_ordered_entries(entries: &dyn Entries) -> bool {
@@ -1661,6 +1771,8 @@ fn diff_entries(
             continue;
         };
         match now.find(id).and_then(|position| now.item_at(position)) {
+            // One item, which both still share: no edit.
+            Some(next) if one_item(before, next) => {}
             Some(next) => {
                 let mut path = path.to_vec();
                 path.push(Segment::Item(id.clone()));
@@ -1892,7 +2004,7 @@ mod tests {
         let walked: Vec<_> = read
             .items
             .into_iter()
-            .map(|entry| (entry.id, entry.key, entry.item))
+            .map(|entry| (entry.id, entry.key, (*entry.item).clone()))
             .collect();
         assert_eq!(walked, read_key_by_key::<Vec<i64>>(&left, &map));
         assert_eq!(walked.len(), 41);

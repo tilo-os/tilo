@@ -27,6 +27,9 @@ aarch64 = "aarch64"
 required = ["network.sockets"]
 optional = ["files.paths", "app-files", "threads", "secrets", "settings"]
 
+[resources]
+kinds = ["remote.connection-list"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

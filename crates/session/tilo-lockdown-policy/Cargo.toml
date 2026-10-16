@@ -7,6 +7,7 @@ license.workspace = true
 description = "Durable lockdown policy store with ordered local observation, shared by the shell's Lockdown portal and its native media gates"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 serde.workspace = true
 serde_json.workspace = true

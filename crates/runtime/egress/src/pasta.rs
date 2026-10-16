@@ -81,8 +81,7 @@ pub fn args(netns: &Netns, pid_file: &Path, map_host_loopback: Option<IpAddr>) -
 /// other user can replace the pid this process later reads.
 fn pid_file() -> Result<PathBuf, String> {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
+    let dir = tilo_paths::xdg::runtime_dir()
         .filter(|d| d.is_dir())
         .ok_or("pasta needs XDG_RUNTIME_DIR for its pid file")?;
     let n = NEXT.fetch_add(1, Ordering::Relaxed);

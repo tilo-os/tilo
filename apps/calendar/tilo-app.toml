@@ -27,6 +27,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "network.http", "network.fetch-proxy"]
 
+[resources]
+kinds = ["calendar.calendar", "tilo.accounts", "tilo.rich-text"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

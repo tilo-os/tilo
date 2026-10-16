@@ -114,6 +114,7 @@ class HardwareProfileTests(unittest.TestCase):
             value["id"] = "firmware-board"
             value["devicetree"] = None
             value.pop("wifi_wake_on_wlan")
+            value.pop("internal_keyboards")
             definition.write_text(json.dumps(value))
             self.data["id"] = value["id"]
             self.data["devicetree"] = self.data["devicetree_sha256"] = None

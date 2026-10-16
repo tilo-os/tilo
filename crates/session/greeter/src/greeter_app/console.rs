@@ -16,6 +16,7 @@ use ui::tilo_actions::{
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{AuthPhase, GreeterApp};
+use tilo_lock::MutexRecover as _;
 
 /// `provider` in `tilo-control` terms.
 pub const PROVIDER: &str = "greeter";
@@ -112,10 +113,7 @@ impl GreeterApp {
                     );
                 }
                 {
-                    let mut stored = self
-                        .password_buffer
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut stored = self.password_buffer.lock_recover();
                     stored.zeroize();
                     *stored = std::mem::take(&mut *secret);
                 }

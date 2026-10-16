@@ -1,11 +1,10 @@
 //! `org.freedesktop.impl.portal.Account` backend.
 
+use super::reply::{Ended, OrFail, Reply, Results, answer};
 use std::collections::HashMap;
 
 #[cfg(target_os = "linux")]
 use zbus::interface;
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 use zbus::zvariant::OwnedValue;
@@ -13,8 +12,6 @@ use zbus::zvariant::OwnedValue;
 #[cfg(target_os = "linux")]
 use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewRequest};
 
-#[cfg(target_os = "linux")]
-use super::desktop_services::PortalResult;
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
 #[cfg(target_os = "linux")]
@@ -41,15 +38,6 @@ impl AccountBackend {
     }
 }
 
-fn option_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    options
-        .get(key)?
-        .try_clone()
-        .ok()
-        .and_then(|v| String::try_from(v).ok())
-        .filter(|s| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control))
-}
-
 #[interface(name = "org.freedesktop.impl.portal.Account")]
 #[cfg(target_os = "linux")]
 impl AccountBackend {
@@ -61,19 +49,21 @@ impl AccountBackend {
         app_id: String,
         window: String,
         options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        let reason = option_string(&options, "reason");
-        let path = handle.to_string();
-        let dialogs = self.dialogs.clone();
-        let cancel_path = path.clone();
-        if !matches!(
+    ) -> Reply {
+        answer(async move {
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&window))
+                .await
+                .or_fail()?;
+            let reason =
+                crate::portal::text_option(&options, "reason", 1024).filter(|s| !s.is_empty());
+            let path = handle.to_string();
+            let dialogs = self.dialogs.clone();
+            let cancel_path = path.clone();
+            let cancel = move |_: &LifecycleEntry| {
+                let _ = dialogs.cancel(&cancel_path);
+            };
             self.lifecycle
-                .register_request(
+                .with_request(
                     connection,
                     &path,
                     LifecycleEntry {
@@ -81,72 +71,62 @@ impl AccountBackend {
                         app_id: auth.caller.app_id.clone(),
                         resource: LifecycleResource::Prompt,
                     },
-                    move |_| {
-                        let _ = dialogs.cancel(&cancel_path);
+                    cancel,
+                    async {
+                        let review = self
+                            .dialogs
+                            .enqueue_review(ReviewRequest {
+                                handle: path.clone(),
+                                app_id: auth.caller.app_id.clone(),
+                                title: crate::shell::i18n::t("portal-account-title"),
+                                reason: reason.clone().unwrap_or_else(|| {
+                                    crate::shell::i18n::t("portal-account-reason")
+                                }),
+                                resource: crate::shell::i18n::t("portal-account-resource"),
+                                confirm_label: crate::shell::i18n::t("portal-account-confirm"),
+                            })
+                            .or_fail()?;
+                        if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
+                            return Err(Ended::Cancelled);
+                        }
+                        match self
+                            .ctx
+                            .desktop_services
+                            .account
+                            .get(&auth.caller.app_id, reason.as_deref())
+                            .into_result()
+                        {
+                            Ok(info) => {
+                                let mut result = Results::new();
+                                result.insert(
+                                    "id".into(),
+                                    OwnedValue::from(zbus::zvariant::Str::from(info.id)),
+                                );
+                                result.insert(
+                                    "name".into(),
+                                    OwnedValue::from(zbus::zvariant::Str::from(info.name)),
+                                );
+                                if let Some(image) = info.image_uri {
+                                    result.insert(
+                                        "image".into(),
+                                        OwnedValue::from(zbus::zvariant::Str::from(image)),
+                                    );
+                                }
+                                Ok(result)
+                            }
+                            Err(ended) => {
+                                tracing::debug!(
+                                    ?ended,
+                                    "Account.GetUserInformation did not complete"
+                                );
+                                Err(ended)
+                            }
+                        }
                     },
                 )
-                .await,
-            Ok(true)
-        ) {
-            return (2, HashMap::new());
-        }
-        let review = match self.dialogs.enqueue_review(ReviewRequest {
-            handle: path.clone(),
-            app_id: auth.caller.app_id.clone(),
-            title: crate::shell::i18n::t("portal-account-title"),
-            reason: reason
-                .clone()
-                .unwrap_or_else(|| crate::shell::i18n::t("portal-account-reason")),
-            resource: crate::shell::i18n::t("portal-account-resource"),
-            confirm_label: crate::shell::i18n::t("portal-account-confirm"),
-        }) {
-            Ok(review) => review,
-            Err(_) => {
-                self.lifecycle
-                    .complete_request_object(connection, &path)
-                    .await;
-                return (2, HashMap::new());
-            }
-        };
-        if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
-            self.lifecycle
-                .complete_request_object(connection, &path)
-                .await;
-            return (1, HashMap::new());
-        }
-        let result = match self
-            .ctx
-            .desktop_services
-            .account
-            .get(&auth.caller.app_id, reason.as_deref())
-        {
-            PortalResult::Success(info) => {
-                let mut result = HashMap::new();
-                result.insert(
-                    "id".into(),
-                    OwnedValue::from(zbus::zvariant::Str::from(info.id)),
-                );
-                result.insert(
-                    "name".into(),
-                    OwnedValue::from(zbus::zvariant::Str::from(info.name)),
-                );
-                if let Some(image) = info.image_uri {
-                    result.insert(
-                        "image".into(),
-                        OwnedValue::from(zbus::zvariant::Str::from(image)),
-                    );
-                }
-                (0, result)
-            }
-            outcome => {
-                tracing::debug!(?outcome, "Account.GetUserInformation did not complete");
-                (outcome.response_code(), HashMap::new())
-            }
-        };
-        self.lifecycle
-            .complete_request_object(connection, &path)
-            .await;
-        result
+                .await
+        })
+        .await
     }
 }
 
@@ -160,6 +140,9 @@ mod tests {
             "reason".into(),
             OwnedValue::from(zbus::zvariant::Str::from("line\nbreak")),
         );
-        assert_eq!(option_string(&options, "reason"), None);
+        assert_eq!(
+            crate::portal::text_option(&options, "reason", 1024).filter(|s| !s.is_empty()),
+            None
+        );
     }
 }

@@ -1467,9 +1467,8 @@ mod tests {
     fn namespace_sticky_parent_does_not_trust_a_foreign_owned_child() {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::PermissionsExt;
-        // SAFETY: geteuid has no preconditions. This opt-in test only changes
         // ownership of a newly created empty directory in its own fixture.
-        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(tilo_process::effective_uid(), 0);
         let (temp, source, _) = fixture();
         let parent = temp.path().canonicalize().unwrap().join("sticky");
         fs::create_dir(&parent).unwrap();

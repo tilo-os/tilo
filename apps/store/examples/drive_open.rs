@@ -66,6 +66,7 @@ fn main() {
             download_url: if url.is_empty() { None } else { Some(url) },
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: Some("aa".repeat(32)),
         installed,

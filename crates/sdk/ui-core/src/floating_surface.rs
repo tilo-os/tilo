@@ -1067,14 +1067,6 @@ struct SettleMotion {
     to: Rect,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct PreferredDesktopSettle {
-    /// The point held by the real drag, expressed as a fraction of the full
-    /// transfer rect. Prepare may translate or clamp that rect before the
-    /// native surface adopts it; the fraction remains the same anchor.
-    grip: Vec2,
-}
-
 /// Placement + drag state shared by call, navigation, browser `PiP` and
 /// arbitrary captured regions.
 #[derive(Clone, Debug)]
@@ -1118,13 +1110,6 @@ pub struct FloatingPlacement {
     /// Production interaction always leaves this unset and follows the clock.
     handoff_progress_override: Option<f64>,
     settle_motion: Option<SettleMotion>,
-    /// Opt-in compact desktop destination. Ordinary calls, navigation and
-    /// PiP retain their existing source-sized detach behavior.
-    settle_detached_to_preferred: bool,
-    /// Present only after the pointer was released (or a programmatic Float
-    /// supplied its stable header anchor). Adoption and release may arrive in
-    /// either order; settling starts only once both are true.
-    preferred_desktop_settle: Option<PreferredDesktopSettle>,
 }
 
 impl FloatingPlacement {
@@ -1152,8 +1137,6 @@ impl FloatingPlacement {
             handoff_motion: None,
             handoff_progress_override: None,
             settle_motion: None,
-            settle_detached_to_preferred: false,
-            preferred_desktop_settle: None,
         }
     }
 
@@ -1188,14 +1171,6 @@ impl FloatingPlacement {
 
     pub fn set_preferred_size(&mut self, size: Size) {
         self.preferred_size = size;
-    }
-
-    /// Opt this placement into source-sized transfer followed by a compact
-    /// desktop settle. The transfer stays full-sized through Prepare and the
-    /// first adopted frame; only a released, adopted surface may resize.
-    pub fn settle_detached_to_preferred_size(&mut self, size: Size) {
-        self.preferred_size = size;
-        self.settle_detached_to_preferred = true;
     }
 
     /// Bind placement to the exact current app-local region of an inline
@@ -1251,7 +1226,6 @@ impl FloatingPlacement {
         self.handoff_motion = None;
         self.handoff_progress_override = None;
         self.settle_motion = None;
-        self.preferred_desktop_settle = None;
         self.desktop_coordinate_offset = Vec2::ZERO;
     }
 
@@ -1269,7 +1243,6 @@ impl FloatingPlacement {
         self.drag = None;
         self.desktop_coordinate_offset = Vec2::ZERO;
         self.handoff_progress_override = None;
-        self.preferred_desktop_settle = None;
         let started = crate::time::now();
         self.settle_motion = (from != home).then_some(SettleMotion {
             started: std::cell::Cell::new(None),
@@ -1293,11 +1266,6 @@ impl FloatingPlacement {
         self.handoff_rect = None;
         self.drag = None;
         self.settle_motion = None;
-        self.preferred_desktop_settle =
-            self.settle_detached_to_preferred
-                .then_some(PreferredDesktopSettle {
-                    grip: Vec2::new(0.5, 0.0),
-                });
         self.handoff_progress_override = None;
         self.handoff_motion = Some(HandoffMotion {
             started: crate::time::now(),
@@ -1359,13 +1327,6 @@ impl FloatingPlacement {
             self.desktop_adopted = true;
             self.desktop_covered = true;
         }
-    }
-
-    /// Confirm adoption and, for an opted-in released surface, begin its
-    /// compact desktop settle inside `desktop`.
-    pub fn confirm_desktop_adoption_within(&mut self, desktop: Rect) {
-        self.confirm_desktop_adoption();
-        self.arm_preferred_desktop_settle(desktop);
     }
 
     /// Complete the shell → app half of the ownership handshake. The shell
@@ -1496,7 +1457,6 @@ impl FloatingPlacement {
         let rect_origin = self.rect(app, desktop);
         self.settle_motion = None;
         self.handoff_progress_override = None;
-        self.preferred_desktop_settle = None;
         self.drag = Some(Drag {
             pointer_origin: pointer,
             rect_origin,
@@ -1599,15 +1559,6 @@ impl FloatingPlacement {
         let release_velocity = released.map_or(Vec2::ZERO, |drag| drag.velocity);
         if let Attachment::Desktop { rect } = self.attachment {
             if self.return_pending {
-                self.preferred_desktop_settle = None;
-                return;
-            }
-            if self.settle_detached_to_preferred {
-                let grip = released.map_or(Vec2::new(0.5, 0.0), |drag| {
-                    normalized_grip(drag.pointer_origin, drag.rect_origin)
-                });
-                self.preferred_desktop_settle = Some(PreferredDesktopSettle { grip });
-                self.arm_preferred_desktop_settle(desktop);
                 return;
             }
             let from = clamp_rect(rect, desktop, 64.0);
@@ -1636,57 +1587,6 @@ impl FloatingPlacement {
             }
         }
     }
-
-    fn arm_preferred_desktop_settle(&mut self, desktop: Rect) {
-        if !self.desktop_adopted || self.return_pending || self.settle_motion.is_some() {
-            return;
-        }
-        let (Attachment::Desktop { rect }, Some(released)) =
-            (self.attachment, self.preferred_desktop_settle.take())
-        else {
-            return;
-        };
-        let from = clamp_rect(rect, desktop, 64.0);
-        let to = preferred_rect_at_grip(from, self.preferred_size, released.grip, desktop);
-        self.attachment = Attachment::Desktop { rect: to };
-        if from != to {
-            self.settle_motion = Some(SettleMotion {
-                started: std::cell::Cell::new(None),
-                from,
-                to,
-            });
-        }
-    }
-}
-
-fn normalized_grip(pointer: Point, rect: Rect) -> Vec2 {
-    Vec2::new(
-        ((pointer.x - rect.x0) / rect.width().max(1.0)).clamp(0.0, 1.0),
-        ((pointer.y - rect.y0) / rect.height().max(1.0)).clamp(0.0, 1.0),
-    )
-}
-
-fn preferred_rect_at_grip(from: Rect, preferred: Size, grip: Vec2, desktop: Rect) -> Rect {
-    let inset = 16.0_f64
-        .min(((desktop.width() - 1.0) / 2.0).max(0.0))
-        .min(((desktop.height() - 1.0) / 2.0).max(0.0));
-    // Kurbo adds positive Insets to the outside; a safe margin shrinks it.
-    let safe = desktop.inset(-inset);
-    let size = Size::new(
-        preferred.width.min(from.width()).min(safe.width()).max(1.0),
-        preferred
-            .height
-            .min(from.height())
-            .min(safe.height())
-            .max(1.0),
-    );
-    let anchor = Point::new(
-        from.x0 + from.width() * grip.x,
-        from.y0 + from.height() * grip.y,
-    );
-    let x0 = (anchor.x - size.width * grip.x).clamp(safe.x0, safe.x1 - size.width);
-    let y0 = (anchor.y - size.height * grip.y).clamp(safe.y0, safe.y1 - size.height);
-    Rect::from_origin_size(Point::new(x0, y0), size)
 }
 
 fn clamp_rect(rect: Rect, bounds: Rect, reachable: f64) -> Rect {
@@ -1938,174 +1838,6 @@ mod tests {
                     SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
                 )));
             assert_eq!(p.rect(app, desk), target);
-        }
-    }
-
-    #[test]
-    fn opted_in_detach_settles_after_release_and_adoption_in_either_order() {
-        let app = Rect::new(200.0, 100.0, 1_000.0, 700.0);
-        let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-        let preferred = Size::new(360.0, 400.0);
-        let press = Point::new(700.0, 130.0);
-        let outside = Point::new(1_050.0, 130.0);
-
-        // Adoption may precede release. The full transfer rect remains exact
-        // until the real pointer grab ends, then its held point anchors the
-        // compact destination.
-        let mut adopted_first = FloatingPlacement::attached(app.size());
-        adopted_first.set_attached_region(Some(app));
-        adopted_first.settle_detached_to_preferred_size(preferred);
-        adopted_first.begin_drag(press, app, desktop);
-        assert_eq!(
-            adopted_first.update_drag(outside, app, desktop),
-            Handoff::Detached
-        );
-        let prepared = Rect::new(570.0, 120.0, 1_370.0, 720.0);
-        adopted_first.prepare_desktop_rect(prepared);
-        let drag = adopted_first.drag.unwrap();
-        let grip = normalized_grip(drag.pointer_origin, drag.rect_origin);
-        let anchor = Point::new(
-            prepared.x0 + prepared.width() * grip.x,
-            prepared.y0 + prepared.height() * grip.y,
-        );
-        adopted_first.confirm_desktop_adoption_within(desktop);
-        assert_eq!(adopted_first.rect(app, desktop), prepared);
-        assert!(
-            adopted_first.settle_motion.is_none(),
-            "adoption cannot resize a surface while its pointer remains held"
-        );
-        adopted_first.end_drag(desktop);
-        assert_eq!(
-            adopted_first.rect(app, desktop),
-            prepared,
-            "the first settle sample is the exact prepared transfer rect"
-        );
-        adopted_first
-            .settle_motion
-            .as_mut()
-            .unwrap()
-            .started
-            .set(Some(instant_ago(
-                SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
-            )));
-        let compact = adopted_first.rect(app, desktop);
-        assert_eq!(compact.size(), preferred);
-        assert!((compact.x0 + compact.width() * grip.x - anchor.x).abs() < 1e-9);
-        assert!((compact.y0 + compact.height() * grip.y - anchor.y).abs() < 1e-9);
-
-        // Release may also precede adoption. No compact pixels are exposed
-        // before the shell has presented the native surface.
-        let mut released_first = FloatingPlacement::attached(app.size());
-        released_first.set_attached_region(Some(app));
-        released_first.settle_detached_to_preferred_size(preferred);
-        released_first.begin_drag(press, app, desktop);
-        assert_eq!(
-            released_first.update_drag(outside, app, desktop),
-            Handoff::Detached
-        );
-        released_first.prepare_desktop_rect(prepared);
-        released_first.end_drag(desktop);
-        assert_eq!(released_first.rect(app, desktop), prepared);
-        assert!(released_first.settle_motion.is_none());
-        released_first.confirm_desktop_adoption_within(desktop);
-        assert_eq!(released_first.rect(app, desktop), prepared);
-        assert!(released_first.settle_motion.is_some());
-
-        // Programmatic Float is already released, but follows the same
-        // source-sized adoption boundary and top-centre anchor.
-        let mut programmatic = FloatingPlacement::attached(app.size());
-        programmatic.set_attached_region(Some(app));
-        programmatic.settle_detached_to_preferred_size(preferred);
-        programmatic.detach_to_desktop(app);
-        programmatic.prepare_desktop_rect(prepared);
-        assert_eq!(programmatic.rect(app, desktop), prepared);
-        programmatic.confirm_desktop_adoption_within(desktop);
-        assert_eq!(programmatic.rect(app, desktop), prepared);
-        programmatic
-            .settle_motion
-            .as_mut()
-            .unwrap()
-            .started
-            .set(Some(instant_ago(
-                SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
-            )));
-        let compact = programmatic.rect(app, desktop);
-        assert_eq!(compact.size(), preferred);
-        assert_eq!(compact.x0 + compact.width() / 2.0, prepared.center().x);
-        assert_eq!(compact.y0, prepared.y0);
-
-        // The shared opt-in is intrinsically shrink-only. A host may prepare
-        // a smaller transfer rect than the request (for example on a compact
-        // output), and an oversized preferred value cannot enlarge it.
-        let prepared_small = Rect::new(420.0, 180.0, 900.0, 460.0);
-        let mut oversized = FloatingPlacement::attached(app.size());
-        oversized.settle_detached_to_preferred_size(Size::new(1_200.0, 900.0));
-        oversized.detach_to_desktop(app);
-        oversized.prepare_desktop_rect(prepared_small);
-        oversized.confirm_desktop_adoption_within(desktop);
-        assert_eq!(oversized.rect(app, desktop), prepared_small);
-        assert!(
-            oversized.settle_motion.is_none(),
-            "a preferred destination never enlarges prepared geometry"
-        );
-    }
-
-    #[test]
-    fn preferred_desktop_settle_keeps_complete_surface_inside_actual_output() {
-        for desktop in [
-            Rect::new(0.0, 0.0, 1_600.0, 900.0),
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-            Rect::new(-1_600.0, 90.0, 0.0, 990.0),
-            Rect::new(240.0, 110.0, 1_040.0, 710.0),
-            Rect::new(20.0, 30.0, 40.0, 48.0),
-        ] {
-            let margin = 16.0_f64
-                .min(((desktop.width() - 1.0) / 2.0).max(0.0))
-                .min(((desktop.height() - 1.0) / 2.0).max(0.0));
-            for theme in [
-                crate::theme::Theme::light(),
-                crate::theme::Theme::dark(),
-                crate::theme::Theme::high_contrast().with_text_scale(2.0),
-            ] {
-                let preferred = Size::new(
-                    f64::from(theme.tokens.metrics.panel_width_sheet * theme.text_growth()),
-                    f64::from(theme.tokens.metrics.panel_row_height * 10.0 * theme.text_growth()),
-                );
-                for center in [desktop.origin(), Point::new(desktop.x1, desktop.y1)] {
-                    let prepared = Rect::from_center_size(center, desktop.size());
-                    let mut placement = FloatingPlacement::attached(prepared.size());
-                    placement.settle_detached_to_preferred_size(preferred);
-                    placement.detach_to_desktop(prepared);
-                    placement.prepare_desktop_rect_with_offset(prepared, Vec2::new(240.0, 110.0));
-                    let before = placement.rect(prepared, desktop);
-                    placement.confirm_desktop_adoption_within(desktop);
-                    assert_eq!(
-                        placement.rect(prepared, desktop),
-                        before,
-                        "the first sample must preserve the actual live transfer rectangle"
-                    );
-                    let motion = placement
-                        .settle_motion
-                        .as_mut()
-                        .expect("an edge-straddling source needs a compact in-bounds settle");
-                    motion.started.set(Some(instant_ago(
-                        SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
-                    )));
-                    let settled = placement.rect(prepared, desktop);
-                    assert!(settled.x0 >= desktop.x0 + margin, "left edge: {settled:?}");
-                    assert!(settled.y0 >= desktop.y0 + margin, "top edge: {settled:?}");
-                    assert!(settled.x1 <= desktop.x1 - margin, "right edge: {settled:?}");
-                    assert!(
-                        settled.y1 <= desktop.y1 - margin,
-                        "bottom edge: {settled:?}"
-                    );
-                    assert!(settled.width() <= preferred.width);
-                    assert!(settled.height() <= preferred.height);
-                    assert!(settled.width() <= prepared.width());
-                    assert!(settled.height() <= prepared.height());
-                    assert!(settled.width() >= 1.0 && settled.height() >= 1.0);
-                }
-            }
         }
     }
 

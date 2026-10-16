@@ -1,4 +1,4 @@
-//! `LibreOffice` Calc `.ods` import and export, through qdoc's
+//! `LibreOffice` Calc `.ods` import and export, through tilo-doc's
 //! [`OdsCodec`]: reading shares the bounded, XXE-hardened package reader and
 //! the [`SheetTable`] materialisation of [`crate::xlsx`] (formulas come back
 //! from each cell's `table:formula`, normalised to A1). Writing emits a

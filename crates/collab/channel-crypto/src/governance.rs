@@ -1,6 +1,5 @@
 //! Durable ciphertext-only governance frame and targeted-delivery journal.
 
-use std::fs;
 use std::path::PathBuf;
 
 use collab_types::{
@@ -113,18 +112,16 @@ impl GovernanceJournal {
     /// dangling-delivery failures.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        if !path.exists() {
+        let too_large = Error::InvalidState("governance journal exceeds 256 MiB".into());
+        let Some(bytes) =
+            tilo_files::native::bounded::read_or(&path, MAX_JOURNAL_BYTES, too_large)?
+        else {
             return Ok(Self {
                 path: Some(path),
                 ..Self::in_memory()
             });
-        }
-        if fs::metadata(&path)?.len() > MAX_JOURNAL_BYTES {
-            return Err(Error::InvalidState(
-                "governance journal exceeds 256 MiB".into(),
-            ));
-        }
-        let mut journal = Self::from_bytes(&fs::read(&path)?)?;
+        };
+        let mut journal = Self::from_bytes(&bytes)?;
         journal.path = Some(path);
         Ok(journal)
     }

@@ -44,7 +44,10 @@ esac
 # subjects that their suites refuse to skip. libsecret (secret-tool) and
 # gnome-keyring are the Secret Service a session keeps its MLS keys in: a
 # headless session runs one, unlocked, so its apps' channels open as a
-# person's do.
+# person's do. python3-gobject gives tilo-secret-service's suite libsecret's
+# own client (gi Secret-1) to drive the service with, as apps would.
+# xwayland-satellite and Xwayland are the X11 bridge the shell's X11 clipboard
+# and focus tests drive through the compositor.
 install_test_runtime_fedora() {
     if rpm -q pipewire-pulseaudio >/dev/null 2>&1; then
         dnf swap -y pipewire-pulseaudio pulseaudio
@@ -63,7 +66,8 @@ install_test_runtime_fedora() {
         vulkan-loader mesa-vulkan-drivers \
         bubblewrap gnome-text-editor \
         cryptsetup swtpm swtpm-tools tpm2-tools \
-        libsecret gnome-keyring
+        libsecret gnome-keyring python3-gobject \
+        xwayland-satellite xorg-x11-server-Xwayland
     # Package scriptlets that create system accounts (sysusers) or compile
     # GSettings schemas can be skipped or fail inside unprivileged image
     # builds without failing the transaction. Replay both idempotently so the

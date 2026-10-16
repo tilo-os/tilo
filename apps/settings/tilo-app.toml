@@ -35,6 +35,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["files.open", "files.paths", "app-files", "open-uri", "secrets", "settings", "network.http", "threads", "media.decode", "processes"]
 
+[resources]
+kinds = ["settings.accessibility", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.default-apps", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

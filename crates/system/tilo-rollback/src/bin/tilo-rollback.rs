@@ -591,7 +591,10 @@ fn cmd_harden(
                 )
             },
         )?;
-        lockout::set_reset_auth(runner, &auth, None)?;
+        let scratch = auth_file
+            .parent()
+            .context("the reset authorisation file has no parent directory")?;
+        lockout::set_reset_auth(runner, &auth, None, scratch)?;
         println!(
             "reset authorisation set; recorded in {}",
             auth_file.display()
@@ -604,7 +607,10 @@ fn cmd_harden(
     }
 
     let auth = read_secret(auth_file).ok();
-    let after = lockout::tighten(runner, target, auth.as_deref().map(|v| &v[..]))?;
+    let scratch = auth_file
+        .parent()
+        .context("the reset authorisation file has no parent directory")?;
+    let after = lockout::tighten(runner, target, auth.as_deref().map(|v| &v[..]), scratch)?;
     println!(
         "after:  maxTries={} recoveryTime={}s lockoutRecovery={}s",
         after.max_tries, after.recovery_time, after.lockout_recovery

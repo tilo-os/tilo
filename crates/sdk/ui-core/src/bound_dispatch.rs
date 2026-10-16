@@ -936,10 +936,38 @@ pub(crate) fn bound_contract_violations(
 /// Collect each retained component once even when an ordinary container does
 /// not forward `search_providers`. Legacy providers keep their root-owned route.
 pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::SearchProvider>> {
-    fn visit(
+    collect_search_sources(
+        root,
+        &|widget| crate::search::capability::search_providers(widget),
+        &|provider| provider.callback_binding().is_none(),
+    )
+}
+
+/// [`search_providers`] as the action directory's witness reads them: the
+/// same providers in the same order, described without being made, so a
+/// source that indexes to answer builds nothing until someone searches.
+pub(crate) fn search_provider_descriptors(
+    root: &dyn Widget,
+) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+    collect_search_sources(
+        root,
+        &|widget| crate::search::capability::search_provider_descriptors(widget),
+        &|descriptor| descriptor.owner.is_none(),
+    )
+}
+
+/// What `read` finds of the root's own search sources (those `unowned`
+/// admits), then of each retained component's, once each.
+fn collect_search_sources<T>(
+    root: &dyn Widget,
+    read: &dyn Fn(&dyn Widget) -> Vec<T>,
+    unowned: &dyn Fn(&T) -> bool,
+) -> Vec<T> {
+    fn visit<T>(
         widget: &dyn Widget,
+        read: &dyn Fn(&dyn Widget) -> Vec<T>,
         seen: &mut std::collections::HashSet<uuid::Uuid>,
-        providers: &mut Vec<Box<dyn crate::search::SearchProvider>>,
+        found: &mut Vec<T>,
     ) {
         let binding = widget.callback_binding();
         let Ok(_entry) = binding.as_ref().map(CallbackBinding::enter).transpose() else {
@@ -948,16 +976,21 @@ pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::
         if let Some(binding) = &binding
             && seen.insert(binding.lifetime_id)
         {
-            providers.extend(crate::search::capability::search_providers(widget));
+            found.extend(read(widget));
         }
-        widget.for_each_child(&mut |child| visit(child, seen, providers));
+        widget.for_each_child(&mut |child| visit(child, read, seen, found));
     }
-    let mut providers = crate::search::capability::search_providers(root)
+    let mut found = read(root)
         .into_iter()
-        .filter(|provider| provider.callback_binding().is_none())
+        .filter(|source| unowned(source))
         .collect::<Vec<_>>();
-    visit(root, &mut std::collections::HashSet::new(), &mut providers);
-    providers
+    visit(
+        root,
+        read,
+        &mut std::collections::HashSet::new(),
+        &mut found,
+    );
+    found
 }
 
 fn provider_resource(
@@ -1215,15 +1248,26 @@ pub(crate) fn directory_witness(
 pub(crate) struct BoundResourceCache(RefCell<Vec<CachedBoundResources>>);
 
 /// One bound owner's admission generation and record frontier, read on each
-/// side of an input dispatch. Only a native surface's input path reads it.
-#[cfg(feature = "native")]
+/// side of an input dispatch (the native App) or of a frame (the frame
+/// harness, which also reads the owner's standing: [`bound_owner_standing`]).
 pub(crate) struct BoundOwnerMark {
     binding: CallbackBinding,
+    /// Only the native input path carries snapshots across generations.
+    #[cfg(feature = "native")]
     generation: Option<u64>,
     document: Option<(Vec<automerge::ChangeHash>, usize)>,
+    standing: Option<OwnerStanding>,
 }
 
-#[cfg(feature = "native")]
+/// What an owner's published controls and synced root read besides its
+/// record and its widgets: what its permissions mean now (a grant expires
+/// with time) and its record's durability, which its root shows once synced.
+#[derive(PartialEq)]
+struct OwnerStanding {
+    permissions: Result<crate::permissions::DirectoryPermissionWitness, String>,
+    save: Result<crate::record::RecordSaveStatus, String>,
+}
+
 impl BoundOwnerMark {
     pub(crate) fn is_committed(&self) -> bool {
         self.document
@@ -1235,7 +1279,23 @@ impl BoundOwnerMark {
 /// Every live bound owner under `root`, once each, in tree order.
 #[cfg(feature = "native")]
 pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
-    fn visit(widget: &dyn Widget, outer: &AutoCommit, marks: &mut Vec<BoundOwnerMark>) {
+    owner_marks(root, outer, false)
+}
+
+/// [`bound_owner_marks`] with each owner's standing. Two such reads are
+/// [`same_owner_standing`] only when nothing an owner's controls, undo status
+/// or synced root reads from outside its widgets moved between them.
+pub(crate) fn bound_owner_standing(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
+    owner_marks(root, outer, true)
+}
+
+fn owner_marks(root: &dyn Widget, outer: &AutoCommit, standing: bool) -> Vec<BoundOwnerMark> {
+    fn visit(
+        widget: &dyn Widget,
+        outer: &AutoCommit,
+        standing: bool,
+        marks: &mut Vec<BoundOwnerMark>,
+    ) {
         if let Some(binding) = widget.callback_binding()
             && !binding.closing.get()
             && binding.lifetime.is_active()
@@ -1244,22 +1304,45 @@ pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<Bo
                 .any(|mark| mark.binding.same_component(&binding))
         {
             let entry = binding.enter();
+            #[cfg(feature = "native")]
             let generation = binding.generation().ok().flatten();
             let document = binding
-                .read_document(outer, |doc, _| crate::widget::settle_mark(doc))
+                .read_document(outer, |doc, _| crate::doc::settle_mark(doc))
                 .ok();
+            let standing = standing.then(|| OwnerStanding {
+                permissions: binding.permissions.borrow().directory_witness(),
+                save: binding
+                    .records
+                    .save_status(&binding.checkout.id)
+                    .map_err(|error| error.to_string()),
+            });
             drop(entry);
             marks.push(BoundOwnerMark {
                 binding,
+                #[cfg(feature = "native")]
                 generation,
                 document,
+                standing,
             });
         }
-        widget.for_each_child(&mut |child| visit(child, outer, marks));
+        widget.for_each_child(&mut |child| visit(child, outer, standing, marks));
     }
     let mut marks = Vec::new();
-    visit(root, outer, &mut marks);
+    visit(root, outer, standing, &mut marks);
     marks
+}
+
+/// Whether two [`bound_owner_standing`] reads name the same owners, each
+/// with its record committed and unmoved and with the same standing.
+pub(crate) fn same_owner_standing(before: &[BoundOwnerMark], after: &[BoundOwnerMark]) -> bool {
+    before.len() == after.len()
+        && before.iter().zip(after).all(|(before, after)| {
+            before.binding.same_component(&after.binding)
+                && before.is_committed()
+                && before.document == after.document
+                && before.standing.is_some()
+                && before.standing == after.standing
+        })
 }
 
 #[cfg(feature = "native")]
@@ -1403,6 +1486,7 @@ pub(crate) fn discover_cached_bound_resources(
             let snapshot = if let Some(cached) = cached {
                 cached
             } else {
+                let _phase = tilo_resource::profiling::Phase::start("ui.bound_discovery_miss");
                 // The snapshot this one replaces: its controls' derivation
                 // and its filter token carry over, so what the two forests
                 // share is neither filtered nor surveyed again.
@@ -1902,12 +1986,8 @@ impl OrdinaryConfirmation {
             return Err(Self::stale());
         }
         let resources = resources_for_control_target(root, doc, &target, &address)?;
-        let (resource, _) = unique_control_spec(&resources, &address)?;
-        let context = tilo_actions::ActionContext::for_resource(
-            resource.id.as_str(),
-            &resource.kind,
-            &resource.label,
-        );
+        let (resource, spec) = unique_control_spec(&resources, &address)?;
+        let context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
         let snapshot = Self::snapshot(
             &resources,
             &address,
@@ -2472,11 +2552,8 @@ pub(crate) fn execute_resource_operation(
                 "Deferred action locus differs from its declaration".into(),
             ));
         }
-        let mut context = tilo_actions::ActionContext::for_resource(
-            resource.id.as_str(),
-            &resource.kind,
-            &resource.label,
-        );
+        let mut context =
+            spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
@@ -3637,6 +3714,29 @@ impl Drop for RestoreFrame<'_> {
     }
 }
 
+/// The undo bracket a widget reported since the last sweep, with what the
+/// boundary keeps of it: whether the widget keeps the step open, and its
+/// ephemeral state. Reading it needs only the widget, so a sweep takes it
+/// first and opens the widget's record frame only when there is one.
+pub(crate) struct TakenActionBracket {
+    before: Vec<ChangeHash>,
+    keep_open: bool,
+    metadata: Option<String>,
+}
+
+impl TakenActionBracket {
+    /// `widget`'s bracket, if it reported one. Rising-edge, like
+    /// [`crate::undo::take_committed_action`]: taking it clears it.
+    pub(crate) fn take(widget: &mut dyn Widget) -> Option<Self> {
+        let before = crate::undo::take_committed_action(widget)?;
+        Some(Self {
+            before,
+            keep_open: crate::undo::keeps_undo_step_open(widget),
+            metadata: crate::undo::get_state(widget),
+        })
+    }
+}
+
 impl PendingRecordAction {
     fn new(binding: &CallbackBinding, before: Vec<ChangeHash>) -> Self {
         Self {
@@ -4118,11 +4218,23 @@ impl CallbackBinding {
         widget: &mut dyn Widget,
         doc: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
-        let Some(before) = crate::undo::take_committed_action(widget) else {
+        let Some(taken) = TakenActionBracket::take(widget) else {
             return Ok(false);
         };
-        let keep_open = crate::undo::keeps_undo_step_open(widget);
-        let metadata = crate::undo::get_state(widget);
+        self.drain_taken_actions(taken, doc)
+    }
+    /// Record what [`TakenActionBracket::take`] read from a widget, under
+    /// the record frame this binding's caller holds open.
+    pub(crate) fn drain_taken_actions(
+        &self,
+        taken: TakenActionBracket,
+        doc: &mut AutoCommit,
+    ) -> Result<bool, BoundDispatchError> {
+        let TakenActionBracket {
+            before,
+            keep_open,
+            metadata,
+        } = taken;
         let handle = ACTIVE
             .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
             .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
@@ -4429,6 +4541,7 @@ impl CallbackBinding {
                 Ok(callback(outer, &ROOT))
             };
         }
+        let _phase = tilo_resource::profiling::Phase::start("ui.record_frame");
         self.records
             .with_action_state(&self.checkout.id, |document, history, state| {
                 let frame = Rc::new(RefCell::new(Some(ActionFrame {
@@ -4693,6 +4806,11 @@ impl BoundNodeMap {
     }
     pub(crate) fn legacy_for(&self, node: NodeId) -> Option<crate::history_mode::HistoryOwner> {
         self.nodes.get(&node).and_then(|entry| entry.legacy.clone())
+    }
+    /// Whether any admitted node belongs to a legacy tile, whose record no
+    /// [`bound_owner_standing`] read follows.
+    pub(crate) fn has_legacy(&self) -> bool {
+        self.nodes.values().any(|entry| entry.legacy.is_some())
     }
     pub(crate) fn legacy_status(
         &self,

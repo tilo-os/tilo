@@ -108,9 +108,9 @@
 
 #[cfg(feature = "wgpu")]
 mod bump_budget;
+mod debug;
 #[cfg(feature = "wgpu")]
 mod image_source;
-mod debug;
 mod recording;
 mod render;
 mod scene;
@@ -148,14 +148,14 @@ pub use wgpu;
 
 #[cfg(feature = "wgpu")]
 pub use image_source::ImageSource;
+pub use scene::{DrawGlyphs, Scene};
+pub use vello_encoding::ImageCacheStats;
+pub use vello_encoding::{FontEmbolden, Glyph, NormalizedCoord};
 /// A stable identity of the compute shaders this build of vello creates
 /// pipelines from: a pipeline cache kept across processes is only valid for
 /// the fingerprint it was filled with.
 #[cfg(feature = "wgpu")]
 pub use vello_shaders::SOURCE_FINGERPRINT as SHADER_FINGERPRINT;
-pub use scene::{DrawGlyphs, Scene};
-pub use vello_encoding::ImageCacheStats;
-pub use vello_encoding::{FontEmbolden, Glyph, NormalizedCoord};
 
 use low_level::ShaderId;
 #[cfg(feature = "wgpu")]
@@ -184,8 +184,7 @@ use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
 pub type ExternalImageSource = fn(u64) -> Option<Vec<u8>>;
 
 #[cfg(feature = "wgpu")]
-static EXTERNAL_IMAGE_SOURCE: std::sync::OnceLock<ExternalImageSource> =
-    std::sync::OnceLock::new();
+static EXTERNAL_IMAGE_SOURCE: std::sync::OnceLock<ExternalImageSource> = std::sync::OnceLock::new();
 
 /// Install the process's [`ExternalImageSource`]. The first one installed stays.
 #[cfg(feature = "wgpu")]
@@ -1804,10 +1803,29 @@ impl Renderer {
     /// thread until the GPU process gets to it. Other backends create the
     /// pipelines synchronously, one after another.
     pub async fn new_async(device: &Device, options: RendererOptions) -> Result<Self> {
+        Self::new_async_deferring(device, options, PipelineDeferral::None).await
+    }
+
+    /// [`Self::new_async`], awaiting only the pipelines `deferral` does not
+    /// defer (Tilo patch). Call [`Self::start_deferred_pipelines_async`] once
+    /// the first frame is out; a render that dispatches a deferred pipeline
+    /// before it is compiled creates that pipeline itself.
+    pub async fn new_async_deferring(
+        device: &Device,
+        options: RendererOptions,
+        mut deferral: PipelineDeferral,
+    ) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
         engine.initialize_gpu_timestamps(device);
+        // As in `new_deferring`: GL compiles under one context lock.
+        if device.adapter_info().backend == wgpu::Backend::Gl {
+            deferral = PipelineDeferral::None;
+        }
         engine.defer_shader_initialisation();
-        let shaders = shaders::full_shaders(device, &mut engine, &options)?;
+        engine.set_pipeline_deferral(deferral);
+        let shaders = shaders::full_shaders(device, &mut engine, &options);
+        engine.set_pipeline_deferral(PipelineDeferral::None);
+        let shaders = shaders?;
         engine.build_shaders_async(device).await;
         Self::with_engine(device, options, engine, shaders)
     }
@@ -1867,7 +1885,16 @@ impl Renderer {
         device: &Device,
         built: impl FnOnce() + Send + 'static,
     ) {
-        self.engine.start_deferred_pipelines(device, Box::new(built));
+        self.engine
+            .start_deferred_pipelines(device, Box::new(built));
+    }
+
+    /// Start compiling the pipelines [`Self::new_async_deferring`] deferred,
+    /// through the device's asynchronous pipeline creation, without waiting
+    /// for them (Tilo patch). Renders install each once it is compiled. A
+    /// second call does nothing.
+    pub fn start_deferred_pipelines_async(&mut self, device: &Device) {
+        self.engine.start_deferred_pipelines_async(device);
     }
 
     /// The pipelines [`Self::new_deferring`] deferred that are not installed

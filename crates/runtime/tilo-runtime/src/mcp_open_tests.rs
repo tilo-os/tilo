@@ -21,8 +21,12 @@ const PERMISSIONS: &str = "workspace.permissions:90142c0f-1092-4d22-84a2-f9af0e5
 /// it is opened.
 #[derive(Clone)]
 struct Writer {
-    /// The app's action that opens a path, if it has one.
+    /// The app's action declared as opening a path, if it has one: an
+    /// `import-<extension>` is declared for that extension, any other for
+    /// any file.
     opener: Option<&'static str>,
+    /// An action that takes a `path` without being declared as opening it.
+    takes_path: Option<&'static str>,
     running: Arc<Mutex<bool>>,
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
     /// For each of the app's next top-level listings, whether it is empty,
@@ -38,6 +42,11 @@ struct Writer {
     listing_page: Option<usize>,
     /// Every question and invocation the host was sent, in order.
     log: Arc<Mutex<Vec<Asked>>>,
+    /// The instance an `open` starts, which its answer names.
+    started: u64,
+    /// Another instance of the app that comes up with it, which nobody
+    /// asked for (another session's open).
+    bystander: Option<u64>,
 }
 
 struct DirectoryFailure {
@@ -56,6 +65,7 @@ impl Writer {
     fn new(opener: Option<&'static str>) -> Self {
         Self {
             opener,
+            takes_path: None,
             running: Arc::default(),
             invoked: Arc::default(),
             blank_listings: Arc::default(),
@@ -63,12 +73,19 @@ impl Writer {
             document: None,
             listing_page: None,
             log: Arc::default(),
+            started: 1,
+            bystander: None,
         }
     }
 
     /// What the host was sent since the last call, and forget it.
     fn asked(&self) -> Vec<Asked> {
         std::mem::take(&mut *self.log.lock().unwrap())
+    }
+
+    fn taking_path(mut self, action: &'static str) -> Self {
+        self.takes_path = Some(action);
+        self
     }
 
     fn reading(mut self, document: impl Into<String>) -> Self {
@@ -106,7 +123,7 @@ impl Writer {
                 row(
                     "",
                     RICH,
-                    "qdoc.rich-text",
+                    "tilo.rich-text",
                     "apply",
                     vec![
                         ActionParam::required("action", ParamType::Object, "An edit")
@@ -166,11 +183,25 @@ impl Writer {
             rows.extend(text_edit_rows());
         }
         if let Some(opener) = self.opener {
+            let mut row = row(DOC, DOC, "word_processor.document", opener, vec![path()]);
+            if let Some(action) = row.action.as_mut() {
+                let tags = &mut action.contract.tags;
+                tags.push(tilo_actions::OPENS_PATH_TAG.into());
+                if let Some(extension) = opener.strip_prefix("import-") {
+                    tags.push(format!(
+                        "{}{extension}",
+                        tilo_actions::OPENS_PATH_EXTENSION_PREFIX
+                    ));
+                }
+            }
+            rows.push(row);
+        }
+        if let Some(action) = self.takes_path {
             rows.push(row(
                 DOC,
                 DOC,
                 "word_processor.document",
-                opener,
+                action,
                 vec![path()],
             ));
         }
@@ -322,17 +353,21 @@ impl ActionHost for Writer {
             .push(Asked::Query(Box::new(query.clone())));
         let running = *self.running.lock().unwrap();
         let Some(provider) = query.provider.clone() else {
+            let mut peers = self.bystander.into_iter().collect::<Vec<_>>();
+            peers.push(self.started);
+            peers.sort_unstable();
             return Pending::ready(Ok(CataloguePage {
                 revision: "v5".into(),
-                providers: running
-                    .then(|| CatalogueProvider {
-                        provider: "1".into(),
+                providers: peers
+                    .into_iter()
+                    .filter(|_| running)
+                    .map(|peer| CatalogueProvider {
+                        provider: peer.to_string(),
                         app_id: APP.into(),
                         room: "room".into(),
                         record_id: String::new(),
                         browsable: true,
                     })
-                    .into_iter()
                     .collect(),
                 ..CataloguePage::default()
             }));
@@ -454,7 +489,7 @@ impl ActionHost for Writer {
         _caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Option<InvocationState> {
-        let (action, arguments) = self
+        let (target, arguments) = self
             .invoked
             .lock()
             .unwrap()
@@ -465,35 +500,57 @@ impl ActionHost for Writer {
                     InvokeArgument::Json(map) => map.clone(),
                     _ => serde_json::Map::new(),
                 };
-                (request.target.address.action.clone(), arguments)
+                (request.target.clone(), arguments)
             })?;
-        let page_size = arguments.get("pageSize").and_then(Value::as_u64);
-        // As the broker validates arguments against the published schema.
-        let refusal = if page_size.is_some_and(|size| size > 64) {
-            Some("argument `pageSize` must be at most 64")
+        let action = target.address.action.clone();
+        // As the app's door binds a read's arguments against the schema it
+        // publishes (the document's read pages from its start when given
+        // none), and refuses what it cannot find.
+        let params = self
+            .rows(&target.provider)
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|offered| offered.address == target.address)
+            .map(|offered| offered.params)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|param| arguments.contains_key(param.name.as_ref()))
+            .collect::<Vec<_>>();
+        let refusal = if action == "read-text"
+            && let Err(error) = tilo_actions::ActionArgs::bind_json(&params, &arguments)
+        {
+            Some(tilo_actions::DoorError::from(error))
         } else if arguments
             .get("block")
             .and_then(Value::as_str)
             .is_some_and(|block| block.starts_with('r'))
         {
-            Some("no block has that id")
+            Some(tilo_actions::DoorError::InvalidArguments(
+                "no block has that id".into(),
+            ))
         } else {
             None
         };
-        let update = if let Some(message) = refusal {
+        let update = if let Some(error) = refusal {
             InvocationUpdate::Failed {
                 invocation: *id,
                 error: tilo_actions::ActionFailure {
-                    code: "invalid_arguments".into(),
-                    message: message.into(),
-                    details: None,
+                    code: error.code().into(),
+                    message: error.to_string(),
+                    details: error.failure_details(),
                     retryable: false,
                 },
             }
         } else {
-            let value = self.document.as_ref().filter(|_| action == "read-text").map(
-                |markdown| json!({"version": 1, "content": {"markdown": markdown}, "nextCursor": "c2"}),
-            );
+            let value = if target.provider == WORKSPACE {
+                // As the broker answers a workspace open: with the
+                // instance the launch started.
+                Some(json!({"peer_id": self.started}))
+            } else {
+                self.document.as_ref().filter(|_| action == "read-text").map(
+                    |markdown| json!({"version": 1, "content": {"markdown": markdown}, "nextCursor": "c2"}),
+                )
+            };
             InvocationUpdate::Succeeded {
                 invocation: *id,
                 output: tilo_actions::ActionOutput {
@@ -586,7 +643,7 @@ fn opening_an_app_with_a_file_opens_it_through_the_apps_own_action() {
             resource(&reply["directory"], "word_processor.style")["actions"]["toggle-bold"]
                 .is_string()
         );
-        assert!(resource(&reply["directory"], "qdoc.rich-text")["actions"]["apply"].is_string());
+        assert!(resource(&reply["directory"], "tilo.rich-text")["actions"]["apply"].is_string());
         assert!(reply["directory"].get("truncated").is_none(), "{reply}");
         assert!(reply["directory"].to_string().len() < DIRECTORY_BYTES);
     });
@@ -609,6 +666,36 @@ fn opening_an_app_with_a_file_opens_it_through_the_apps_own_action() {
             ),
         ]
     );
+}
+
+/// Two sessions opening one app at once each get the instance their own
+/// launch started: the host names it, and the bridge neither lists the
+/// app's instances before nor after to guess which one is new.
+#[test]
+fn an_open_answers_the_instance_the_host_started() {
+    let host = Writer {
+        started: 7,
+        bystander: Some(5),
+        ..Writer::new(Some("open"))
+    };
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let reply = run(call(
+        &server,
+        "tilo_invoke",
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
+    ))
+    .unwrap();
+    assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+    assert_eq!(reply["peer_id"], 7, "{reply}");
+    assert_eq!(reply["opened"]["update"]["state"], "succeeded", "{reply}");
+    let asked = host.asked();
+    assert!(
+        !asked.iter().any(lists_instances),
+        "no instance listing was asked: {asked:?}"
+    );
+    let opened = host.invoked();
+    assert_eq!(opened.len(), 2, "{opened:?}");
+    assert_eq!(opened[1].0, "7", "the file opened in the started instance");
 }
 
 /// computer (run 20260930-105710): every task that opened a file spent its
@@ -706,6 +793,35 @@ fn an_app_without_open_imports_the_file_by_its_extension() {
     assert_eq!(host.invoked()[1].3, json!({"path": "/data/in/Sales.CSV"}));
 }
 
+/// A file is opened only through an action its app declares as opening
+/// paths, and one declared for other extensions does not open it. An
+/// action that merely takes a `path` (importing an installer image, which
+/// needs an administrator) is never chosen by its name.
+#[test]
+fn only_a_declared_opener_opens_a_path() {
+    let open = |path: &str| json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": path}});
+    let host = Writer::new(None).taking_path("import-iso");
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let reply = run(call(
+        &server,
+        "tilo_invoke",
+        open("/home/you/Downloads/Win11.iso"),
+    ))
+    .unwrap();
+    assert_eq!(reply["opened"]["error"], OPENED_NO_ACTION, "{reply}");
+    assert!(
+        host.invoked().iter().all(|call| call.2 != "import-iso"),
+        "{:?}",
+        host.invoked()
+    );
+
+    let host = Writer::new(Some("import-csv"));
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let reply = run(call(&server, "tilo_invoke", open("/data/in/paper.docx"))).unwrap();
+    assert_eq!(reply["opened"]["error"], OPENED_NO_ACTION, "{reply}");
+    assert_eq!(host.invoked().len(), 1, "nothing but the launch ran");
+}
+
 /// workflows (guest run 20260929-200306): opening a workbook Sheets already
 /// held started a second window that imported it again.
 #[test]
@@ -765,10 +881,9 @@ fn opening_a_file_an_instance_holds_returns_that_instance() {
 #[test]
 fn an_app_opened_empty_answers_once_its_directory_lists_a_resource() {
     let host = Writer::new(None);
-    host.blank_listings
-        .lock()
-        .unwrap()
-        .extend([false, true, true]);
+    // The host answers once the app has published, but the app may publish
+    // again while it binds its document: the first listings read empty.
+    host.blank_listings.lock().unwrap().extend([true, true]);
     let server = McpServer::new(host.clone(), "room".into(), "owner".into());
     let reply = run(call(
         &server,
@@ -873,7 +988,7 @@ fn a_handle_in_a_resource_argument_is_expanded_and_text_is_not_replayed() {
             .as_str()
             .unwrap()
             .to_owned();
-        let style = resource(&page, "qdoc.rich-text")["resource"]
+        let style = resource(&page, "tilo.rich-text")["resource"]
             .as_str()
             .unwrap()
             .to_owned();
@@ -892,6 +1007,13 @@ fn a_handle_in_a_resource_argument_is_expanded_and_text_is_not_replayed() {
             "no block has that id"
         );
         assert!(selected.get("adjusted").is_none(), "{selected}");
+        assert_eq!(
+            selected["hint"],
+            format!(
+                "block `{style}` is a session handle for {RICH}; pass that id if you meant the resource"
+            ),
+            "{selected}"
+        );
     });
     let calls = host.invoked();
     let arguments = |action: &str| {
@@ -1017,7 +1139,7 @@ fn a_failed_call_with_an_unexpanded_handle_is_not_rerun() {
         let page = call(&server, "tilo_query", json!({"peer_id": 1}))
             .await
             .unwrap();
-        let handle = resource(&page, "qdoc.rich-text")["resource"]
+        let handle = resource(&page, "tilo.rich-text")["resource"]
             .as_str()
             .unwrap();
         assert_ne!(handle, RICH);
@@ -1056,7 +1178,7 @@ fn an_admission_refusal_with_a_text_handle_is_not_an_execution_failure() {
         let page = call(&server, "tilo_query", json!({"peer_id": 1}))
             .await
             .unwrap();
-        let handle = resource(&page, "qdoc.rich-text")["resource"]
+        let handle = resource(&page, "tilo.rich-text")["resource"]
             .as_str()
             .unwrap();
         let refusal = call(
@@ -1108,7 +1230,7 @@ fn the_http_bridge_does_not_readmit_a_failed_text_handle_mutation() {
         assert_eq!(listed.status(), StatusCode::OK);
         let bytes = listed.into_body().collect().await.unwrap().to_bytes();
         let page: Value = serde_json::from_slice(&bytes).unwrap();
-        let handle = resource(&page["result"]["structuredContent"], "qdoc.rich-text")["resource"]
+        let handle = resource(&page["result"]["structuredContent"], "tilo.rich-text")["resource"]
             .as_str()
             .unwrap();
         assert_ne!(handle, RICH);
@@ -1161,7 +1283,7 @@ fn handles_stand_for_long_ids_and_full_ids_keep_working() {
         let page = call(&server, "tilo_query", json!({"peer_id": 1}))
             .await
             .unwrap();
-        let rich = resource(&page, "qdoc.rich-text")["resource"]
+        let rich = resource(&page, "tilo.rich-text")["resource"]
             .as_str()
             .unwrap()
             .to_owned();
@@ -1414,10 +1536,22 @@ fn doc_real_headings_takes_three_tilo_turns() {
     assert_eq!(calls.len(), 10);
 }
 
-/// cross-standup asked `read-text` for 200 blocks and was refused; the
-/// bridge now reads the most the action allows and says so.
+/// What `read-text` was asked for, in order.
+fn read_sizes(host: &Writer) -> Vec<Value> {
+    host.invoked()
+        .iter()
+        .filter(|call| call.2 == "read-text")
+        .map(|call| call.3["pageSize"].clone())
+        .collect()
+}
+
+/// cross-standup asked `read-text` for 200 blocks and was refused. One call
+/// is one invocation: the refusal carries the bound as data and the answer
+/// names it, and nothing runs again with another value. Replaces the bridge
+/// that clamped the number and started a second invocation under a fresh
+/// id, which a retry of the caller's id then repeated.
 #[test]
-fn a_number_beyond_its_bound_is_clamped_and_the_answer_says_so() {
+fn an_out_of_range_number_is_refused_with_its_bound_and_never_rerun() {
     let host = Writer::new(Some("open"));
     let server = McpServer::new(host.clone(), "room".into(), "owner".into());
     let reply = run(async {
@@ -1436,15 +1570,67 @@ fn a_number_beyond_its_bound_is_clamped_and_the_answer_says_so() {
         .await
         .unwrap()
     });
-    assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
-    assert_eq!(reply["adjusted"], "pageSize 200 is out of range; used 64");
-    let calls = host.invoked();
-    let sizes: Vec<&Value> = calls
+    assert_eq!(reply["update"]["state"], "failed", "{reply}");
+    assert_eq!(
+        reply["update"]["error"]["details"],
+        json!({"param": "pageSize", "violation": {"kind": "maximum", "bound": 64}}),
+        "{reply}"
+    );
+    assert_eq!(
+        reply["update"]["error"]["message"],
+        "argument `pageSize` must be at most 64"
+    );
+    assert_eq!(
+        reply["hint"],
+        "pageSize must be at most 64; call again with a value in range, such as 64"
+    );
+    assert!(reply.get("adjusted").is_none(), "{reply}");
+    assert_eq!(read_sizes(&host), [json!(200)], "exactly one invocation");
+}
+
+/// The caller retries an out-of-range call with its own invocation id, as
+/// the tool tells it to after a lost reply: every start the host sees
+/// carries that id and the caller's own value, so a host that keeps its
+/// ids (as every production host does) runs it at most once.
+#[test]
+fn a_retried_invocation_id_never_runs_twice() {
+    let host = Writer::new(Some("open"));
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let id = tilo_actions::InvocationId::new();
+    let read = json!({
+        "peer_id": 1, "resource": DOC, "action": "read-text",
+        "arguments": {"pageSize": 200}, "invocation_id": id.0.to_string()
+    });
+    let (first, again) = run(async {
+        call(
+            &server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+        )
+        .await
+        .unwrap();
+        let first = call(&server, "tilo_invoke", read.clone()).await.unwrap();
+        let again = call(&server, "tilo_invoke", read).await.unwrap();
+        (first, again)
+    });
+    for reply in [&first, &again] {
+        assert_eq!(reply["invocation_id"], id.0.to_string(), "{reply}");
+        assert_eq!(reply["update"]["state"], "failed", "{reply}");
+    }
+    let started: Vec<_> = host
+        .invoked
+        .lock()
+        .unwrap()
         .iter()
-        .filter(|call| call.2 == "read-text")
-        .map(|call| &call.3["pageSize"])
+        .filter(|request| request.target.address.action == "read-text")
+        .map(|request| request.invocation)
         .collect();
-    assert_eq!(sizes, [&json!(200), &json!(64)]);
+    assert!(
+        started.iter().all(|started| *started == id),
+        "no invocation under another id: {started:?}"
+    );
+    assert!(!started.is_empty());
+    assert!(read_sizes(&host).iter().all(|size| *size == json!(200)));
 }
 
 /// Edits and the save that follows are one `tilo_invoke`. A failure stops

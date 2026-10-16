@@ -18,14 +18,16 @@ export async function useRegistry() {
 }
 
 /** `POST <api>/rooms`: `{roomId, origin, room, userPublicKey, expiresAt,
- * pageTicket, joinUrl, admit, events, invitations, app}`. */
+ * pageTicket, joinUrl, admit, events, invitations, app}`. `invitations` and
+ * `events` carry the room's owner key: keep them to this page, and use them
+ * as given (the service refuses both routes without the key). */
 export async function createRoom(api, {signal} = {}) {
   const response = await fetch(new URL('rooms', `${api.replace(/\/$/, '')}/`), {method: 'POST', signal});
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? `rooms: HTTP ${response.status}`);
   return response.json();
 }
 
-/** A one-use guest link for `room`, in the web link grammar
+/** A one-use guest link for `room` (the `createRoom` answer), in the web link grammar
  * (docs/architecture/web-routing.md): the Writer full tab, on `record` when
  * given, with the guest ticket as the fragment's secret. */
 export async function createInvitation(room, {record, signal} = {}) {
@@ -90,6 +92,7 @@ export function recordOf(peer, app = WRITER, {timeoutMs = 30_000} = {}) {
 }
 
 /** Each device the room certifies, earlier ones first: `{label, device, at}`.
+ * `room` is the `createRoom` answer, whose `events` URL is the owner's.
  * Returns a function that stops watching. */
 export function watchMembers(room, onMember, {onExpired} = {}) {
   const events = new EventSource(room.events);

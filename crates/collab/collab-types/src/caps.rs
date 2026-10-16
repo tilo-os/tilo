@@ -7,10 +7,13 @@
 //! `tilo-action-policy` over the published tree.
 //!
 //! [`decide_capability`] is fail-closed and deny-biased: no matching grant
-//! denies, and a matching `Restrict` removes access even if a `Grant` would
-//! allow it.
+//! denies, and a matching `Restrict` caps access at its own [`Access`] even if
+//! a `Grant` would allow more. `Read` is the floor: a `Restrict` makes a scope
+//! read-only and never takes reading away. To keep a path, device, host or
+//! record from an app, do not grant it.
 
 use serde::{Deserialize, Serialize};
+mod fs_authority_v1;
 pub mod net;
 
 pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, host_covers};
@@ -21,7 +24,8 @@ use crate::crypto::Ed25519PublicKey;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Access {
-    /// Read, observe, capture.
+    /// Read, observe, capture. The floor: `Write` implies it, so no
+    /// [`Effect::Restrict`] removes it. Only the absence of a grant does.
     Read,
     /// Change, send, drive. Implies `Read`.
     Write,
@@ -239,13 +243,69 @@ impl Scope {
 /// rooms: the sandbox capabilities people hold over shared files, and who
 /// may reach each room a relay carries (keyed by the relay's room id) — the
 /// room's members, as its policy names them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Written as an object. It also reads the bare capability array that
+/// preceded it ([`fs_authority_v1`]): that file persists on a machine across
+/// image updates, and failing to read it leaves the filesystem unmounted.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct FsAuthority {
-    #[serde(default)]
     pub capabilities: Vec<CapOverride>,
-    #[serde(default)]
     pub room_members: std::collections::BTreeMap<String, Vec<RoomMember>>,
+}
+
+/// The current, object form of [`FsAuthority`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FsAuthorityV2 {
+    #[serde(default)]
+    capabilities: Vec<CapOverride>,
+    #[serde(default)]
+    room_members: std::collections::BTreeMap<String, Vec<RoomMember>>,
+}
+
+impl<'de> Deserialize<'de> for FsAuthority {
+    /// An object is the current form; an array is the list before it. The
+    /// shape alone decides, so an error names what is wrong inside the form
+    /// the file is actually in.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
+
+        struct Either;
+        impl<'de> serde::de::Visitor<'de> for Either {
+            type Value = FsAuthority;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(
+                    "a file authority object (`{\"capabilities\": [...]}`) or the capability \
+                     array written before it",
+                )
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<FsAuthority, A::Error> {
+                let FsAuthorityV2 {
+                    capabilities,
+                    room_members,
+                } = FsAuthorityV2::deserialize(MapAccessDeserializer::new(map))?;
+                Ok(FsAuthority {
+                    capabilities,
+                    room_members,
+                })
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                seq: A,
+            ) -> Result<FsAuthority, A::Error> {
+                let old = Vec::deserialize(SeqAccessDeserializer::new(seq))?;
+                Ok(FsAuthority::from(fs_authority_v1::migrate(old)))
+            }
+        }
+
+        deserializer.deserialize_any(Either)
+    }
 }
 
 /// A person a relay admits to one room: until `until` (Unix seconds,
@@ -434,7 +494,9 @@ impl Expiry {
 pub enum Effect {
     /// Extend a subject's access within the scope.
     Grant,
-    /// Cap a subject's access within the scope.
+    /// Cap a subject's access within the scope at the capability's
+    /// [`Access`]: `Restrict { Read }` means read-only. A restriction never
+    /// denies [`Access::Read`].
     Restrict,
 }
 
@@ -516,6 +578,9 @@ pub enum CapDecision {
 /// May `actor` reach `resource` with `access`? A live matching grant whose
 /// access implies the request allows, unless a live matching restriction caps
 /// it below the request. `now` in Unix seconds; `None` skips expiry.
+///
+/// Reading is refused only when no live grant covers the resource: every
+/// restriction's access implies `Read`, so none caps below it.
 pub fn decide_capability(
     actor: &Actor,
     resource: &ResourceRef,
@@ -596,6 +661,71 @@ mod tests {
             decide_capability(&stranger, &book, Access::Read, &caps, None),
             CapDecision::NotGranted
         );
+    }
+
+    #[test]
+    fn a_restriction_never_removes_read_at_any_scope() {
+        let actor = Actor::app("so.tilo.books");
+        let cases = [
+            (
+                Scope::FsPath("/w".into()),
+                ResourceRef::FsPath("/w/a.txt".into()),
+            ),
+            (
+                Scope::Device("camera".into()),
+                ResourceRef::Device("camera".into()),
+            ),
+            (
+                Scope::NetHost("example.com".into()),
+                ResourceRef::NetHost("example.com".into()),
+            ),
+            (
+                Scope::FsRecord(EVERY.into()),
+                ResourceRef::FsRecord("file-1".into()),
+            ),
+        ];
+        for (scope, resource) in cases {
+            for granted in [Access::Read, Access::Write] {
+                for capped in [Access::Read, Access::Write] {
+                    let caps = [
+                        CapOverride::grant(Subject::app("so.tilo.books"), scope.clone(), granted),
+                        CapOverride::new(
+                            Subject::app("so.tilo.books"),
+                            scope.clone(),
+                            Effect::Restrict,
+                            capped,
+                        ),
+                    ];
+                    assert_eq!(
+                        decide_capability(&actor, &resource, Access::Read, &caps, Some(0)),
+                        CapDecision::Allow,
+                        "{scope:?}: grant {granted:?}, restrict {capped:?}"
+                    );
+                }
+            }
+            // The restriction matched: it is why Write is refused, not a
+            // scope that missed.
+            let caps = [
+                CapOverride::grant(Subject::app("so.tilo.books"), scope.clone(), Access::Write),
+                CapOverride::new(
+                    Subject::app("so.tilo.books"),
+                    scope.clone(),
+                    Effect::Restrict,
+                    Access::Read,
+                ),
+            ];
+            assert_eq!(
+                decide_capability(&actor, &resource, Access::Write, &caps, Some(0)),
+                CapDecision::DeniedByRestriction,
+                "{scope:?}"
+            );
+            // Only the absence of a grant refuses reading.
+            assert_eq!(
+                decide_capability(&actor, &resource, Access::Read, &caps[1..], Some(0)),
+                CapDecision::NotGranted,
+                "{scope:?}"
+            );
+        }
     }
 
     #[test]

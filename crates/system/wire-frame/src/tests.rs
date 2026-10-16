@@ -190,9 +190,55 @@ fn frame_limits_truncation_and_empty_policy_are_enforced() {
     }
 }
 
+#[test]
+fn lines_are_bounded_and_end_with_a_newline() {
+    let mut reader = Cursor::new(b"one\n\nfour\nlast".to_vec());
+    assert_eq!(
+        read_line(&mut reader, 4).unwrap().as_deref(),
+        Some(&b"one"[..])
+    );
+    assert_eq!(
+        read_line(&mut reader, 4).unwrap().as_deref(),
+        Some(&b""[..])
+    );
+    assert_eq!(
+        read_line(&mut reader, 4).unwrap().as_deref(),
+        Some(&b"four"[..])
+    );
+    assert!(matches!(
+        read_line(&mut reader, 4),
+        Err(FrameError::Truncated)
+    ));
+    assert_eq!(read_line(&mut reader, 4).unwrap(), None);
+
+    assert!(matches!(
+        read_line(&mut Cursor::new(b"fives\n".to_vec()), 4),
+        Err(FrameError::TooLarge(5))
+    ));
+    // A peer that never sends a newline is cut off at the limit.
+    let mut endless = io::BufReader::new(io::repeat(b'a'));
+    assert!(matches!(
+        read_line(&mut endless, 1024),
+        Err(FrameError::TooLarge(1025))
+    ));
+}
+
 #[cfg(feature = "tokio")]
 mod asynchronous {
     use super::*;
+
+    #[tokio::test]
+    async fn async_lines_match_blocking_lines() {
+        let mut reader = &b"one\nfives\n"[..];
+        assert_eq!(
+            read_line_async(&mut reader, 4).await.unwrap().as_deref(),
+            Some(&b"one"[..])
+        );
+        assert!(matches!(
+            read_line_async(&mut reader, 4).await,
+            Err(FrameError::TooLarge(5))
+        ));
+    }
 
     #[tokio::test]
     async fn async_framing_matches_blocking_framing_and_limits() {

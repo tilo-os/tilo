@@ -5,16 +5,6 @@
         reason = "unit tests may drive real threads and wait on the real clock; the rule guards the library"
     )
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        clippy::float_cmp,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 //! Host services: what a Tilo UI process borrows from whatever hosts it.
 //!
 //! The toolkit reads the clock, runs background work, reaches the clipboard,

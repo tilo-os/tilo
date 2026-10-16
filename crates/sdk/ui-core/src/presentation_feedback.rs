@@ -1,8 +1,4 @@
 //! Opt-in native drawable feedback; independent of render-worker API completion.
-#![allow(
-    clippy::disallowed_methods,
-    reason = "native host runner: drawable feedback logs from its own thread"
-)]
 #[cfg(all(target_os = "macos", feature = "presentation-feedback"))]
 use std::sync::{
     Arc,

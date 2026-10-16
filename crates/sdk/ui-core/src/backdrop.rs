@@ -93,7 +93,27 @@ pub(crate) fn fill(
     material: Material,
     theme: &Theme,
 ) {
-    let ground = crate::chrome::panel_ground(theme);
+    fill_with_ground(
+        scene,
+        transform,
+        shape,
+        material,
+        theme,
+        crate::chrome::panel_ground(theme),
+    );
+}
+
+/// [`fill`] with a ground of the caller's choosing: a surface that lifts
+/// itself off the desktop by its own tone (a notification card) tints the
+/// same blurred backdrop with that tone instead of the panel ground.
+pub(crate) fn fill_with_ground(
+    scene: &mut Scene,
+    transform: Affine,
+    shape: &impl Shape,
+    material: Material,
+    theme: &Theme,
+    ground: Color,
+) {
     if blurs(material, theme)
         && let Some((image, brush_transform)) = record(scene, transform, shape, theme, ground)
     {
@@ -136,6 +156,16 @@ pub struct RecordedBackdrop {
     pub below: Scene,
     /// The opaque panel ground the material tints with.
     pub ground: Color,
+}
+
+impl RecordedBackdrop {
+    /// How far outside its bounds the surface's blurred pixels depend on what is drawn: the
+    /// kernel's reach, and what the halved passes' texels add to it (at most a quarter of the
+    /// deviation, twice over, once a texel is that large).
+    #[must_use]
+    pub fn reach(&self) -> f64 {
+        (self.blur_px.max(0.0) * (KERNEL_REACH + 1.0)).ceil() + 4.0
+    }
 }
 
 struct Recording {

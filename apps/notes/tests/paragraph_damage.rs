@@ -2,6 +2,7 @@
 use crate::component_support::*;
 use notes::read;
 use std::{cell::RefCell, rc::Rc};
+use ui::lock::MutexRecover as _;
 use ui::{Widget, headless::FrameHarness};
 use vello::{Scene, kurbo::Rect, peniko::Color};
 
@@ -42,11 +43,16 @@ fn canonical_notes_default_motion_and_word_boundary_preserve_sparse_gpu_pixels()
 
 #[test]
 fn canonical_notes_timestamp_boundary_preserves_sparse_gpu_pixels() {
-    pin_edit_clock(1_790_000_000);
     paragraph_input(false, "y", "xy", true);
 }
 
 fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timestamp: bool) {
+    // The wall clock is pinned for the whole process, and the timestamp case
+    // moves it a minute on: another case still typing would see its
+    // edited-at caption change under it, which is not what typing damages.
+    static CLOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _clock = CLOCK.lock_recover();
+    pin_edit_clock(1_790_000_000);
     let f = NotebookFixture::rich();
     let body = (0..18)
         .map(|index| format!("Paragraph {index}: an ordinary document line."))
@@ -80,6 +86,18 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // The first edit can change the shared save indicator. The subsequent
     // ordinary edit proves stable app chrome forwards the paragraph damage.
     driver.key("x");
+    // Autosave shows nothing, so no bubble keeps the window busy until the
+    // write lands: wait for it (debounce, then saved) before the baseline,
+    // or its completion would land in the typing measured below.
+    let written = std::time::Instant::now();
+    while written.elapsed() < std::time::Duration::from_secs(5)
+        && (written.elapsed() < std::time::Duration::from_millis(900)
+            || f.records.save_status(&checkout.id).ok()
+                != Some(ui::record::RecordSaveStatus::Saved))
+    {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        driver.settle_for_capture(ui::time::Duration::from_millis(100));
+    }
     let started = ui::time::now();
     let settled = driver.settle_for_capture(HANG_BOUND);
     if !settled {
@@ -125,8 +143,25 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
         damage.iter().map(Rect::area).sum::<f64>() < 1200.0 * 900.0 / 2.0,
         "ordinary stable paragraph input must not damage the whole app: {damage:?}"
     );
+    if !advance_timestamp {
+        assert_only_the_edited_line_is_damaged(&damage);
+    }
     assert_sparse_pixels(&before, driver.scene(), &damage, background);
     close_driver(&mut driver);
+}
+
+/// One typed character repaints the edited line and nothing else: the caret
+/// is inside it.
+fn assert_only_the_edited_line_is_damaged(damage: &[Rect]) {
+    let line = Rect::new(300.0, 270.0, 1200.0, 340.0);
+    assert!(
+        damage.iter().all(|rect| rect.intersect(line) == *rect),
+        "typing damages only the edited line: {damage:?}"
+    );
+    assert!(
+        damage.iter().map(Rect::area).sum::<f64>() <= 900.0 * 24.0,
+        "typing damages one line, not its section: {damage:?}"
+    );
 }
 
 fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], background: Color) {
@@ -147,10 +182,54 @@ fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], backgrou
         old_pixels, expected,
         "ordinary input must change visible note paint"
     );
-    assert_eq!(
-        retained.readback_current(),
-        expected,
-        "all retained app pixels match the full GPU oracle"
+    // Independent GPU recordings differ by a one-unit rounding result at a
+    // handful of edges, including where nothing was damaged; anything more is
+    // a stale or missing region.
+    let retained_pixels = retained.readback_current();
+    assert_eq!(retained_pixels.len(), expected.len());
+    // Outside the damage the retained target must keep exactly the pixels it
+    // had: a sparse render that touches them, or a stale frame landing there,
+    // changes them. Inside it, and against the dense oracle, two dense
+    // recordings of one unchanged scene already differ by one unit at a few
+    // edge pixels (rendering `before` twice does), so a one-unit difference is
+    // raster noise and anything more is a stale or missing region.
+    let inside = |column: usize, row: usize| {
+        let (x, y) = (
+            f64::from(u32::try_from(column).unwrap()),
+            f64::from(u32::try_from(row).unwrap()),
+        );
+        damage
+            .iter()
+            .any(|rect| x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1)
+    };
+    let mut noise = 0_usize;
+    let pixels = retained_pixels
+        .chunks_exact(4)
+        .zip(old_pixels.chunks_exact(4))
+        .zip(expected.chunks_exact(4));
+    for (pixel, ((retained, old), want)) in pixels.enumerate() {
+        let (column, row) = (pixel % 1200, pixel / 1200);
+        if !inside(column, row) {
+            assert_eq!(
+                retained, old,
+                "the sparse render left pixel ({column}, {row}) outside the damage as it was"
+            );
+        }
+        let delta = retained
+            .iter()
+            .zip(want)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            delta <= 1,
+            "retained pixel ({column}, {row}) differs from the full GPU oracle by {delta}"
+        );
+        noise = noise.saturating_add(usize::from(delta != 0));
+    }
+    assert!(
+        noise <= 16,
+        "{noise} pixels differ from the full GPU oracle"
     );
 }
 

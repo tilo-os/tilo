@@ -38,6 +38,7 @@ fn tree() -> DesktopTree {
             active_tab: 9_007_199_254_741_001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     }];
     DesktopTree {
@@ -392,7 +393,10 @@ fn flush_work_area_is_reachable_and_maximized_groups_stay_maximized() {
         &RecordStore::in_memory(),
         &mut Unavailable,
         SurfaceChrome {
-            work_area: tilo_desktop::composition::WorkArea::Flush { top: 12.0 },
+            work_area: tilo_desktop::composition::WorkArea::Flush {
+                top: 12.0,
+                bottom: 12.0,
+            },
             ..SurfaceChrome::default()
         },
     );

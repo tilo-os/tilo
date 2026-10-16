@@ -368,6 +368,9 @@ pub(crate) struct Core {
     pub(crate) revealed: Option<(SecretId, Zeroizing<String>, ui::time::Instant)>,
     /// A notice for the window to hand its shell, which shows and expires it.
     pub(crate) toast: Option<String>,
+    /// The title of an item just saved from the editor, for the window to
+    /// say in passing: closing the editor alone looks the same as Cancel.
+    pub(crate) saved: Option<String>,
     pub(crate) health: crate::VaultHealth,
     pub(crate) findings: Vec<Finding>,
     pub(crate) app_grants: Vec<CredentialGrant>,
@@ -415,6 +418,7 @@ impl Core {
             draft_error: None,
             revealed: None,
             toast: None,
+            saved: None,
             health: crate::VaultHealth::default(),
             findings: Vec::new(),
             app_grants: Vec::new(),
@@ -1079,12 +1083,12 @@ impl Core {
         match model.save_item(&mut item) {
             Ok(id) => {
                 self.selected = Some(id);
+                self.saved = Some(item.title.clone());
                 self.refresh();
                 self.close_editor();
                 self.show_pane = Some(NavPane::Content);
                 self.reveal_open = true;
                 self.touch();
-                self.toast("Saved");
             }
             Err(error) => self.toast(error),
         }
@@ -1120,7 +1124,6 @@ impl Core {
                     self.close_editor();
                     self.select_first_visible();
                     self.show_pane = Some(NavPane::Overview);
-                    self.toast("Item deleted");
                     Ok(())
                 }
                 Ok(false) => Err("That item is no longer in your vault".to_owned()),
@@ -1527,7 +1530,7 @@ impl Core {
                         path.set_extension("csv");
                     }
                     match self.write_plaintext_export(&path) {
-                        Ok(count) => self.toast(format!("Exported {count} items")),
+                        Ok(_) => {}
                         Err(error) => self.toast(error),
                     }
                 }

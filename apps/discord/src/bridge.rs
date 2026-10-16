@@ -113,6 +113,12 @@ enum Fired<'e> {
         verbs: Vec<String>,
         event: &'e Value,
     },
+    /// A change to the bridged guild record itself, such as a Moderator's
+    /// `block-persona`.
+    Guild {
+        verbs: Vec<String>,
+        event: &'e Value,
+    },
     Discord {
         source: &'e str,
         payload: &'e Value,
@@ -138,6 +144,7 @@ fn fired(event: &Value) -> Fired<'_> {
             event,
         },
         Some(ROOM_KIND) => Fired::Room { verbs, event },
+        Some(crate::KIND) => Fired::Guild { verbs, event },
         _ => Fired::Other,
     }
 }
@@ -290,6 +297,11 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
                 room_change(&mut plan, read.guild, verb, event);
             }
         }
+        Fired::Guild { verbs, event } => {
+            for verb in &verbs {
+                guild_change(&mut plan, read, verb, event);
+            }
+        }
         Fired::Discord { source, payload } => discord_event(&mut plan, read, source, payload),
         Fired::Other => {}
     }
@@ -411,6 +423,21 @@ fn room_change(plan: &mut BridgePlan, guild: &Guild, verb: &str, event: &Value) 
             _ => {}
         }
     }
+}
+
+/// A Moderator blocked a Discord author: what was already mirrored of them
+/// is removed from Chat.
+fn guild_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, event: &Value) {
+    if verb != "block-persona" {
+        return;
+    }
+    let Some(user) = event
+        .pointer("/arguments/discord_user")
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    inbound_plan(plan, read, inbound::plan_block(read.guild, user));
 }
 
 fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &Value) {

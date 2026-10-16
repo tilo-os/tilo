@@ -26,6 +26,11 @@ use tilo_app_package::{BlobFetcher, BlobHash, BlobSink, PackageFetcher, PackageI
 
 /// No published layer is larger than this.
 const MAX_LAYER_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// The most bytes one `.tapp` may occupy once unpacked, and the most a cached
+/// one may be when it is read back whole. The compressed layer is bounded by
+/// `MAX_LAYER_BYTES`, but what it inflates to is the registry's word, and a
+/// cached package is read into memory before anything verifies it.
+const MAX_TAPP_BYTES: u64 = 1024 * 1024 * 1024;
 /// Manifests and token responses are small.
 const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 /// Tags scanned in one repository named without a tag.
@@ -178,6 +183,19 @@ impl OciImages {
     /// Unpack every `.tapp` in a layer into the cache under the id its
     /// header claims.
     fn unpack_layer(&self, layer: &Path, media_type: &str) -> Result<usize> {
+        self.unpack_layer_bounded(layer, media_type, MAX_TAPP_BYTES)
+    }
+
+    /// [`Self::unpack_layer`] with the per-package ceiling as a parameter.
+    /// An entry past it — declared or inflated — is dropped, not truncated:
+    /// a partial package would fail verification anyway, and the rest of the
+    /// layer is still worth unpacking.
+    fn unpack_layer_bounded(
+        &self,
+        layer: &Path,
+        media_type: &str,
+        max_tapp_bytes: u64,
+    ) -> Result<usize> {
         let file = std::fs::File::open(layer)?;
         let reader: Box<dyn Read> = if media_type.ends_with("gzip") {
             Box::new(flate2::read::GzDecoder::new(file))
@@ -195,14 +213,24 @@ impl OciImages {
                     .path()?
                     .extension()
                     .is_some_and(|extension| extension == "tapp");
-            if !is_tapp {
+            if !is_tapp || entry.size() > max_tapp_bytes {
                 continue;
             }
             let staging = tapps.join(format!(".incoming-{}", std::process::id()));
-            {
+            let written = {
                 let mut out = std::fs::File::create(&staging)?;
-                std::io::copy(&mut entry, &mut out)?;
+                // The header's size is not trusted either: inflate at most
+                // one byte past the ceiling, and that byte means over.
+                let written = std::io::copy(
+                    &mut (&mut entry).take(max_tapp_bytes.saturating_add(1)),
+                    &mut out,
+                )?;
                 out.sync_all()?;
+                written
+            };
+            if written > max_tapp_bytes {
+                std::fs::remove_file(&staging)?;
+                continue;
             }
             match claimed_id(&staging) {
                 Some(id) => {
@@ -249,6 +277,23 @@ fn claimed_id(path: &Path) -> Option<PackageId> {
 }
 
 fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>> {
+    read_if_present_within(path, MAX_TAPP_BYTES)
+}
+
+/// Reads a cached package whole, refusing one larger than `max_bytes`
+/// before allocating for it.
+fn read_if_present_within(path: &Path, max_bytes: u64) -> Result<Option<Vec<u8>>> {
+    let len = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("stat {}", path.display())),
+    };
+    if len > max_bytes {
+        bail!(
+            "{} is {len} bytes, past the {max_bytes}-byte package ceiling",
+            path.display()
+        );
+    }
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -571,8 +616,51 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert_eq!(read_if_present(&images.cached(&id)).unwrap(), Some(tapp));
+        assert_eq!(
+            read_if_present(&images.cached(&id)).unwrap(),
+            Some(tapp.clone())
+        );
         images.mark_scanned("sha256:aa").unwrap();
         assert!(images.scanned().contains("sha256:aa"));
+
+        // Phase `a_package_past_the_ceiling_is_dropped_not_unpacked`.
+        // The same layer under a ceiling smaller than the package: nothing
+        // is unpacked, and no staging file is left behind.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let images = OciImages::new(Vec::new(), dir.path().join("cache"));
+            let ceiling = u64::try_from(tapp.len()).expect("fits").saturating_sub(1);
+            assert_eq!(
+                images
+                    .unpack_layer_bounded(
+                        &path,
+                        "application/vnd.oci.image.layer.v1.tar+gzip",
+                        ceiling
+                    )
+                    .unwrap(),
+                0
+            );
+            assert!(!images.cached(&id).exists());
+            let leftovers: Vec<_> = std::fs::read_dir(dir.path().join("cache/tapps"))
+                .unwrap()
+                .flatten()
+                .collect();
+            assert!(
+                leftovers.is_empty(),
+                "no staging file may remain: {leftovers:?}"
+            );
+        }
+        // Phase `a_cached_package_past_the_ceiling_is_refused_before_it_is_read`.
+        {
+            let cached = dir.path().join("big.tapp");
+            std::fs::write(&cached, &tapp).unwrap();
+            let len = u64::try_from(tapp.len()).expect("fits");
+            assert!(read_if_present_within(&cached, len.saturating_sub(1)).is_err());
+            assert_eq!(read_if_present_within(&cached, len).unwrap(), Some(tapp));
+            assert_eq!(
+                read_if_present_within(&dir.path().join("missing.tapp"), 1).unwrap(),
+                None
+            );
+        }
     }
 }

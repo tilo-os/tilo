@@ -6,7 +6,7 @@
 use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::CommitNamed as _;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 
 /// The parent exchange test's state directory, device identity, endpoint,
 /// relay and publishing session, still live when its restart phase begins.
@@ -122,6 +122,7 @@ pub(super) async fn restart_after_offline_snapshot(
             let message: NeighbourMsg = postcard::from_bytes(&original).unwrap();
             assert!(
                 view.peer()
+                    .outbox()
                     .lookup_retained_local_document(
                         &message,
                         identity.device_cert.device_public_key
@@ -308,16 +309,14 @@ pub(super) fn publish_committed(
     let mut sent = Vec::new();
     for (bytes, kind) in owner.outgoing() {
         let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-        let (channel, _) = tilo_peer_state::transport::retention(
-            &message,
-            kind == tilo_peer_state::transport::Retention::Checkpoint,
-        )
-        .unwrap();
+        let (channel, _) =
+            neighbour_wire::retention(&message, kind == neighbour_wire::Retention::Checkpoint)
+                .unwrap();
         match kind {
-            tilo_peer_state::transport::Retention::Checkpoint => {
+            neighbour_wire::Retention::Checkpoint => {
                 publisher.publish_checkpoint(channel, bytes.to_vec())
             }
-            tilo_peer_state::transport::Retention::Delta => {
+            neighbour_wire::Retention::Delta => {
                 publisher.publish_retained_delta(channel, bytes.to_vec())
             }
         }

@@ -65,6 +65,7 @@ mod process;
 pub mod session;
 pub mod time;
 pub mod users;
+pub mod windows_compat;
 
 pub use audio::{
     VolumeState, get_source_state, get_volume, get_volume_state, has_output_device, set_mute,
@@ -112,9 +113,10 @@ pub use network::{
     delete_vpn_connection, delete_vpn_connection_uuid, disconnect_wifi, forget_network_profile,
     get_connectivity, get_link_status, get_radio_state, get_wifi, get_wired, import_vpn_config,
     inspect_certificate, link_status_from_state, list_hotspot_clients, list_saved_network_profiles,
-    list_vpn_connections, list_wifi_networks, portable_wifi_profile_secret, set_airplane_mode,
-    set_hotspot, set_mobile_broadband, set_network_autoconnect, set_vpn_connection,
-    set_vpn_connection_uuid, set_wifi, set_wired, wifi_from_radios, wireless_link_quality_pct,
+    list_vpn_connections, list_wifi_networks, portable_wifi_profile_secret, scan_wifi,
+    set_airplane_mode, set_hotspot, set_mobile_broadband, set_network_autoconnect,
+    set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired, wifi_from_radios,
+    wireless_link_quality_pct,
 };
 pub use orientation::{
     AccelSample, DeviceOrientation, OrientationTracker, RotationControl, has_accelerometer,

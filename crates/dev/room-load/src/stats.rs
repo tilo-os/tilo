@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
 pub struct Stats {
@@ -22,6 +23,8 @@ pub struct Stats {
     join_ms: Mutex<Vec<f64>>,
     /// The admission part of each join: `/join` and the redemptions.
     admit_ms: Mutex<Vec<f64>>,
+    /// `/join`'s answer alone (the service pre-admitting), in arrival order.
+    service_ms: Mutex<Vec<f64>>,
     /// Delivery of messages sent while their receiver was in the room, with
     /// when each was sent (ms into the run).
     chat_ms: Mutex<Vec<(u64, f64)>>,
@@ -33,14 +36,8 @@ pub struct Stats {
 /// The width of the send-time windows chat delivery is reported in.
 const CHAT_WINDOW_MS: u64 = 5000;
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 /// The `q` quantile of `values` (nearest rank).
-fn quantile(values: &mut [f64], q: f64) -> f64 {
+pub fn quantile(values: &mut [f64], q: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
@@ -55,17 +52,21 @@ fn quantile(values: &mut [f64], q: f64) -> f64 {
 impl Stats {
     pub fn join(&self, admit_ms: f64, ms: f64) {
         self.joined.fetch_add(1, Ordering::Relaxed);
-        lock(&self.join_ms).push(ms);
-        lock(&self.admit_ms).push(admit_ms);
+        self.join_ms.lock_recover().push(ms);
+        self.admit_ms.lock_recover().push(admit_ms);
+    }
+
+    pub fn service(&self, ms: f64) {
+        self.service_ms.lock_recover().push(ms);
     }
 
     pub fn full(&self, ms: f64) {
-        lock(&self.full_ms).push(ms);
+        self.full_ms.lock_recover().push(ms);
     }
 
     pub fn chat(&self, sent: u64, ms: f64) {
         self.chat_rx.fetch_add(1, Ordering::Relaxed);
-        lock(&self.chat_ms).push((sent, ms));
+        self.chat_ms.lock_recover().push((sent, ms));
     }
 
     pub fn chat_history(&self) {
@@ -75,12 +76,13 @@ impl Stats {
     pub fn fail(&self, what: impl Into<String>) {
         let mut what: String = what.into();
         what.truncate(160);
-        *lock(&self.failures).entry(what).or_default() += 1;
+        *self.failures.lock_recover().entry(what).or_default() += 1;
     }
 
     pub fn summary(&self) -> serde_json::Value {
-        let mut join = lock(&self.join_ms).clone();
-        let mut admit = lock(&self.admit_ms).clone();
+        let mut join = self.join_ms.lock_recover().clone();
+        let mut admit = self.admit_ms.lock_recover().clone();
+        let mut service = self.service_ms.lock_recover().clone();
         // In arrival order: whether joining slows as the room fills.
         let by_tenth = |values: &[f64]| -> Vec<f64> {
             values
@@ -90,7 +92,8 @@ impl Stats {
         };
         let join_by_tenth = by_tenth(&join);
         let admit_by_tenth = by_tenth(&admit);
-        let delivered = lock(&self.chat_ms).clone();
+        let service_by_tenth = by_tenth(&service);
+        let delivered = self.chat_ms.lock_recover().clone();
         // By when each message was sent: whether delivery slows while guests
         // are still joining.
         let mut windows: BTreeMap<u64, Vec<f64>> = BTreeMap::new();
@@ -105,13 +108,14 @@ impl Stats {
             .map(|(at, mut ms)| (at, quantile(&mut ms, 0.95)))
             .collect();
         let mut chat: Vec<f64> = delivered.into_iter().map(|(_, ms)| ms).collect();
-        let mut full = lock(&self.full_ms).clone();
+        let mut full = self.full_ms.lock_recover().clone();
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         serde_json::json!({
             "joined": load(&self.joined),
             "join_ms": {
                 "p50": quantile(&mut join, 0.5),
                 "p95": quantile(&mut join, 0.95),
+                "p99": quantile(&mut join, 0.99),
                 "max": quantile(&mut join, 1.0),
             },
             "join_ms_mean_by_tenth": join_by_tenth,
@@ -120,6 +124,11 @@ impl Stats {
                 "p95": quantile(&mut admit, 0.95),
             },
             "admit_ms_mean_by_tenth": admit_by_tenth,
+            "service_ms": {
+                "p50": quantile(&mut service, 0.5),
+                "p95": quantile(&mut service, 0.95),
+            },
+            "service_ms_mean_by_tenth": service_by_tenth,
             "full": {
                 "count": full.len(),
                 "p95_ms": quantile(&mut full, 0.95),
@@ -135,13 +144,14 @@ impl Stats {
             "chat_ms": {
                 "p50": quantile(&mut chat, 0.5),
                 "p95": quantile(&mut chat, 0.95),
+                "p99": quantile(&mut chat, 0.99),
                 "max": quantile(&mut chat, 1.0),
             },
             "chat_p95_ms_by_sent_s": chat_p95_by_sent_s,
             "live_open": load(&self.live_open),
             "live_ended": load(&self.live_ended),
             "session_failures": load(&self.session_failures),
-            "failures": lock(&self.failures).clone(),
+            "failures": self.failures.lock_recover().clone(),
         })
     }
 }

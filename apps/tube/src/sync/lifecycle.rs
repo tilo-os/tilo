@@ -19,6 +19,7 @@ use zeroize::Zeroizing;
 use super::transport::{DeviceKey, GrayjaySyncTransport};
 use super::{PeerDescriptor, PeerId, SyncError, SyncResult, SyncState, SyncTransport};
 use crate::model::TubeModel;
+use ui::lock::MutexRecover as _;
 
 const MAX_PEERS: usize = 64;
 const AUTO_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -283,10 +284,7 @@ impl DeviceSync {
     /// Move the local text field into a `Secret` action argument and wipe the
     /// field. The returned value must only be placed in that redacted argument.
     pub fn take_pairing_input(&self) -> String {
-        let mut input = self
-            .pairing_input
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut input = self.pairing_input.lock_recover();
         let blob = input.trim().to_string();
         input.zeroize();
         input.clear();

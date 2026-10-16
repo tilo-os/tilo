@@ -616,7 +616,9 @@ pub fn text_digest(text: &str) -> String {
 #[derive(Clone, Debug, Default)]
 pub struct Source {
     object: Option<ObjId>,
-    text: Option<String>,
+    /// Shared, so a copy of the project (a view holding the state it was
+    /// shown while the reader follows) copies no file's text.
+    text: Option<std::sync::Arc<str>>,
     initial: Option<String>,
     /// Whether a new text is the same object on every device that makes it.
     shared: bool,
@@ -671,7 +673,7 @@ impl Source {
         if self.text.is_none()
             && let Some(object) = &self.object
         {
-            self.text = Some(doc.text(object)?);
+            self.text = Some(doc.text(object)?.into());
         }
         Ok(())
     }

@@ -3,7 +3,7 @@ use super::*;
 use crate::shell::native_workspace_owner::{self, NativeWorkspaceOwner};
 use std::time::{Duration, SystemTime};
 use tilo_desktop::activity::TaskReviewCommand;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_task::{
     WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId,
 };
@@ -15,7 +15,7 @@ fn admit(owner: &NativeWorkspaceOwner, room: crate::shell::state::RoomId) {
         .with_current(room, |view| {
             let before = view.peer().clone();
             let mut next = before.clone();
-            next.put_governed_grants(
+            next.governance_mut().put_governed_grants(
                 &tilo_action_policy::roles::AgentPreset::Operator.grants(
                     &room.to_string(),
                     "scribe",
@@ -473,7 +473,7 @@ fn native_task_review_rechecks_a_signed_demotion_after_discovery() {
         .with_current(room, |view| {
             let before = view.peer().clone();
             let mut next = before.clone();
-            next.set_member_role(
+            next.governance_mut().set_member_role(
                 caller.user_public_key,
                 tilo_peer_state::join::MemberRole::Viewer,
                 &key,

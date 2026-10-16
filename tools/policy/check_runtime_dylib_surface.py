@@ -59,6 +59,9 @@ DENIED = {
     "shell": "the compositor",
     "ush": "the user shell daemon",
     "compat-service": "the Windows compatibility service",
+    "local-model-service": "the on-device model service the model gateway runs (apps use "
+                           "tilo-model-gateway without its default service feature)",
+    "rten": "the subject model's runtime, which runs in the model gateway daemon",
 }
 # Crates of an engine that is a library of its own beside the runtime
 # (crates/runtime/engines/): only its app maps them.
@@ -70,6 +73,15 @@ ENGINES = {
     "tilo-spotify-engine": "Spotify playback's engine library (libtilo_spotify_engine.so)",
     "tilo-spotify": "Spotify playback, which Music loads from libtilo_spotify_engine.so",
     "librespot": "the Spotify client, in libtilo_spotify_engine.so",
+    "tilo-paint-engine": "Canvas's painting engines' library (libtilo_paint_engine.so)",
+    "tilo-wet-media": "the wet-media simulation, which Canvas loads from libtilo_paint_engine.so",
+    "tilo-subject": "Canvas's subject mattes, in libtilo_paint_engine.so",
+    "tilo-segment": "matte refinement under tilo-subject, in libtilo_paint_engine.so",
+    "tilo-youtube-engine": "the YouTube client's engine library (libtilo_youtube_engine.so)",
+    "rustypipe": "the YouTube client, which Music and Tube load from libtilo_youtube_engine.so",
+    "rquickjs": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
+    "rquickjs-core": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
+    "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
 }
 
 

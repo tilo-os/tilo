@@ -136,6 +136,18 @@ pub fn mouse_wheel(x: f32, y: f32) -> WindowEvent {
     }
 }
 
+/// A stylus sample at `pressure`, upright, tip end: the platform sends one
+/// immediately before each pointer event a pen makes.
+#[must_use]
+pub fn pen_sample(pressure: f64) -> WindowEvent {
+    WindowEvent::PenSample {
+        device_id: DeviceId::dummy(),
+        pressure,
+        tilt: (0.0, 0.0),
+        eraser: false,
+    }
+}
+
 /// The left button going down.
 #[must_use]
 pub fn mouse_press() -> WindowEvent {

@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use tilo_files::{Dir, Kind, VPath, blocking};
+use tilo_files::{Dir, VPath, blocking};
 
 /// One of Photos' state files: in the shared state location
 /// (`$XDG_STATE_HOME/tilo` natively, the page's storage on the web), or at
@@ -44,10 +44,5 @@ impl StateFile {
 /// A regular file the user named, whole, when it is at most `limit` bytes.
 pub(crate) fn read_native(path: &Path, limit: u64) -> Option<Vec<u8>> {
     let (dir, name) = tilo_files::file_at(path).ok()?;
-    let meta = blocking::metadata(&dir, &name).ok()?;
-    if meta.kind != Kind::File || meta.len > limit {
-        return None;
-    }
-    let bytes = blocking::read(&dir, &name).ok()?;
-    (bytes.len() as u64 <= limit).then_some(bytes)
+    blocking::read_bounded(&dir, &name, usize::try_from(limit).unwrap_or(usize::MAX)).ok()?
 }

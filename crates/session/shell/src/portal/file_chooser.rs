@@ -22,11 +22,10 @@
               lint fires on macro-generated code a per-function #[allow] cannot reach"
 )]
 
+use super::reply::{Ended, OrFail, Outcome, Reply, Results, answer};
 use crate::shell::state::FsMode;
 #[cfg(target_os = "linux")]
 use zbus::interface;
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
@@ -69,20 +68,20 @@ impl FileChooserBackend {
         parent_window: String,
         title: String,
         options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        tracing::debug!(
-            "FileChooser.OpenFile: app={app_id} title={title} opts={}",
-            options.len()
-        );
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        let caller = auth.caller;
-        let opts = decode_open_options(caller.clone(), title, &options);
-        pick_and_grant(&self.ctx.file_picker, opts, FsMode::Read).await
+    ) -> Reply {
+        answer(async move {
+            tracing::debug!(
+                "FileChooser.OpenFile: app={app_id} title={title} opts={}",
+                options.len()
+            );
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window))
+                .await
+                .or_fail()?;
+            let caller = auth.caller;
+            let opts = decode_open_options(caller.clone(), title, &options);
+            pick_and_grant(&self.ctx.file_picker, opts, FsMode::Read).await
+        })
+        .await
     }
 
     /// `SaveFile` — request a destination for one new file.
@@ -95,26 +94,26 @@ impl FileChooserBackend {
         parent_window: String,
         title: String,
         options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        tracing::debug!(
-            "FileChooser.SaveFile: app={app_id} title={title} opts={}",
-            options.len()
-        );
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        if lockdown::current_policy().disable_save_to_disk {
-            return (1, HashMap::new());
-        }
-        let caller = auth.caller;
-        let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ true)
-            .accept_label(opt_string(&options, "accept_label"))
-            .current_name(opt_string(&options, "current_name"))
-            .filters(filters_from_options(&options));
-        pick_and_grant(&self.ctx.file_picker, opts, FsMode::ReadWrite).await
+    ) -> Reply {
+        answer(async move {
+            tracing::debug!(
+                "FileChooser.SaveFile: app={app_id} title={title} opts={}",
+                options.len()
+            );
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window))
+                .await
+                .or_fail()?;
+            if lockdown::current_policy().disable_save_to_disk {
+                return Err(Ended::Cancelled);
+            }
+            let caller = auth.caller;
+            let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ true)
+                .accept_label(opt_string(&options, "accept_label"))
+                .current_name(opt_string(&options, "current_name"))
+                .filters(filters_from_options(&options));
+            pick_and_grant(&self.ctx.file_picker, opts, FsMode::ReadWrite).await
+        })
+        .await
     }
 
     /// `SaveFiles` — request a folder + multiple destination filenames.
@@ -127,25 +126,25 @@ impl FileChooserBackend {
         parent_window: String,
         title: String,
         options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        tracing::debug!(
-            "FileChooser.SaveFiles: app={app_id} title={title} opts={}",
-            options.len()
-        );
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        if lockdown::current_policy().disable_save_to_disk {
-            return (1, HashMap::new());
-        }
-        let caller = auth.caller;
-        let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ true)
-            .accept_label(opt_string(&options, "accept_label"))
-            .filters(filters_from_options(&options));
-        pick_and_grant(&self.ctx.file_picker, opts, FsMode::ReadWrite).await
+    ) -> Reply {
+        answer(async move {
+            tracing::debug!(
+                "FileChooser.SaveFiles: app={app_id} title={title} opts={}",
+                options.len()
+            );
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window))
+                .await
+                .or_fail()?;
+            if lockdown::current_policy().disable_save_to_disk {
+                return Err(Ended::Cancelled);
+            }
+            let caller = auth.caller;
+            let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ true)
+                .accept_label(opt_string(&options, "accept_label"))
+                .filters(filters_from_options(&options));
+            pick_and_grant(&self.ctx.file_picker, opts, FsMode::ReadWrite).await
+        })
+        .await
     }
 }
 
@@ -164,7 +163,7 @@ pub async fn pick_and_grant(
     file_picker: &FilePickerSpawnerHandle,
     opts: FilePickerOptions,
     mode: FsMode,
-) -> (u32, HashMap<String, OwnedValue>) {
+) -> Outcome {
     let caller = opts.caller.clone();
     let save = opts.save;
     let rx = file_picker.request_with(opts);
@@ -172,7 +171,7 @@ pub async fn pick_and_grant(
     // posture as `flow::resolve`'s "channel-closed-without-reply ≡ deny": a request nobody answered is not an approved one.
     let picked = rx.await.unwrap_or_default();
     let Some(paths) = picked.filter(|p| !p.is_empty()) else {
-        return (1, HashMap::new());
+        return Err(Ended::Cancelled);
     };
 
     // Return host file URIs to xdg-desktop-portal. The frontend exports
@@ -205,12 +204,6 @@ pub(super) fn filters_from_options(
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
-    let v = options.get(key)?.try_clone().ok()?;
-    bool::try_from(v).ok()
-}
-
-#[cfg(any(target_os = "linux", test))]
 fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     let v = options.get(key)?.try_clone().ok()?;
     String::try_from(v).ok().filter(|s| !s.is_empty())
@@ -223,36 +216,25 @@ fn decode_open_options(
     options: &HashMap<String, OwnedValue>,
 ) -> FilePickerOptions {
     FilePickerOptions::new(caller, title, /*save=*/ false)
-        .directory(opt_bool(options, "directory").unwrap_or(false))
-        .multiple(opt_bool(options, "multiple").unwrap_or(false))
+        .directory(crate::portal::option::<bool>(options, "directory").unwrap_or(false))
+        .multiple(crate::portal::option::<bool>(options, "multiple").unwrap_or(false))
         .accept_label(opt_string(options, "accept_label"))
         .filters(filters_from_options(options))
 }
 
-/// Translate a real user-selected path list into the
-/// `(response_code, results)` pair the `FileChooser` frontend expects.
-///
-/// `response_code` follows the freedesktop.org Request convention: 0 =
-/// OK (with results), 1 = user cancelled, 2 = other failure. `None`
-/// (dialog dismissed without picking) is treated as cancel.
-pub(super) fn paths_to_open_response(
-    paths: Option<Vec<PathBuf>>,
-    save: bool,
-) -> (u32, HashMap<String, OwnedValue>) {
-    let mut results: HashMap<String, OwnedValue> = HashMap::new();
-    let Some(paths) = paths else {
-        return (1, results);
-    };
-    if paths.is_empty() {
-        return (1, results);
-    }
-    let Some(uris) = paths
+/// Translate a real user-selected path list into the results the
+/// `FileChooser` frontend expects. No selection (`None`, or dismissed with
+/// nothing picked) is a cancel.
+pub(super) fn paths_to_open_response(paths: Option<Vec<PathBuf>>, save: bool) -> Outcome {
+    let mut results = Results::new();
+    let paths = paths
+        .filter(|paths| !paths.is_empty())
+        .ok_or(Ended::Cancelled)?;
+    let uris = paths
         .iter()
         .map(|path| file_uri(path))
         .collect::<Option<Vec<_>>>()
-    else {
-        return (2, HashMap::new());
-    };
+        .or_fail()?;
     let uris_value = Value::new(uris);
     if let Ok(owned) = OwnedValue::try_from(uris_value) {
         results.insert("uris".to_string(), owned);
@@ -260,7 +242,7 @@ pub(super) fn paths_to_open_response(
     if save && let Ok(w) = OwnedValue::try_from(Value::Bool(true)) {
         results.insert("writable".to_string(), w);
     }
-    (0, results)
+    Ok(results)
 }
 
 /// Encode an absolute path as an RFC 8089 file URI, percent-encoding bytes
@@ -325,41 +307,47 @@ mod tests {
     fn chooser_paths_map_to_portal_responses_and_encoded_uris() {
         // Phase `paths_allow_returns_response_zero_and_uri`.
         {
-            let (code, results) = paths_to_open_response(
+            let (code, results) = crate::portal::reply::reply(paths_to_open_response(
                 Some(vec![PathBuf::from("/tmp/x.txt")]),
                 /*save=*/ false,
-            );
+            ));
             assert_eq!(code, 0);
             assert!(results.contains_key("uris"));
             assert!(!results.contains_key("writable"));
         }
         // Phase `paths_save_returns_writable_true`.
         {
-            let (code, results) = paths_to_open_response(
+            let (code, results) = crate::portal::reply::reply(paths_to_open_response(
                 Some(vec![PathBuf::from("/tmp/out.bin")]),
                 /*save=*/ true,
-            );
+            ));
             assert_eq!(code, 0);
             assert!(results.contains_key("uris"));
             assert!(results.contains_key("writable"));
         }
         // Phase `paths_none_returns_response_one_no_results`.
         {
-            let (code, results) = paths_to_open_response(None, /*save=*/ false);
+            let (code, results) =
+                crate::portal::reply::reply(paths_to_open_response(None, /*save=*/ false));
             assert_eq!(code, 1);
             assert!(results.is_empty());
         }
         // Phase `paths_empty_returns_response_one`.
         {
             // Empty list ≡ cancel — keeps the contract symmetric with `None` (the spawner uses an empty Vec ≡ cancel internally).
-            let (code, results) = paths_to_open_response(Some(vec![]), /*save=*/ false);
+            let (code, results) = crate::portal::reply::reply(paths_to_open_response(
+                Some(vec![]),
+                /*save=*/ false,
+            ));
             assert_eq!(code, 1);
             assert!(results.is_empty());
         }
         // Phase `paths_serialise_to_file_uri`.
         {
-            let (_code, results) =
-                paths_to_open_response(Some(vec![PathBuf::from("/tmp/a.txt")]), false);
+            let (_code, results) = crate::portal::reply::reply(paths_to_open_response(
+                Some(vec![PathBuf::from("/tmp/a.txt")]),
+                false,
+            ));
             let uris_v = results.get("uris").expect("uris");
             let cloned: OwnedValue = uris_v.try_clone().expect("clone OwnedValue");
             let uris: Vec<String> = Vec::<String>::try_from(cloned).expect("Vec<String>");
@@ -403,11 +391,11 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap();
-            let (code, results) = rt.block_on(pick_and_grant(
+            let (code, results) = crate::portal::reply::reply(rt.block_on(pick_and_grant(
                 &fp,
                 FilePickerOptions::new(caller, "Open file", /*save=*/ false),
                 FsMode::Read,
-            ));
+            )));
             assert_eq!(code, 0);
             let uris_v = results.get("uris").expect("uris");
             let cloned: OwnedValue = uris_v.try_clone().expect("clone OwnedValue");
@@ -431,11 +419,11 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap();
-            let (code, _) = rt.block_on(pick_and_grant(
+            let (code, _) = crate::portal::reply::reply(rt.block_on(pick_and_grant(
                 &fp,
                 FilePickerOptions::new(caller.clone(), "Open", false),
                 FsMode::Read,
-            ));
+            )));
             assert_eq!(code, 0);
 
             // Read the capabilities back out of the workspace the store wrote to, not out of anything this test built.
@@ -466,11 +454,11 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap();
-            let (code, _) = rt.block_on(pick_and_grant(
+            let (code, _) = crate::portal::reply::reply(rt.block_on(pick_and_grant(
                 &fp,
                 FilePickerOptions::new(caller.clone(), "Open", false),
                 FsMode::Read,
-            ));
+            )));
             assert_eq!(code, 1, "a cancelled dialog is response=1");
 
             let tree = store.tree_handle();
@@ -506,11 +494,11 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap();
-            let (code, results) = rt.block_on(pick_and_grant(
+            let (code, results) = crate::portal::reply::reply(rt.block_on(pick_and_grant(
                 &fp,
                 FilePickerOptions::new(caller, "Open", false),
                 FsMode::Read,
-            ));
+            )));
             assert_eq!(code, 1);
             assert!(results.is_empty());
         }
@@ -530,17 +518,13 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap();
-            let (code, result) = rt.block_on(pick_and_grant(
+            let (code, result) = crate::portal::reply::reply(rt.block_on(pick_and_grant(
                 &fp,
                 FilePickerOptions::new(caller.clone(), "t", save),
                 mode,
-            ));
+            )));
             assert_eq!(code, 0);
-            let writable = result
-                .get("writable")
-                .and_then(|value| value.try_clone().ok())
-                .and_then(|value| bool::try_from(value).ok())
-                .unwrap_or(false);
+            let writable = crate::portal::option::<bool>(&result, "writable").unwrap_or(false);
             assert_eq!(
                 writable, expect_write,
                 "save={save}: an Open must not hand out write access, and a \

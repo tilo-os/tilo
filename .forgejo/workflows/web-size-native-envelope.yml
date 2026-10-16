@@ -94,6 +94,11 @@ jobs:
           fi
       - name: Build tilo-app
         run: bash tools/ci/measure.sh "SDK release web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
+      # The splitter's tests compile a fixture for wasm32, split it and run
+      # the pieces: that a split module's static data is written before its
+      # code runs, and only data no other module reaches moves.
+      - name: Module splitter tests
+        run: bash tools/ci/measure.sh "Web module splitter tests" -- cargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml
       - name: Release desktop bundle within its size budget
         run: |
           bash tools/ci/measure.sh "SDK release desktop bundle build" -- \

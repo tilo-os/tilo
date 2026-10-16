@@ -1725,7 +1725,10 @@ pub fn collect_text(record: &RecordDesc, value: &dyn Any, out: &mut Vec<String>)
 }
 
 /// [`Model::diff`] of a record: each field that is not read-only, at its
-/// key.
+/// key. A field that would store as it is ([`Model::stores_as`]) has
+/// nothing to submit and is passed over, compared in memory: no path made
+/// for it, nothing turned into JSON. The path of a field compared further
+/// is made once, in one buffer.
 pub fn diff(
     record: &RecordDesc,
     before: &dyn Any,
@@ -1733,6 +1736,7 @@ pub fn diff(
     path: &[Segment],
     out: &mut Vec<Edit<()>>,
 ) {
+    let mut at: Vec<Segment> = Vec::new();
     for (index, field) in record.fields.iter().enumerate() {
         if field.readonly {
             continue;
@@ -1741,7 +1745,15 @@ pub fn diff(
         else {
             continue;
         };
-        let mut at = path.to_vec();
+        if (field.table.ops.stores_as)(field.table, now, was) {
+            continue;
+        }
+        if at.is_empty() {
+            at.reserve_exact(path.len().saturating_add(1));
+            at.extend_from_slice(path);
+        } else {
+            at.truncate(path.len());
+        }
         at.push(Segment::Field(field.key.to_owned()));
         (field.table.ops.diff)(field.table, was, now, &at, out);
     }
@@ -2458,6 +2470,14 @@ pub struct JsonDesc {
     /// The value's JSON form, or why it has none: what its stored text is
     /// written from ([`json_text`]).
     pub try_value: fn(&dyn Any) -> Result<serde_json::Value, ModelError>,
+    /// The value serialised, as compact JSON text: equal texts are equal
+    /// JSON forms, so two values compare without building either form.
+    pub bytes: fn(&dyn Any) -> Option<Vec<u8>>,
+    /// Whether two values are equal in memory, for a type whose equal values
+    /// have equal JSON forms (a derived `PartialEq`): a diff passes over an
+    /// equal pair without serialising either. `None` when the type has no
+    /// such equality; unequal values are still compared by their forms.
+    pub equal: Option<fn(&dyn Any, &dyn Any) -> bool>,
     /// Put the value of a JSON form into `out`, an `Option` of the type. The
     /// stored text is read through it too ([`json_text`]).
     pub from_value: fn(&serde_json::Value, &mut dyn Any) -> Result<(), ModelError>,
@@ -2519,7 +2539,7 @@ fn json_text(json: &JsonDesc, value: &dyn Any) -> Result<String, ModelError> {
 pub struct JsonOf<T>(PhantomData<T>);
 
 impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> JsonOf<T> {
-    /// A [`json_model!`](crate::json_model) type: the value itself.
+    /// A type stored as itself, compared only by its JSON form.
     pub const PLAIN: JsonDesc = JsonDesc {
         to_value: |value| {
             value
@@ -2531,6 +2551,8 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
             crate::__private::json_via_bytes(value.downcast_ref::<T>().ok_or_else(mismatch)?)
                 .map_err(serde_invalid)
         },
+        bytes: |value| serde_json::to_vec(value.downcast_ref::<T>()?).ok(),
+        equal: None,
         from_value: |value, out| {
             put::<T>(
                 out,
@@ -2560,6 +2582,8 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
             )
             .map_err(serde_invalid)
         },
+        bytes: |value| serde_json::to_vec(&value.downcast_ref::<crate::Json<T>>()?.0).ok(),
+        equal: None,
         from_value: |value, out| {
             put(
                 out,
@@ -2570,6 +2594,24 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
         null_default: false,
         staged: (empty_of::<crate::Json<T>>, unwrap_of::<crate::Json<T>>),
         replace: replace_of::<crate::Json<T>>,
+    };
+}
+
+impl<T> JsonOf<T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + Default + PartialEq + 'static,
+{
+    /// A [`json_model!`](crate::json_model) type, compared in memory first:
+    /// its `PartialEq` holds only between values of equal JSON forms, as a
+    /// derived one does, so an equal pair needs neither serialised.
+    pub const COMPARED: JsonDesc = JsonDesc {
+        equal: Some(|value, other| {
+            matches!(
+                (value.downcast_ref::<T>(), other.downcast_ref::<T>()),
+                (Some(value), Some(other)) if value == other
+            )
+        }),
+        ..Self::PLAIN
     };
 }
 
@@ -2631,6 +2673,19 @@ pub static JSON_OPS: ModelOps = ModelOps {
         )
     },
     diff: |table, before, after, path, out| {
+        // Values equal in memory have equal forms; the same text is the same
+        // form; a different text may still be (a map's keys serialised in
+        // another order), so the forms decide.
+        if let Some(json) = table.json() {
+            if json.equal.is_some_and(|equal| equal(before, after)) {
+                return;
+            }
+            if let Some(was) = (json.bytes)(before)
+                && (json.bytes)(after).is_some_and(|now| now == was)
+            {
+                return;
+            }
+        }
         let value = (JSON_OPS.to_json)(table, after);
         if (JSON_OPS.to_json)(table, before) != value {
             out.push(Edit::new(path.to_vec(), EditOp::Set { value }));
@@ -2917,6 +2972,14 @@ pub trait MapEntries {
     /// # Errors
     /// When `staged` is of another type or empty.
     fn insert_moved(&mut self, key: String, staged: &mut dyn Any) -> Result<(), ModelError>;
+    /// The keys whose entries may differ from those of `before`, a map of
+    /// this same type, in key order, once each: under any other key both
+    /// hold the same entry. `None`, the default, when the map cannot tell,
+    /// and every entry is compared.
+    fn differing_keys<'a>(&'a self, before: &'a dyn Any) -> Option<Vec<&'a str>> {
+        let _ = before;
+        None
+    }
 }
 
 impl<T: 'static> MapEntries for std::collections::BTreeMap<String, T> {
@@ -2963,7 +3026,7 @@ impl<T: 'static> MapEntries for std::collections::BTreeMap<String, T> {
     }
 }
 
-/// What `BTreeMap<String, T>`'s table reaches into one with.
+/// What the table of a map of string keys reaches into one with.
 #[allow(
     clippy::type_complexity,
     reason = "each field reaches into the map one way"
@@ -2980,31 +3043,26 @@ pub struct MapDesc {
     item_staged: (fn() -> Box<dyn Any>, Unstage),
 }
 
-/// The [`MapDesc`] of `BTreeMap<String, T>`.
-pub struct MapOf<T>(PhantomData<T>);
+/// The [`MapDesc`] of the map `M` of string keys to `T`s: a
+/// `BTreeMap<String, T>` ([`MapOf`]) or a [`Map`](crate::Map), stored
+/// alike.
+pub struct MapIn<T, M>(PhantomData<fn() -> (T, M)>);
 
-impl<T: Model> MapOf<T> {
+/// The [`MapDesc`] of `BTreeMap<String, T>`.
+pub type MapOf<T> = MapIn<T, std::collections::BTreeMap<String, T>>;
+
+impl<T: Model, M: MapEntries + Default + 'static> MapIn<T, M> {
     pub const DESC: MapDesc = MapDesc {
         item: T::TABLE,
         item_nullable: T::NULLABLE,
-        entries: |value| {
-            Some(value.downcast_ref::<std::collections::BTreeMap<String, T>>()? as &dyn MapEntries)
-        },
-        entries_mut: |value| {
-            Some(
-                value.downcast_mut::<std::collections::BTreeMap<String, T>>()?
-                    as &mut dyn MapEntries,
-            )
-        },
+        entries: |value| Some(value.downcast_ref::<M>()? as &dyn MapEntries),
+        entries_mut: |value| Some(value.downcast_mut::<M>()? as &mut dyn MapEntries),
         fresh: |out| {
-            let out = out.downcast_mut::<Option<std::collections::BTreeMap<String, T>>>()?;
-            Some(out.insert(std::collections::BTreeMap::new()) as &mut dyn MapEntries)
+            let out = out.downcast_mut::<Option<M>>()?;
+            Some(out.insert(M::default()) as &mut dyn MapEntries)
         },
-        staged: (
-            empty_of::<std::collections::BTreeMap<String, T>>,
-            unwrap_of::<std::collections::BTreeMap<String, T>>,
-        ),
-        replace: replace_of::<std::collections::BTreeMap<String, T>>,
+        staged: (empty_of::<M>, unwrap_of::<M>),
+        replace: replace_of::<M>,
         item_staged: (empty_of::<T>, unwrap_of::<T>),
     };
 
@@ -3131,16 +3189,62 @@ pub static MAP_OPS: ModelOps = ModelOps {
         if now.count() != was.count() {
             return false;
         }
+        let stores_as = |key: &str, value: &dyn Any| {
+            was.value(key)
+                .is_some_and(|before| (map.item.ops.stores_as)(map.item, value, before))
+        };
+        // Under any other key both hold the same entry.
+        if let Some(keys) = now.differing_keys(before) {
+            return keys
+                .into_iter()
+                .all(|key| now.value(key).is_some_and(|value| stores_as(key, value)));
+        }
         let mut same = true;
-        now.each(&mut |key, value| {
-            same = same
-                && was
-                    .value(key)
-                    .is_some_and(|before| (map.item.ops.stores_as)(map.item, value, before));
-        });
+        now.each(&mut |key, value| same = same && stores_as(key, value));
         same
     },
-    store_changed: |table, value, _, doc, slot, _| (MAP_OPS.store)(table, value, doc, slot),
+    store_changed: |table, value, before, doc, slot, dirty| {
+        let map = maps(table)?;
+        let now = (map.entries)(value).ok_or_else(mismatch)?;
+        let was = (map.entries)(before).ok_or_else(mismatch)?;
+        let Some(differing) = now.differing_keys(before) else {
+            return (MAP_OPS.store)(table, value, doc, slot);
+        };
+        // A slot holding no map yet is written whole, as is a map someone
+        // else changed otherwise than key by key.
+        let Some((Value::Object(ObjType::Map), obj)) = slot.current(doc)? else {
+            return (MAP_OPS.store)(table, value, doc, slot);
+        };
+        let touched = dirty.under(&obj);
+        if touched.is_all() {
+            return (MAP_OPS.store)(table, value, doc, slot);
+        }
+        // Under any other key the entry is the one `before` holds, and the
+        // map holds it as a store left it: storing it writes nothing.
+        let mut keys = differing;
+        keys.extend(touched.keys());
+        keys.sort_unstable();
+        keys.dedup();
+        // What `store` writes: the stale keys deleted, then each entry
+        // written, both in key order.
+        for key in &keys {
+            if now.value(key).is_none() && automerge::ReadDoc::get(doc, &obj, *key)?.is_some() {
+                automerge::transaction::Transactable::delete(doc, &obj, *key)?;
+            }
+        }
+        for key in &keys {
+            let Some(next) = now.value(key) else {
+                continue;
+            };
+            match was.value(key) {
+                Some(held) => write_key_changed(map.item, (next, held), doc, &obj, key, dirty)?,
+                None => {
+                    (map.item.ops.store)(map.item, next, doc, Slot::Key(&obj, key)).located(key)?;
+                }
+            }
+        }
+        Ok(())
+    },
     refresh: |table, target, doc, value, id, delta| {
         let map = maps(table)?;
         let touched = delta.under(id);
@@ -3210,31 +3314,48 @@ pub static MAP_OPS: ModelOps = ModelOps {
         let (Some(was), Some(now)) = ((map.entries)(before), (map.entries)(after)) else {
             return;
         };
-        was.each(&mut |key, before| {
+        let at = |key: &str| {
             let mut at = path.to_vec();
             at.push(Segment::Key(key.to_owned()));
-            match now.value(key) {
-                Some(next) => (map.item.ops.diff)(map.item, before, next, &at, out),
-                None => out.push(Edit::new(
-                    path.to_vec(),
-                    EditOp::RemoveKey {
-                        key: key.to_owned(),
-                    },
-                )),
-            }
-        });
-        now.each(&mut |key, next| {
+            at
+        };
+        // An entry `before` holds: changed, or removed.
+        let kept = |key: &str, before: &dyn Any, out: &mut Vec<Edit<()>>| match now.value(key) {
+            Some(next) => (map.item.ops.diff)(map.item, before, next, &at(key), out),
+            None => out.push(Edit::new(
+                path.to_vec(),
+                EditOp::RemoveKey {
+                    key: key.to_owned(),
+                },
+            )),
+        };
+        // An entry `after` holds: added, when `before` had none.
+        let added = |key: &str, next: &dyn Any, out: &mut Vec<Edit<()>>| {
             if was.value(key).is_none() {
-                let mut at = path.to_vec();
-                at.push(Segment::Key(key.to_owned()));
                 out.push(Edit::new(
-                    at,
+                    at(key),
                     EditOp::Set {
                         value: (map.item.ops.to_json)(map.item, next),
                     },
                 ));
             }
-        });
+        };
+        // Under any other key both hold the same entry: no edit.
+        if let Some(keys) = now.differing_keys(before) {
+            for key in &keys {
+                if let Some(before) = was.value(key) {
+                    kept(key, before, out);
+                }
+            }
+            for key in &keys {
+                if let Some(next) = now.value(key) {
+                    added(key, next, out);
+                }
+            }
+        } else {
+            was.each(&mut |key, before| kept(key, before, out));
+            now.each(&mut |key, next| added(key, next, out));
+        }
     },
     collect_text: |table, value, out| {
         if let Some(map) = table.map()

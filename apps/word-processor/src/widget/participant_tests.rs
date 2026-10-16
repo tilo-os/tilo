@@ -11,6 +11,8 @@ use crate::actions::{RegionKind, SearchTarget};
 use tilo_actions::{ActionInvoker, ParticipantId, Resource};
 use tilo_automerge::ApplyIncoming as _;
 use ui::widget::Edits;
+use winit::event::ElementState;
+use winit::keyboard::{Key, NamedKey};
 
 fn pid(name: &str) -> ParticipantId {
     ParticipantId::new(name).unwrap()
@@ -318,7 +320,7 @@ fn participant_presence_uses_the_block_key_and_byte_offsets() {
         ui::PresencePayload::Selection { start: 7, end: 13 }
     );
 
-    assert!(wp.remove_participant(&typist));
+    ui::collaboration::participants::Participants::leave_participant(&mut wp, &typist);
     assert_eq!(wp.participant_presence(&state.doc).len(), 1);
 }
 

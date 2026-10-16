@@ -11,6 +11,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+pub use agent_provider_config::local::snapshot::{
+    AcceleratorSetup, AcceleratorSetupState, HardwareFit, HardwareRecommendation,
+    InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
+    LocalModelSnapshot,
+};
 use agent_provider_config::{
     EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig, ProviderProfile,
     ProviderProtocol,
@@ -20,18 +25,22 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
 use ui::time::{Duration, Instant};
-use ui::widget::{Button, ProgressBar, Row, Spacer, TextInput, Widget};
+use ui::widget::{Button, ProgressBar, Row, Text, TextInput, Widget};
 use zeroize::Zeroize;
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
+use crate::panes::accounts::{BrowserOpener, PortalOpener};
+use crate::panes::agent_vertex::{self, Polled, VertexFields, VertexSetup};
 use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, value_row,
+    Item, SettingsSection, StatusTone, card, card_with_action, field_row, note, row, rows,
+    semantic_status_pill, value_row,
 };
+use ui::lock::MutexRecover as _;
 
 /// The person's agent providers, as their settings hold them: the hosted
 /// ones roam with the person, those on this device or its network stay.
@@ -206,6 +215,39 @@ pub enum AgentModelsEffect {
         #[param("The provider's id")]
         provider: String,
     },
+    /// Start adding Google Vertex AI, which signs in with Google instead of
+    /// taking an API key. Shows its setup; signs in to nothing yet.
+    #[effect(view, label = "Add Google Vertex AI")]
+    AddGoogleVertex,
+    /// Sign in with Google in the browser for Vertex AI: for the provider
+    /// being added, or again for an existing one whose sign-in ended.
+    #[effect(row, label = "Sign in with Google")]
+    SignInWithGoogle {
+        #[param("The provider's id; omit for the one being added")]
+        provider: Option<String>,
+    },
+    /// Stop a Google sign-in, or the setup of a provider being added.
+    #[effect(view)]
+    CancelGoogleSignIn,
+    /// Put one of the person's listed Google Cloud projects in the setup.
+    #[effect(view)]
+    ChooseVertexProject {
+        #[param("The Google Cloud project id")]
+        project: String,
+    },
+    /// Save the Vertex AI provider being added, once signed in, or change
+    /// an existing one's project, location and model.
+    #[effect(row)]
+    SetVertexProvider {
+        #[param("The provider's id; omit for the one being added")]
+        provider: Option<String>,
+        #[param("The Google Cloud project billed for requests")]
+        project: String,
+        #[param("The Vertex AI location; `global` when omitted")]
+        location: Option<String>,
+        #[param("The model, for example gemini-4-argon; the default when omitted")]
+        model: Option<String>,
+    },
 }
 
 fn protocol_slug(protocol: ProviderProtocol) -> &'static str {
@@ -340,9 +382,7 @@ pub(crate) fn answer(
             drop(model);
             Ok(cx.thread(
                 move |_| {
-                    let mut typed = buffer
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut typed = buffer.lock_recover();
                     let value = key.unwrap_or_else(|| std::mem::take(&mut *typed));
                     typed.zeroize();
                     drop(typed);
@@ -384,6 +424,30 @@ pub(crate) fn answer(
                     outcome.map(|()| Effected::done())
                 },
             ))
+        }
+        AgentModelsEffect::AddGoogleVertex => {
+            if model.vertex.as_ref().is_none_or(|setup| setup.existing) {
+                model.cancel_vertex();
+                model.vertex = Some(VertexSetup::adding());
+            }
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::SignInWithGoogle { provider } => {
+            model.sign_in_with_google(provider.as_deref())?;
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::CancelGoogleSignIn => {
+            model.cancel_vertex();
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::ChooseVertexProject { project } => {
+            model
+                .vertex
+                .as_ref()
+                .filter(|setup| setup.choosing())
+                .ok_or_else(|| t("agent-vertex-sign-in-first"))?
+                .choose_project(&project);
+            Ok(Effected::done())
         }
         provider => {
             let result = model.change_providers(provider);
@@ -659,7 +723,11 @@ impl AgentModelsArea {
             .operation(offer(AgentModelsEffect::RemoveProvider {
                 provider: id.clone(),
             }));
-            let row = if model.needs_key(profile) {
+            let row = if profile.sign_in.is_some() {
+                row.operation(offer(AgentModelsEffect::SignInWithGoogle {
+                    provider: Some(id.clone()),
+                }))
+            } else if model.needs_key(profile) {
                 row.operation(
                     SettingsEffect::from(AgentModelsEffect::SaveProviderKey {
                         provider: id,
@@ -699,9 +767,19 @@ pub struct AgentModelsModel {
     provider_key_buffers: Mutex<HashMap<String, Arc<Mutex<String>>>>,
     provider_field_buffers: Mutex<HashMap<String, HostedFieldBuffers>>,
     limit_field_buffers: Mutex<HashMap<(String, String), LimitFieldBuffers>>,
-    /// Whether this device's vault holds each hosted provider's key, or why
-    /// that could not be told.
+    /// Whether this device's vault holds each hosted provider's key (for
+    /// a provider that signs in, a usable sign-in), or why that could not
+    /// be told.
     keys: HashMap<String, Result<bool, String>>,
+    /// A Google Vertex AI sign-in: of a provider being added, or again of
+    /// an existing one.
+    vertex: Option<VertexSetup>,
+    /// The project, location and model fields of each Vertex AI provider.
+    vertex_fields: Mutex<HashMap<String, VertexFields>>,
+    /// Where Vertex AI sign-ins are sealed and forgotten.
+    custodian: account_custody::Custodian,
+    /// What opens Google's consent page.
+    opener: Arc<dyn BrowserOpener>,
     changed: bool,
 }
 
@@ -744,6 +822,10 @@ impl AgentModelsModel {
             provider_field_buffers: Mutex::new(HashMap::new()),
             limit_field_buffers: Mutex::new(HashMap::new()),
             keys: HashMap::new(),
+            vertex: None,
+            vertex_fields: Mutex::new(HashMap::new()),
+            custodian: account_custody::Custodian::live(),
+            opener: Arc::new(PortalOpener),
             changed: false,
         };
         model.sync_local_profile();
@@ -765,10 +847,68 @@ impl AgentModelsModel {
     }
 
     /// Whether `profile` is hosted and this device's vault has no key for
-    /// it: one that roamed here from another device needs its own.
+    /// it: one that roamed here from another device needs its own. For a
+    /// provider that signs in, whether it needs to sign in again.
     fn needs_key(&self, profile: &ProviderProfile) -> bool {
         profile.location == EndpointLocation::Hosted
             && matches!(self.keys.get(&profile.id), Some(Ok(false)))
+    }
+
+    /// Open Google's consent page for Vertex AI: for the provider being
+    /// added when `provider` is `None`, else again for that provider.
+    fn sign_in_with_google(&mut self, provider: Option<&str>) -> Result<(), String> {
+        let current = self.vertex.take();
+        let reuse = |setup: &VertexSetup| match provider {
+            None => !setup.existing,
+            Some(id) => setup.profile_id == id,
+        };
+        let mut setup = match current {
+            Some(setup) if reuse(&setup) => setup,
+            other => {
+                self.vertex = other;
+                self.cancel_vertex();
+                match provider {
+                    None => VertexSetup::adding(),
+                    Some(id) => VertexSetup::again(
+                        self.providers
+                            .get()
+                            .config
+                            .profiles
+                            .iter()
+                            .find(|profile| profile.id == id && profile.signs_in_with_google())
+                            .ok_or_else(|| t("agent-provider-gone"))?,
+                    ),
+                }
+            }
+        };
+        setup.begin(&self.custodian, &self.opener);
+        self.vertex = Some(setup);
+        self.changed = true;
+        Ok(())
+    }
+
+    /// Stop the Vertex AI sign-in or setup. A provider that was being added
+    /// leaves no grant behind.
+    fn cancel_vertex(&mut self) {
+        if let Some(mut setup) = self.vertex.take() {
+            setup.cancel();
+            if !setup.existing {
+                // Nothing may have been sealed yet; there is nothing to report.
+                let _ = self
+                    .custodian
+                    .forget_oauth(&agent_vertex::grant_id(&setup.profile_id));
+            }
+        }
+        self.changed = true;
+    }
+
+    fn vertex_fields(&self, profile: &ProviderProfile) -> VertexFields {
+        self.vertex_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(profile.id.clone())
+            .or_insert_with(|| VertexFields::of(profile))
+            .clone()
     }
 
     fn refresh(&mut self) {
@@ -921,9 +1061,95 @@ impl AgentModelsModel {
         }
     }
 
+    /// Remove `provider` from `config` with its credential on this device:
+    /// its API key, or its Google sign-in.
+    fn remove_provider(
+        &mut self,
+        config: &mut ProviderConfig,
+        provider: &str,
+    ) -> Result<(), String> {
+        let removed = config
+            .remove(provider)
+            .ok_or_else(|| t("agent-provider-gone"))?;
+        if removed.sign_in.is_none() {
+            return tilo_model_gateway::remove_api_key(provider).map_err(|error| {
+                t_args(
+                    "agent-key-remove-err",
+                    &[("error", error.to_string().into())],
+                )
+            });
+        }
+        // Forgotten here only: revoking at Google would end every grant of
+        // Tilo's client for this person, Mail's included.
+        if self
+            .vertex
+            .as_ref()
+            .is_some_and(|setup| setup.profile_id == provider)
+        {
+            self.cancel_vertex();
+        }
+        self.custodian
+            .forget_oauth(&agent_vertex::grant_id(provider))
+            .map_err(|error| {
+                t_args(
+                    "agent-sign-in-forget-err",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
+        self.vertex_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider);
+        Ok(())
+    }
+
+    /// Add the Vertex AI provider being set up (`provider` `None`), once
+    /// signed in, or change an existing one; the provider's id.
+    fn set_vertex_provider(
+        &self,
+        config: &mut ProviderConfig,
+        provider: Option<String>,
+        fields: (&str, Option<&str>, Option<&str>),
+    ) -> Result<String, String> {
+        let (id, existing) = match provider {
+            Some(id) => (id, true),
+            None => (
+                self.vertex
+                    .as_ref()
+                    .filter(|setup| !setup.existing)
+                    .map(|setup| setup.profile_id.clone())
+                    .ok_or_else(|| t("agent-vertex-sign-in-first"))?,
+                false,
+            ),
+        };
+        if !existing && !agent_vertex::signed_in(&self.custodian, &id) {
+            return Err(t("agent-vertex-sign-in-first"));
+        }
+        agent_vertex::apply(config, &id, existing, fields)?;
+        Ok(id)
+    }
+
+    /// Close the setup of the Vertex AI provider `id` once it is saved, and
+    /// read its fields and sign-in again.
+    fn vertex_saved(&mut self, id: &str) {
+        if self
+            .vertex
+            .as_ref()
+            .is_some_and(|setup| setup.profile_id == id)
+        {
+            self.vertex = None;
+        }
+        self.vertex_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+        self.read_keys();
+    }
+
     /// Apply a provider change to the person's settings.
     fn change_providers(&mut self, effect: AgentModelsEffect) -> Result<(), String> {
         let mut config = self.providers.get().config.clone();
+        let mut vertex_saved = None;
         match effect {
             AgentModelsEffect::SetModelRequestLimits {
                 provider,
@@ -939,8 +1165,7 @@ impl AgentModelsModel {
                     (max_output_tokens, runtime_context_tokens, plan_timeout_ms),
                 )?;
                 self.limit_field_buffers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .remove(&(provider, model));
             }
             AgentModelsEffect::AddProvider { protocol: slug } => {
@@ -984,15 +1209,19 @@ impl AgentModelsModel {
                 }
             }
             AgentModelsEffect::RemoveProvider { provider } => {
-                if config.remove(&provider).is_none() {
-                    return Err(t("agent-provider-gone"));
-                }
-                tilo_model_gateway::remove_api_key(&provider).map_err(|error| {
-                    t_args(
-                        "agent-key-remove-err",
-                        &[("error", error.to_string().into())],
-                    )
-                })?;
+                self.remove_provider(&mut config, &provider)?;
+            }
+            AgentModelsEffect::SetVertexProvider {
+                provider,
+                project,
+                location,
+                model,
+            } => {
+                vertex_saved = Some(self.set_vertex_provider(
+                    &mut config,
+                    provider,
+                    (&project, location.as_deref(), model.as_deref()),
+                )?);
             }
             _ => return Err("not a provider effect".into()),
         }
@@ -1007,6 +1236,9 @@ impl AgentModelsModel {
                 )
             })?;
         self.providers.refresh();
+        if let Some(id) = vertex_saved {
+            self.vertex_saved(&id);
+        }
         self.changed = true;
         Ok(())
     }
@@ -1019,56 +1251,52 @@ impl AgentModelsModel {
         self.changed = true;
     }
 
-    fn accelerator_card(&self) -> Option<El> {
+    fn accelerator_card(&self) -> Option<SettingsSection> {
         let setup = self.snapshot.accelerator_setup.as_ref()?;
         let match_label = t("agent-accel-match");
         let mut body = vec![value_row(&match_label, &setup.boot_pack_id)];
         let (status, tone) = match &setup.status {
             AcceleratorSetupState::Available => {
-                body.push(caption(&t("agent-accel-available")));
-                body.push(Box::new(
-                    Row::new()
-                        .push(Box::new(self.cx.bind_invocation(
-                            Button::new("agent-models-accelerator-setup", &t("agent-accel-setup")),
-                            AgentModelsEffect::SetUpAccelerator,
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ));
+                body.push(note(&t("agent-accel-available")));
+                body.push(row(Box::new(Row::new().push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new("agent-models-accelerator-setup", &t("agent-accel-setup")),
+                        AgentModelsEffect::SetUpAccelerator,
+                    ),
+                )))));
                 (t("agent-accel-ready"), StatusTone::Neutral)
             }
             AcceleratorSetupState::Queued => {
-                body.push(Box::new(
+                body.push(row(Box::new(
                     ProgressBar::indeterminate().with_label(t("agent-accel-preparing")),
-                ));
-                body.push(caption(&t("agent-accel-queued-caption")));
+                )));
+                body.push(note(&t("agent-accel-queued-caption")));
                 (t("agent-accel-queued"), StatusTone::Neutral)
             }
             AcceleratorSetupState::Staging => {
-                body.push(Box::new(
+                body.push(row(Box::new(
                     ProgressBar::indeterminate().with_label(t("agent-accel-staging-label")),
-                ));
-                body.push(caption(&t("agent-accel-staging-caption")));
+                )));
+                body.push(note(&t("agent-accel-staging-caption")));
                 (t("agent-accel-staging"), StatusTone::Warning)
             }
             AcceleratorSetupState::RestartRequired => {
-                body.push(caption(&t("agent-accel-restart-caption")));
+                body.push(note(&t("agent-accel-restart-caption")));
                 (t("agent-accel-restart"), StatusTone::Warning)
             }
             AcceleratorSetupState::Active => {
-                body.push(caption(&t("agent-accel-active-caption")));
+                body.push(note(&t("agent-accel-active-caption")));
                 (t("agent-accel-active"), StatusTone::Success)
             }
             AcceleratorSetupState::Error { message } => {
-                body.push(caption(message));
-                body.push(caption(&t("agent-accel-error-retry")));
-                body.push(Box::new(
-                    Row::new()
-                        .push(Box::new(self.cx.bind_invocation(
-                            Button::new("agent-models-accelerator-retry", &t("agent-accel-retry")),
-                            AgentModelsEffect::SetUpAccelerator,
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ));
+                body.push(note(message));
+                body.push(note(&t("agent-accel-error-retry")));
+                body.push(row(Box::new(Row::new().push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new("agent-models-accelerator-retry", &t("agent-accel-retry")),
+                        AgentModelsEffect::SetUpAccelerator,
+                    ),
+                )))));
                 (t("agent-status-attention"), StatusTone::Warning)
             }
         };
@@ -1079,7 +1307,7 @@ impl AgentModelsModel {
         ))
     }
 
-    fn push_recommendation_confirm(&self, body: &mut Vec<El>, package: &LocalModelPackage) {
+    fn push_recommendation_confirm(&self, body: &mut Vec<Item>, package: &LocalModelPackage) {
         self.push_confirm(
             body,
             package,
@@ -1096,7 +1324,7 @@ impl AgentModelsModel {
     /// invokes `cancel`.
     fn push_confirm(
         &self,
-        body: &mut Vec<El>,
+        body: &mut Vec<Item>,
         package: &LocalModelPackage,
         controls: (&str, &str),
         cancel_effect: AgentModelsEffect,
@@ -1120,8 +1348,8 @@ impl AgentModelsModel {
             value_row(&source, &package.source),
             value_row(&revision, &package.revision),
             value_row(&license, &package.license),
-            caption(&accept),
-            Box::new(
+            note(&accept),
+            row(Box::new(
                 Row::new()
                     .push(Box::new(self.cx.bind_invocation(
                         Button::new(controls.0, &accept_btn),
@@ -1133,15 +1361,14 @@ impl AgentModelsModel {
                     .push(Box::new(self.cx.bind_invocation(
                         Button::new(controls.1, &cancel),
                         cancel_effect,
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ),
+                    ))),
+            )),
         ]);
     }
 
-    fn recommendation_card(&self) -> El {
+    fn recommendation_card(&self) -> SettingsSection {
         let hardware = &self.snapshot.hardware;
-        let fit_label = hardware.fit.label();
+        let fit_label = fit_label(hardware.fit);
         let mem = gib(i64::from(hardware.memory_gib));
         let hw_fit = t("agent-hw-fit");
         let hw_mem = t("agent-hw-memory");
@@ -1161,21 +1388,16 @@ impl AgentModelsModel {
             let value = gib(i64::from(storage));
             body.push(value_row(&label, &value));
         }
-        body.push(caption(&hardware.reason));
+        body.push(note(&hardware.reason));
         let Some(package) = &self.snapshot.recommendation else {
             let rec_model = t("agent-rec-model");
             let waiting = t("agent-rec-waiting");
             body.push(value_row(&rec_model, &waiting));
-            body.push(caption(&t("agent-rec-waiting-caption")));
+            body.push(note(&t("agent-rec-waiting-caption")));
             let unavailable = t("agent-setup-unavailable");
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new("agent-models-setup-unavailable", &unavailable)
-                            .with_enabled(false),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
+            body.push(row(Box::new(Row::new().push(Box::new(
+                Button::new("agent-models-setup-unavailable", &unavailable).with_enabled(false),
+            )))));
             return card_with_action(
                 &t("agent-rec-title"),
                 semantic_status_pill(&t("agent-service-unavailable"), StatusTone::Warning),
@@ -1185,30 +1407,28 @@ impl AgentModelsModel {
         let rec_model = t("agent-rec-model");
         body.extend([
             value_row(&rec_model, &package.name),
-            caption(&package.description),
+            note(&package.description),
         ]);
         if self.reviewing.with(|reviewing| *reviewing) {
             self.push_recommendation_confirm(&mut body, package);
         } else {
             let setup = t("agent-setup-device");
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new("agent-models-setup-local", &setup).with_enabled(
-                                self.manager_available
-                                    && hardware.fit != HardwareFit::Unsupported
-                                    && self
-                                        .snapshot
-                                        .accelerator_setup
-                                        .as_ref()
-                                        .is_none_or(|setup| !setup.status.blocks_model_setup()),
-                            ),
-                            AgentModelsEffect::ReviewModelDownload { show: true },
+            body.push(row(Box::new(
+                Row::new().push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new("agent-models-setup-local", &setup).with_enabled(
+                            self.manager_available
+                                && hardware.fit != HardwareFit::Unsupported
+                                && self
+                                    .snapshot
+                                    .accelerator_setup
+                                    .as_ref()
+                                    .is_none_or(|setup| !setup.status.blocks_model_setup()),
                         ),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
+                        AgentModelsEffect::ReviewModelDownload { show: true },
+                    ),
+                )),
+            )));
         }
         card_with_action(
             &t("agent-rec-title"),
@@ -1224,13 +1444,13 @@ impl AgentModelsModel {
         clippy::too_many_lines,
         reason = "every install phase of the card stays beside its controls"
     )]
-    fn in_process_card(&self, model: &InProcessLocalModel) -> El {
+    fn in_process_card(&self, model: &InProcessLocalModel) -> SettingsSection {
         let package = &model.package;
         let widget_token = token(&package.id);
         let mut body = vec![
             value_row(&t("agent-inprocess-model"), &package.name),
-            caption(&package.description),
-            caption(&t("agent-inprocess-caption")),
+            note(&package.description),
+            note(&t("agent-inprocess-caption")),
         ];
         let confirming = self
             .reviewing_local
@@ -1265,12 +1485,12 @@ impl AgentModelsModel {
                         "agent-progress-downloading",
                         &[("name", package.name.as_str().into())],
                     );
-                    body.push(Box::new(
+                    body.push(row(Box::new(
                         ProgressBar::new(phase_progress(phase).unwrap_or(0.0)).with_label(progress),
-                    ));
+                    )));
                     let done = byte_size(*downloaded_bytes);
                     let total = byte_size(*total_bytes);
-                    body.push(caption(&t_args(
+                    body.push(note(&t_args(
                         "agent-download-progress",
                         &[("done", done.as_str().into()), ("total", total.into())],
                     )));
@@ -1280,8 +1500,10 @@ impl AgentModelsModel {
                         "agent-progress-installing",
                         &[("name", package.name.as_str().into())],
                     );
-                    body.push(Box::new(ProgressBar::indeterminate().with_label(progress)));
-                    body.push(caption(message));
+                    body.push(row(Box::new(
+                        ProgressBar::indeterminate().with_label(progress),
+                    )));
+                    body.push(note(message));
                 }
                 Some(LocalModelPhase::Ready { .. }) => {
                     body.push(value_row(
@@ -1289,18 +1511,18 @@ impl AgentModelsModel {
                         &byte_size(package.installed_bytes),
                     ));
                     body.push(value_row(&t("agent-license"), &package.license));
-                    body.push(caption(&t("agent-inprocess-ready-caption")));
+                    body.push(note(&t("agent-inprocess-ready-caption")));
                 }
                 Some(LocalModelPhase::Error { message }) => {
-                    body.push(caption(message));
-                    body.push(caption(&t("agent-inprocess-error-caption")));
+                    body.push(note(message));
+                    body.push(note(&t("agent-inprocess-error-caption")));
                 }
             }
-            let mut row = Row::new();
+            let mut buttons = Row::new();
             let installable = model.installable();
             let removable = model.removable();
             if installable {
-                row = row.push(Box::new(
+                buttons = buttons.push(Box::new(
                     self.cx.bind_invocation(
                         Button::new(
                             &format!("agent-models-inprocess-setup-{widget_token}"),
@@ -1315,7 +1537,7 @@ impl AgentModelsModel {
                 ));
             }
             if removable {
-                row = row.push(Box::new(self.cx.bind_invocation(
+                buttons = buttons.push(Box::new(self.cx.bind_invocation(
                     Button::new(
                         &format!("agent-models-inprocess-remove-{widget_token}"),
                         &action_label(ModelAction::Remove),
@@ -1326,23 +1548,23 @@ impl AgentModelsModel {
                 )));
             }
             if installable || removable {
-                body.push(Box::new(row.push(Box::new(Spacer::new()))));
+                body.push(row(Box::new(buttons)));
             }
         }
         let (status, tone) = match &model.phase {
             None => (t("agent-status-not-installed"), StatusTone::Neutral),
             Some(LocalModelPhase::Ready { .. }) => (t("agent-status-ready"), StatusTone::Success),
-            Some(phase) => (phase.status(), phase_tone(phase)),
+            Some(phase) => (phase_status(phase), phase_tone(phase)),
         };
         card_with_action(
-            &package.capability_title(),
+            &capability_title(package),
             semantic_status_pill(&status, tone),
             rows(body),
         )
     }
 
-    fn model_card(&self, model: &InstalledLocalModel) -> El {
-        let status = model.phase.status();
+    fn model_card(&self, model: &InstalledLocalModel) -> SettingsSection {
+        let status = phase_status(&model.phase);
         let storage = byte_size(model.package.installed_bytes);
         let status_label = t("agent-model-status");
         let storage_label = t("agent-model-storage");
@@ -1361,13 +1583,13 @@ impl AgentModelsModel {
                     "agent-progress-downloading",
                     &[("name", model.package.name.as_str().into())],
                 );
-                body.push(Box::new(
+                body.push(row(Box::new(
                     ProgressBar::new(phase_progress(&model.phase).unwrap_or(0.0))
                         .with_label(progress),
-                ));
+                )));
                 let done = byte_size(*downloaded_bytes);
                 let total = byte_size(*total_bytes);
-                body.push(caption(&t_args(
+                body.push(note(&t_args(
                     "agent-download-progress",
                     &[("done", done.as_str().into()), ("total", total.into())],
                 )));
@@ -1377,29 +1599,29 @@ impl AgentModelsModel {
                     "agent-progress-installing",
                     &[("name", model.package.name.as_str().into())],
                 );
-                body.push(Box::new(match percent {
+                body.push(row(Box::new(match percent {
                     Some(_) => ProgressBar::new(phase_progress(&model.phase).unwrap_or(0.0))
                         .with_label(progress),
                     None => ProgressBar::indeterminate().with_label(progress),
-                }));
-                body.push(caption(message));
+                })));
+                body.push(note(message));
             }
             LocalModelPhase::Error { message } => {
-                body.push(caption(message));
-                body.push(caption(&t("agent-error-retry-caption")));
+                body.push(note(message));
+                body.push(note(&t("agent-error-retry-caption")));
             }
             LocalModelPhase::Ready { running: true, .. } => {
-                body.push(caption(&t("agent-ready-running-caption")));
+                body.push(note(&t("agent-ready-running-caption")));
             }
             LocalModelPhase::Ready { running: false, .. } => {
-                body.push(caption(&t("agent-ready-stopped-caption")));
+                body.push(note(&t("agent-ready-stopped-caption")));
             }
         }
         let actions = available_actions(&model.phase);
         if !actions.is_empty() {
-            let mut row = Row::new();
+            let mut buttons = Row::new();
             for action in actions {
-                row = row.push(Box::new(self.cx.bind_invocation(
+                buttons = buttons.push(Box::new(self.cx.bind_invocation(
                     Button::new(
                         &format!(
                             "agent-models-{}-{}",
@@ -1411,7 +1633,7 @@ impl AgentModelsModel {
                     model_effect(model, action),
                 )));
             }
-            body.push(Box::new(row.push(Box::new(Spacer::new()))));
+            body.push(row(Box::new(buttons)));
         }
         card_with_action(
             &model.package.name,
@@ -1421,10 +1643,7 @@ impl AgentModelsModel {
     }
 
     fn key_buffer(&self, profile_id: &str) -> Arc<Mutex<String>> {
-        let mut buffers = self
-            .provider_key_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buffers = self.provider_key_buffers.lock_recover();
         buffers
             .entry(profile_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(String::new())))
@@ -1432,10 +1651,7 @@ impl AgentModelsModel {
     }
 
     fn field_buffers(&self, profile: &ProviderProfile) -> HostedFieldBuffers {
-        let mut buffers = self
-            .provider_field_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buffers = self.provider_field_buffers.lock_recover();
         buffers
             .entry(profile.id.clone())
             .or_insert_with(|| HostedFieldBuffers {
@@ -1452,10 +1668,10 @@ impl AgentModelsModel {
         clippy::too_many_lines,
         reason = "the hosted-provider editor keeps each credential and endpoint control together"
     )]
-    fn hosted_profiles(&self) -> El {
+    fn hosted_profiles(&self) -> SettingsSection {
         let config = self.providers.get().config.clone();
-        let mut body: Vec<El> = vec![caption(&t("agent-hosted-intro"))];
-        body.push(Box::new(
+        let mut body: Vec<Item> = vec![note(&t("agent-hosted-intro"))];
+        body.push(row(Box::new(
             Row::new()
                 .push(Box::new(self.cx.bind_invocation(
                     Button::new("agent-models-add-anthropic", &t("agent-add-anthropic")),
@@ -1470,8 +1686,12 @@ impl AgentModelsModel {
                         protocol: "openai-compatible".into(),
                     },
                 )))
-                .push(Box::new(Spacer::new())),
-        ));
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("agent-models-add-vertex", &t("agent-add-vertex")),
+                    AgentModelsEffect::AddGoogleVertex,
+                ))),
+        )));
         for profile in config
             .profiles
             .iter()
@@ -1479,6 +1699,10 @@ impl AgentModelsModel {
         {
             let location = location_shown(profile.location);
             body.push(value_row(profile.display_label(), &location));
+            if profile.sign_in.is_some() {
+                self.push_sign_in_profile(&mut body, profile, config.default_profile.as_deref());
+                continue;
+            }
             let profile_id = profile.id.clone();
             let fields = self.field_buffers(profile);
             let label = fields
@@ -1496,26 +1720,35 @@ impl AgentModelsModel {
                 .lock()
                 .map(|value| value.clone())
                 .unwrap_or_default();
-            body.push(Box::new(
-                TextInput::local()
-                    .with_id(&format!("agent-models-label-{profile_id}"))
-                    .with_external_buffer(Arc::clone(&fields.label))
-                    .with_initial_value(&label)
-                    .with_placeholder(t("agent-placeholder-name")),
+            body.push(field_row(
+                &t("agent-placeholder-name"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-label-{profile_id}"))
+                        .with_external_buffer(Arc::clone(&fields.label))
+                        .with_initial_value(&label)
+                        .with_placeholder(t("agent-placeholder-name")),
+                ),
             ));
-            body.push(Box::new(
-                TextInput::local()
-                    .with_id(&format!("agent-models-url-{profile_id}"))
-                    .with_external_buffer(Arc::clone(&fields.endpoint))
-                    .with_initial_value(&endpoint)
-                    .with_placeholder(t("agent-placeholder-url")),
+            body.push(field_row(
+                &t("agent-placeholder-url"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-url-{profile_id}"))
+                        .with_external_buffer(Arc::clone(&fields.endpoint))
+                        .with_initial_value(&endpoint)
+                        .with_placeholder(t("agent-placeholder-url")),
+                ),
             ));
-            body.push(Box::new(
-                TextInput::local()
-                    .with_id(&format!("agent-models-model-{profile_id}"))
-                    .with_external_buffer(Arc::clone(&fields.model))
-                    .with_initial_value(&model)
-                    .with_placeholder(t("agent-placeholder-model")),
+            body.push(field_row(
+                &t("agent-placeholder-model"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-model-{profile_id}"))
+                        .with_external_buffer(Arc::clone(&fields.model))
+                        .with_initial_value(&model)
+                        .with_placeholder(t("agent-placeholder-model")),
+                ),
             ));
             let alternate_protocol = match profile.protocol {
                 ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
@@ -1530,7 +1763,7 @@ impl AgentModelsModel {
             let read = |field: &Arc<Mutex<String>>| {
                 field.lock().map(|value| value.clone()).unwrap_or_default()
             };
-            body.push(Box::new(
+            body.push(row(Box::new(
                 Row::new()
                     .push(Box::new(self.cx.bind(
                         Button::new(
@@ -1582,9 +1815,8 @@ impl AgentModelsModel {
                         AgentModelsEffect::RemoveProvider {
                             provider: profile_id.clone(),
                         },
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ));
+                    ))),
+            )));
             let protocol = t("agent-protocol");
             body.push(value_row(&protocol, profile.protocol.label()));
             let buffer = self.key_buffer(&profile_id);
@@ -1595,21 +1827,24 @@ impl AgentModelsModel {
                 None => (false, None),
             };
             if let Some(error) = configured_error {
-                body.push(crate::widgets::error_caption(&t_args(
+                body.push(row(crate::widgets::error_caption(&t_args(
                     "agent-key-read-error",
                     &[("error", error.into())],
-                )));
+                ))));
             }
-            body.push(Box::new(
+            body.push(field_row(
+                &t("agent-placeholder-key"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-api-key-{profile_id}"))
+                        .with_external_buffer(buffer)
+                        .with_initial_value(&initial)
+                        .with_secret(true)
+                        .with_placeholder(t("agent-placeholder-key")),
+                ),
+            ));
+            body.push(row(Box::new(
                 Row::new()
-                    .push(Box::new(
-                        TextInput::local()
-                            .with_id(&format!("agent-models-api-key-{profile_id}"))
-                            .with_external_buffer(buffer)
-                            .with_initial_value(&initial)
-                            .with_secret(true)
-                            .with_placeholder(t("agent-placeholder-key")),
-                    ))
                     .push(Box::new(self.cx.bind_invocation(
                         Button::new(
                             &format!("agent-models-set-api-key-{profile_id}"),
@@ -1632,39 +1867,145 @@ impl AgentModelsModel {
                         AgentModelsEffect::RemoveProviderKey {
                             provider: profile_id.clone(),
                         },
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ));
-            body.push(if configured {
-                caption(&t("agent-key-stored"))
+                    ))),
+            )));
+            // why: a key-status sentence or badge is a status line, not a label/control pair.
+            body.push(row(if configured {
+                Box::new(Text::new(&t("agent-key-stored")).dimmed())
             } else if self.needs_key(profile) {
                 semantic_status_pill(&t("agent-key-needed"), StatusTone::Warning)
             } else {
-                caption(&t("agent-key-none"))
-            });
-            if profile.default_model.is_some() {
-                body.push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("agent-models-default-{profile_id}"),
-                        &if config.default_profile.as_deref() == Some(&profile.id) {
-                            t("agent-default-current")
-                        } else {
-                            t("agent-use-default")
-                        },
-                    ),
-                    AgentModelsEffect::SetDefaultProvider {
-                        provider: profile_id.clone(),
-                    },
-                )));
-            }
+                Box::new(Text::new(&t("agent-key-none")).dimmed())
+            }));
+            body.extend(self.default_button(profile, config.default_profile.as_deref()));
         }
         for issue in config.validation_errors() {
-            body.push(caption(&t_args(
+            body.push(note(&t_args(
                 "agent-config-issue",
                 &[("message", issue.message.as_str().into())],
             )));
         }
         card(&t("agent-hosted-title"), rows(body))
+    }
+
+    /// The offer to make `profile` the default, when it has a model.
+    fn default_button(
+        &self,
+        profile: &ProviderProfile,
+        default_profile: Option<&str>,
+    ) -> Option<Item> {
+        profile.default_model.as_ref()?;
+        Some(row(Box::new(self.cx.bind_invocation(
+            Button::new(
+                &format!("agent-models-default-{}", profile.id),
+                &if default_profile == Some(profile.id.as_str()) {
+                    t("agent-default-current")
+                } else {
+                    t("agent-use-default")
+                },
+            ),
+            AgentModelsEffect::SetDefaultProvider {
+                provider: profile.id.clone(),
+            },
+        ))))
+    }
+
+    /// A provider that signs in with Google: its project, location and
+    /// model, whether its sign-in still holds on this device, and the offer
+    /// to sign in again. It has no key, endpoint or protocol to edit.
+    fn push_sign_in_profile(
+        &self,
+        body: &mut Vec<Item>,
+        profile: &ProviderProfile,
+        default_profile: Option<&str>,
+    ) {
+        let profile_id = profile.id.clone();
+        self.vertex_fields(profile)
+            .push(&self.cx, body, &profile_id);
+        let setup = self
+            .vertex
+            .as_ref()
+            .filter(|setup| setup.profile_id == profile_id);
+        let waiting = setup.is_some_and(VertexSetup::waiting);
+        let state = self.keys.get(&profile_id);
+        if let Some(Err(error)) = state {
+            body.push(row(crate::widgets::error_caption(&t_args(
+                "agent-sign-in-read-error",
+                &[("error", error.as_str().into())],
+            ))));
+        }
+        // why: a sign-in status sentence or badge is a status line, not a label/control pair.
+        body.push(row(if waiting {
+            Box::new(Text::new(&t("agent-vertex-waiting")).dimmed())
+        } else if matches!(state, Some(Ok(true))) {
+            Box::new(Text::new(&t("agent-signed-in")).dimmed())
+        } else if self.needs_key(profile) {
+            semantic_status_pill(&t("agent-sign-in-again-needed"), StatusTone::Warning)
+        } else {
+            Box::new(Text::new(&t("agent-sign-in-unknown")).dimmed())
+        }));
+        if let Some(message) = setup.and_then(VertexSetup::message) {
+            body.push(row(crate::widgets::error_caption(message)));
+        }
+        let sign_in: Box<dyn Widget> = if waiting {
+            Box::new(self.cx.bind_invocation(
+                Button::new(
+                    &format!("agent-models-vertex-cancel-{profile_id}"),
+                    &t("agent-cancel"),
+                ),
+                AgentModelsEffect::CancelGoogleSignIn,
+            ))
+        } else {
+            Box::new(self.cx.bind_invocation(
+                Button::new(
+                    &format!("agent-models-vertex-sign-in-{profile_id}"),
+                    &t("agent-sign-in-again"),
+                ),
+                AgentModelsEffect::SignInWithGoogle {
+                    provider: Some(profile_id.clone()),
+                },
+            ))
+        };
+        body.push(row(Box::new(
+            Row::new()
+                .push(sign_in)
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-enabled-{profile_id}"),
+                        &if profile.enabled {
+                            t("agent-disable")
+                        } else {
+                            t("agent-enable")
+                        },
+                    ),
+                    AgentModelsEffect::SetProviderEnabled {
+                        provider: profile_id.clone(),
+                        on: !profile.enabled,
+                    },
+                )))
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-remove-provider-{profile_id}"),
+                        &t("agent-remove-provider"),
+                    ),
+                    AgentModelsEffect::RemoveProvider {
+                        provider: profile_id.clone(),
+                    },
+                ))),
+        )));
+        body.extend(self.default_button(profile, default_profile));
+    }
+
+    /// The setup of a Vertex AI provider being added, then the hosted
+    /// providers and their request limits.
+    fn push_provider_cards(&self, cards: &mut Vec<SettingsSection>) {
+        if let Some(setup) = self.vertex.as_ref().filter(|setup| !setup.existing) {
+            cards.push(setup.card(&self.cx));
+        }
+        cards.push(self.hosted_profiles());
+        cards.push(self.request_limits_card());
     }
 
     fn request_limit_buffers(
@@ -1673,10 +2014,7 @@ impl AgentModelsModel {
         selected: &ModelDescriptor,
     ) -> LimitFieldBuffers {
         let key = (profile.id.clone(), selected.id.clone());
-        let mut buffers = self
-            .limit_field_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buffers = self.limit_field_buffers.lock_recover();
         let fields = buffers
             .entry(key)
             .or_insert_with(|| LimitFieldBuffers {
@@ -1706,9 +2044,9 @@ impl AgentModelsModel {
         fields
     }
 
-    fn request_limits_card(&self) -> El {
+    fn request_limits_card(&self) -> SettingsSection {
         let config = self.providers.get().config.clone();
-        let mut body = vec![caption(&t("agent-request-limits-caption"))];
+        let mut body = vec![note(&t("agent-request-limits-caption"))];
         for profile in &config.profiles {
             for selected in &profile.models {
                 body.push(value_row(profile.display_label(), selected.display_label()));
@@ -1739,19 +2077,21 @@ impl AgentModelsModel {
                     ),
                 ] {
                     let initial = buffer.lock().map(|value| value.clone()).unwrap_or_default();
-                    body.push(value_row(&t(label), ""));
-                    body.push(Box::new(
-                        TextInput::local()
-                            .with_id(&format!("agent-model-limit-{name}-{widget_id}"))
-                            .with_accessible_name(t(label))
-                            .with_external_buffer(buffer)
-                            .with_initial_value(&initial)
-                            .with_placeholder(t("agent-context-unknown")),
+                    body.push(field_row(
+                        &t(label),
+                        Box::new(
+                            TextInput::local()
+                                .with_id(&format!("agent-model-limit-{name}-{widget_id}"))
+                                .with_accessible_name(t(label))
+                                .with_external_buffer(buffer)
+                                .with_initial_value(&initial)
+                                .with_placeholder(t("agent-context-unknown")),
+                        ),
                     ));
                 }
                 let provider = profile.id.clone();
                 let model = selected.id.clone();
-                body.push(Box::new(
+                body.push(row(Box::new(
                     Row::new()
                         .push(Box::new(self.cx.bind(
                             Button::new(
@@ -1780,9 +2120,8 @@ impl AgentModelsModel {
                                 runtime_context_tokens: None,
                                 plan_timeout_ms: None,
                             },
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ));
+                        ))),
+                )));
             }
         }
         card(&t("agent-request-limits-title"), rows(body))
@@ -1797,7 +2136,7 @@ impl AgentModelsModel {
         let mut cards = vec![card(
             &private_title,
             rows(vec![
-                caption(&t("agent-private-caption")),
+                note(&t("agent-private-caption")),
                 value_row(&local_inf, &local_gw),
                 value_row(&downloads, &downloads_v),
             ]),
@@ -1805,14 +2144,13 @@ impl AgentModelsModel {
         if !self.manager_available {
             cards.push(card(
                 &t("agent-service-down-title"),
-                caption(&t("agent-service-down-body")),
+                rows(vec![note(&t("agent-service-down-body"))]),
             ));
-            cards.push(self.hosted_profiles());
-            cards.push(self.request_limits_card());
+            self.push_provider_cards(&mut cards);
             return crate::widgets::cards(cards);
         }
         if let Some(notice) = &self.notice {
-            cards.push(card(&t("agent-service-title"), caption(notice)));
+            cards.push(card(&t("agent-service-title"), rows(vec![note(notice)])));
         }
         if let Some(accelerator) = self.accelerator_card() {
             cards.push(accelerator);
@@ -1835,15 +2173,14 @@ impl AgentModelsModel {
         if self.snapshot.models.is_empty() {
             cards.push(card(
                 &t("agent-models-empty-title"),
-                caption(&t("agent-models-empty")),
+                rows(vec![note(&t("agent-models-empty"))]),
             ));
         } else {
             for model in &self.snapshot.models {
                 cards.push(self.model_card(model));
             }
         }
-        cards.push(self.hosted_profiles());
-        cards.push(self.request_limits_card());
+        self.push_provider_cards(&mut cards);
         crate::widgets::cards(cards)
     }
 }
@@ -1961,198 +2298,34 @@ fn limit_input(buffer: &Arc<Mutex<String>>) -> Option<u32> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HardwareFit {
-    Excellent,
-    Good,
-    Tight,
-    Unsupported,
+/// The fit's label, as the hardware card shows it.
+fn fit_label(fit: HardwareFit) -> String {
+    t(match fit {
+        HardwareFit::Excellent => "agent-fit-excellent",
+        HardwareFit::Good => "agent-fit-good",
+        HardwareFit::Tight => "agent-fit-tight",
+        HardwareFit::Unsupported => "agent-fit-unsupported",
+    })
 }
 
-impl HardwareFit {
-    fn label(self) -> String {
-        t(match self {
-            Self::Excellent => "agent-fit-excellent",
-            Self::Good => "agent-fit-good",
-            Self::Tight => "agent-fit-tight",
-            Self::Unsupported => "agent-fit-unsupported",
-        })
+/// The card title naming what an in-process model does for the person.
+fn capability_title(package: &LocalModelPackage) -> String {
+    if package.segmentation {
+        t("agent-inprocess-segmentation-title")
+    } else {
+        package.name.clone()
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HardwareRecommendation {
-    pub fit: HardwareFit,
-    pub memory_gib: u16,
-    pub accelerator: String,
-    pub accelerator_memory_gib: Option<u16>,
-    pub free_storage_gib: Option<u16>,
-    pub reason: String,
-}
-
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each flag mirrors an independent signed declaration of the release"
-)]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalModelPackage {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub source: String,
-    pub revision: String,
-    pub license: String,
-    pub license_url: String,
-    pub download_bytes: u64,
-    pub installed_bytes: u64,
-    /// Signed capability reported by the local-model manager for this exact
-    /// revision. It is not inferred from a model name.
-    #[serde(default)]
-    pub vision: bool,
-    /// Signed biometric capability for a distinct local face runtime.  A
-    /// general image-analysis model must not gain this capability implicitly.
-    #[serde(default)]
-    pub face_recognition: bool,
-    /// The model runs inside the apps that use it: it is installed, never
-    /// started, and is not a chat model for the local provider profile.
-    #[serde(default)]
-    pub in_process: bool,
-    /// Signed salient-object segmentation capability ("Select subject").
-    #[serde(default)]
-    pub segmentation: bool,
-}
-
-impl LocalModelPackage {
-    /// The card title naming what an in-process model does for the person.
-    fn capability_title(&self) -> String {
-        if self.segmentation {
-            t("agent-inprocess-segmentation-title")
-        } else {
-            self.name.clone()
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum LocalModelPhase {
-    Downloading {
-        downloaded_bytes: u64,
-        total_bytes: u64,
-    },
-    Installing {
-        percent: Option<u8>,
-        message: String,
-    },
-    Ready {
-        running: bool,
-        /// Exact loopback endpoint published by the supervised model service.
-        /// A missing endpoint is never substituted with a guessed port.
-        #[serde(default)]
-        endpoint: Option<LocalModelEndpoint>,
-    },
-    Error {
-        message: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalModelEndpoint {
-    pub url: String,
-    pub model_id: String,
-}
-
-impl LocalModelPhase {
-    fn is_transient(&self) -> bool {
-        matches!(self, Self::Downloading { .. } | Self::Installing { .. })
-    }
-
-    fn status(&self) -> String {
-        t(match self {
-            Self::Downloading { .. } => "agent-status-downloading",
-            Self::Installing { .. } => "agent-status-installing",
-            Self::Ready { running: true, .. } => "agent-status-running",
-            Self::Ready { running: false, .. } => "agent-status-ready",
-            Self::Error { .. } => "agent-status-attention",
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstalledLocalModel {
-    pub package: LocalModelPackage,
-    pub phase: LocalModelPhase,
-}
-
-/// A signed model that runs in-process, offered whether or not it is
-/// installed. `phase` is absent until it is set up.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InProcessLocalModel {
-    pub package: LocalModelPackage,
-    #[serde(default)]
-    pub phase: Option<LocalModelPhase>,
-}
-
-impl InProcessLocalModel {
-    /// Whether setting it up (again) is what the card offers.
-    pub(crate) fn installable(&self) -> bool {
-        matches!(self.phase, None | Some(LocalModelPhase::Error { .. }))
-    }
-
-    /// Whether there are local bytes or a failed record to remove.
-    pub(crate) fn removable(&self) -> bool {
-        matches!(
-            self.phase,
-            Some(LocalModelPhase::Ready { .. } | LocalModelPhase::Error { .. })
-        )
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum AcceleratorSetupState {
-    Available,
-    Queued,
-    Staging,
-    RestartRequired,
-    Active,
-    Error { message: String },
-}
-
-impl AcceleratorSetupState {
-    pub(crate) fn blocks_model_setup(&self) -> bool {
-        !matches!(self, Self::Active)
-    }
-
-    fn is_transient(&self) -> bool {
-        matches!(self, Self::Queued | Self::Staging)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcceleratorSetup {
-    pub boot_pack_id: String,
-    pub status: AcceleratorSetupState,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalModelSnapshot {
-    pub hardware: HardwareRecommendation,
-    pub recommendation: Option<LocalModelPackage>,
-    #[serde(default)]
-    pub models: Vec<InstalledLocalModel>,
-    /// Every signed in-process model, installed or not.
-    #[serde(default)]
-    pub in_process: Vec<InProcessLocalModel>,
-    #[serde(default)]
-    pub accelerator_setup: Option<AcceleratorSetup>,
-}
-
-impl LocalModelSnapshot {
-    pub(crate) fn in_process_model(&self, id: &str) -> Option<&InProcessLocalModel> {
-        self.in_process.iter().find(|model| model.package.id == id)
-    }
+/// The phase's status line.
+fn phase_status(phase: &LocalModelPhase) -> String {
+    t(match phase {
+        LocalModelPhase::Downloading { .. } => "agent-status-downloading",
+        LocalModelPhase::Installing { .. } => "agent-status-installing",
+        LocalModelPhase::Ready { running: true, .. } => "agent-status-running",
+        LocalModelPhase::Ready { running: false, .. } => "agent-status-ready",
+        LocalModelPhase::Error { .. } => "agent-status-attention",
+    })
 }
 
 /// Boundary implemented by Tilo' model service. The production adapter is a
@@ -2409,6 +2582,16 @@ impl PaneModel for AgentModelsModel {
         if self.providers.refresh() {
             self.read_keys();
         }
+        let polled = self.vertex.as_mut().map(VertexSetup::poll);
+        match polled {
+            None | Some(Polled::Nothing) => {}
+            Some(Polled::Changed) => self.changed = true,
+            Some(Polled::SignedInAgain) => {
+                self.vertex = None;
+                self.read_keys();
+                self.notice = Some(t("agent-vertex-signed-in"));
+            }
+        }
         if self.is_busy() && self.last_poll.elapsed() >= POLL_INTERVAL {
             self.refresh();
         }
@@ -2420,7 +2603,7 @@ impl PaneModel for AgentModelsModel {
     }
 
     fn busy(&self) -> bool {
-        self.is_busy()
+        self.is_busy() || self.vertex.as_ref().is_some_and(VertexSetup::waiting)
     }
 }
 
@@ -2785,6 +2968,169 @@ mod tests {
         assert!(save.params().iter().any(|param| param.name == "key"));
     }
 
+    /// Google Vertex AI is added only once signed in, with the project,
+    /// location and model chosen; it shows its sign-in rather than a key,
+    /// and removing it forgets its own grant and no other.
+    #[test]
+    fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
+        use account_custody::TokenSet;
+        use account_custody::cloud_projects::CloudProject;
+        let vault = tempfile::tempdir().unwrap();
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
+        let grant = |refresh: &str| TokenSet {
+            access_token: "access".into(),
+            scope: Some("https://www.googleapis.com/auth/cloud-platform".into()),
+            refresh_token: refresh.into(),
+            expires_in: 3600,
+            obtained_at: 0,
+        };
+        let mail = accounts::AccountId::new("ada@example.com");
+        pane.custodian
+            .seal_oauth(&mail, &grant("mail-refresh"))
+            .unwrap();
+
+        pane.vertex = Some(VertexSetup::adding());
+        let id = pane.vertex.as_ref().unwrap().profile_id.clone();
+        let add = |project: &str| AgentModelsEffect::SetVertexProvider {
+            provider: None,
+            project: project.into(),
+            location: None,
+            model: None,
+        };
+        assert_eq!(
+            pane.change_providers(add("tilo-509618")),
+            Err(t("agent-vertex-sign-in-first")),
+            "nothing is saved before the sign-in"
+        );
+        pane.custodian
+            .seal_oauth(&agent_vertex::grant_id(&id), &grant("vertex-refresh"))
+            .unwrap();
+        pane.vertex
+            .as_mut()
+            .unwrap()
+            .signed_in_for_test(vec![CloudProject {
+                id: "tilo-509618".into(),
+                name: "Tilo".into(),
+            }]);
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter().any(|line| line == "Tilo (tilo-509618)"),
+            "{text:#?}"
+        );
+        assert_eq!(
+            pane.change_providers(add("Not A Project")),
+            Err(t("agent-vertex-project-invalid"))
+        );
+        assert!(pane.providers.get().config.profiles.is_empty());
+
+        pane.change_providers(add("tilo-509618")).unwrap();
+        assert!(pane.vertex.is_none(), "the setup ends once saved");
+        let stored = pane.cx.settings::<AgentProviders>().get().config;
+        let profile = &stored.profiles[0];
+        assert_eq!(profile.id, id, "the grant was sealed for this provider");
+        assert!(profile.signs_in_with_google());
+        assert!(profile.credential.is_none());
+        assert_eq!(
+            profile.endpoint,
+            "https://aiplatform.googleapis.com/v1/projects/tilo-509618/locations/global/endpoints/openapi"
+        );
+        assert_eq!(
+            profile.sign_in.as_ref().unwrap().billing_project.as_deref(),
+            Some("tilo-509618")
+        );
+        assert_eq!(
+            profile.default_model.as_deref(),
+            Some("google/gemini-4-argon")
+        );
+        assert!(stored.validation_errors().is_empty());
+
+        shows_its_sign_in_and_forgets_only_its_grant(&mut pane, &id, &mail);
+    }
+
+    fn shows_its_sign_in_and_forgets_only_its_grant(
+        pane: &mut AgentModelsModel,
+        id: &str,
+        mail: &accounts::AccountId,
+    ) {
+        use account_custody::GrantState;
+        let id = id.to_string();
+        pane.keys.insert(id.clone(), Ok(false));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(text.iter().any(|line| line == "Sign in again"), "{text:#?}");
+        assert!(!text.iter().any(|line| line == "Save key"), "{text:#?}");
+        pane.keys.insert(id.clone(), Ok(true));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line == "Signed in with Google on this device."),
+            "{text:#?}"
+        );
+
+        pane.change_providers(AgentModelsEffect::SetVertexProvider {
+            provider: Some(id.clone()),
+            project: "other-project".into(),
+            location: Some("europe-west4".into()),
+            model: Some("gemini-2.5-pro".into()),
+        })
+        .unwrap();
+        let profile = pane.cx.settings::<AgentProviders>().get().config.profiles[0].clone();
+        assert_eq!(
+            profile.endpoint,
+            "https://europe-west4-aiplatform.googleapis.com/v1/projects/other-project/locations/europe-west4/endpoints/openapi"
+        );
+        assert_eq!(
+            profile.default_model.as_deref(),
+            Some("google/gemini-2.5-pro")
+        );
+        assert_eq!(
+            profile.sign_in.unwrap().billing_project.as_deref(),
+            Some("other-project")
+        );
+
+        pane.change_providers(AgentModelsEffect::RemoveProvider {
+            provider: id.clone(),
+        })
+        .unwrap();
+        assert!(pane.providers.get().config.profiles.is_empty());
+        assert_eq!(
+            pane.custodian
+                .oauth_grant_state(&agent_vertex::grant_id(&id))
+                .unwrap(),
+            GrantState::Missing
+        );
+        assert_eq!(
+            pane.custodian.oauth_grant_state(mail).unwrap(),
+            GrantState::Usable,
+            "Mail's grant of the same person is untouched"
+        );
+    }
+
+    /// Cancelling the setup of a provider being added leaves no grant.
+    #[test]
+    fn cancelling_a_vertex_setup_forgets_its_grant() {
+        let vault = tempfile::tempdir().unwrap();
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
+        pane.vertex = Some(VertexSetup::adding());
+        let id = pane.vertex.as_ref().unwrap().profile_id.clone();
+        pane.custodian
+            .seal_oauth(
+                &agent_vertex::grant_id(&id),
+                &account_custody::TokenSet {
+                    access_token: "a".into(),
+                    scope: None,
+                    refresh_token: "r".into(),
+                    expires_in: 3600,
+                    obtained_at: 0,
+                },
+            )
+            .unwrap();
+        pane.cancel_vertex();
+        assert!(pane.vertex.is_none());
+        assert!(!agent_vertex::signed_in(&pane.custodian, &id));
+    }
+
     fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
@@ -2922,7 +3268,7 @@ mod tests {
             package,
             phase: LocalModelPhase::Ready {
                 running: true,
-                endpoint: Some(LocalModelEndpoint {
+                endpoint: Some(agent_provider_config::local::LocalEndpoint {
                     url: "http://127.0.0.1:43127/v1".into(),
                     model_id,
                 }),

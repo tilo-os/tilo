@@ -2,17 +2,18 @@
 //! Configuration selects a destination only; current enrolled custody supplies authority.
 use super::{
     HashMap, HostContext, HostContextInputs, InProcessApps, InstanceViewStore, LaunchError,
-    LaunchTarget, PermissionContext, Rc, RecordCheckout, RefCell, RestoreInput,
+    LaunchTarget, Rc, RecordCheckout, RefCell, RestoreInput,
 };
 use crate::shell::{network::ShellNetwork, remote_action_link::RemoteActionLink};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination, FeedbackQuery};
-use tilo_actions::remote::{Caller, Pending, PendingPoll, RemoteActionMessage};
+use tilo_actions::remote::{Pending, PendingPoll, RemoteActionMessage};
 use tilo_app::feedback::{Error, Submission};
-use tilo_desktop::feedback::transport::{Enrollment, NoCapture, SignedReceipt, Startup, Transport};
+use tilo_desktop::feedback::transport::{
+    Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
+};
 use tilo_user_identity::DeviceCert;
-use ui::permissions::{Actor, Standing};
 
 /// The host owns a model service, not its app's rendering or teardown details.
 pub(super) trait Producer {
@@ -72,7 +73,7 @@ impl Connection {
                 // Both halves of the admission must still hold: the reporter's
                 // standing (what they may write) and the room's sandbox (what
                 // the feedback window's code may touch, its capture and files).
-                let sandbox = view.peer().governed_sandbox()?;
+                let sandbox = view.peer().governance().governed_sandbox()?;
                 if admission.permissions.standing() != &standing
                     || admission.permissions.capabilities() != sandbox.as_slice()
                 {
@@ -111,40 +112,16 @@ impl Connection {
     }
     fn admit(&self, answer: &FeedbackAnswer) -> Result<Enrollment, Error> {
         self.custody()?;
-        let a = &answer.admission;
-        if a.destination != self.destination
-            || a.owner_user != hex::encode(self.owner.user_public_key)
-            || a.owner_device != hex::encode(self.owner.device_public_key)
-            || a.reporter_user != hex::encode(self.reporter.user_public_key)
-            || a.reporter_device != hex::encode(self.reporter.device_public_key)
-        {
-            return Err(Error::ReceiptMismatch);
-        }
-        let standing: Standing = serde_json::from_value(a.standing.clone())?;
-        if standing.person != a.reporter_user {
-            return Err(Error::ReceiptMismatch);
-        }
-        let room = self.destination.room.clone();
-        Ok(Enrollment {
-            destination: tilo_desktop::feedback::Destination {
-                room: room.clone(),
-                provider: self.destination.provider.clone(),
-                channel: self.destination.channel.clone(),
-            },
-            owner: Caller::authenticated(self.owner.user_public_key, self.owner.device_public_key)
-                .in_room(room.clone()),
-            reporter: Caller::authenticated(
-                self.reporter.user_public_key,
-                self.reporter.device_public_key,
-            )
-            .in_room(room.clone()),
-            permissions: PermissionContext::new(
-                Actor::person(standing.person.clone()).in_room(room),
-                serde_json::from_value(a.sandbox.clone())?,
-                standing,
-            )
-            .at_unix_time(a.unix_time),
-        })
+        let identity = |cert: &DeviceCert| Identity {
+            user: cert.user_public_key,
+            device: cert.device_public_key,
+        };
+        Enrollment::admitted(
+            answer,
+            &self.destination,
+            &identity(&self.owner),
+            &identity(&self.reporter),
+        )
     }
     fn poll(&mut self) {
         let mut waiting = Vec::new();
@@ -160,10 +137,8 @@ impl Connection {
                             .ok()
                             .map(|admission| (answer, admission))
                     }) {
-                        if let (Some(submission), Some(value)) = (submission, answer.receipt)
-                            && let Ok(bytes) = serde_json::to_vec(&value)
-                            && let Ok(receipt) = SignedReceipt::decode(&bytes)
-                            && receipt.verify(&submission, &admission).is_ok()
+                        if let Some(submission) = submission
+                            && let Some(receipt) = admission.receipt_in(&answer, &submission)
                         {
                             if self.receipts.len() >= 8 {
                                 self.receipts.clear();

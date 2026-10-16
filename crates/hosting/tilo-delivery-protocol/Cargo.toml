@@ -17,7 +17,8 @@ ignored = ["getrandom03"]
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# Transport hints and invite grants of the workspace join contract.
+tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-relay-client = { path = "../tilo-relay-client" }
@@ -46,6 +47,9 @@ uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }
+# The descriptor tests verify against a real governed workspace; production
+# callers supply theirs through `descriptor::CommittedWorkspace`.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
 
 [lints]

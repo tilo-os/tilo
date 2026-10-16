@@ -173,20 +173,12 @@ impl WorkspaceTreeReplica {
             });
         }
         drop(tree);
-        self.pending_outgoing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend(msgs);
+        self.pending_outgoing.lock_recover().extend(msgs);
     }
 
     /// Drain pending outbound messages so a test (or Hub-driver) can broadcast them; stable FIFO order.
     pub fn drain_outgoing(&self) -> Vec<NeighbourMsg> {
-        std::mem::take(
-            &mut *self
-                .pending_outgoing
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        std::mem::take(&mut *self.pending_outgoing.lock_recover())
     }
 }
 
@@ -251,8 +243,7 @@ impl WorkspaceTreeReplica {
                     return;
                 }
                 self.pending_outgoing
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .push(NeighbourMsg::SyncResp {
                         changes,
                         room: room_id.to_string(),
@@ -1347,6 +1338,7 @@ mod tests {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+use tilo_lock::MutexRecover as _;
 
 #[cfg(test)]
 mod native_owner_gate_tests {

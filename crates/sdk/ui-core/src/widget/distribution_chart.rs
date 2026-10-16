@@ -20,7 +20,7 @@ use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
 };
 
 #[derive(Clone, Debug)]
@@ -364,19 +364,19 @@ impl InteractiveChart for DistributionChart {
         self.activated = Some(series.id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self
-            .summaries()
-            .iter()
+    fn keyboard_items(&self) -> Vec<usize> {
+        let summaries = self.summaries();
+        let present = summaries.iter().map(Option::is_some);
+        present
             .enumerate()
-            .filter(|(_, summary)| summary.is_some())
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
-        if let Some(index) = self.inspection.hovered {
-            self.inspection.pointer = Point::new(self.center_x(index), self.plot_rect().center().y);
-        }
-        self.inspection.hovered.is_some()
+            .filter_map(|(index, present)| present.then_some(index))
+            .collect()
+    }
+    fn anchor(&self, &index: &usize) -> Option<Point> {
+        Some(Point::new(
+            self.center_x(index),
+            self.plot_rect().center().y,
+        ))
     }
 }
 
@@ -398,21 +398,8 @@ impl Widget for DistributionChart {
         let summaries = self.summaries();
         let range = Self::range(&summaries);
         let plot = self.plot_rect();
-        if self.inspection.keyboard
-            && let Some(index) = self.inspection.hovered
-        {
-            self.inspection.pointer = Point::new(self.center_x(index), plot.center().y);
-        }
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        self.follow_keyboard_anchor();
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         for value in crate::charts::nice_ticks(range.0, range.1, 5) {
             let y = self.y(value, range);
             if self.style.show_grid {
@@ -630,15 +617,12 @@ impl Widget for DistributionChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        let Some(id) = crate::widget::chart_navigation::activated_id(
+        crate::widget::chart_navigation::activate(
+            &mut self.activated,
             action,
             key_path,
             self.series.iter().map(|series| &series.id),
-        ) else {
-            return false;
-        };
-        self.activated = Some(id.clone());
-        true
+        )
     }
     fn name(&self) -> &'static str {
         "DistributionChart"

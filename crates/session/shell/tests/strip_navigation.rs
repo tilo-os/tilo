@@ -89,6 +89,7 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
             active_tab: ids[0],
             width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
+            focus_history: Vec::new(),
         })
         .collect();
 
@@ -368,6 +369,7 @@ fn two_strip_harness() -> (Harness, StripId, StripId, GroupId, Vec<GroupId>) {
             active_tab: 91,
             width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
+            focus_history: Vec::new(),
         }],
     });
     tree.desktop.active_group.insert(lower, resident);
@@ -913,6 +915,72 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
 }
 
 // The rail: the thing that says there is more strip.
+
+/// The ribbon and rail report a position, which matters only while you
+/// move: hidden at rest, they show the moment navigation changes what they
+/// report (a keyboard step, a sideways scroll) and fade out shortly after.
+#[test]
+fn the_position_indicators_show_while_navigating_and_fade_after() {
+    let mut h = Harness::new();
+    let rest = Instant::now();
+    assert_eq!(
+        h.host.strip_indicator_alpha_at(rest, false),
+        0.0,
+        "at rest the indicators stay out of the way"
+    );
+
+    // Step until focus actually moves along the strip (the first press can
+    // only settle keyboard focus on it, which moves nothing).
+    for _ in 0..3 {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.tick();
+        if h.host.strip_rail_for_tests().focused != 0 {
+            break;
+        }
+    }
+    assert_ne!(
+        h.host.strip_rail_for_tests().focused,
+        0,
+        "fixture: focus moved"
+    );
+    let stepped = Instant::now();
+    assert_eq!(
+        h.host.strip_indicator_alpha_at(stepped, false),
+        1.0,
+        "a keyboard step along the strip shows them at once"
+    );
+    assert_eq!(
+        h.host
+            .strip_indicator_alpha_at(stepped + Duration::from_millis(900), false),
+        1.0,
+        "they stay long enough to read"
+    );
+    assert_eq!(
+        h.host
+            .strip_indicator_alpha_at(stepped + Duration::from_secs(2), false),
+        0.0,
+        "and are gone within two seconds of the last move"
+    );
+
+    // Once gone, a sideways scroll that moves the strip brings them back.
+    let before = (h.host.strip_rail_for_tests().focused, h.scroll_x());
+    for rightward in [-120.0, 120.0] {
+        h.scroll_horizontally(rightward);
+        h.tick();
+        if (h.host.strip_rail_for_tests().focused, h.scroll_x()) != before {
+            break;
+        }
+    }
+    assert_ne!(
+        (h.host.strip_rail_for_tests().focused, h.scroll_x()),
+        before,
+        "fixture: the scroll moved along the strip"
+    );
+    let later = stepped + Duration::from_secs(3);
+    let scrolled = later.max(Instant::now());
+    let moved = h.host.strip_indicator_alpha_at(scrolled, false);
+    assert_eq!(moved, 1.0, "scrolling the strip shows them again");
+}
 
 #[test]
 fn the_rail_maps_the_strip_and_travels_on_click() {
@@ -1577,9 +1645,15 @@ fn axis_gather_stops_old_snap_when_focus_is_already_visible() {
     h.lay_out();
     h.tick();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+    // Group 0 is already wholly on screen where the old motion left the
+    // strip, so the gather reveals nothing more (a reveal is the least pan
+    // that shows the group) but still cancels the motion toward group 4.
+    let stopped = h.scroll_x();
+    h.tick();
+    h.lay_out();
     assert_eq!(
         h.scroll_x(),
-        0.0,
+        stopped,
         "already-visible gather still cancels old motion"
     );
 }
@@ -1738,4 +1812,29 @@ fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
         before,
         "restore reuses the existing record rather than creating a default"
     );
+}
+
+/// With no strip above, Super+Up maximizes the focused group and Super+Down
+/// restores it; otherwise both stay strip navigation.
+#[test]
+fn super_up_on_the_top_strip_maximizes_and_super_down_restores() {
+    let (mut h, upper, lower, _resident, _groups) = two_strip_harness();
+    let maximized = |h: &mut Harness| {
+        h.host
+            .group_row_mut_for_tests(upper)
+            .expect("the upper strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+    assert_eq!(plane(&h).1, upper, "the harness starts on the top strip");
+    assert!(!maximized(&mut h));
+    h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
+    assert!(maximized(&mut h), "Super+Up maximizes on the top strip");
+    assert_eq!(plane(&h).1, upper);
+    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
+    assert!(!maximized(&mut h), "Super+Down restores a maximized group");
+    assert_eq!(plane(&h).1, upper, "restoring does not change strip");
+    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
+    assert_eq!(plane(&h).1, lower, "Super+Down is strip navigation again");
 }

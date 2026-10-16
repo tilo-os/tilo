@@ -75,8 +75,8 @@ The bench does not yet drive the macOS hardware event queue. Before accepting a 
 ## Bench verification
 
 ```sh
-cargo test --locked -p ui --lib ux_bench --no-default-features
-cargo test --locked -p ui --lib widget::scrollable::tests --no-default-features
+cargo test --locked -p tilo-ui --lib ux_bench --no-default-features
+cargo test --locked -p tilo-ui --lib widget::scrollable::tests --no-default-features
 cargo test --locked -p shell --bin shell --no-default-features
 python3 scripts/ux-bench/test_suite.py
 ```

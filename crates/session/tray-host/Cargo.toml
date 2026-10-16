@@ -1,0 +1,27 @@
+[package]
+name = "tilo-tray-host"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "StatusNotifierItem tray host: the watcher, its items and their menus"
+
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# Follows each item's change signals.
+futures-util.workspace = true
+# The state dump's view of the tray.
+serde_json.workspace = true
+# Timestamps a dbusmenu `Event`.
+tilo-clock = { path = "../../platform/tilo-clock" }
+# Requests go to the runtime serving the watcher; an item is followed until its owner leaves.
+tokio = { workspace = true, features = ["macros", "rt"] }
+tracing.workspace = true
+zbus = { workspace = true, features = ["tokio"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-copy-lint = { path = "../../dev/copy-lint" }
+
+[lints]
+workspace = true

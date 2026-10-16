@@ -27,7 +27,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_app_package::manifest::TrustAttestation;
 use tilo_app_package::trust::{
-    AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
+    AttestorScope, RevocationList, RevokedKey, TrustFile, TrustedAttestor, TrustedAttestors,
     attestation_preimage,
 };
 use tilo_app_package::{Manifest, SigningIdentity, pack};

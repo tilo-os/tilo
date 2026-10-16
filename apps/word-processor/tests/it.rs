@@ -31,3 +31,6 @@ mod framework_read;
 
 #[path = "framework_undo.rs"]
 mod framework_undo;
+
+#[path = "writer_benchmark.rs"]
+mod writer_benchmark;

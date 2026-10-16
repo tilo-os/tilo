@@ -1257,6 +1257,12 @@ pub struct NavShell {
     toasts_drawn_scene: Scene,
     /// A notice came, went or changed: the next draw paints it.
     toasts_dirty: bool,
+    /// The window's sync status, quiet text before the trailing controls
+    /// of the row History stands in.
+    sync_status: crate::widget::HeaderStatus,
+    /// The room that row leaves before the sync status, where a document
+    /// says how its save is going ([`Self::header_status_slot`]).
+    status_slot: Rect,
 }
 
 impl Default for NavShell {
@@ -1341,6 +1347,8 @@ impl NavShell {
             toasts_drawn: None,
             toasts_drawn_scene: Scene::new(),
             toasts_dirty: false,
+            sync_status: crate::widget::HeaderStatus::default(),
+            status_slot: Rect::ZERO,
         }
     }
 
@@ -2876,6 +2884,78 @@ impl NavShell {
         {
             self.paint_part(f, part);
         }
+        self.paint_sync_status(f);
+    }
+
+    /// The sync status, in the header of the column History stands in (the
+    /// one reaching the window's trailing edge): after its title and before
+    /// its trailing controls, wherever the row has room.
+    fn paint_sync_status(&mut self, f: &mut Frame<'_>) {
+        self.status_slot = Rect::ZERO;
+        let g = &self.geometry;
+        let column = g.history_column.unwrap_or(Column::Content);
+        let row = g.header(column);
+        if row.width() <= 0.0 || row.height() <= 0.0 || g.column(column).width() <= 0.0 {
+            self.sync_status
+                .paint(f.scene, f.transform, f.text, f.theme, row, 0.0, 0.0);
+            return;
+        }
+        let gap = f64::from(f.theme.tokens.spacing.s3);
+        let in_row = |rect: Rect| {
+            rect.width() > 0.0 && rect.y0 < row.y1 && rect.y1 > row.y0 && rect.x0 >= row.x0
+        };
+        let actions = at(&self.headers, column).actions.len();
+        let mut trailing: Vec<Rect> = (0..actions)
+            .map(|i| Part::Action(column, i))
+            .chain([Part::More(column)])
+            .filter(|part| self.built_has(*part) && !self.part_hidden(*part))
+            .filter_map(|part| self.exposed(part).map(|widget| widget.get_rect()))
+            .collect();
+        trailing.extend([g.history, g.inspector_toggle]);
+        let x1 = trailing
+            .into_iter()
+            .filter(|rect| in_row(*rect))
+            .map(|rect| rect.x0)
+            .fold(row.x1, f64::min)
+            - gap;
+        let x0 = [
+            Part::Title(column),
+            Part::Leading(column),
+            Part::Toggle,
+            Part::Back,
+        ]
+        .into_iter()
+        .filter(|part| self.built_has(*part) && !self.part_hidden(*part))
+        .filter_map(|part| match part {
+            Part::Toggle => Some(g.toggle),
+            Part::Back => Some(g.back),
+            _ => self.exposed(part).map(|widget| widget.get_rect()),
+        })
+        .filter(|rect| in_row(*rect))
+        .map(|rect| rect.x1)
+        .fold(row.x0, f64::max)
+            + gap;
+        self.sync_status
+            .paint(f.scene, f.transform, f.text, f.theme, row, x0, x1);
+        let said = self.sync_status.get_rect();
+        let x1 = if said.is_zero_area() {
+            x1
+        } else {
+            said.x0 - gap
+        };
+        if x1 > x0 {
+            self.status_slot = Rect::new(x0, row.y0, x1, row.y1);
+        }
+    }
+
+    /// Where a document's transient status goes in the header row that
+    /// carries the sync status: after the title and before the trailing
+    /// controls and the sync status, the row's height. Empty until the
+    /// shell paints, and when the row has no room. A save status shown
+    /// here covers none of the document.
+    #[must_use]
+    pub fn header_status_slot(&self) -> Rect {
+        self.status_slot
     }
 
     /// Whether `part` is in the host tree this frame: only those were laid
@@ -3346,7 +3426,7 @@ impl Widget for NavShell {
         self.structure_dirty = false;
         self.invalidation.invalidate();
         let style = Style {
-            size: Size::from_percent(1.0, 1.0),
+            size: Self::region_size(),
             ..Default::default()
         };
         taffy.widget_node(style, &nodes, node_map, self)
@@ -3355,6 +3435,7 @@ impl Widget for NavShell {
     fn manual_layout_policy(&self) -> Option<ManualPolicy> {
         Some(ManualPolicy::for_children(
             Rc::clone(&self.policy),
+            Self::region_size(),
             self.baseline.clone(),
             self.invalidation.clone(),
         ))
@@ -3474,6 +3555,9 @@ impl Widget for NavShell {
             .iter()
             .filter_map(|part| self.exposed(*part))
             .collect();
+        if self.sync_status.text().is_some() {
+            children.push(&self.sync_status);
+        }
         if !self.toasts.is_empty() {
             children.push(&self.toasts);
         }
@@ -3487,6 +3571,9 @@ impl Widget for NavShell {
             if let Some(widget) = self.exposed(part) {
                 visitor(widget);
             }
+        }
+        if self.sync_status.text().is_some() {
+            visitor(&self.sync_status);
         }
         if !self.toasts.is_empty() {
             visitor(&self.toasts);
@@ -3513,6 +3600,7 @@ impl Widget for NavShell {
             history_close,
             inert_parts,
             toasts,
+            sync_status,
             ..
         } = self;
         let mut stubs = inert_parts.iter_mut();
@@ -3584,6 +3672,9 @@ impl Widget for NavShell {
             if let Some(widget) = next {
                 out.push(widget);
             }
+        }
+        if sync_status.text().is_some() {
+            out.push(sync_status);
         }
         if !toasts.is_empty() {
             out.push(toasts);
@@ -3675,6 +3766,13 @@ impl Widget for NavShell {
         self.toasts_drawn = self.toasts_painted;
         self.toasts_drawn_scene.clone_from(&self.toasts_scene);
         self.for_each_owned_mut(|child| child.mark_drawn());
+        // The shell paints its titles and notices itself, so they learn
+        // here what it painted: as children they would otherwise ask for
+        // a frame forever.
+        for header in &mut self.headers {
+            header.title.mark_drawn();
+        }
+        self.toasts.mark_drawn();
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -3729,6 +3827,14 @@ impl WindowHeader for NavShell {
         self.inputs.borrow_mut().history = control;
         self.structure_dirty = true;
         self.invalidate();
+    }
+
+    fn set_sync_status(&mut self, status: Option<&str>) -> bool {
+        if self.sync_status.set(status) {
+            self.paint_dirty = true;
+            self.invalidation.invalidate();
+        }
+        true
     }
 }
 
@@ -3791,6 +3897,11 @@ impl crate::widget::controls::ActionControls for NavShell {
 }
 
 impl NavShell {
+    /// The shell fills the window it is given.
+    fn region_size() -> Size<taffy::Dimension> {
+        Size::from_percent(1.0, 1.0)
+    }
+
     /// What the shell itself answers: the sidebar shortcut, Escape, Ctrl+F,
     /// a scrim press, and the resize drag. Returns whether it consumed
     /// `event`.

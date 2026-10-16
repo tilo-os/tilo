@@ -24,6 +24,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use tilo_lock::MutexRecover as _;
 use vello::util::RenderSurface;
 use wgpu::{
     Adapter, Device, Instance, Limits, Queue, Surface, SurfaceConfiguration, SurfaceTarget,
@@ -53,10 +54,7 @@ pub struct DeviceLossMonitor(Arc<Mutex<Option<String>>>);
 impl DeviceLossMonitor {
     /// Actual device loss reason, when the context callback has observed one.
     pub fn reason(&self) -> Option<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.0.lock_recover().clone()
     }
 }
 
@@ -444,10 +442,7 @@ impl RenderContext {
         let loss = DeviceLossMonitor::default();
         let observer = loss.clone();
         device.set_device_lost_callback(move |reason, message| {
-            let mut recorded = observer
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut recorded = observer.0.lock_recover();
             if recorded.is_none() {
                 *recorded = Some(format!("{reason:?}: {message}"));
             }

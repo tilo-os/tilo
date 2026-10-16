@@ -139,6 +139,7 @@ impl Fixture {
             }],
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }];
         tree.desktop.set_active_group(home_strip, 40);
         let elsewhere = WorkspaceId::new();

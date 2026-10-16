@@ -1532,7 +1532,6 @@ impl PresenceCtx {
     /// than read as the peer moving again ([`Self::set_pointer_at`]); tests
     /// pass a clock they control.
     #[allow(
-        clippy::needless_pass_by_value,
         clippy::too_many_lines,
         reason = "public wire-decode API called from crates outside ui; narrowing payload to &PresencePayload would require updating call sites out of scope for this pass"
     )]
@@ -2187,10 +2186,6 @@ mod string_id_wrapper_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn peers_keep_stable_colours_and_honest_labels_in_any_arrival_order() {
         // phase: presence_user_color_is_stable_and_distinct
         {

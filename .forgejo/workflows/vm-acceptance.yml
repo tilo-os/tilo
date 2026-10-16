@@ -58,6 +58,20 @@ on:
     paths:
       - "scripts/vm-acceptance/**"
       - ".forgejo/workflows/vm-acceptance.yml"
+      # What the input-fidelity (I01-I07, B04, W17) and agent-door (M01-M04) checks prove:
+      # ci_select.py maps each to its checks, so such a pull request runs only those.
+      - "crates/dev/tilo-vm/**"
+      - "crates/dev/tilo-vmd/**"
+      - "crates/dev/tilo-vm-protocol/**"
+      - "crates/session/shell/src/compositor/input*"
+      - "crates/session/shell/src/compositor/client_input.rs"
+      - "crates/session/shell/src/compositor/lock_*"
+      - "crates/session/shell/src/compositor/backend/drm/**"
+      - "crates/session/shell/src/compositor/agent_door.rs"
+      - "crates/session/shell/src/shell/agent_admission*.rs"
+      - "crates/runtime/tilo-runtime/src/**"
+      - "os/usr/lib/udev/**"
+      - "os/hardware/profiles/lenovo-83ed/input/**"
 
 concurrency:
   # A pull request's newest commit replaces its older run; dispatched and
@@ -186,9 +200,25 @@ jobs:
               [[ $from != "$target" ]] || from=$commit
               if ! git diff --quiet "$commit" "$target"; then
                 swap=shell
+                # tilo-vmd's input path runs in the VM (device profiles, uinput)
+                # and must speak the protocol of the tilo-vm built from the ref.
+                # Compare against the base disk, not the branch point: a base
+                # disk older than a protocol change on main would otherwise
+                # refuse every request the ref's tilo-vm sends.
+                git diff --quiet "$commit" "$target" -- crates/dev/tilo-vmd crates/dev/tilo-vm-protocol || swap+=",vmd"
+                apps=""
                 for app in $(git diff --name-only "$from" "$target" -- apps/ | cut -d/ -f2 | sort -u); do
-                  git cat-file -e "$target:apps/$app/Cargo.toml" 2>/dev/null && swap+=",app:$app"
+                  git cat-file -e "$target:apps/$app/Cargo.toml" 2>/dev/null && apps+=",app:$app"
                 done
+                # An app links the base's libruntime_dylib.so, whose symbols
+                # carry crate hashes: with a Cargo.lock the base does not
+                # have, the changed apps go in with their runtime as one
+                # cohort (tilo-vm refuses a lone app:<dir> then).
+                if [[ -n $apps ]] && ! git diff --quiet "$commit" "$target" -- Cargo.lock; then
+                  swap+=",apps+runtime"
+                else
+                  swap+=$apps
+                fi
               fi ;;
             all)
               swap=$(git show "$target:os/components.toml" | python3 -c '
@@ -199,7 +229,8 @@ jobs:
 
           only=${INPUT_ONLY:-}
           if [[ $EVENT == pull_request ]]; then
-            mapfile -t changed < <(git diff --name-only "$PR_BASE...$PR_HEAD" -- scripts/vm-acceptance)
+            # The whole diff: ci_select.py ignores what no check proves.
+            mapfile -t changed < <(git diff --name-only "$PR_BASE...$PR_HEAD")
             only=$(python3 scripts/vm-acceptance/ci_select.py "${changed[@]}")
           fi
 

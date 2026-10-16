@@ -108,10 +108,6 @@ pub fn serve_workspace(
     })
 }
 
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc servers are Rc-based and run on a LocalSet by construction"
-)]
 async fn accept(
     listener: &tokio::net::UnixListener,
     backend: &Arc<dyn WorkspaceBackend>,

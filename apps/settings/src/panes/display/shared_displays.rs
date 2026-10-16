@@ -1,8 +1,8 @@
 //! Shared display facts and arrangement controls through the Settings resource door.
 
 use super::{
-    DisplayEffect, DisplayModel, Dropdown, El, LiveRow, LocalState, SettingsEffect, Toggle,
-    caption, card, effect, rows, setting_row, setting_row_described, t, t_args,
+    DisplayEffect, DisplayModel, Dropdown, LiveRow, LocalState, SettingsEffect, SettingsSection,
+    Toggle, card, effect, note, rows, setting_row, setting_row_described, t, t_args,
 };
 use settings_store::person_displays::{Arrangement, Layout, ResolvedDisplay};
 use ui::tilo_resource::{self, Effect};
@@ -304,12 +304,12 @@ impl DisplayModel {
         Ok(t("display-shared-saved"))
     }
 
-    pub(super) fn build_shared_displays_card(&self) -> Option<El> {
+    pub(super) fn build_shared_displays_card(&self) -> Option<SettingsSection> {
         let layout = self.shared_layout();
         if layout.displays.is_empty() && layout.inactive.is_empty() {
             return None;
         }
-        let mut content = vec![caption(&t("display-shared-description"))];
+        let mut content = vec![note(&t("display-shared-description"))];
         content.push(
             self.cx
                 .row(t("display-shared-auto-input"))
@@ -470,7 +470,7 @@ mod tests {
             .collect();
         let mut before = Vec::new();
         tiles(
-            model.build_device_arrangement_card().unwrap().as_ref(),
+            crate::widgets::cards(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
             &mut before,
         );
         assert_eq!(before.len(), 2);
@@ -499,7 +499,7 @@ mod tests {
             .unwrap();
         let mut after = Vec::new();
         tiles(
-            model.build_device_arrangement_card().unwrap().as_ref(),
+            crate::widgets::cards(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
             &mut after,
         );
         assert_eq!(
@@ -566,7 +566,7 @@ mod tests {
                 order: 1,
             })
             .unwrap();
-        let card = model.build_device_arrangement_card().unwrap();
+        let card = crate::widgets::cards(vec![model.build_device_arrangement_card().unwrap()]);
         let mut before = Vec::new();
         names(card.as_ref(), &mut before);
         assert!(
@@ -596,7 +596,7 @@ mod tests {
             .unwrap();
         let mut after = Vec::new();
         names(
-            model.build_device_arrangement_card().unwrap().as_ref(),
+            crate::widgets::cards(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
             &mut after,
         );
         assert!(

@@ -9,6 +9,7 @@
 use crate::time::SystemTime;
 use std::collections::HashSet;
 
+use crate::history_source::detail::{contains_opaque_id, human_label};
 use crate::history_source::seen::HistorySeenFrontier;
 use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 use crate::widget::history_group::{
@@ -128,22 +129,26 @@ impl ActivityDigest {
                 let slice = recent.get(group.start..group.end).unwrap_or(&[]);
                 let mut apps = Vec::new();
                 let mut resources = Vec::new();
+                // Only names a person can read: a resource or app known only
+                // by its id is left out rather than shown as a hash.
                 for entry in slice {
-                    if let Some(app) = entry
+                    if let Some(label) = entry
                         .context
                         .as_ref()
                         .and_then(|context| context.app.as_ref())
-                        && !apps.contains(&app.label)
+                        .and_then(|app| human_label(&app.label, &app.id))
+                        && !apps.iter().any(|known| known == label)
                     {
-                        apps.push(app.label.clone());
+                        apps.push(label.to_owned());
                     }
-                    if let Some(resource) = entry
+                    if let Some(label) = entry
                         .context
                         .as_ref()
                         .and_then(|context| context.resource.as_ref())
-                        && !resources.contains(&resource.label)
+                        .and_then(|resource| human_label(&resource.label, resource.id.as_str()))
+                        && !resources.iter().any(|known| known == label)
                     {
-                        resources.push(resource.label.clone());
+                        resources.push(label.to_owned());
                     }
                 }
                 let group_id = slice
@@ -151,8 +156,11 @@ impl ActivityDigest {
                     .and_then(|entry| entry.context.as_ref())
                     .and_then(|context| context.group.as_ref())
                     .map(|group| group.id.clone());
-                let title = digest_outcome_title(group, recent, &resources);
-                let group_detail = group.subtitle(recent);
+                let mut title = digest_outcome_title(group, recent, &resources);
+                if contains_opaque_id(&title) {
+                    title = general_outcome_title(&group.families);
+                }
+                let group_detail = without_opaque_parts(&group.subtitle(recent));
                 let detail = if title == group.title(recent) {
                     group_detail
                 } else {
@@ -174,7 +182,11 @@ impl ActivityDigest {
                         .iter()
                         .map(|entry| ActivityBriefAction {
                             author: entry.author.clone(),
-                            summary: entry.summary.clone(),
+                            summary: if contains_opaque_id(&entry.summary) {
+                                general_outcome_title(&[OpFamily::of(entry.entry_kind)])
+                            } else {
+                                entry.summary.clone()
+                            },
                             timestamp: entry.timestamp,
                         })
                         .collect(),
@@ -212,7 +224,30 @@ fn digest_outcome_title(
         [only] => Some(only.as_str()),
         _ => None,
     };
-    let (general, about) = match group.families.as_slice() {
+    let (general, about) = outcome_keys(&group.families);
+    match (about, subject) {
+        (Some(key), Some(resource)) => crate::i18n!(key, "resource" => resource),
+        _ => crate::i18n!(general),
+    }
+}
+
+/// The outcome title that names no resource, for changes whose own wording
+/// would only show identifiers.
+fn general_outcome_title(families: &[OpFamily]) -> String {
+    crate::i18n!(outcome_keys(families).0)
+}
+
+/// A brief's detail line minus the ` · ` parts that carry identifiers.
+fn without_opaque_parts(detail: &str) -> String {
+    detail
+        .split(" \u{00b7} ")
+        .filter(|part| !contains_opaque_id(part))
+        .collect::<Vec<_>>()
+        .join(" \u{00b7} ")
+}
+
+fn outcome_keys(families: &[OpFamily]) -> (&'static str, Option<&'static str>) {
+    match families {
         [OpFamily::Governance] => ("history-outcome-access", None),
         [OpFamily::Comment] => (
             "history-outcome-discussion",
@@ -227,10 +262,6 @@ fn digest_outcome_title(
             Some("history-outcome-worked-on"),
         ),
         _ => ("history-outcome-workspace", None),
-    };
-    match (about, subject) {
-        (Some(key), Some(resource)) => crate::i18n!(key, "resource" => resource),
-        _ => crate::i18n!(general),
     }
 }
 
@@ -431,6 +462,51 @@ mod tests {
                     .iter()
                     .all(|brief| brief.work_session_id.is_some())
             );
+        }
+    }
+
+    #[test]
+    fn catch_up_never_shows_record_ids_as_names() {
+        let record = "3f2a9c41d0b7e8aa5c1d";
+        let id_only = |id: u8, at: u64, group: Option<&str>| {
+            let mut item = entry(id, "Ada", at);
+            item.summary = format!("Edited {record}");
+            let mut context = ActionContext::for_resource(record, "notes.note", record)
+                .with_app("org.tilo.Notes", "org.tilo.Notes");
+            if let Some(group) = group {
+                context = context.with_group("g", group, "issue");
+            }
+            item.context = Some(context);
+            item
+        };
+        let mut second = id_only(2, 110, None);
+        second.author = id_only(1, 100, None).author;
+        for entries in [
+            vec![id_only(1, 100, None)],
+            vec![id_only(1, 100, None), second],
+            vec![id_only(1, 100, Some(record))],
+        ] {
+            let digest = ActivityDigest::from_entries(&entries, SystemTime::UNIX_EPOCH, 5);
+            assert!(!digest.briefs.is_empty(), "the changes stay countable");
+            for brief in &digest.briefs {
+                let shown = [
+                    brief.title.clone(),
+                    brief.detail.clone(),
+                    brief.glance(),
+                    brief.apps.join(" "),
+                    brief.resources.join(" "),
+                ]
+                .into_iter()
+                .chain(brief.actions.iter().map(|action| action.summary.clone()))
+                .collect::<Vec<_>>();
+                for text in shown {
+                    assert!(
+                        !text.contains(record) && !contains_opaque_id(&text),
+                        "an identifier reached the catch-up: {text:?}"
+                    );
+                }
+                assert!(!brief.title.is_empty());
+            }
         }
     }
 

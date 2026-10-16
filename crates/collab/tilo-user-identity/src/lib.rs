@@ -63,15 +63,6 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod approval;
 pub mod canonical;
 pub mod cert;
@@ -83,7 +74,6 @@ pub mod fleet;
 pub mod image;
 #[cfg(target_os = "macos")]
 mod keychain;
-pub mod machine_mesh;
 #[cfg(target_os = "linux")]
 pub mod nofollow;
 // Identity files need an owner-checked filesystem; the browser keeps its

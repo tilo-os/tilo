@@ -342,3 +342,73 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
         assert!(fixture.staged().is_empty());
     }
 }
+
+/// A file created, written and synced inside the persister's settle time is
+/// back under its own name after a crash: `fsync` makes the namespace that
+/// places it durable, not only its bytes. A namespace that cannot be written
+/// fails the `fsync`, and the staged bytes stay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot() {
+    let mut fixture = Fixture::new().await;
+    // What the disk holds: the namespace from before the file existed, until
+    // the hook writes a newer one.
+    let on_disk = Arc::new(Mutex::new(fixture.namespace.lock().unwrap().save()));
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let record_id = {
+        let fs = fixture.mount(true);
+        fs.set_durability_hook({
+            let namespace = Arc::clone(&fixture.namespace);
+            let on_disk = Arc::clone(&on_disk);
+            let refuse = Arc::clone(&refuse);
+            Arc::new(move || {
+                if refuse.load(Ordering::SeqCst) {
+                    return Err(io::Error::other("the namespace volume is full"));
+                }
+                *on_disk.lock().unwrap() = namespace.lock().unwrap().save();
+                Ok(())
+            })
+        });
+        let (ino, _fh) = create_open(&fs, "wal.db");
+        fs.write_buffer(ino, 0, b"committed transaction").unwrap();
+        assert_eq!(fs.fsync_inode(ino), Ok(()));
+
+        let (other, _fh) = create_open(&fs, "unsynced.db");
+        fs.write_buffer(other, 0, b"never synced").unwrap();
+        refuse.store(true, Ordering::SeqCst);
+        assert_eq!(
+            fs.fsync_inode(other),
+            Err(EIO),
+            "a sync whose namespace was not written must fail"
+        );
+        assert_eq!(
+            fs.staged_bytes(other).as_deref(),
+            Some(b"never synced".as_slice())
+        );
+        fs.ns().record_id_for(ino).unwrap()
+        // Dropped without close or a final save: the process died.
+    };
+
+    let bytes = on_disk.lock().unwrap().clone();
+    fixture.namespace = Arc::new(Mutex::new(
+        Namespace::from_bytes("restarted", &bytes).unwrap(),
+    ));
+    let fs = fixture.mount(true);
+    let ino = fs
+        .ns()
+        .lookup(crate::namespace::ROOT_INO, b"wal.db")
+        .expect("a synced file keeps its name across a crash")
+        .ino
+        .0;
+    assert_eq!(fs.ns().record_id_for(ino), Some(record_id));
+    assert!(fs.recover_unsaved_writes() >= 1);
+    assert_eq!(committed_bytes(&fs, ino).await, b"committed transaction");
+    assert!(
+        fs.ns()
+            .lookup(
+                crate::namespace::ROOT_INO,
+                unsaved_copy_name(b"wal.db", b"committed transaction")
+            )
+            .is_none(),
+        "the synced bytes went back into their file, not into a copy beside it"
+    );
+}

@@ -27,6 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -188,63 +189,6 @@ pub struct TrustedAttestors {
 }
 
 impl TrustedAttestors {
-    /// Empty registry (nothing trusted).
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Decode from TOML source.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrustLoadError::Parse`] if `s` is not valid TOML for this
-    /// shape.
-    pub fn from_toml_str(s: &str) -> Result<Self, TrustLoadError> {
-        toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))
-    }
-
-    /// Encode to TOML source.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrustLoadError::Encode`] if serialisation fails.
-    pub fn to_toml_string(&self) -> Result<String, TrustLoadError> {
-        toml::to_string(self).map_err(|e| TrustLoadError::Encode(e.to_string()))
-    }
-
-    /// Load from disk; returns an empty registry if the file doesn't exist.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrustLoadError::Io`] if the file exists but can't be read
-    /// or isn't valid UTF-8, or [`TrustLoadError::Parse`] if it isn't valid
-    /// TOML for this shape.
-    pub fn load(path: &Path) -> Result<Self, TrustLoadError> {
-        if !path.exists() {
-            return Ok(Self::empty());
-        }
-        let bytes = std::fs::read(path).map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        let text = String::from_utf8(bytes).map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        Self::from_toml_str(&text)
-    }
-
-    /// Atomic-rename-based save.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrustLoadError::Io`] if the parent directory can't be
-    /// created or the write fails, or [`TrustLoadError::Encode`] if
-    /// serialisation fails.
-    pub fn save(&self, path: &Path) -> Result<(), TrustLoadError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        }
-        let text = self.to_toml_string()?;
-        tilo_files::native::atomic::write(path, text.as_bytes())
-            .map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        Ok(())
-    }
-
     /// Look up an attestor by id.
     pub fn get(&self, id: &str) -> Option<&TrustedAttestor> {
         self.attestor.iter().find(|a| a.id == id)
@@ -255,6 +199,62 @@ impl TrustedAttestors {
         &self.attestor
     }
 }
+
+/// A trust list kept as a TOML file in user config. A missing file is an
+/// empty list: nothing trusted, nothing revoked.
+pub trait TrustFile: Default + Serialize + DeserializeOwned {
+    /// Decode from TOML source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Parse`] if `s` is not valid TOML for this
+    /// shape.
+    fn from_toml_str(s: &str) -> Result<Self, TrustLoadError> {
+        toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))
+    }
+
+    /// Encode to TOML source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Encode`] if serialisation fails.
+    fn to_toml_string(&self) -> Result<String, TrustLoadError> {
+        toml::to_string(self).map_err(|e| TrustLoadError::Encode(e.to_string()))
+    }
+
+    /// Load from disk; the empty list if the file doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Io`] if the file exists but can't be read
+    /// or isn't valid UTF-8, or [`TrustLoadError::Parse`] if it isn't valid
+    /// TOML for this shape.
+    fn load(path: &Path) -> Result<Self, TrustLoadError> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::from_toml_str(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(TrustLoadError::Io(e.to_string())),
+        }
+    }
+
+    /// Atomic-rename-based save.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Io`] if the parent directory can't be
+    /// created or the write fails, or [`TrustLoadError::Encode`] if
+    /// serialisation fails.
+    fn save(&self, path: &Path) -> Result<(), TrustLoadError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        }
+        let text = self.to_toml_string()?;
+        tilo_files::native::atomic::write(path, text.as_bytes())
+            .map_err(|e| TrustLoadError::Io(e.to_string()))
+    }
+}
+
+impl TrustFile for TrustedAttestors {}
 
 /// One revoked publisher key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,64 +286,9 @@ pub struct RevocationList {
     pub revoked: Vec<RevokedKey>,
 }
 
+impl TrustFile for RevocationList {}
+
 impl RevocationList {
-    /// Empty list (nothing revoked).
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Decode from TOML.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrustLoadError::Parse`] if `s` is not valid TOML for this
-    /// shape.
-    pub fn from_toml_str(s: &str) -> Result<Self, TrustLoadError> {
-        toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))
-    }
-
-    /// Encode to TOML.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrustLoadError::Encode`] if serialisation fails.
-    pub fn to_toml_string(&self) -> Result<String, TrustLoadError> {
-        toml::to_string(self).map_err(|e| TrustLoadError::Encode(e.to_string()))
-    }
-
-    /// Load from disk; returns an empty list if the file doesn't exist.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrustLoadError::Io`] if the file exists but can't be read
-    /// or isn't valid UTF-8, or [`TrustLoadError::Parse`] if it isn't valid
-    /// TOML for this shape.
-    pub fn load(path: &Path) -> Result<Self, TrustLoadError> {
-        if !path.exists() {
-            return Ok(Self::empty());
-        }
-        let bytes = std::fs::read(path).map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        let text = String::from_utf8(bytes).map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        Self::from_toml_str(&text)
-    }
-
-    /// Atomic-rename-based save.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrustLoadError::Io`] if the parent directory can't be
-    /// created or the write fails, or [`TrustLoadError::Encode`] if
-    /// serialisation fails.
-    pub fn save(&self, path: &Path) -> Result<(), TrustLoadError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        }
-        let text = self.to_toml_string()?;
-        tilo_files::native::atomic::write(path, text.as_bytes())
-            .map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        Ok(())
-    }
-
     /// Test a raw pubkey against the revocation list; returns the matching `RevokedKey` if any.
     pub fn find(&self, pubkey: &[u8; 32]) -> Option<&RevokedKey> {
         for entry in &self.revoked {

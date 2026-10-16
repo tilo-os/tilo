@@ -113,12 +113,7 @@ pub struct Desk {
 
 impl SharedDesk {
     fn with(&self, edit: impl FnOnce(&mut Desk)) {
-        edit(
-            &mut self
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        edit(&mut self.0.lock_recover());
     }
 
     /// Replace the tiles shown with `tiles`.
@@ -133,10 +128,7 @@ impl SharedDesk {
 
     /// The desk as it is now, for one frame to read without holding the lock.
     pub fn snapshot(&self) -> Desk {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.0.lock_recover().clone()
     }
 }
 
@@ -443,10 +435,7 @@ impl PeerPresence {
                 }
                 // Nothing to say if the pointer has never moved, or is
                 // over nothing the room shares.
-                let Some(anchor) = *sink_cursor
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                else {
+                let Some(anchor) = *sink_cursor.lock_recover() else {
                     return;
                 };
                 let key = PresenceKey::tile_pointer(route.cluster_id.clone(), anchor.tab);
@@ -514,10 +503,7 @@ impl PeerPresence {
         // Cloned once, so the roster can read their change signals without
         // locking the replica on every frame.
         let (roster_tree, participants_epoch) = {
-            let replica = net
-                .replica
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let replica = net.replica.lock_recover();
             (replica.tree.clone(), replica.participants_epoch())
         };
         Self {
@@ -576,10 +562,7 @@ impl PeerPresence {
         room: &str,
         people: Vec<ui::collaboration::Collaborator>,
     ) {
-        let mine = self
-            .rooms
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mine = self.rooms.lock_recover();
         if !mine.iter().any(|current| current == room) {
             return;
         }
@@ -594,10 +577,7 @@ impl PeerPresence {
     /// pointer on the wire in the room on screen. A wakeup with no tree
     /// write reads nothing from the tree. Returns whether anything went out.
     pub fn follow_tree(&self, tree: &crate::shell::state::WorkspaceTreeHandle) -> bool {
-        let mut followed = self
-            .followed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut followed = self.followed.lock_recover();
         // Loaded before the tree is read: a write racing the read below is
         // read again on the next call.
         let generation = tree.generation();
@@ -632,14 +612,8 @@ impl PeerPresence {
         if room.is_empty() {
             return false;
         }
-        let at = *self
-            .cursor
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut last = self
-            .last_published
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = *self.cursor.lock_recover();
+        let mut last = self.last_published.lock_recover();
         // Read before deciding: a peer joining while this runs is welcomed
         // on the next frame.
         let joined = self.net.peers_joined_epoch();
@@ -728,10 +702,7 @@ impl PeerPresence {
         }
         let folded = !drained.is_empty();
         let net = Arc::clone(&self.net);
-        let mine = self
-            .rooms
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mine = self.rooms.lock_recover();
         let cursor_changed = self.anchored.lock().is_ok_and(|mut anchored| {
             anchored.retain(|_, (room, _, _)| mine.iter().any(|r| r == room));
             let fresh = fold_inbound(
@@ -877,10 +848,7 @@ impl PeerPresence {
             participants: self.participants_epoch.load(Ordering::Acquire),
             presence: self.presence_epoch.load(Ordering::Acquire),
         };
-        let mut seen = self
-            .roster_seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut seen = self.roster_seen.lock_recover();
         if let Some(last) = seen.as_mut()
             && now.saturating_duration_since(last.at) < ROSTER_RECHECK
         {
@@ -2964,6 +2932,7 @@ mod two_sessions {
                     active_tab: desk_tab(id),
                     width: WindowWidth::Fraction(250),
                     maximized: false,
+                    focus_history: Vec::new(),
                 })
                 .collect(),
         }];
@@ -3683,3 +3652,4 @@ mod two_sessions {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+use tilo_lock::MutexRecover as _;

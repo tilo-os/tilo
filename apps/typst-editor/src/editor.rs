@@ -285,6 +285,12 @@ impl SourceEditor {
         self.control_mut().set_focused(focused);
         let rect = self.rect;
         self.control_mut().set_rect(rect);
+        // This embedded editor bypasses widget measurement. Give it the
+        // theme's resolved code size instead of its stock 1× role size;
+        // content sizing prevents applying the accessibility scale twice.
+        self.control_mut()
+            .inner_mut()
+            .set_content_size(Some(theme.text(ui::tokens::TextRole::Code).size));
         let text = self.control().value().to_string();
         let spans = diags
             .iter()
@@ -480,6 +486,41 @@ mod tests {
                 [Severity::Warning, Severity::Error],
                 "the widget marks each span at its severity"
             );
+        }
+    }
+
+    #[test]
+    fn embedded_source_scales_type_gutter_and_hit_testing_together() {
+        let mut editor = SourceEditor::new();
+        editor.set_text("= Motion\n\nA short note.\n");
+        editor.set_rect(Rect::new(0.0, 0.0, 660.0, 700.0));
+        let mut tr = TextRenderer::new();
+        let mut base_line = 0.0;
+        let mut base_gutter = 0.0;
+        for (index, theme) in [
+            Theme::dark(),
+            Theme::dark().with_ui_scale(1.5),
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.2),
+            Theme::dark(),
+        ]
+        .iter()
+        .enumerate()
+        {
+            editor.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, theme, &[]);
+            let input = editor.control().inner();
+            let line = input.body_line_height();
+            let gutter = editor.control().gutter_width();
+            if index == 0 {
+                base_line = line;
+                base_gutter = gutter;
+            }
+            let factor = f64::from(theme.ui_scale * theme.text_scale);
+            assert!((line / base_line - factor).abs() < 0.01);
+            if index == 1 || index == 2 {
+                assert!(gutter > base_gutter, "line numbers grow with source text");
+            }
+            let caret = editor.control().caret_rect(theme, 4);
+            assert_eq!(editor.control().byte_at_point(caret.center()), 4);
         }
     }
 

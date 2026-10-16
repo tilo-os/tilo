@@ -73,6 +73,9 @@ pub struct EditableLabel {
     /// Set by something else that offers a rename (a context menu's
     /// "Rename"): the label begins an edit with the next event it sees.
     edit_request: Option<crate::LocalState<bool>>,
+    /// The text and style the last `measure` sized; the label needs measuring
+    /// again only when either changed.
+    measured: Option<(String, TextStyle)>,
 }
 
 impl EditableLabel {
@@ -98,6 +101,7 @@ impl EditableLabel {
             edits_on_click: false,
             placeholder: None,
             edit_request: None,
+            measured: None,
         }
     }
 
@@ -383,6 +387,7 @@ impl Widget for EditableLabel {
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         let (w, _) = text_renderer.measure_style(self.shown_text(), None, &self.style);
+        self.measured = Some((self.shown_text().to_owned(), self.style.clone()));
         taffy::Size {
             width: w + 4.0,
             height: self.band(),
@@ -392,6 +397,16 @@ impl Widget for EditableLabel {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.input.apply_layout_external(self.rect);
+    }
+
+    /// Its size follows the text it shows and the style it shows it in, so
+    /// it is measured again when either changed since the last measure.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+            || self
+                .measured
+                .as_ref()
+                .is_none_or(|(text, style)| text != self.shown_text() || *style != self.style)
     }
 
     fn draw(
@@ -664,6 +679,26 @@ mod tests {
 
     fn no_mods() -> Modifiers {
         Modifiers::default()
+    }
+
+    /// A frame re-solves the label's size only when what it shows changed,
+    /// not on every frame that moves it.
+    #[test]
+    fn a_label_asks_for_a_measure_only_when_its_text_changes() {
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            EditableLabel::new("Budget"),
+            (400, 80),
+            Theme::dark(),
+        );
+        harness.relayout();
+        assert!(!harness.root::<EditableLabel>().layout_needs_measure());
+        harness
+            .root_mut::<EditableLabel>()
+            .set_value("Quarterly budget");
+        assert!(harness.root::<EditableLabel>().layout_needs_measure());
+        harness.relayout();
+        assert!(!harness.root::<EditableLabel>().layout_needs_measure());
     }
 
     #[test]

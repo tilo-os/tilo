@@ -1,10 +1,6 @@
 //! `wl_data_device` + `zwp_primary_selection_device_v1` on the app's own
 //! Wayland connection — the native clipboard for a Wayland app; see
 //! the crate docs for why this, rather than `arboard`, serves Wayland.
-#![allow(
-    clippy::disallowed_methods,
-    reason = "native host runner: the Wayland clipboard owns its event thread"
-)]
 
 use std::sync::Arc;
 
@@ -71,7 +67,6 @@ impl RichClipboard {
 }
 
 const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
-const CLIPBOARD_SHUTDOWN_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(250);
 
 fn publication_deadline() -> tilo_clock::Instant {
     let now = tilo_clock::now();
@@ -83,20 +78,6 @@ fn recv_bounded<T>(
     budget: tilo_clock::Duration,
 ) -> Option<T> {
     receiver.recv_timeout(budget).ok()
-}
-
-fn join_bounded(thread: std::thread::JoinHandle<()>, budget: tilo_clock::Duration) -> bool {
-    let now = tilo_clock::now();
-    let deadline = now.checked_add(budget).unwrap_or(now);
-    while !thread.is_finished() && tilo_clock::now() < deadline {
-        std::thread::yield_now();
-    }
-    if thread.is_finished() {
-        let _ = thread.join();
-        true
-    } else {
-        false
-    }
 }
 
 /// `wl_data_device` + `zwp_primary_selection_device_v1` on the app's own
@@ -132,6 +113,27 @@ struct PublicationClipboard {
     sender: smithay_client_toolkit::reexports::calloop::channel::Sender<ClipboardCommand>,
     thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
     alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PublicationClipboard {
+    /// Stop the worker and wait until it has. The worker drives the
+    /// application's own `wl_display`, which the application frees after
+    /// this clipboard; a worker left running would go on reading and
+    /// writing freed memory. It sits in its event loop, where `Exit` wakes
+    /// it at once, and none of its work blocks: its pipes are event
+    /// sources. `smithay_clipboard::Clipboard` makes the same wait on drop
+    /// for the readers this clipboard also owns.
+    fn shut_down(&self) {
+        let _ = self.sender.send(ClipboardCommand::Exit);
+        let thread = self
+            .thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(thread) = thread {
+            let _ = thread.join();
+        }
+    }
 }
 
 enum ClipboardCommand {
@@ -524,6 +526,10 @@ mod image_worker_impl {
         deadline: tilo_clock::Instant,
     }
 
+    struct PublishedSelection {
+        reply: std::sync::mpsc::Sender<bool>,
+    }
+
     struct PlainRequest {
         reply: std::sync::Mutex<Option<std::sync::mpsc::Sender<Option<String>>>>,
         deadline: tilo_clock::Instant,
@@ -576,8 +582,8 @@ mod image_worker_impl {
             _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
             _: sctk::reexports::client::protocol::wl_callback::Event,
             pending: &PendingPublication,
-            _: &Connection,
-            _: &QueueHandle<Self>,
+            connection: &Connection,
+            queue_handle: &QueueHandle<Self>,
         ) {
             // This callback follows all earlier focus events on the same
             // protocol queue. A timed-out or unfocused copy must not become
@@ -602,7 +608,36 @@ mod image_worker_impl {
             } else {
                 false
             };
-            let _ = pending.reply.send(ok);
+            if ok {
+                // The new sink may take focus as soon as set_image returns.
+                // Fence set_selection on this connection before reporting a
+                // successful copy, so a caller's next focus change cannot
+                // overtake its own publication.
+                connection.display().sync(
+                    queue_handle,
+                    PublishedSelection {
+                        reply: pending.reply.clone(),
+                    },
+                );
+                let _ = connection.flush();
+            } else {
+                let _ = pending.reply.send(false);
+            }
+        }
+    }
+
+    impl Dispatch<sctk::reexports::client::protocol::wl_callback::WlCallback, PublishedSelection>
+        for State
+    {
+        fn event(
+            _: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            published: &PublishedSelection,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let _ = published.reply.send(true);
         }
     }
 
@@ -1892,12 +1927,7 @@ fn begin_external_refresh(inflight: &std::sync::atomic::AtomicBool) -> bool {
 impl Drop for WaylandClipboard {
     fn drop(&mut self) {
         self.rich.invalidate();
-        let _ = self.publication.sender.send(ClipboardCommand::Exit);
-        if let Ok(mut thread) = self.publication.thread.lock()
-            && let Some(thread) = thread.take()
-        {
-            let _ = join_bounded(thread, CLIPBOARD_SHUTDOWN_BUDGET);
-        }
+        self.publication.shut_down();
     }
 }
 
@@ -1987,21 +2017,36 @@ mod tests {
                 "a slow external owner must not make paste return an unrelated cached value"
             );
         }
-        // phase: shutdown_join_is_bounded_when_a_protocol_worker_is_stuck
+        // phase: shutdown_returns_only_after_the_worker_has_stopped
         {
-            // The worker stays blocked until this test releases it, so a
-            // `join_bounded` that returns at all has given up on its own budget.
-            let (release, stuck) = std::sync::mpsc::channel::<()>();
+            // A worker slower to stop than the old fixed budget: shutting
+            // down still waits for it, since it would use the display after.
+            let (sender, commands) =
+                smithay_client_toolkit::reexports::calloop::channel::channel::<ClipboardCommand>();
+            let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_stopped = Arc::clone(&stopped);
             let worker = std::thread::spawn(move || {
-                let _ = stuck.recv();
+                loop {
+                    match commands.try_recv() {
+                        Ok(ClipboardCommand::Exit)
+                        | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                        Ok(_) | Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            std::thread::yield_now();
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                worker_stopped.store(true, std::sync::atomic::Ordering::Release);
             });
-            assert!(!join_bounded(worker, std::time::Duration::from_millis(2)));
-            drop(release);
-
-            let finished = std::thread::spawn(|| {});
+            let publication = PublicationClipboard {
+                sender,
+                thread: std::sync::Mutex::new(Some(worker)),
+                alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            };
+            publication.shut_down();
             assert!(
-                join_bounded(finished, tilo_test_env::hang_bound()),
-                "a worker that exits is joined within the budget"
+                stopped.load(std::sync::atomic::Ordering::Acquire),
+                "shutting down returned while the worker could still use the display"
             );
         }
         // phase: source_payload_rejects_unadvertised_mime_without_falling_back_to_text

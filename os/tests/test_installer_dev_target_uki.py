@@ -11,6 +11,7 @@ from pathlib import Path
 import struct
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -19,24 +20,36 @@ spec = importlib.util.spec_from_file_location('dev_target', SCRIPT)
 dev = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dev)
 UKI_TOOL = SCRIPT.parents[2] / 'dev/uki-cmdline.py'
+BUILDER = SCRIPT.parents[2] / 'dev/dev-target-uki.py'
+spec = importlib.util.spec_from_file_location('dev_target_builder', BUILDER)
+builder = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(builder)
 KERNEL, INITRD = b'exact CI kernel', b'exact CI initrd'
 DTB = struct.pack('>10I', 0xD00DFEED, 40, 40, 40, 40, 17, 16, 0, 0, 0)
 DIGEST = 'a' * 128
 MANIFEST = 'sha256:' + 'b' * 64
 ORIGIN = 'registry.tilo.so/tilo/tilo-vm:main-fixture-lenovo-83ed'
+# What bootc 1.16 `install to-filesystem --composefs-backend` writes ahead of
+# the image's kargs in a split-kernel BLS entry (captured from a VM install).
+FS_UUID, BOOT_UUID = '298c49ae-60ed-4a00-a035-c863f0b1a686', 'adc2062b-7c7c-4f19-960a-ad87b0823796'
+BOOTC_DISK_IDENTITY = f'root=UUID={FS_UUID} rootflags=subvol=/ rw boot=UUID={BOOT_UUID}'
 
 
 def pe(payloads):
-    data = bytearray(4096)
+    """A minimal ARM64 PE: each section's raw size is its payload, 512-aligned."""
+    raw_sizes = [max(512, -(-len(value) // 512) * 512) for value in payloads.values()]
+    data = bytearray(1024 + sum(raw_sizes))
     data[:2] = b'MZ'
     struct.pack_into('<I', data, 60, 64)
     data[64:68] = b'PE\0\0'
     struct.pack_into('<HHIIIHH', data, 68, 0xaa64, len(payloads), 0, 0, 0, 240, 0x2022)
-    for index, (name, value) in enumerate(payloads.items()):
-        offset, raw = 328 + 40 * index, 1024 + 512 * index
+    raw = 1024
+    for index, ((name, value), raw_size) in enumerate(zip(payloads.items(), raw_sizes)):
+        offset = 328 + 40 * index
         data[offset:offset + 8] = name.encode().ljust(8, b'\0')
-        struct.pack_into('<IIII', data, offset + 8, len(value), 4096 * (index + 1), 512, raw)
+        struct.pack_into('<IIII', data, offset + 8, len(value), 4096 * (index + 1), raw_size, raw)
         data[raw:raw + len(value)] = value
+        raw += raw_size
     return bytes(data)
 
 
@@ -71,7 +84,9 @@ class DevelopmentTarget(unittest.TestCase):
         self.entry.write_text(f'title Tilo\nversion {DIGEST}\nsort-key bootc-tilo-0\n'
                               f'linux /EFI/Linux/bootc_composefs-{DIGEST}/vmlinuz\n'
                               f'initrd /EFI/Linux/bootc_composefs-{DIGEST}/initrd\n'
-                              f'options quiet root=tilo-auto composefs={DIGEST} tilo.install\n')
+                              f'options {BOOTC_DISK_IDENTITY} composefs={DIGEST} '
+                              f'systemd.mount-extra=UUID={BOOT_UUID}:/boot:auto:ro '
+                              f'root=tilo-auto quiet tilo.install\n')
         self.selected = {'target_digest': MANIFEST, 'update_origin': ORIGIN}
         # Split-kernel tests model the constructor alongside the fake build()
         # output. Do not depend on ukify being installed on the CI test runner.
@@ -96,7 +111,8 @@ class DevelopmentTarget(unittest.TestCase):
         sys.modules.pop('hardware_profile', None)
         old_path = sys.path[:]
         self.addCleanup(lambda: sys.path.__setitem__(slice(None), old_path))
-        for name, value in [('PROFILE_TOOLS', tools), ('UKI_TOOL', UKI_TOOL)]:
+        for name, value in [('PROFILE_TOOLS', tools), ('UKI_TOOL', UKI_TOOL),
+                            ('TRANSPORT_UKI', self.root / 'no-transport/target-uki.efi')]:
             mocked = patch.object(dev, name, value)
             mocked.start()
             self.addCleanup(mocked.stop)
@@ -126,6 +142,10 @@ class DevelopmentTarget(unittest.TestCase):
         cmdline = Path(str(argv[argv.index('--cmdline') + 1])[1:]).read_bytes().rstrip(b'\r\n')
         self.assertNotIn(b'tilo.install', cmdline)
         self.assertIn(dev.MOUNT.encode(), cmdline)
+        # bootc's install-time disk identity never reaches the installed UKI.
+        for word in BOOTC_DISK_IDENTITY.split() + [f'systemd.mount-extra=UUID={BOOT_UUID}:/boot:auto:ro']:
+            self.assertNotIn(word.encode(), cmdline.split())
+        self.assertTrue(cmdline.startswith(f'composefs={DIGEST} root=tilo-auto quiet '.encode()))
         output = Path(argv[argv.index('--output') + 1])
         output.write_bytes(pe({'.linux': KERNEL, '.initrd': INITRD,
                               '.cmdline': cmdline + b'\0', '.dtb': DTB}))
@@ -196,9 +216,88 @@ class DevelopmentTarget(unittest.TestCase):
                 dev.image_inputs(self.image)
         self.assertFalse((self.esp / f'EFI/Linux/bootc/bootc_composefs-{DIGEST}.efi').exists())
 
+    def runner_uki(self, **changes):
+        """The runner's real constructor; only the external ukify is a fixture."""
+        payloads = {}
+        def run(argv, **kwargs):
+            argv = [str(item) for item in argv]
+            if argv[1].endswith('uki-hardware-profile.py'):
+                self.assertEqual(argv[2:], [str(self.image), '7.2.7', 'aarch64'])
+                return SimpleNamespace(stdout=str(self.dtb) + '\n')
+            self.assertEqual(argv[:2], ['ukify', 'build'])
+            self.assertEqual(Path(argv[argv.index('--linux') + 1]), self.kdir / 'vmlinuz')
+            self.assertEqual(argv[argv.index('--devicetree') + 1], str(self.dtb))
+            cmdline = Path(argv[argv.index('--cmdline') + 1][1:]).read_bytes().rstrip(b'\n')
+            payloads.update({'.linux': KERNEL, '.initrd': INITRD,
+                             '.cmdline': cmdline + b'\0', '.dtb': DTB}, **changes)
+            Path(argv[argv.index('--output') + 1]).write_bytes(pe(payloads))
+            return SimpleNamespace(stdout='')
+        output = self.root / 'transport/target-uki.efi'
+        output.parent.mkdir()
+        with patch.object(builder, 'run', side_effect=run):
+            builder.construct(self.image, output)
+        mocked = patch.object(dev, 'TRANSPORT_UKI', output)
+        mocked.start()
+        self.addCleanup(mocked.stop)
+        return output
+
+    def test_runner_built_uki_installs_without_a_live_constructor(self):
+        self.assertEqual(builder.CMDLINE_ROOM, dev.CMDLINE_ROOM)
+        transported = self.runner_uki()
+        original = transported.read_bytes()
+        self.assertEqual(dev.sections(transported)['.cmdline'].rstrip(b'\0'),
+                         builder.placeholder().encode())
+        with patch.object(dev, 'command', side_effect=AssertionError('the live medium has no ukify')), \
+                patch.object(dev.shutil, 'which', return_value=None):
+            dev.image_inputs(self.image)
+            self.assertEqual(dev.promote(self.image, self.target, self.esp, self.selected), DIGEST)
+        installed = dev.sections(self.esp / f'EFI/Linux/bootc/bootc_composefs-{DIGEST}.efi')
+        self.assertEqual((installed['.linux'], installed['.initrd'], installed['.dtb']), (KERNEL, INITRD, DTB))
+        self.assertEqual(installed['.cmdline'],
+                         f'composefs={DIGEST} root=tilo-auto quiet {dev.MOUNT}'.encode())
+        ini = configparser.ConfigParser()
+        ini.read(self.origin)
+        self.assertEqual(ini.get('boot', 'boot_type'), 'uki')
+        self.assertEqual(ini.get('image', 'manifest_digest'), MANIFEST)
+        self.assertIn(f'efi /EFI/Linux/bootc/bootc_composefs-{DIGEST}.efi', self.entry.read_text())
+        self.assertEqual(transported.read_bytes(), original)
+
+    def test_runner_built_uki_must_carry_the_selected_payload_and_room(self):
+        entry, origin = self.entry.read_bytes(), self.origin.read_bytes()
+        for changes, message in (({'.linux': b'other image kernel'}, 'split kernel payload'),
+                                 ({'.dtb': b'x' * len(DTB)}, 'pinned hardware DTB'),
+                                 ({'.cmdline': b'root=tilo-auto\0'}, 'reserved command-line room')):
+            with self.subTest(changes=changes), patch.object(dev.shutil, 'which', return_value=None):
+                transported = self.runner_uki(**changes)
+                with patch.object(dev, 'command') as build, self.assertRaisesRegex(ValueError, message):
+                    dev.promote(self.image, self.target, self.esp, self.selected)
+                build.assert_not_called()
+                self.assertEqual(self.entry.read_bytes(), entry)
+                self.assertEqual(self.origin.read_bytes(), origin)
+                self.assertFalse((self.esp / f'EFI/Linux/bootc/bootc_composefs-{DIGEST}.efi').exists())
+                shutil.rmtree(transported.parent)
+
+    def test_runner_built_uki_refuses_a_command_line_beyond_its_room(self):
+        self.runner_uki(**{'.cmdline': (dev.CMDLINE_ROOM + '=x').encode()})
+        entry = self.entry.read_bytes()
+        with patch.object(dev.shutil, 'which', return_value=None), \
+                self.assertRaisesRegex(ValueError, 'reserved 512'):
+            self.entry.write_text(entry.decode().replace(' tilo.install', ' x=' + 'y' * 600 + ' tilo.install'))
+            dev.promote(self.image, self.target, self.esp, self.selected)
+        self.assertFalse((self.esp / f'EFI/Linux/bootc/bootc_composefs-{DIGEST}.efi').exists())
+
+    def test_runner_built_uki_beside_a_sealed_image_uki_is_ambiguous(self):
+        self.runner_uki()
+        image_uki = self.image / 'boot/EFI/Linux/7.2.7.efi'
+        image_uki.parent.mkdir(parents=True)
+        image_uki.write_bytes(pe({'.linux': KERNEL, '.initrd': INITRD, '.cmdline': b'x\0', '.dtb': DTB}))
+        with self.assertRaisesRegex(ValueError, 'both a sealed and a transported UKI'):
+            dev.image_inputs(self.image)
+
     def test_wrong_payload_or_ci_manifest_fails_before_mutation(self):
         original_entry, original_origin = self.entry.read_bytes(), self.origin.read_bytes()
-        for variant in ('payload', 'manifest', 'composefs', 'ambiguous-kernel', 'unsafe-bls'):
+        for variant in ('payload', 'manifest', 'composefs', 'ambiguous-kernel', 'unsafe-bls',
+                        'other-root', 'second-bootc-root'):
             with self.subTest(variant=variant):
                 if variant == 'payload':
                     path = self.esp / f'EFI/Linux/bootc_composefs-{DIGEST}/vmlinuz'
@@ -207,6 +306,11 @@ class DevelopmentTarget(unittest.TestCase):
                     self.selected['target_digest'] = 'sha256:' + 'c' * 64
                 elif variant == 'composefs':
                     self.entry.write_text(original_entry.decode().replace('composefs=' + DIGEST, 'composefs=' + 'c' * 128))
+                elif variant == 'other-root':
+                    # Only bootc's own UUID root is dropped; any other root stays fatal.
+                    self.entry.write_text(original_entry.decode().replace(' quiet', ' root=/dev/vda3 quiet'))
+                elif variant == 'second-bootc-root':
+                    self.entry.write_text(original_entry.decode().replace(' quiet', f' root=UUID={BOOT_UUID} quiet'))
                 elif variant == 'ambiguous-kernel':
                     (self.image / 'usr/lib/modules/other').mkdir()
                 else:

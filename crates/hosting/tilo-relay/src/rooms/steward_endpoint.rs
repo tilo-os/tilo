@@ -99,14 +99,28 @@ impl Rooms {
         }
         let channel =
             collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
-        let allowed = readers(&room.peer().governed_access(SystemTime::now())?);
         let steward = room
             .stewardship
             .clone()
             .ok_or("this relay does not steward the room's channels")?;
+        // This relay's own endpoint names the record it writes: the channel
+        // is decided by it from its first admission.
+        steward.learn_route(
+            channel,
+            &collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str()),
+        );
+        let now = SystemTime::now();
+        let allowed = readers(
+            room.peer(),
+            &room.peer().governance().governed_access(now)?,
+            Some(&*steward),
+            now,
+        )?;
         let mut stewardship = steward.channels.lock().await;
         if create {
             let messages = stewardship.open_channel(channel, &allowed)?;
+            // After the channel changes a settle handed over.
+            room.publisher.flushed().await;
             self.publish_channel_governance(workspace_id, messages)
                 .await?;
         }

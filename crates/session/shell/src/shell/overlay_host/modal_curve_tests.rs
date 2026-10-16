@@ -120,7 +120,7 @@ fn modal_transitions_pump_only_the_frames_they_need() {
 
     fn osd_sleeps_while_opaque_and_pumps_only_its_fade_tail() {
         use crate::shell::chrome_state::ChromeState;
-        use crate::shell::osd::{OSD_FADE, OSD_HOLD, Osd};
+        use crate::shell::osd::{OSD_FADE, OSD_FADE_IN, OSD_HOLD, Osd};
         use crate::shell::state::WorkspaceTree;
         use ui::widget::Container;
 
@@ -131,7 +131,11 @@ fn modal_transitions_pump_only_the_frames_they_need() {
         chrome.borrow_mut().show_osd(osd);
 
         assert!(
-            !host.needs_animation_frame_at(raised_at),
+            host.needs_animation_frame_at(raised_at),
+            "the fade-in pumps its frames"
+        );
+        assert!(
+            !host.needs_animation_frame_at(raised_at + OSD_FADE_IN),
             "the static hold must not repaint continuously"
         );
         let expiry = raised_at.checked_add(OSD_HOLD).unwrap();

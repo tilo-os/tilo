@@ -5,18 +5,18 @@
 //! recapture.
 
 use super::{
-    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
-    RemoveMemberRequest, RoomAdminRequest, RoomCommand, RoomReply, RoomSummary,
+    CancelInvitationRequest, GrantAppAuthorshipRequest, IssueInvitationRequest, IssuedInvitation,
+    PendingInvitation, RemoveMemberRequest, RoomAdminRequest, RoomCommand, RoomReply, RoomSummary,
     SetMemberRoleRequest,
 };
-use tilo_peer_state::GovernedMember;
-use tilo_peer_state::join::{
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_workspace_join::GovernedMember;
+use tilo_workspace_join::{
     JoinChallenge, JoinChallengeRequest, JoinChallengeResponse, JoinCompleteRequest, JoinProof,
     JoinTransportRequest, JoinTransportResponse, MemberRole, MembershipChallenge,
     MembershipChallengeRequest, MembershipChallengeResponse, MembershipCompleteRequest,
     MembershipProof,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 const COMMANDS: &[(&str, &str)] = &[
     ("Create", "0004526f6f6d"),
@@ -52,6 +52,10 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "ClaimTopologyNamespace",
         "092430303030303030302d303030302d303030302d303030302d3030303030303030303030312a",
+    ),
+    (
+        "GrantAppAuthorship",
+        "0a2430303030303030302d303030302d303030302d303030302d3030303030303030303030310b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0d736f2e74696c6f2e6e6f746573",
     ),
 ];
 
@@ -218,6 +222,16 @@ fn commands() -> Vec<(&'static str, RoomCommand)> {
             RoomCommand::ClaimTopologyNamespace {
                 room: room(),
                 salt: 42,
+            },
+        ),
+        (
+            "GrantAppAuthorship",
+            RoomCommand::GrantAppAuthorship {
+                room: room(),
+                request: GrantAppAuthorshipRequest {
+                    request_id: [11; 32],
+                    app: "so.tilo.notes".into(),
+                },
             },
         ),
     ]
@@ -410,7 +424,8 @@ fn room_admin_wire_cases_cover_every_variant() {
             | RoomCommand::SetRole { .. }
             | RoomCommand::Remove { .. }
             | RoomCommand::RecordEffectReceipt { .. }
-            | RoomCommand::ClaimTopologyNamespace { .. } => {}
+            | RoomCommand::ClaimTopologyNamespace { .. }
+            | RoomCommand::GrantAppAuthorship { .. } => {}
         }
     }
     for (_, reply) in replies() {
@@ -425,6 +440,47 @@ fn room_admin_wire_cases_cover_every_variant() {
             | RoomReply::Refused(_) => {}
         }
     }
-    assert_eq!(commands().len(), 10);
+    assert_eq!(commands().len(), 11);
     assert_eq!(replies().len(), 8);
+}
+
+#[test]
+fn every_command_but_removal_names_the_action_that_replaced_it() {
+    for (name, command) in commands() {
+        let replaced = command.replaced_by();
+        assert_eq!(replaced.is_none(), name == "Remove", "{name}: {replaced:?}");
+        if let Some((provider, action)) = replaced {
+            assert!(
+                [
+                    "tilo.workspace",
+                    super::HOST_ACTIONS_PROVIDER,
+                    super::MEMBER_ACTIONS_PROVIDER
+                ]
+                .contains(&provider),
+                "{name}: {provider}"
+            );
+            assert!(!action.is_empty(), "{name}");
+        }
+    }
+    assert_eq!(
+        RoomCommand::List.replaced_by(),
+        Some(("tilo.host", "room.list"))
+    );
+    assert_eq!(super::member_resource("r"), "workspace.member:r");
+}
+
+#[test]
+fn an_actions_invitation_decodes_to_what_was_issued() {
+    let issued = IssuedInvitation {
+        invite_id: [4; 32],
+        signed_invitation: vec![1, 2, 3],
+    };
+    let answered = super::ActionInvitation::of(&issued);
+    assert_eq!(answered.invite, hex::encode([4; 32]));
+    assert_eq!(answered.decode(), Ok(issued));
+    let short = super::ActionInvitation {
+        invite: "00".into(),
+        invitation: String::new(),
+    };
+    assert!(short.decode().is_err());
 }

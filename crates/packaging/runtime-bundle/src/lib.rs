@@ -10,15 +10,6 @@
 //! the host and silently skipped if absent, since Debian and Fedora
 //! layouts differ and only what exists is copied.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod component_pins;
 pub mod gc;
 pub mod verity;
@@ -939,6 +930,7 @@ fn verify_bundle_impl(
     on_disk.remove(BUNDLE_MANIFEST_FILENAME);
 
     let mut listed = BTreeSet::new();
+    let mut to_hash: Vec<(PathBuf, &BundleFile)> = Vec::new();
     for expected in &manifest.files {
         if !valid_payload_path(&expected.path) || !listed.insert(expected.path.as_str()) {
             return Err(BundleError::InvalidPayloadPath {
@@ -973,20 +965,22 @@ fn verify_bundle_impl(
                 });
             }
         } else {
-            let digests = digest_file(&abs, false)?;
-            check.hashed = check.hashed.saturating_add(1);
-            check.hashed_bytes = check.hashed_bytes.saturating_add(digests.size);
-            if digests.blake3 != expected.hash {
-                return Err(BundleError::HashMismatch {
-                    expected: expected.hash.clone(),
-                    computed: digests.blake3,
-                });
-            }
+            to_hash.push((abs, expected));
         }
         on_disk.remove(&expected.path);
     }
     if let Some((path, _)) = on_disk.into_iter().next() {
         return Err(BundleError::FileUnlisted { path });
+    }
+    for (digests, expected) in hash_payload_files(&to_hash)? {
+        check.hashed = check.hashed.saturating_add(1);
+        check.hashed_bytes = check.hashed_bytes.saturating_add(digests.size);
+        if digests.blake3 != expected.hash {
+            return Err(BundleError::HashMismatch {
+                expected: expected.hash.clone(),
+                computed: digests.blake3,
+            });
+        }
     }
 
     // Root hash is what the signature covers, so it's checked BEFORE the
@@ -1198,6 +1192,97 @@ struct FileDigests {
 
 /// Read `path` once, BLAKE3-hashing it and, with `with_verity`, computing its
 /// fs-verity digest.
+/// BLAKE3-hash every file in `files`, spread over the machine's cores, and
+/// return the digests in the order given. Every byte of every file is still
+/// read and hashed; only the order and the threads change. A launch hashed
+/// a 370 MB runtime on one core (0.3 s warm, seconds with a cold page cache);
+/// the files are independent, so the cores and the disk's queue depth are
+/// used together. On failure the error of the earliest file in `files` wins,
+/// as it did when they were hashed one after another.
+///
+/// # Errors
+///
+/// The first (in `files` order) file that cannot be read.
+fn hash_payload_files<'a>(
+    files: &[(PathBuf, &'a BundleFile)],
+) -> Result<Vec<(FileDigests, &'a BundleFile)>, BundleError> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .clamp(1, MAX_HASH_WORKERS)
+        .min(files.len());
+    if workers <= 1 {
+        return files
+            .iter()
+            .map(|(path, expected)| Ok((digest_file(path, false)?, *expected)))
+            .collect();
+    }
+    // Largest first, so the last worker is not left with one huge file.
+    let mut order: Vec<usize> = (0..files.len()).collect();
+    order.sort_by_key(|&index| std::cmp::Reverse(files.get(index).map_or(0, |f| f.1.size)));
+    let next = AtomicUsize::new(0);
+    let done = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let slot = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&index) = order.get(slot) else { break };
+                        let Some((path, _)) = files.get(index) else {
+                            break;
+                        };
+                        let digest = digest_file(path, false);
+                        let failed = digest.is_err();
+                        mine.push((index, digest));
+                        if failed {
+                            // Nothing after a read error can be accepted.
+                            next.store(order.len(), Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                    mine
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_default())
+            .collect::<Vec<_>>()
+    });
+    let mut results: Vec<Option<Result<FileDigests, BundleError>>> =
+        std::iter::repeat_with(|| None).take(files.len()).collect();
+    for (index, digest) in done.into_iter().flatten() {
+        if let Some(slot) = results.get_mut(index) {
+            *slot = Some(digest);
+        }
+    }
+    if let Some(error) = results.iter_mut().find_map(|result| match result.take() {
+        Some(Err(error)) => Some(error),
+        other => {
+            *result = other;
+            None
+        }
+    }) {
+        return Err(error);
+    }
+    files
+        .iter()
+        .zip(results)
+        .map(|((_, expected), result)| match result {
+            Some(Ok(digests)) => Ok((digests, *expected)),
+            _ => Err(BundleError::Io(std::io::Error::other(
+                "payload hashing was interrupted",
+            ))),
+        })
+        .collect()
+}
+
+/// Most threads one verification hashes with: enough to saturate an `NVMe`
+/// queue and several big cores, few enough not to starve the desktop.
+const MAX_HASH_WORKERS: usize = 8;
+
 fn digest_file(path: &Path, with_verity: bool) -> Result<FileDigests, BundleError> {
     let mut f = fs::File::open(path)?;
     let mut hasher = blake3::Hasher::new();

@@ -60,6 +60,7 @@ use super::credential::{
 };
 use super::providers::{self, MountSpec};
 use super::volume::{CloudVolume, DEFAULT_IDLE_POLL_MAX, VolumeConfig};
+use tilo_lock::MutexRecover as _;
 
 /// What a running mount tells the service.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -979,9 +980,7 @@ impl Launcher for ProcessLauncher {
                     }
                 } else if let Some(json) = line.strip_prefix(CAPABILITIES_PREFIX) {
                     if let Ok(offered) = serde_json::from_str(json) {
-                        *reported
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = offered;
+                        *reported.lock_recover() = offered;
                     }
                 } else if line == READY_LINE {
                     if let Some(tx) = ready.take() {
@@ -1050,10 +1049,7 @@ impl RunningMount for ChildMount {
     }
 
     fn capabilities(&self) -> CloudCapabilities {
-        *self
-            .capabilities
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.capabilities.lock_recover()
     }
 
     fn stop(mut self: Box<Self>) {
@@ -1072,11 +1068,7 @@ pub struct InProcessLauncher {
 
 impl InProcessLauncher {
     pub fn volume(&self, account_id: &str) -> Option<Arc<CloudVolume>> {
-        self.volumes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(account_id)
-            .cloned()
+        self.volumes.lock_recover().get(account_id).cloned()
     }
 }
 
@@ -1124,8 +1116,7 @@ impl Launcher for InProcessLauncher {
             volume.pause();
         }
         self.volumes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .insert(spec.account_id.clone(), Arc::clone(&volume));
         Ok(Box::new(InProcessMount {
             account_id: spec.account_id.clone(),
@@ -1178,10 +1169,7 @@ impl RunningMount for InProcessMount {
 
     fn stop(self: Box<Self>) {
         self.volume.shutdown();
-        self.volumes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.account_id);
+        self.volumes.lock_recover().remove(&self.account_id);
     }
 }
 

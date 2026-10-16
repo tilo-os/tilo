@@ -339,12 +339,7 @@ impl CommandEntry {
             ..
         } = &fa.action.input
         {
-            let params = fa.action.params();
-            let primary = params
-                .iter()
-                .find(|param| param.required)
-                .or_else(|| params.first())
-                .map_or(PROMPTED_PARAM, |param| param.name.as_ref());
+            let primary = fa.action.prompt_param().unwrap_or(PROMPTED_PARAM);
             entry = entry.with_argument(prompt.clone(), placeholder.clone());
             entry.action_argument = Some(primary.to_string());
         }
@@ -455,6 +450,12 @@ pub struct CommandPalette {
     /// Skip the built-in fuzzy filter when `true`, for provider hosts whose
     /// pre-matched result set should show verbatim.
     bypass_fuzzy: bool,
+    /// More results are still coming ([`Self::set_searching`]).
+    searching: bool,
+    /// [`crate::search::engine_generation`] the entries were ranked with:
+    /// where the index's code loads on first use, they are ranked again
+    /// once it is in.
+    ranked_generation: u64,
     /// Suppress the palette's built-in filter strip (and its reserved
     /// height) so a host rendering its own strip doesn't duplicate it.
     hide_filter_strip: bool,
@@ -518,6 +519,8 @@ impl CommandPalette {
                 crate::control_custody::ControlProducerDiscipline::ReplaceOne,
             ),
             bypass_fuzzy: false,
+            searching: false,
+            ranked_generation: crate::search::engine_generation(),
             hide_filter_strip: false,
             host_filter_strip: false,
             host_filter_strip_rows: 1,
@@ -940,6 +943,13 @@ impl CommandPalette {
             entry.badge = Some(badge.into());
             entry.description = Some(description.into());
         }
+    }
+
+    /// Whether more results are still on their way (an index whose code is
+    /// still loading): an empty list then says "Searching…" instead of
+    /// "No results".
+    pub fn set_searching(&mut self, searching: bool) {
+        self.searching = searching;
     }
 
     /// Every entry passes through unless [`Self::search_filter`] rejects it.
@@ -1530,50 +1540,36 @@ impl CommandPalette {
             f64::from(theme.tokens.spacing.s3),
             ground,
         );
-        // Key chips are static hints resting on the panel: no fill, just a
-        // hairline derived against the panel ground (HIG §9.5) — never a
-        // white veneer that is invisible on a light palette, and not a
-        // base-relative lift that reads as a well on a darker ground.
-        let chip_edge = crate::surface::edge_on(ground);
-
+        // Key hints are the shared keycaps in the platform's legends (HIG:
+        // keycaps come from `InputHint`, never hand-drawn or typed as arrows).
         let style = theme.text(TextRole::Caption);
         let dim = colors.text_dim;
         let cy = f64::midpoint(footer.y0, footer.y1);
-        let chip_h = (footer.height() - 12.0).max(13.0);
+        let cap_h = crate::widget::InputHint::keycap_height(theme);
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let group_gap = f64::from(theme.tokens.spacing.s3);
 
-        let mut x = footer.x0 + 6.0;
+        let mut x = footer.x0 + gap;
         let activate = match self.mode {
             PaletteMode::Search => "palette-hint-open",
             PaletteMode::Commands => "palette-hint-run",
         };
-        let hints = [
-            ("\u{2191}\u{2193}", crate::i18n!("palette-hint-navigate")),
-            ("\u{21b5}", crate::i18n!(activate)),
-            ("Esc", crate::i18n!("palette-hint-close")),
+        let hints: [(&[&str], String); 3] = [
+            (&["Up", "Down"], crate::i18n!("palette-hint-navigate")),
+            (&["Enter"], crate::i18n!(activate)),
+            (&["Esc"], crate::i18n!("palette-hint-close")),
         ];
-        for (key, label) in &hints {
-            let (kw, kh) = text_renderer.measure_style(key, None, &style);
-            let chip_w = (f64::from(kw) + 10.0).max(chip_h);
-            let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                chip_edge,
-                None,
-                &crate::surface::edge_outline(chip_rect, 4.0),
-            );
-            text_renderer.draw_style(
+        let keycaps = crate::keycaps::active();
+        for (keys, label) in &hints {
+            let legends: Vec<String> = keys.iter().map(|key| keycaps.key(key)).collect();
+            x += crate::widget::InputHint::paint_keycap_labels_at(
                 scene,
-                key,
-                dim,
-                transform.pre_translate(Vec2::new(
-                    chip_rect.x0 + (chip_rect.width() - f64::from(kw)) / 2.0,
-                    chip_rect.y0 + (chip_rect.height() - f64::from(kh)) / 2.0,
-                )),
-                None,
-                &style,
-            );
-            x = chip_rect.x1 + 4.0;
+                transform,
+                Point::new(x, cy - cap_h / 2.0),
+                &legends,
+                text_renderer,
+                theme,
+            ) + gap;
             let (lw, lh) = text_renderer.measure_style(label, None, &style);
             text_renderer.draw_style(
                 scene,
@@ -1583,7 +1579,7 @@ impl CommandPalette {
                 None,
                 &style,
             );
-            x += f64::from(lw) + 12.0;
+            x += f64::from(lw) + group_gap;
         }
 
         let n = self.result_total();
@@ -1948,6 +1944,9 @@ impl CommandPalette {
             None,
             &title_style,
         );
+        if self.is_searching() {
+            return;
+        }
         let hint_style = theme.text(TextRole::Caption);
         let hint = crate::i18n!("palette-no-results-hint");
         let hint = hint.as_str();
@@ -1965,8 +1964,16 @@ impl CommandPalette {
         );
     }
 
+    fn is_searching(&self) -> bool {
+        // Entries this palette ranks itself wait for the index's code too.
+        (self.searching || (!self.bypass_fuzzy && !crate::search::engine_ready()))
+            && !self.query.is_empty()
+    }
+
     fn empty_results_title(&self) -> String {
-        if self.query.is_empty() {
+        if self.is_searching() {
+            crate::i18n!("palette-searching")
+        } else if self.query.is_empty() {
             crate::i18n!("palette-empty")
         } else {
             crate::i18n!("palette-no-results", "query" => self.query.as_str())
@@ -2083,6 +2090,13 @@ impl Widget for CommandPalette {
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
+        let generation = crate::search::engine_generation();
+        if self.ranked_generation != generation {
+            self.ranked_generation = generation;
+            if !self.bypass_fuzzy {
+                self.rebuild();
+            }
+        }
         // `desired_size` is the single source of truth so a hand-placed
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
@@ -2594,13 +2608,13 @@ impl crate::widget::controls::ActionControls for CommandPalette {
 }
 
 impl CommandPalette {
-    /// For hosts rendering the palette as a free-floating overlay.
-    /// `handle_event` ignores the taffy tree + node id, so a throwaway
-    /// single-leaf tree drives the exact same logic.
-    pub fn handle_overlay_key(
+    /// Drive `handle_event` without a layout: it ignores the taffy tree +
+    /// node id, so a throwaway single-leaf tree runs the exact same logic.
+    #[cfg(test)]
+    fn handle_overlay_key(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
@@ -2613,7 +2627,7 @@ impl CommandPalette {
             event,
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
-                modifiers,
+                modifiers: &modifiers,
                 state: state.reborrow(),
                 path,
                 handled: &mut handled,
@@ -2884,7 +2898,7 @@ mod tests {
 
             assert!(p.handle_overlay_key(
                 &crate::synthetic_input::cursor_moved(row.center().x, row.center().y),
-                &modifiers,
+                modifiers,
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -2895,7 +2909,7 @@ mod tests {
             );
             assert!(p.handle_overlay_key(
                 &crate::synthetic_input::mouse_press(),
-                &modifiers,
+                modifiers,
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -2983,10 +2997,14 @@ mod tests {
         }
 
         fn prompted_resource_action_binds_its_declared_argument() {
-            let spec = tilo_actions::ActionSpec::prompted(
+            let spec = tilo_actions::ActionSpec::prompted_param(
                 "rename",
                 "Rename",
-                "New name",
+                tilo_actions::ActionParam::required(
+                    PROMPTED_PARAM,
+                    tilo_actions::ParamType::Text,
+                    "New name",
+                ),
                 "name…",
                 tilo_actions::ExecutionLocus::ClientLocal,
                 |name| tilo_actions::EncodedAction::encode_operation("test.rename", &name).unwrap(),
@@ -3010,6 +3028,42 @@ mod tests {
             );
             assert_eq!(invocation.arguments[PROMPTED_PARAM], "Project Atlas");
 
+            let encoded = flat[0].action.build_json(&invocation.arguments).unwrap();
+            assert_eq!(encoded.type_id, "test.rename");
+        }
+
+        /// The palette's typed text lands in the parameter the action names,
+        /// whatever it is called: the prompt is the description.
+        fn prompted_action_with_a_named_parameter_gets_the_typed_text_under_that_name() {
+            let spec = tilo_actions::ActionSpec::prompted_param(
+                "rename",
+                "Rename",
+                tilo_actions::ActionParam::required(
+                    "title",
+                    tilo_actions::ParamType::Text,
+                    "The note's new title",
+                ),
+                "title…",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                |title| {
+                    tilo_actions::EncodedAction::encode_operation("test.rename", &title).unwrap()
+                },
+            );
+            let resources = vec![
+                tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            ];
+            let flat = tilo_actions::flatten(&resources);
+            let entry = CommandEntry::from_flat_action(&flat[0]);
+            let mut palette = CommandPalette::commands();
+            palette.open_action_argument(entry, Some("Project Atlas".into()));
+            assert!(dispatch(
+                &mut palette,
+                &key_press(Key::Named(NamedKey::Enter))
+            ));
+            let invocation =
+                crate::widget::controls::take_control_invocation(&mut palette).unwrap();
+            assert_eq!(invocation.arguments["title"], "Project Atlas");
+            assert!(!invocation.arguments.contains_key(PROMPTED_PARAM));
             let encoded = flat[0].action.build_json(&invocation.arguments).unwrap();
             assert_eq!(encoded.type_id, "test.rename");
         }
@@ -3070,6 +3124,7 @@ mod tests {
 
         immediate_resource_action_enqueues_an_address_not_a_private_outcome();
         prompted_resource_action_binds_its_declared_argument();
+        prompted_action_with_a_named_parameter_gets_the_typed_text_under_that_name();
         typed_resource_action_binds_its_primary_parameter();
         semantic_shortcut_labels_follow_the_palette_platform();
     }
@@ -3214,7 +3269,7 @@ mod tests {
                     "東京".into(),
                     Some(("東".len(), "東".len())),
                 )),
-                &modifiers,
+                modifiers,
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -3240,7 +3295,7 @@ mod tests {
 
             assert!(palette.handle_overlay_key(
                 &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
-                &modifiers,
+                modifiers,
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));

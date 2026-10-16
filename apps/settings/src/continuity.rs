@@ -9,75 +9,36 @@ use ui::tilo_resource;
 
 pub(crate) const AUDIT_LIMIT: usize = 24;
 
-/// A separately revocable Continuity facet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Capability {
-    Clipboard,
-    Notifications,
-    WifiSettings,
-    Media,
-    DisplayInput,
-    FileTransfer,
-    RealtimeSessions,
-    TypedGamepad,
-    AppContinuations,
+pub(crate) use settings_store::continuity_privacy::ContinuityCapability as Capability;
+
+/// What `capability` is called in Settings.
+pub(crate) fn label(capability: Capability) -> String {
+    crate::i18n::t(match capability {
+        Capability::Clipboard => "continuity-clipboard",
+        Capability::Notifications => "continuity-notifications",
+        Capability::WifiSettings => "continuity-wifi-settings",
+        Capability::Media => "continuity-media",
+        Capability::DisplayInput => "continuity-display-input",
+        Capability::FileTransfer => "continuity-file-transfer",
+        Capability::RealtimeSessions => "continuity-realtime-sessions",
+        Capability::TypedGamepad => "continuity-typed-gamepad",
+        Capability::AppContinuations => "continuity-app-continuations",
+    })
 }
 
-impl Capability {
-    pub(crate) const ALL: [Self; 9] = [
-        Self::Clipboard,
-        Self::Notifications,
-        Self::WifiSettings,
-        Self::Media,
-        Self::DisplayInput,
-        Self::FileTransfer,
-        Self::RealtimeSessions,
-        Self::TypedGamepad,
-        Self::AppContinuations,
-    ];
-
-    pub(crate) const fn key(self) -> &'static str {
-        match self {
-            Self::Clipboard => "clipboard",
-            Self::Notifications => "notifications",
-            Self::WifiSettings => "wifi_settings",
-            Self::Media => "media",
-            Self::DisplayInput => "display_input",
-            Self::FileTransfer => "file_transfer",
-            Self::RealtimeSessions => "realtime_sessions",
-            Self::TypedGamepad => "typed_gamepad",
-            Self::AppContinuations => "app_continuations",
-        }
-    }
-
-    pub(crate) fn label(self) -> String {
-        crate::i18n::t(match self {
-            Self::Clipboard => "continuity-clipboard",
-            Self::Notifications => "continuity-notifications",
-            Self::WifiSettings => "continuity-wifi-settings",
-            Self::Media => "continuity-media",
-            Self::DisplayInput => "continuity-display-input",
-            Self::FileTransfer => "continuity-file-transfer",
-            Self::RealtimeSessions => "continuity-realtime-sessions",
-            Self::TypedGamepad => "continuity-typed-gamepad",
-            Self::AppContinuations => "continuity-app-continuations",
-        })
-    }
-
-    pub(crate) fn description(self) -> String {
-        crate::i18n::t(match self {
-            Self::Clipboard => "continuity-clipboard-description",
-            Self::Notifications => "continuity-notifications-description",
-            Self::WifiSettings => "continuity-wifi-settings-description",
-            Self::Media => "continuity-media-description",
-            Self::DisplayInput => "continuity-display-input-description",
-            Self::FileTransfer => "continuity-file-transfer-description",
-            Self::RealtimeSessions => "continuity-realtime-sessions-description",
-            Self::TypedGamepad => "continuity-typed-gamepad-description",
-            Self::AppContinuations => "continuity-app-continuations-description",
-        })
-    }
+/// What allowing `capability` lets the person's other devices do.
+pub(crate) fn description(capability: Capability) -> String {
+    crate::i18n::t(match capability {
+        Capability::Clipboard => "continuity-clipboard-description",
+        Capability::Notifications => "continuity-notifications-description",
+        Capability::WifiSettings => "continuity-wifi-settings-description",
+        Capability::Media => "continuity-media-description",
+        Capability::DisplayInput => "continuity-display-input-description",
+        Capability::FileTransfer => "continuity-file-transfer-description",
+        Capability::RealtimeSessions => "continuity-realtime-sessions-description",
+        Capability::TypedGamepad => "continuity-typed-gamepad-description",
+        Capability::AppContinuations => "continuity-app-continuations-description",
+    })
 }
 
 /// One bounded, deliberately low-detail local record.
@@ -94,7 +55,7 @@ impl AuditEntry {
     pub(crate) fn summary(&self) -> String {
         let subject = self
             .capability
-            .map_or_else(|| crate::i18n::t("continuity-all"), Capability::label);
+            .map_or_else(|| crate::i18n::t("continuity-all"), label);
         crate::i18n::t_args(
             if self.enabled {
                 "continuity-audit-allowed"

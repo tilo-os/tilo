@@ -20,7 +20,9 @@ pub mod presence_slot;
 pub mod retention;
 
 pub use presence_slot::PresenceSlot;
-pub use retention::{Retention, app_document_channel, audience, retention, standalone};
+pub use retention::{
+    Retention, app_document_channel, audience, retention, standalone, steward_only,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -432,6 +434,21 @@ pub enum NeighbourMsg {
         offset: u64,
         bytes: Vec<u8>,
     },
+    /// [`Self::MlsAccessRequest`] with the route of the record the channel
+    /// carries, so a steward can decide Read on that record, a Deny over its
+    /// app or any pattern covering it included. The route proves itself: the
+    /// steward refuses it unless it hashes, with `room`, to the request's
+    /// channel ([`collab_types::ChannelRoute::proves`]). A device sends both
+    /// forms while a steward may predate this one. Appended to preserve every
+    /// existing Postcard discriminant.
+    MlsRoutedAccessRequest {
+        room: String,
+        request: Box<collab_types::MlsAccessRequestV1>,
+        route: Box<collab_types::ChannelRoute>,
+        /// Chosen by the sender for each delivery attempt, as for
+        /// [`Self::MlsAccessRequest`]; receivers ignore it.
+        delivery: u64,
+    },
 }
 
 impl NeighbourMsg {
@@ -487,6 +504,7 @@ impl NeighbourMsg {
             | Self::MediaCapabilities { .. }
             | Self::MlsGovernance { .. }
             | Self::MlsAccessRequest { .. }
+            | Self::MlsRoutedAccessRequest { .. }
             | Self::MlsGovernanceAck { .. }
             | Self::PersonalWorkspaces { .. }
             | Self::RecordContentWant { .. }
@@ -539,6 +557,7 @@ impl NeighbourMsg {
             Self::PersonalWorkspaces { .. } => "PersonalWorkspaces",
             Self::RecordContentWant { .. } => "RecordContentWant",
             Self::RecordContentPiece { .. } => "RecordContentPiece",
+            Self::MlsRoutedAccessRequest { .. } => "MlsRoutedAccessRequest",
         }
     }
 }
@@ -658,6 +677,22 @@ mod tests {
                         signature: Signature::from_bytes([0xEF; 64]),
                     }),
                     delivery: 9,
+                },
+            ),
+            (
+                "channel routed access request",
+                NeighbourMsg::MlsRoutedAccessRequest {
+                    room: ROOM.into(),
+                    request: Box::new(MlsAccessRequestV1 {
+                        version: 1,
+                        channel,
+                        device: Ed25519PublicKey::from_bytes([2; 32]),
+                        key_package: vec![0x4B, 0x50],
+                        issued_at: 1_700_000_000,
+                        signature: Signature::from_bytes([0xCD; 64]),
+                    }),
+                    route: Box::new(collab_types::ChannelRoute::new("so.tilo.sheets", "payroll")),
+                    delivery: 10,
                 },
             ),
         ]
@@ -1002,7 +1037,7 @@ mod tests {
         );
     }
 
-    const VARIANT_COUNT: usize = 28;
+    const VARIANT_COUNT: usize = 29;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1195,6 +1230,17 @@ mod tests {
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee40efefefefefefef",
                 "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
                 "efefefefefefefefefefefefefefefefefefefefefefefefef09",
+            ),
+        ),
+        (
+            "channel routed access request",
+            concat!(
+                "1c2436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030630110555555555555555555555555555555550202020202020202",
+                "020202020202020202020202020202020202020202020202024b5080e2cfaa06",
+                "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                "cd0e736f2e74696c6f2e73686565747307706179726f6c6c0a",
             ),
         ),
     ];

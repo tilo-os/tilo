@@ -58,7 +58,7 @@ impl ChatPermissions {
     /// the conversation, not a peer-local filesystem path, so a viewer who
     /// can read the room can hydrate the room's verified shared bytes.
     pub fn can_embed(&self, blob: &str) -> bool {
-        let valid_hash = blob.len() == 64 && blob.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let valid_hash = tilo_content::valid_hash(blob);
         let valid_demo = matches!(
             blob,
             crate::images::DEMO_CALL_GRID
@@ -177,13 +177,11 @@ mod tests {
     }
 
     #[test]
-    fn the_no_access_shot_is_a_reader_the_workspace_granted_no_files() {
-        let ctx = crate::app::ChatApp::shot_permission("no-access").expect("staged context");
-        let p = ChatPermissions::from_context(ctx);
+    fn a_reader_the_workspace_granted_no_files_cannot_open_attachments() {
+        let p = ChatPermissions::from_context(PermissionContext::stranger(crate::model::ME));
         assert!(
             !p.can_embed(crate::images::DEMO_CLIP),
             "attachments stay closed"
         );
-        assert!(crate::app::ChatApp::shot_permission("call").is_none());
     }
 }

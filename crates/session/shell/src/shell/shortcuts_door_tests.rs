@@ -855,12 +855,18 @@ fn utc_clock(now: &str) -> std::sync::Arc<ManualClock> {
     ))
 }
 
-/// What `triggers` fire now for the shortcuts `person` saved in the room.
+/// What `triggers` fire now for the shortcuts `person` saved in the room:
+/// show them the passing time, then wait for the schedule ledger the
+/// tick handed to the state writer and take the firings it held, the way
+/// the loop does once the write wakes it.
 fn tick(triggers: &mut TriggerHost, door: &Door, person: &str) -> Vec<Firing> {
     let tree = door.membership.read();
     let armed = armed(&tree.desktop.workspaces, |_| person.to_string());
-    let fired = triggers.observe(TriggerEvent::Tick, &armed);
+    let mut fired = triggers.observe(TriggerEvent::Tick, &armed);
     drop(tree);
+    crate::shell::durable_writer::global().flush();
+    fired.extend(triggers.take_settled_firings());
+    assert!(!triggers.holds_firings(), "a written ledger holds nothing");
     fired
 }
 

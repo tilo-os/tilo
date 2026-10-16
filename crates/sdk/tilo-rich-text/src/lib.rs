@@ -1,6 +1,6 @@
 //! # Rich text in a Tilo app
 //!
-//! One document model and one editor across the OS: qdoc's rich text
+//! One document model and one editor across the OS: tilo-doc's rich text
 //! ([`tilo_document::RichText`]) is the resource, and the toolkit's block
 //! editor is the view of it. An app that shows rich text writes one line:
 //!
@@ -28,14 +28,6 @@
 //!
 //! [`RichTextSurface`] is the surface behind that line, for an app that
 //! configures the editor or places it inside its own layout.
-
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 mod block_commands;
 mod blocks;

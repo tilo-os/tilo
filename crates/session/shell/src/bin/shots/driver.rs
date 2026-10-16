@@ -36,6 +36,8 @@ use taffy::prelude::NodeId;
 /// have to spend that time. Kept short enough that sleeping 60 frames
 /// (~1 s) doesn't blow scenario runtime.
 const FRAME_MS: u64 = 16;
+/// How long a capture waits for pending visual work before it shows it.
+const CAPTURE_SETTLE: Duration = Duration::from_secs(5);
 
 pub struct ShellDriver {
     /// Layout + paint core, shared with the native compositor mode.
@@ -80,10 +82,33 @@ impl ShellDriver {
         Self::with_tree(WorkspaceTree::bootstrap_demo(), viewport)
     }
 
+    /// [`Self::new`] for scene `name`. `offline` shows the session whose
+    /// collaboration service went away: its apps reach for the session's
+    /// broker at a socket nobody serves, so a room's documents lose their
+    /// route as they do when the service stops.
+    pub fn for_scene(name: &str, viewport: (u32, u32)) -> Self {
+        let broker = (name == "offline").then(|| {
+            let gone =
+                std::env::temp_dir().join(format!("tilo-shots-gone-{}", uuid::Uuid::new_v4()));
+            (gone.join("collab.sock"), gone.join("identity.sock"))
+        });
+        Self::build(WorkspaceTree::bootstrap_demo(), viewport, broker)
+    }
+
     /// Build a driver around the provided workspace tree at `viewport` size.
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
+        Self::build(tree, viewport, None)
+    }
+
+    /// [`Self::with_tree`], its apps reaching the session broker at
+    /// `broker`'s collaboration and identity sockets, when given.
+    fn build(
+        tree: WorkspaceTree,
+        viewport: (u32, u32),
+        broker: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    ) -> Self {
         // Boot adopts every ownerless workspace before the session ever
-        // paints (`compositor::hosted`), so a room you made is a room
+        // paints (`compositor::session_bootstrap`), so a room you made is a room
         // you own; skipping it renders "no members" for rooms that on a
         // real machine are yours.
         // The driver then acts as that same owner in every room: the
@@ -94,7 +119,23 @@ impl ShellDriver {
         let mut tree = tree;
         tree.adopt_ownerless_workspaces(&owner);
         let hosted_tabs = hosted_app_tabs(&tree);
-        let mut fb = FrameBuilder::with_tree(tree, viewport);
+        // An owned fixture never reads the wall clock, so frames compare
+        // across minutes; it shows the time it is given, like a session
+        // shows the time it reads.
+        let mut fb = match shell::shell::hosted_inputs::HostedTileInputs::fixture()
+            .and_then(|inputs| inputs.with_fixture_clock(shots_clock()))
+            .and_then(|inputs| match broker {
+                Some((collab, identity)) => inputs.with_session_broker_at(collab, identity),
+                None => Ok(inputs),
+            }) {
+            Ok(inputs) => FrameBuilder::with_tree_and_inputs(&tree, viewport, inputs),
+            Err(error) => {
+                eprintln!(
+                    "shots: fixture inputs unavailable ({error}); the bar shows a placeholder time"
+                );
+                FrameBuilder::with_tree(tree, viewport)
+            }
+        };
         fb.with_chrome(|st| st.act_as(owner));
         // Binding a tab never creates its document: the action that opens
         // an app does. This driver opens every tab of the tree it is handed
@@ -479,6 +520,9 @@ impl ShellDriver {
         #[cfg(target_os = "linux")]
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
+            // A still shows the capture as finished: the compositor applies
+            // the worker's result on a later frame, a shot waits for it.
+            let _ = executor.finish_io_blocking(&mut self.fb);
             return scene;
         }
         self.fb.draw_capture_overlays(&mut scene);
@@ -584,7 +628,33 @@ impl ShellDriver {
         // cross-strip dispatch) is reflected in what gets captured.
         let root = self.root_obj.clone();
         self.fb.pump_apps(&mut self.state, &root);
+        // Work a person would see finish a moment after the window opened
+        // (an app's first save being confirmed, an image arriving) finishes
+        // before the capture too; what is still pending after the bound is
+        // stuck, and the shot shows it.
+        let deadline = Instant::now().checked_add(CAPTURE_SETTLE);
+        while self.fb.host().has_pending_visual_work() {
+            if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
+                eprintln!(
+                    "shots: visual work still pending after {CAPTURE_SETTLE:?}; capturing it"
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(FRAME_MS));
+            self.fb.pump_apps(&mut self.state, &root);
+            let _ = self.fb.paint_settled();
+        }
         self.fb.paint_settled()
+    }
+}
+
+/// The moment every shot shows: a weekday morning.
+fn shots_clock() -> tilo_desktop::chrome::ClockSnapshot {
+    tilo_desktop::chrome::ClockSnapshot {
+        unix_seconds: 1_700_000_000,
+        clock: "09:41".into(),
+        weekday: "Tue".into(),
+        date: "14 November".into(),
     }
 }
 
@@ -1285,10 +1355,9 @@ impl ShellDriver {
         false
     }
 
-    /// Show that presence attaches to app content. Focus the Files hosted
-    /// window and move Ada's location to its tab.
-    pub fn show_collaborator_in_files_for_shots(&mut self) -> bool {
-        let target = {
+    /// Focus the active workspace's tab titled `title`, returning its id.
+    fn focus_tab_titled(&mut self, title: &str) -> Option<u64> {
+        let (strip, group, tab) = {
             let state = self.chrome();
             let tree = state.tree();
             tree.desktop.active_workspace().and_then(|ws| {
@@ -1297,17 +1366,22 @@ impl ShellDriver {
                         group
                             .tabs
                             .iter()
-                            .find(|tab| tab.title == "Files")
+                            .find(|tab| tab.title == title)
                             .map(|tab| (strip.id, group.id, tab.id))
                     })
                 })
             })
-        };
-        let Some((strip, group, files_tab)) = target else {
+        }?;
+        self.host_mut().focus_window_on_strip(strip, group, tab);
+        Some(tab)
+    }
+
+    /// Show that presence attaches to app content. Focus the Files hosted
+    /// window and move Ada's location to its tab.
+    pub fn show_collaborator_in_files_for_shots(&mut self) -> bool {
+        let Some(files_tab) = self.focus_tab_titled("Files") else {
             return false;
         };
-        self.host_mut()
-            .focus_window_on_strip(strip, group, files_tab);
         self.with_chrome(|state| {
             let mut tree = state.tree_mut();
             if let Some(ada) = tree.desktop.active_workspace_mut().and_then(|ws| {
@@ -1387,7 +1461,7 @@ impl ShellDriver {
     /// catalogue) — a one-shot mutation; call on a fresh driver per scene.
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
-            "desktop" => Self::scene_desktop(),
+            "desktop" | "offline" => Self::scene_desktop(),
             "overview" => self.scene_overview(),
             "overview-shared" => self.scene_overview_shared(),
             "palette" => self.scene_palette(),
@@ -2358,26 +2432,37 @@ impl ShellDriver {
         let settled_at = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
+        // Over a window with no document of its own, so no save status
+        // competes with the banners.
+        let _ = self.focus_tab_titled("Files");
         self.with_chrome(|st| {
-            // Severity ramp in one frame; long dismiss windows so
-            // the still-image scene captures the stack visible.
+            // What a person meets over their work: a collaborator who
+            // needs them, something shared with them, and a failure they
+            // did not cause. Long dismiss windows keep the still-image
+            // scene's stack on screen.
             st.push_notification_full(
-                Notification::new("Switched to workspace Research", "Active tab: Notes")
-                    .with_severity(NotificationSeverity::Info)
+                Notification::new("Ada mentioned you", "“Can you look at the launch notes?”")
+                    .with_app_name("Chat")
+                    .with_from("Ada", "peer:ada")
                     .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             st.push_notification_full(
-                Notification::new("Slow network", "Peer sync delayed; retrying")
-                    .with_severity(NotificationSeverity::Warning)
+                Notification::new("Lena shared “Q3 plan”", "You can edit it.")
+                    .with_app_name("Files")
+                    .with_from("Lena", "peer:lena")
                     .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             st.push_notification_full(
-                Notification::new("Permission denied", "Files cannot access /etc/shadow")
-                    .with_severity(NotificationSeverity::Error)
-                    .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                Notification::new(
+                    "Backup paused",
+                    "The backup drive was disconnected. Reconnect it to continue.",
+                )
+                .with_app_name("Backups")
+                .with_severity(NotificationSeverity::Warning)
+                .with_dismiss_after(Duration::from_secs(60))
+                .with_created_at(settled_at),
             );
         });
     }
@@ -2455,6 +2540,7 @@ impl ShellDriver {
                         active_tab: tid,
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     };
                     strip.window_groups.push(group);
                 }
@@ -2540,6 +2626,7 @@ impl ShellDriver {
                     active_tab: tid,
                     width: half,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
                 strip_id = Some(strip.id);
                 sibling = Some(gid);
@@ -2601,6 +2688,7 @@ impl ShellDriver {
                             active_tab: tid,
                             width: WindowWidth::Normal,
                             maximized: false,
+                            focus_history: Vec::new(),
                         });
                         ws.strips.push(strip);
                     }
@@ -2618,6 +2706,7 @@ impl ShellDriver {
     /// legacy `--scenes` flag for default expansion + validation.
     pub const ALL_SCENES: &'static [&'static str] = &[
         "desktop",
+        "offline",
         "multi-group",
         "multi-strip",
         "maximized",

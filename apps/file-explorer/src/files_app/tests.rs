@@ -51,7 +51,8 @@ mod open_with_tests {
 
     fn merge_is_never_offered_for_binary_or_unsupported_names() {
         assert!(merge_supported_path(std::path::Path::new("notes.txt")));
-        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
+        assert!(merge_supported_path(std::path::Path::new("legacy.QDOC")));
+        assert!(merge_supported_path(std::path::Path::new("draft.TILO-DOC")));
         assert!(!merge_supported_path(std::path::Path::new("photo.png")));
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
     }
@@ -855,29 +856,39 @@ mod command_path_tests {
             "idle scheduled sync still dirty: updated={updated} structure={structure} anim={needs_animation}"
         );
 
-        // Production AboutToWait also drains Nearby Send. An unchanged
-        // snapshot used to set `structure_dirty` and commit at ~0.5 Hz;
-        // together with the 750ms metadata wake that was ~1.8 paint/s.
+        // Nearby Send used to ask every 2s; now only on an announced change.
+        assert!(
+            !widget.take_collab_requests().iter().any(|request| matches!(
+                request,
+                ui::collaboration::CollabRequest::NearbyTransferCommand { .. }
+            )),
+            "an idle Files window must not ask Nearby Send anything"
+        );
+        ui::widget::Collaborative::handle_collab_event(
+            &mut widget,
+            &ui::collaboration::CollabEvent::NearbyTransferChanged,
+        );
         let request_id = widget
             .take_collab_requests()
             .iter()
             .find_map(|request| match request {
-                ui::collaboration::CollabRequest::NearbyTransferCommand { request_id, .. } => {
-                    Some(*request_id)
-                }
-                _ => None,
-            });
-        if let Some(request_id) = request_id {
-            ui::widget::Collaborative::handle_collab_event(
-                &mut widget,
-                &ui::collaboration::CollabEvent::NearbyTransferCommandResult {
+                ui::collaboration::CollabRequest::NearbyTransferCommand {
                     request_id,
-                    result: Ok(ui::collaboration::NearbyTransferReply::Snapshot {
-                        snapshot: ui::collaboration::NearbyTransferSnapshot::default(),
-                    }),
-                },
-            );
-        }
+                    command: ui::collaboration::NearbyTransferCommand::Snapshot,
+                    ..
+                } => Some(*request_id),
+                _ => None,
+            })
+            .expect("an announced change asks for a snapshot");
+        ui::widget::Collaborative::handle_collab_event(
+            &mut widget,
+            &ui::collaboration::CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(ui::collaboration::NearbyTransferReply::Snapshot {
+                    snapshot: ui::collaboration::NearbyTransferSnapshot::default(),
+                }),
+            },
+        );
         let updated = ui::widget::Widget::update(&mut widget, &state.doc, &state.root);
         ui::widget::Widget::sync(&mut widget, &state.doc, &state.root);
         let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
@@ -1279,6 +1290,189 @@ mod command_path_tests {
             menu.width() >= 400.0,
             "the scaled menu keeps enough width for the Undo label: {menu:?}"
         );
+    }
+
+    #[test]
+    fn one_time_cloud_import_is_an_independent_copy_through_the_action_door() {
+        for kind in [
+            crate::remote_accounts::RemoteAccountKind::Dropbox,
+            crate::remote_accounts::RemoteAccountKind::GoogleDrive,
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let mount = home.path().join("Remote/Cloud");
+            let destination = home.path().join("Downloads");
+            std::fs::create_dir_all(&mount).unwrap();
+            std::fs::create_dir(&destination).unwrap();
+            std::fs::create_dir(mount.join("Folder")).unwrap();
+            std::fs::write(mount.join("Folder/document.txt"), b"original bytes").unwrap();
+            // Provider-native documents are already projected as link files.
+            std::fs::write(
+                mount.join("Folder/document.gdoc"),
+                b"{\"url\":\"https://docs.google.com/document/d/test\"}",
+            )
+            .unwrap();
+            let mut account = remote_account(
+                crate::remote_accounts::RemoteAccountHealth::Healthy,
+                Some(mount.clone()),
+            );
+            account.kind = kind;
+            let mut files = FileExplorerWidget::with_persistence_dirs(
+                None,
+                Some(home.path().to_path_buf()),
+                favorites::UserDirs {
+                    downloads: Some(destination.clone()),
+                    ..Default::default()
+                },
+            );
+            files.startup_accounts = Some(vec![account]);
+            files.navigate(mount.clone());
+            let row = files
+                .published_rows()
+                .into_iter()
+                .find(|row| row.label == "Folder")
+                .unwrap();
+            assert!(row.actions.iter().any(|action| action.id == "import-once"));
+            let mut doc = automerge::AutoCommit::new();
+            published::invoke(
+                &mut files,
+                &mut doc,
+                row.id.as_str(),
+                "import-once",
+                &serde_json::json!({"folder": destination}),
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("Folder/document.txt")).unwrap(),
+                b"original bytes"
+            );
+            assert_eq!(
+                std::fs::read(destination.join("Folder/document.gdoc")).unwrap(),
+                std::fs::read(mount.join("Folder/document.gdoc")).unwrap()
+            );
+            std::fs::write(mount.join("Folder/document.txt"), b"later remote edit").unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("Folder/document.txt")).unwrap(),
+                b"original bytes"
+            );
+            std::fs::write(
+                destination.join("Folder/document.txt"),
+                b"local import edit",
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(mount.join("Folder/document.txt")).unwrap(),
+                b"later remote edit"
+            );
+            let index = files
+                .displayed_entries()
+                .iter()
+                .position(|entry| entry.name == "Folder")
+                .unwrap();
+            files.select(Some(index));
+            assert!(
+                files
+                    .context_menu_spec(&[])
+                    .iter()
+                    .any(|(_, command)| command.as_ref()
+                        == Some(&FileCommand::ImportOnceToDownloads))
+            );
+            assert!(files.apply_command(FileCommand::ImportOnceToDownloads));
+            assert_eq!(
+                std::fs::read(destination.join("Folder 2/document.txt")).unwrap(),
+                b"later remote edit"
+            );
+            // A symlink cannot turn the local destination into a cloud folder.
+            let link = home.path().join("cloud-link");
+            std::os::unix::fs::symlink(&mount, &link).unwrap();
+            assert!(
+                published::invoke(
+                    &mut files,
+                    &mut doc,
+                    row.id.as_str(),
+                    "import-once",
+                    &serde_json::json!({"folder": link})
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_import_retains_local_destination_after_alias_changes() {
+        let home = tempfile::tempdir().unwrap();
+        let mount = home.path().join("Cloud");
+        let destination = home.path().join("Downloads");
+        let alias = home.path().join("destination-alias");
+        std::fs::create_dir(&mount).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(mount.join("document.txt"), b"remote bytes").unwrap();
+        std::os::unix::fs::symlink(&destination, &alias).unwrap();
+        let mut account = remote_account(
+            crate::remote_accounts::RemoteAccountHealth::Healthy,
+            Some(mount.clone()),
+        );
+        account.kind = crate::remote_accounts::RemoteAccountKind::Dropbox;
+        let mut files = FileExplorerWidget::with_persistence(None, Some(home.path().to_path_buf()));
+        files.startup_accounts = Some(vec![account]);
+        files.navigate(mount.clone());
+        // Use the production document queue, withholding execution until the
+        // admitted alias has been redirected into the remote mount.
+        files.dispatcher = Some(ui::framework::testing::dispatcher::<
+            crate::resource::FileExplorer,
+        >("files"));
+        files.device = Some("test-device".into());
+        let row = files
+            .published_rows()
+            .into_iter()
+            .find(|row| row.label == "document.txt")
+            .unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        published::invoke(
+            &mut files,
+            &mut doc,
+            row.id.as_str(),
+            "import-once",
+            &serde_json::json!({"folder": alias}),
+        )
+        .unwrap();
+        assert!(!destination.join("document.txt").exists());
+        assert_eq!(files.awaiting_ops.len(), 1);
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&mount, &alias).unwrap();
+        let outcome = crate::file_ops::execute(&files.awaiting_ops[0].0, None);
+        assert!(
+            matches!(outcome, ui::tilo_resource::Settled::Done(_)),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("document.txt")).unwrap(),
+            b"remote bytes"
+        );
+        assert!(!mount.join("document 2.txt").exists());
+        std::fs::write(mount.join("document.txt"), b"remote edit").unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("document.txt")).unwrap(),
+            b"remote bytes"
+        );
+        std::fs::write(destination.join("document.txt"), b"local edit").unwrap();
+        assert_eq!(
+            std::fs::read(mount.join("document.txt")).unwrap(),
+            b"remote edit"
+        );
+
+        // The action schema requires an absolute folder, even when a
+        // submitted relative folder exists and canonicalizes successfully.
+        assert!(
+            published::invoke(
+                &mut files,
+                &mut doc,
+                row.id.as_str(),
+                "import-once",
+                &serde_json::json!({"folder": "."}),
+            )
+            .is_err()
+        );
+        assert_eq!(files.awaiting_ops.len(), 1);
     }
 
     fn remote_account(
@@ -2374,7 +2568,9 @@ mod command_path_tests {
         );
         let resources = crate::files_app::published::tree(&widget, &document);
         assert!(ui::tilo_actions::door::resolve(&resources, &address).is_none());
-        widget.nearby_send.poll_if_due(ui::time::now());
+        widget
+            .nearby_send
+            .handle_event(&CollabEvent::NearbyTransferChanged);
         let request_id = widget
             .nearby_send
             .take_requests()
@@ -4118,10 +4314,7 @@ mod command_path_tests {
             lines: Vec::new(),
             action: None,
         });
-        *widget
-            .merge_preflight_result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+        *widget.merge_preflight_result.lock_recover() = Some((
             conflict_id,
             version_id,
             Ok(fs_protocol::MergePreflightProjectionV1 {
@@ -4142,10 +4335,7 @@ mod command_path_tests {
             }) if *actual_conflict == conflict_id && *actual_version == version_id
         ));
 
-        *widget
-            .merge_preflight_result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+        *widget.merge_preflight_result.lock_recover() = Some((
             conflict_id,
             version_id,
             Ok(fs_protocol::MergePreflightProjectionV1 {
@@ -4178,10 +4368,7 @@ mod command_path_tests {
             action: Some(CollabPanelAction::EmptyTrash),
         });
         widget.merge_preflight_pending = Some((current_conflict, version_id));
-        *widget
-            .merge_preflight_result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+        *widget.merge_preflight_result.lock_recover() = Some((
             stale_conflict,
             version_id,
             Ok(fs_protocol::MergePreflightProjectionV1 {
@@ -5725,10 +5912,11 @@ mod injected_startup_tests {
             startup(&child),
             deferred_services(),
         );
-        widget.nearby_send.poll_if_due(ui::time::now());
+        // Nearby Send asks nothing until the shell announces a change, so it
+        // sets no deadline; nothing may be due yet.
         assert!(
-            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline > ui::time::now()),
-            "the completed-reply branch, rather than Nearby Send's initial poll, must supply the immediate wake"
+            Widget::next_wake_deadline(&widget).is_none_or(|deadline| deadline > ui::time::now()),
+            "the completed-reply branch, rather than Nearby Send, must supply the immediate wake"
         );
         widget
             .request_deferred_document_open(

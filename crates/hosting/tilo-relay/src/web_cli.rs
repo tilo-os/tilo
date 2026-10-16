@@ -658,6 +658,11 @@ pub async fn dev(
             .map(|&origin| origin.into())
             .collect();
     }
+    // The session beside this host that launches apps for web members, as
+    // `run --web` takes it: without it a web page lists nothing to open.
+    if let Some(device) = session_device(&web_args)? {
+        relay.set_node_session(device);
+    }
     let listen = web_args
         .web
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 9443)));
@@ -1343,10 +1348,6 @@ mod tests {
         (relay, root, approver, approver_endpoint)
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the relay serves the whole scenario and `shutdown` consumes it at the end"
-    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_room_certifies_exactly_the_admitted_browser_and_refuses_an_unmatched_code() {
         let tmp = tempfile::tempdir().unwrap();

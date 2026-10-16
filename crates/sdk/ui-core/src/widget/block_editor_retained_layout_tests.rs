@@ -847,3 +847,414 @@ fn handles_hang_in_their_own_gutter_outside_the_text_column() {
     let read_only = BlockEditor::new().with_read_only(true);
     assert_eq!(read_only.handle_gutter(&Theme::dark()), 0.0);
 }
+
+/// A note shaped like a working one, `sections` times over: a heading, a
+/// paragraph with a link, a bullet pair, a ten-line Rust fence and a TeX
+/// formula, so every per-run derivation the draw makes has a subject.
+fn sectioned_note(sections: usize) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    for section in 0..sections {
+        blocks.push(Block::heading(2, &format!("Section {section}")));
+        let mut paragraph = Block::paragraph(&format!(
+            "Paragraph {section:03} links to a meeting among ordinary prose."
+        ));
+        paragraph
+            .line
+            .set_marks(vec![MarkSpan::new(23..32, Mark::Link(Uuid::nil()))]);
+        blocks.push(paragraph);
+        blocks.push(Block::bullet(0, &format!("observation {section}")));
+        blocks.push(Block::bullet(0, &format!("follow-up {section}")));
+        for line in 0..10 {
+            blocks.push(Block::code_block(
+                Some("rust".into()),
+                &format!("let line_{line} = \"section {section}\"; // note"),
+            ));
+        }
+        blocks.push(Block::paragraph("Between the fence and its formula."));
+        blocks.push(Block::code_block(Some("tex".into()), r"\frac{x^2+1}{y}"));
+        blocks.push(Block::paragraph("Closing words of the section."));
+    }
+    blocks
+}
+
+/// The editor's first line on screen when it is scrolled to its middle.
+fn scrolled_to_middle(fixture: &mut RetainedEditor) -> Rect {
+    let middle = fixture.editor.blocks.len() / 2;
+    fixture.frame();
+    let top = fixture.editor.blocks[middle].line.get_rect().y0;
+    let viewport = Rect::new(0.0, top, f64::from(fixture.width), top + 600.0);
+    fixture.viewport = Some(viewport);
+    fixture.frame();
+    viewport
+}
+
+fn has_colour(block: &Block, kind: TokenKind) -> bool {
+    block
+        .line
+        .transient_colors()
+        .iter()
+        .any(|span| span.kind == kind)
+}
+
+/// An unchanged redraw highlights no code at all, and a keystroke in one
+/// code line re-highlights that line's run and nothing else, however long
+/// the document: syntax colours are derived once per change, not per frame.
+#[test]
+fn syntax_colours_are_derived_per_change_not_per_frame() {
+    let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(125));
+    fixture.viewport = Some(Rect::new(0.0, 0.0, 640.0, 600.0));
+    fixture.frame();
+    let code_lines = fixture
+        .editor
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::CodeBlock { .. }))
+        .count();
+    assert!(code_lines > 1000, "a long document with code: {code_lines}");
+    assert!(
+        has_colour(&fixture.editor.blocks[4], TokenKind::Keyword),
+        "the first frame colours code"
+    );
+    fixture.editor.highlighted_lines = 0;
+    fixture.frame();
+    fixture.frame();
+    assert_eq!(
+        fixture.editor.highlighted_lines, 0,
+        "an unchanged redraw highlights no code line"
+    );
+    // A keystroke in the third line of the first fence.
+    fixture.editor.focus_block(6, CursorPlacement::Start);
+    fixture.frame();
+    fixture.editor.highlighted_lines = 0;
+    fixture.type_text("x");
+    assert!(fixture.editor.blocks[6].text().starts_with("xlet line_2"));
+    assert_eq!(
+        fixture.editor.highlighted_lines, 10,
+        "a keystroke re-highlights its own ten-line run only"
+    );
+    assert!(
+        has_colour(&fixture.editor.blocks[6], TokenKind::StringLit),
+        "the edited line is coloured again"
+    );
+    // A line that opens a comment carries the parse into the run's next lines.
+    fixture.editor.blocks[4].line.set_text("/* an open comment");
+    fixture.frame();
+    assert!(
+        fixture.editor.blocks[5]
+            .line
+            .transient_colors()
+            .iter()
+            .all(|span| span.kind == TokenKind::Comment),
+        "an unterminated comment colours the rest of its run: {:?}",
+        fixture.editor.blocks[5].line.transient_colors()
+    );
+    // A line that leaves the run for prose drops its colours.
+    fixture.editor.blocks[5].kind = BlockKind::Paragraph;
+    fixture.frame();
+    assert!(fixture.editor.blocks[5].line.transient_colors().is_empty());
+    // Its old neighbour now starts a run of its own, outside the comment, and
+    // is highlighted afresh.
+    assert!(
+        has_colour(&fixture.editor.blocks[6], TokenKind::StringLit),
+        "{:?}",
+        fixture.editor.blocks[6].line.transient_colors()
+    );
+}
+
+/// Replacing the blocks with fresh lines of the same identity and text
+/// still colours them: what was derived lives with the colours, not the ids.
+#[test]
+fn fresh_lines_with_known_ids_are_coloured() {
+    let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(2));
+    fixture.frame();
+    let replacement: Vec<Block> = fixture
+        .editor
+        .blocks
+        .iter()
+        .map(|block| {
+            let mut fresh = match &block.kind {
+                BlockKind::CodeBlock { lang } => Block::code_block(lang.clone(), block.text()),
+                _ => Block::paragraph(block.text()),
+            };
+            fresh.id.clone_from(&block.id);
+            fresh
+        })
+        .collect();
+    fixture.editor.set_blocks(replacement);
+    fixture.rebuild_after_structure_change();
+    fixture.frame();
+    assert!(
+        has_colour(&fixture.editor.blocks[4], TokenKind::Keyword),
+        "a fresh line is highlighted even though its id and text are known"
+    );
+}
+
+/// What a frame derives besides painting follows the viewport, not the
+/// document: a ten times longer note with the same screen derives the same
+/// code chrome, formula sources and link targets, and paints the same blocks.
+#[test]
+fn per_frame_derivations_follow_the_viewport_not_the_document() {
+    let mut work = Vec::new();
+    for sections in [12_usize, 120] {
+        let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(sections));
+        fixture.viewport = Some(Rect::new(0.0, 0.0, 640.0, 600.0));
+        fixture.frame();
+        fixture.frame();
+        fixture.editor.painted_blocks = 0;
+        fixture.editor.formula_sources = 0;
+        fixture.editor.highlighted_lines = 0;
+        crate::profiling::frame_probe::enable();
+        let started = crate::time::now();
+        let frames = 20_u32;
+        for _ in 0..frames {
+            fixture.frame();
+        }
+        let elapsed = started.elapsed() / frames;
+        let phases = crate::profiling::frame_probe::take();
+        eprintln!(
+            "block-editor-frame {}",
+            serde_json::json!({
+                "blocks": fixture.editor.blocks.len(),
+                "profile": if cfg!(debug_assertions) { "test-debug" } else { "optimized" },
+                "frame_us": elapsed.as_micros(),
+                "draw_phases_ns_calls": phases,
+            })
+        );
+        let last = fixture.editor.blocks.last().unwrap().line.get_rect();
+        assert!(last.y0 > 1200.0, "the note reaches past the paint window");
+        work.push((
+            fixture.editor.painted_blocks,
+            fixture.editor.formula_sources,
+            fixture.editor.highlighted_lines,
+            fixture.editor.code_copy_hits.len(),
+            fixture.editor.live_link_hits.len(),
+        ));
+    }
+    assert!(
+        work[0].1 > 0 && work[0].3 > 0 && work[0].4 > 0,
+        "the screen holds formulas, code and links: {work:?}"
+    );
+    assert_eq!(work[0].2, 0, "unchanged frames highlight no code: {work:?}");
+    assert_eq!(
+        work[0], work[1],
+        "painted blocks, formula sources, highlighted lines, code chrome and link targets \
+         per frame: {work:?}"
+    );
+}
+
+/// The copy button of a code run on screen stays hit-testable, and a link on
+/// screen stays clickable, after culling what is off screen.
+#[test]
+fn culled_frames_keep_on_screen_chrome_and_links_live() {
+    let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(40));
+    let viewport = scrolled_to_middle(&mut fixture);
+    let blocks = &fixture.editor.blocks;
+    let fences_on_screen: Vec<usize> = (0..blocks.len())
+        .filter(|&index| {
+            code_header_height(blocks, index, 1.0) > 0.0
+                && viewport.contains(blocks[index].line.get_rect().origin())
+        })
+        .collect();
+    assert!(!fences_on_screen.is_empty(), "a fence starts on screen");
+    for start in &fences_on_screen {
+        assert!(
+            fixture
+                .editor
+                .code_copy_hits
+                .iter()
+                .any(|(rect, hit, _)| hit == start && rect.area() > 0.0),
+            "fence {start} on screen has its copy button"
+        );
+    }
+    let linked = (0..blocks.len())
+        .find(|&index| {
+            !blocks[index].line.marks().is_empty()
+                && viewport.contains(blocks[index].line.get_rect().origin())
+        })
+        .expect("a linked paragraph on screen");
+    let link = blocks[linked].line.mark_rects(&fixture.theme, 23..32)[0];
+    assert_eq!(
+        fixture.editor.link_at_point(link.center()),
+        Some(LinkTarget::Page(Uuid::nil()))
+    );
+    let reach = viewport.inflate(0.0, viewport.height());
+    assert!(
+        fixture
+            .editor
+            .code_copy_hits
+            .iter()
+            .all(|(rect, _, _)| rect.y1 >= reach.y0 - CODE_HEADER_HEIGHT && rect.y0 <= reach.y1),
+        "no chrome is derived for a run a screen or more away"
+    );
+}
+
+/// The window of a note scrolled to its middle, rendered.
+fn render_window(fixture: &mut RetainedEditor, viewport: Option<Rect>, top: f64) -> Vec<u8> {
+    let presence = PresenceCtx::empty();
+    if let Some(viewport) = viewport {
+        presence.push_viewport(viewport);
+    }
+    let mut scene = Scene::new();
+    fixture.editor.draw(
+        &mut scene,
+        Affine::translate((0.0, -top)),
+        &mut fixture.text,
+        &fixture.theme,
+        &presence,
+    );
+    let background = fixture.theme.tokens.colors.surfaces.content;
+    crate::offscreen::OffscreenRenderer::new(640, 600).render(&scene, background)
+}
+
+/// Culling and caching change nothing on screen: a culled frame from warm
+/// caches renders the window exactly as a frame that paints every block and
+/// derives every colour again, in each theme.
+#[test]
+fn culled_cached_frames_render_what_a_full_frame_does() {
+    for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+        let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(30));
+        fixture.theme = theme;
+        let viewport = scrolled_to_middle(&mut fixture);
+        fixture.frame();
+        let culled = render_window(&mut fixture, Some(viewport), viewport.y0);
+        // Forget every derived colour: the next frame highlights from scratch.
+        for block in &mut fixture.editor.blocks {
+            block.line.set_transient_colors(Vec::new());
+        }
+        fixture.editor.highlighted_lines = 0;
+        let full = render_window(&mut fixture, None, viewport.y0);
+        assert!(
+            fixture.editor.highlighted_lines > 0,
+            "the full frame derived its colours again"
+        );
+        let differing = culled
+            .chunks_exact(4)
+            .zip(full.chunks_exact(4))
+            .filter(|(culled, full)| culled != full)
+            .count();
+        assert!(
+            culled.chunks_exact(4).any(|pixel| pixel != &culled[..4]),
+            "the window shows the note"
+        );
+        assert_eq!(differing, 0, "pixels a culled frame paints differently");
+    }
+}
+
+/// The semantic tree's nodes beneath and including `id`.
+fn subtree_len(tree: &crate::a11y_tree::SemanticTree, id: &crate::a11y_tree::SemanticId) -> usize {
+    tree.node(id).map_or(0, |node| {
+        node.children
+            .iter()
+            .map(|child| subtree_len(tree, child))
+            .sum::<usize>()
+            .saturating_add(1)
+    })
+}
+
+/// What a tree that keeps nothing between frames publishes for the editor
+/// now: every node, in reading order.
+fn published_afresh(fixture: &RetainedEditor) -> Vec<crate::a11y_tree::SemanticNode> {
+    let mut tree = crate::a11y_tree::SemanticTree::new();
+    tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+    tree.iter().cloned().collect()
+}
+
+/// A keystroke builds the accessibility row of the block it typed into, and
+/// the semantic tree builds that row's nodes, the document's and the
+/// window's: every other block hands the tree the very row it had, which the
+/// tree keeps.
+/// The work is the same in a document four times as long, and the tree it
+/// publishes is the one a full rebuild publishes.
+#[test]
+fn a_keystroke_builds_the_accessibility_row_of_its_block_alone() {
+    let mut built = Vec::new();
+    for count in [40, 160] {
+        let blocks = (0..count)
+            .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary line.")))
+            .collect();
+        let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+        let mut tree = crate::a11y_tree::SemanticTree::new();
+        tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+        assert!(
+            tree.nodes_built_for_test() > count * 6,
+            "the first refresh builds every row"
+        );
+        let rows = fixture.editor.access_row_builds_for_test();
+
+        fixture.key(Key::Character("x".into()), Modifiers::default());
+        let delta = tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+
+        assert_eq!(
+            fixture.editor.access_row_builds_for_test() - rows,
+            1,
+            "a keystroke into one of {count} blocks builds one row"
+        );
+        let typed = tree
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Paragraph block 1"))
+            .map(|node| node.id.clone())
+            .expect("the typed block's row");
+        assert_eq!(
+            tree.nodes_built_for_test(),
+            subtree_len(&tree, &typed) + 2,
+            "the tree builds the typed row's nodes, the document's and the window's alone, \
+             of {count} blocks"
+        );
+        assert!(
+            delta.added.is_empty() && delta.removed.is_empty() && !delta.updated.is_empty(),
+            "the keystroke updates nodes, adding and removing none: {delta:?}"
+        );
+        assert_eq!(
+            tree.iter().cloned().collect::<Vec<_>>(),
+            published_afresh(&fixture),
+            "the kept rows publish what a full rebuild publishes"
+        );
+        built.push(tree.nodes_built_for_test());
+    }
+    assert_eq!(
+        built[0], built[1],
+        "a keystroke costs the same whatever the document's length"
+    );
+}
+
+/// A row is kept only while everything it is built from is the same: a
+/// caret moved, a block indented or a block moved builds the rows it
+/// changed and publishes what a full rebuild publishes.
+#[test]
+fn kept_accessibility_rows_follow_caret_indent_and_moves() {
+    let blocks = vec![
+        Block::paragraph("First"),
+        Block::bullet(0, "Second"),
+        Block::bullet(0, "Third"),
+        Block::paragraph("Fourth"),
+    ];
+    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+    let mut tree = crate::a11y_tree::SemanticTree::new();
+    tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+    for key in [
+        Key::Named(NamedKey::ArrowRight),
+        Key::Named(NamedKey::ArrowDown),
+        Key::Named(NamedKey::ArrowDown),
+        Key::Named(NamedKey::Tab),
+    ] {
+        fixture.key(key.clone(), Modifiers::default());
+        tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+        assert_eq!(
+            tree.iter().cloned().collect::<Vec<_>>(),
+            published_afresh(&fixture),
+            "after {key:?} the kept rows publish what a full rebuild publishes"
+        );
+    }
+    let moved = fixture.editor.focused_index().expect("a focused block");
+    assert!(fixture.editor.move_block_to(moved, 0), "the block moves up");
+    if fixture.editor.take_structure_dirty() {
+        fixture.rebuild_after_structure_change();
+    }
+    fixture.frame();
+    tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+    assert_eq!(
+        tree.iter().cloned().collect::<Vec<_>>(),
+        published_afresh(&fixture),
+        "after a move the kept rows publish what a full rebuild publishes"
+    );
+}

@@ -445,6 +445,47 @@ pub enum BackendEvent {
     Focus(bool),
 }
 
+impl BackendEvent {
+    /// Whether this event is the person using an input device, which keeps
+    /// the session from dimming, blanking, locking and suspending. It does
+    /// not matter who receives it: a pen stroke or a two-finger pinch that
+    /// goes straight to an app is as much use as a key the shell handles.
+    /// Exhaustive, so a new kind of input has to say whether it counts.
+    pub fn is_person_input(&self) -> bool {
+        match self {
+            Self::Input(_)
+            | Self::PhysicalKey { .. }
+            | Self::RelativePointerMotion { .. }
+            | Self::ModifiersChanged(_)
+            | Self::Tablet(_)
+            | Self::TabletPad(_)
+            | Self::TabletPadMap { .. }
+            | Self::Gesture(_)
+            | Self::ShellGesture(_)
+            | Self::Touch(_)
+            | Self::TabletMode(_)
+            // A key press an accessibility filter rejected was still pressed.
+            | Self::VisualAlert => true,
+            // Devices and outputs come and go on their own (a Bluetooth
+            // reconnect, a monitor waking), and the rest is bookkeeping that
+            // follows input already counted.
+            Self::CloseRequested
+            | Self::OutputResized { .. }
+            | Self::OutputsChanged
+            | Self::TabletPadAdded(_)
+            | Self::TabletPadRemoved(_)
+            | Self::InputStateReset
+            | Self::KeyboardConfiguration { .. }
+            | Self::InputDeviceAdded { .. }
+            | Self::InputDeviceRemoved { .. }
+            | Self::InputUsed(_)
+            | Self::PointerMotionUsed
+            | Self::Redraw
+            | Self::Focus(_) => false,
+        }
+    }
+}
+
 /// The physical tablet a tool is used on.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TabletDevice {
@@ -675,6 +716,15 @@ pub trait Backend {
         self.submit_frame(&frame.scene, output);
     }
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent));
+
+    /// Read input that arrived since the last poll, without blocking and
+    /// without touching anything else [`Self::poll_events`] applies (the
+    /// output table above all), so the run loop can call it between the
+    /// phases of a turn while that turn's frame is being built. The events
+    /// arrive in order and belong ahead of whatever the next
+    /// [`Self::poll_events`] returns. Backends whose input does not arrive
+    /// on their own loop have nothing to read here.
+    fn poll_input(&mut self, _callback: &mut dyn FnMut(BackendEvent)) {}
 
     /// Duplicate an fd which becomes readable whenever this backend has
     /// events waiting for [`Self::poll_events`]. The compositor registers it
@@ -991,7 +1041,6 @@ pub fn apply_scale_factor_changed(output: &mut Output, scale_factor: f64) -> Opt
     }
     #[allow(
         clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         reason = "monitor scale factor; f32 precision is ample for a UI scale value"
     )]
     let scale = scale_factor as f32;

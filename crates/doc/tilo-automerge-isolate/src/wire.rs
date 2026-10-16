@@ -12,9 +12,13 @@
 //! first frame says why it could not be.
 //!
 //! Replies: `0 changed`, `1` (missing dependencies), `2 count keys…` (no copy
-//! at `key`; the ones the worker holds), `3 message…` (Automerge refused it).
+//! at `key`; the ones the worker holds), `3 message…` (Automerge refused it),
+//! `4 count hashes…` (loaded; the hash of each change, for the caller's load
+//! of the same bytes, or none).
 
 use std::io::{self, Read, Write};
+
+use automerge::ChangeHash;
 
 use crate::engine::Key;
 use crate::{Applied, Dependencies};
@@ -57,6 +61,11 @@ pub(crate) enum Escape {
 
 pub(crate) enum Reply {
     Applied(Applied),
+    /// A [`Request::Load`] succeeded. The hashes of the document's changes,
+    /// which the caller's own load of the same bytes takes instead of
+    /// computing them (`engine::load_validated`); empty when the worker has
+    /// none to give.
+    Loaded(Vec<ChangeHash>),
     Uncached(Vec<Key>),
     Invalid(String),
 }
@@ -213,6 +222,13 @@ impl Reply {
                 out.push(3);
                 out.extend(message.as_bytes());
             }
+            Self::Loaded(hashes) => {
+                out.push(4);
+                out.extend(u64::try_from(hashes.len()).unwrap_or(0).to_le_bytes());
+                for hash in hashes {
+                    out.extend(hash.0);
+                }
+            }
         }
         out
     }
@@ -231,6 +247,19 @@ impl Reply {
                 Some(Self::Uncached(keys))
             }
             3 => Some(Self::Invalid(String::from_utf8_lossy(input).into_owned())),
+            4 => {
+                let (count, mut rest) = input.split_first_chunk::<8>()?;
+                let count = usize::try_from(u64::from_le_bytes(*count)).ok()?;
+                if rest.len() != count.checked_mul(32)? {
+                    return None;
+                }
+                let mut hashes = Vec::with_capacity(count);
+                while let Some((hash, after)) = rest.split_first_chunk::<32>() {
+                    hashes.push(ChangeHash(*hash));
+                    rest = after;
+                }
+                Some(Self::Loaded(hashes))
+            }
             _ => None,
         }
     }

@@ -9,6 +9,7 @@ homepage.workspace = true
 description = "Dropbox accounts as a cloud-source provider: API v2 listings and cursor feed, long-poll, content_hash, revisions, upload sessions, ranged reads, share links and quota."
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 chrono = { workspace = true, features = ["std"] }
 cloud-source = { version = "0.1.0", path = "../cloud-source" }
 reqwest = { workspace = true, features = ["blocking"] }
@@ -25,6 +26,14 @@ test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
 # the shared test responder, for this crate's conformance run and the
 # storage daemon's end-to-end tests. Test support only.
 fake-server = ["dep:test-http"]
+# Explicit external simulator tests; no license or network needed by default.
+rystic-tests = []
+# Strict vendor contracts that expose known released-twin fidelity defects.
+rystic-contract-tests = ["rystic-tests"]
+
+[[test]]
+name = "rystic"
+required-features = ["rystic-tests"]
 
 [dev-dependencies]
 cloud-source = { path = "../cloud-source", features = ["conformance"] }

@@ -331,7 +331,7 @@ impl Guild {
         Emit::new(
             source::LAYOUT_CHANGED,
             event_id::sequenced(source::LAYOUT_CHANGED, sequence),
-            now_ms(),
+            tilo_clock::unix_now_ms_i64(),
             &layout,
         )
     }
@@ -444,7 +444,7 @@ impl Guild {
         Emit::new(
             source::MESSAGE_DELETED,
             event_id::message_deleted(id),
-            now_ms(),
+            tilo_clock::unix_now_ms_i64(),
             &event,
         )
     }
@@ -473,7 +473,7 @@ impl Guild {
                 source::REACTION_REMOVED
             },
             event_id::reaction(&message, &user, &emoji, added, sequence),
-            now_ms(),
+            tilo_clock::unix_now_ms_i64(),
             &event,
         ))
     }
@@ -498,7 +498,7 @@ impl Guild {
         Some(Emit::new(
             source::MEMBER_CHANGED,
             event_id::sequenced(source::MEMBER_CHANGED, sequence),
-            now_ms(),
+            tilo_clock::unix_now_ms_i64(),
             &event,
         ))
     }
@@ -540,14 +540,6 @@ impl Guild {
             &event,
         ))
     }
-}
-
-/// Wall-clock Unix milliseconds.
-#[must_use]
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]

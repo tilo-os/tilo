@@ -6,7 +6,7 @@ if [ -n "${TILO_CRYPTO_BIN:-}" ]; then
   crypto="$TILO_CRYPTO_BIN"
 else
   cargo build --quiet --manifest-path "$repo/Cargo.toml" -p tilo-crypto
-  crypto="$repo/target/debug/tilo-crypto"
+  crypto="${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-crypto"
 fi
 mkdir -p "$work/dev/disk/by-partuuid" "$work/run" "$work/bin"
 touch "$work/dev/esp" "$work/dev/tilo-root" "$work/dev/tilo-root-2" "$work/dev/linux-root" \

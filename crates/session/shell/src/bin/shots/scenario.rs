@@ -234,6 +234,28 @@ pub enum Action {
         app_id: &'static str,
         surface_id: u64,
     },
+    /// Activate an app whose window has not mapped yet: the production
+    /// launch holds its place with the opening card from this frame.
+    HoldLaunchPlace {
+        app_id: &'static str,
+        label: &'static str,
+    },
+    /// A peer's window whose app is still being fetched from the
+    /// registry here, with no real install behind it.
+    HoldInstallPlace {
+        app_id: &'static str,
+        label: &'static str,
+    },
+    /// The install [`Action::HoldInstallPlace`] stands for has fetched
+    /// `received` of `total` bytes.
+    InstallBytes {
+        app_id: &'static str,
+        received: u64,
+        total: u64,
+    },
+    /// Let real time pass, then step one frame: for states keyed to how
+    /// long something has taken, which frame steps alone do not advance.
+    WaitWall(u64),
     /// Open a second tab of a **shell-hosted** app — Notes, Editor —
     /// into the active group.
     ///
@@ -729,6 +751,51 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
 
 /// `Action::OpenWindow` — split out of [`apply`] to keep that dispatcher short.
 fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
+    match action {
+        Action::HoldLaunchPlace { app_id, label } => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                let placement = shell::shell::placement::placement_for_target(
+                    &st.tree(),
+                    st.strip_viewport(),
+                    st.open_target,
+                );
+                shell::shell::tab_binding::hold_place_for_launch(
+                    &mut st.tree_mut(),
+                    app_id,
+                    label,
+                    placement,
+                );
+                st.bump();
+            });
+            return;
+        }
+        Action::HoldInstallPlace { app_id, label } => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                shell::shell::peer_windows::show_install_under_way_for_shots(
+                    &mut st.tree_mut(),
+                    app_id,
+                    label,
+                );
+                st.bump();
+            });
+            return;
+        }
+        Action::InstallBytes {
+            app_id,
+            received,
+            total,
+        } => {
+            shell::shell::peer_windows::show_install_bytes_for_shots(app_id, *received, *total);
+            driver.step_frames(1);
+            return;
+        }
+        Action::WaitWall(ms) => {
+            std::thread::sleep(std::time::Duration::from_millis(*ms));
+            driver.step_frames(1);
+            return;
+        }
+        _ => {}
+    }
     if let Action::OpenWindow { app_id, surface_id } = action {
         let app_id = *app_id;
         let surface_id = *surface_id;
@@ -1147,6 +1214,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 picker.click_cancel();
             }
             driver.host_mut().pump_file_picker();
+            seed_file_picker_fixture(driver);
             let queue = FilePickerQueue::new();
             driver.host_mut().set_portal_queues(
                 PromptQueueHandle::new(PromptResolver::Channel),
@@ -1192,6 +1260,43 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             driver.host_mut().pump_file_picker();
         }
         _ => {}
+    }
+}
+
+/// Fill the picker's fixture folder like a person's home — the usual
+/// folders and a few documents with sizes and dates — so the capture shows
+/// the sidebar and every column. The fixture is a throwaway directory the
+/// capture owns; nothing here exists outside `--shots`.
+fn seed_file_picker_fixture(driver: &mut ShellDriver) {
+    let mut home = None;
+    driver.with_chrome(|st: &mut ChromeState| {
+        home = st
+            .hosted_inputs()
+            .picker_scope
+            .as_ref()
+            .map(|scope| scope.initial_dir.clone());
+    });
+    let Some(home) = home else {
+        return;
+    };
+    for folder in ["Documents", "Downloads", "Pictures", "Music", "Projects"] {
+        let _ = std::fs::create_dir_all(home.join(folder));
+    }
+    for (name, kilobytes) in [
+        ("Quarterly report.odt", 84_u64),
+        ("Meeting notes.md", 3),
+        ("Budget 2027.ods", 212),
+        ("Holiday photo.png", 2_480),
+        ("Invoice March.pdf", 156),
+        ("Reading list.txt", 1),
+    ] {
+        let path = home.join(name);
+        if !path.exists() {
+            let _ = std::fs::write(
+                &path,
+                vec![b'x'; usize::try_from(kilobytes.saturating_mul(1000)).unwrap_or(0)],
+            );
+        }
     }
 }
 
@@ -1626,7 +1731,10 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
         "volume_low" => Osd::volume(0.10, false),
         "volume_muted" => Osd::volume(0.65, true),
         "brightness" => Osd::brightness(0.40),
+        "keyboard_backlight" => Osd::keyboard_backlight(0.5),
+        "keyboard_backlight_off" => Osd::keyboard_backlight(0.0),
         "mic_muted" => Osd::mic_mute(true),
+        "no_backlight" => Osd::no_backlight(),
         "next_track" => Osd::transport(Transport::Next),
         _ => Osd::volume(0.5, false),
     }
@@ -1996,6 +2104,48 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(1),
                 Action::Relayout,
                 Action::Snapshot("markup-saved"),
+            ],
+        },
+        Scenario {
+            name: "opening_card",
+            description: "An app asked for holds its place with the moving opening card from the \
+                          first frame, says so when the start runs long, and says what it is \
+                          doing while its app is still being fetched from the registry, with \
+                          how much has arrived once the download reports it.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(None),
+                Action::HoldLaunchPlace {
+                    app_id: "so.tilo.notes",
+                    label: "Notes",
+                },
+                Action::Wait(1),
+                Action::Relayout,
+                Action::Snapshot("opening-first-frame"),
+                Action::WaitWall(5_500),
+                Action::Relayout,
+                Action::Snapshot("opening-slow"),
+                Action::SelectGroup(None),
+                Action::HoldInstallPlace {
+                    app_id: "so.tilo.slides",
+                    label: "Slides",
+                },
+                Action::Wait(20),
+                Action::Relayout,
+                Action::Snapshot("opening-installing"),
+                Action::WaitWall(5_500),
+                Action::Relayout,
+                Action::Snapshot("opening-installing-slow"),
+                Action::InstallBytes {
+                    app_id: "so.tilo.slides",
+                    received: 4_200_000,
+                    total: 18_000_000,
+                },
+                // Past the dots-to-bar crossfade, so the shot shows where
+                // it settles rather than a frame of the fade.
+                Action::WaitWall(400),
+                Action::Relayout,
+                Action::Snapshot("opening-installing-progress"),
             ],
         },
         Scenario {
@@ -2859,6 +3009,44 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "overlay_edges",
+            description: "Open every top-bar chip and hover its affordances so the popovers and tooltips are reviewed anchored at the top, left and right screen edges.",
+            actions: vec![
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(18),
+                Action::Snapshot("00-desktop"),
+                // Named targets, not coordinates: the scenario runs across
+                // the viewport sweep, where every chip moves. Hover dwell
+                // shows the tooltip of the tray pill against the right
+                // screen edge, then the overview button's against the left.
+                Action::MoveCursorNamed("topbar_tray_pill"),
+                Action::Wait(40),
+                Action::Snapshot("01-tooltip-right-edge"),
+                Action::MoveCursorNamed("topbar_overview_button"),
+                Action::Wait(40),
+                Action::Snapshot("02-tooltip-left-edge"),
+                Action::ClickNamed("topbar_workspace_pill"),
+                Action::Wait(4),
+                Action::Snapshot("03-workspace-chip"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::ClickNamed("topbar_center_clock"),
+                Action::Wait(4),
+                Action::Snapshot("04-clock-chip"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::ClickNamed("topbar_tray_pill"),
+                Action::Wait(4),
+                Action::Snapshot("05-status-chip"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::SeedInvitePending,
+                Action::Wait(3),
+                Action::ClickNamed("topbar_avatar_stack"),
+                Action::Wait(4),
+                Action::Snapshot("06-people-with-pending-invite"),
+            ],
+        },
+        Scenario {
             name: "solo_and_shared_shell_states",
             description: "Compare the quiet solo desktop with the same workspace after collaborators arrive, then open its roster.",
             actions: vec![
@@ -2931,7 +3119,7 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "crowded_people_roster",
-            description: "Prove that a crowded live roster keeps full activity and intent rows, pages cleanly, and remains keyboard navigable.",
+            description: "Prove that a crowded live roster lists everyone with full activity and intent rows, scrolls under its pinned count, and remains keyboard navigable.",
             actions: vec![
                 Action::Wait(4),
                 Action::Relayout,
@@ -2939,19 +3127,11 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(18),
                 Action::SeedCrowdedWorkspace,
                 Action::Wait(3),
-                Action::Snapshot("01-first-three-people"),
+                Action::Snapshot("01-everyone-listed"),
                 Action::Key(Key::Named(NamedKey::Home)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Snapshot("02-next-page-keyboard-focus"),
-                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Key(Key::Named(NamedKey::End)),
                 Action::Wait(2),
-                Action::Snapshot("03-next-three-people"),
+                Action::Snapshot("02-last-person-focused"),
             ],
         },
         Scenario {
@@ -3599,8 +3779,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
                 Action::Wait(4),
                 Action::Snapshot("04-four-windows"),
-                // Back to the first window, which pans the strip home the way
-                // focus always does — the starting position for the travel.
+                // Back to the first window, which pans it flush with the screen
+                // edge (the least pan that shows it) — the starting position
+                // for the travel.
                 Action::SelectGroup(Some(0)),
                 Action::Wait(PAN_SETTLE_FRAMES),
                 Action::Snapshot("05-strip-at-rest"),
@@ -3845,26 +4026,32 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "media_key_osd",
-            description: "The transient slab a volume / brightness / mute / transport key raises.",
+            description: "The bottom-centre pill a volume / brightness / mute / backlight / transport key raises.",
             actions: vec![
                 Action::SeedOsd("volume"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("01-volume"),
                 Action::SeedOsd("volume_low"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("02-volume-low"),
                 Action::SeedOsd("volume_muted"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("03-muted"),
                 Action::SeedOsd("brightness"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("04-brightness"),
                 Action::SeedOsd("mic_muted"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("05-mic-muted"),
                 Action::SeedOsd("next_track"),
-                Action::Wait(3),
+                Action::Wait(14),
                 Action::Snapshot("06-next-track"),
+                Action::SeedOsd("keyboard_backlight"),
+                Action::Wait(14),
+                Action::Snapshot("07-keyboard-backlight"),
+                Action::SeedOsd("no_backlight"),
+                Action::Wait(14),
+                Action::Snapshot("08-no-backlight"),
             ],
         },
         Scenario {
@@ -4258,7 +4445,7 @@ mod tests {
     /// Sink that records what the strip's scroll looks like at each
     /// named snapshot, straight off the live `GroupRow` the shell pans.
     struct StripScrollSink {
-        seen: Vec<(String, f64, f64, f64)>,
+        seen: Vec<(String, f64, f64, f64, f64)>,
     }
     impl SnapshotSink for StripScrollSink {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
@@ -4269,13 +4456,23 @@ mod tests {
                     .active_workspace()
                     .and_then(|ws| ws.strips.first().map(|s| s.id))
             };
-            let (scroll_x, max_scroll_x, pan_max_scroll_x) = strip_id
+            let (scroll_x, max_scroll_x, pan_max_scroll_x, leading_inset) = strip_id
                 .and_then(|sid| driver.host_mut().group_row_mut_for_tests(sid))
-                .map_or((f64::NAN, f64::NAN, f64::NAN), |row| {
-                    (row.scroll_x(), row.max_scroll_x(), row.pan_max_scroll_x())
+                .map_or((f64::NAN, f64::NAN, f64::NAN, f64::NAN), |row| {
+                    (
+                        row.scroll_x(),
+                        row.max_scroll_x(),
+                        row.pan_max_scroll_x(),
+                        row.leading_inset(),
+                    )
                 });
-            self.seen
-                .push((name.to_string(), scroll_x, max_scroll_x, pan_max_scroll_x));
+            self.seen.push((
+                name.to_string(),
+                scroll_x,
+                max_scroll_x,
+                pan_max_scroll_x,
+                leading_inset,
+            ));
         }
     }
 
@@ -4352,29 +4549,32 @@ mod tests {
             &mut sink,
         );
 
-        let at = |name: &str| -> (f64, f64, f64) {
-            let (_, sx, mx, pan_mx) = sink
+        let at = |name: &str| -> (f64, f64, f64, f64) {
+            let (_, sx, mx, pan_mx, inset) = sink
                 .seen
                 .iter()
-                .find(|(n, _, _, _)| n == name)
+                .find(|(n, ..)| n == name)
                 .unwrap_or_else(|| panic!("scenario should snapshot {name}"));
-            (*sx, *mx, *pan_mx)
+            (*sx, *mx, *pan_mx, *inset)
         };
-        let (rest_x, rest_max, rest_pan_max) = at("05-strip-at-rest");
+        let (rest_x, rest_max, rest_pan_max, rest_inset) = at("05-strip-at-rest");
         assert!(
             rest_max > 400.0,
             "four half-width windows must overflow the display by more than a third of \
              a screen, or there is nothing to pan across (max_scroll_x = {rest_max})"
         );
+        // Focusing the first window reveals it by the least pan: flush with
+        // the screen edge, the wheel-disc gutter scrolled off to its left.
         assert!(
-            rest_x < 1.0,
-            "the strip starts at its leftmost position (scroll_x = {rest_x})"
+            rest_x <= rest_inset + 1.0,
+            "the strip starts with its first window flush at the screen edge \
+             (scroll_x = {rest_x}, leading inset = {rest_inset})"
         );
         assert!(
             rest_pan_max > rest_max,
             "direct panning must expose legal trailing canvas beyond the content-tight bound"
         );
-        let (held_x, held_max, held_pan_max) = at("06-held-past-trailing-edge");
+        let (held_x, held_max, held_pan_max, _) = at("06-held-past-trailing-edge");
         assert!(
             held_x > held_pan_max,
             "the held gesture must visibly pull beyond its legal resting end \
@@ -4386,13 +4586,13 @@ mod tests {
             "rubber-band travel must stay below its 28%-viewport asymptote \
              (scroll_x = {held_x}, pan_max_scroll_x = {held_pan_max})"
         );
-        let (settled_x, _, settled_pan_max) = at("07-settled-trailing-room");
+        let (settled_x, _, settled_pan_max, _) = at("07-settled-trailing-room");
         assert!(
             (settled_x - settled_pan_max).abs() < 1.0,
             "release must settle to the legal 20%-viewport trailing rest \
              (scroll_x = {settled_x}, pan_max_scroll_x = {settled_pan_max})"
         );
-        let (back_x, _, _) = at("08-panned-back");
+        let (back_x, ..) = at("08-panned-back");
         assert!(
             back_x < 1.0,
             "the reverse direct pan returns the strip home (scroll_x = {back_x})"

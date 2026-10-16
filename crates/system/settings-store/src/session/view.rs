@@ -10,7 +10,7 @@
 //! each of those reads used to. Only a host whose copy watch could not start
 //! asks it to look at the copy on a timer as well.
 
-use std::sync::{Arc, PoisonError, mpsc};
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 
 use super::{Committed, SessionSettings};
 use crate::{ChangeOrigin, ChangeSignal, ConditionalUpdate, SectionChange, SettingsSource};
+use tilo_lock::MutexRecover as _;
 
 struct HostView {
     session: Arc<SessionSettings>,
@@ -48,6 +49,9 @@ pub(super) fn start(
             let Some(session) = session_weak.upgrade() else {
                 break;
             };
+            // Writes the host's loop accepted without waiting, then the
+            // copy another process may have written.
+            session.write_pending();
             session.refresh();
         }
     })?;
@@ -59,6 +63,16 @@ pub(super) fn start(
 }
 
 impl HostView {
+    /// Accept a write from a thread that must not wait for the disk
+    /// ([`crate::defer_writes_on_this_thread`]): readers see it now and the
+    /// worker makes it durable.
+    fn accept_deferred(&self, name: &str, origin: &ChangeOrigin, change: &mut SectionChange<'_>) {
+        self.session.accept_deferred(name, origin, change);
+        if let Some(sender) = &self.refresh {
+            let _ = sender.try_send(());
+        }
+    }
+
     fn snapshot(&self) -> Arc<Committed> {
         if let Some(sender) = &self.refresh
             && self.session.copy_may_have_changed()
@@ -67,13 +81,7 @@ impl HostView {
             // never grows the queue or blocks the event loop.
             let _ = sender.try_send(());
         }
-        Arc::clone(
-            &self
-                .session
-                .committed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
+        Arc::clone(&self.session.committed.lock_recover())
     }
 }
 
@@ -83,6 +91,13 @@ impl SettingsSource for HostView {
     }
 
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+        if crate::writes_deferred_on_this_thread() {
+            let mut values = Some(values);
+            self.accept_deferred(name, &ChangeOrigin::default(), &mut |_| {
+                values.take().unwrap_or_default()
+            });
+            return Ok(());
+        }
         // Storage workers retain the original durable result/error contract.
         self.session.update_section(name, values)
     }
@@ -93,6 +108,11 @@ impl SettingsSource for HostView {
         values: Map<String, Value>,
         origin: &ChangeOrigin,
     ) -> std::io::Result<()> {
+        if crate::writes_deferred_on_this_thread() {
+            let mut values = Some(values);
+            self.accept_deferred(name, origin, &mut |_| values.take().unwrap_or_default());
+            return Ok(());
+        }
         self.session.update_section_by(name, values, origin)
     }
 
@@ -102,6 +122,10 @@ impl SettingsSource for HostView {
         origin: &ChangeOrigin,
         change: &mut SectionChange<'_>,
     ) -> std::io::Result<()> {
+        if crate::writes_deferred_on_this_thread() {
+            self.accept_deferred(name, origin, change);
+            return Ok(());
+        }
         self.session.update_section_with(name, origin, change)
     }
 
@@ -133,6 +157,14 @@ impl SettingsSource for HostView {
         self.snapshot().revision
     }
 
+    fn flush_pending(&self) {
+        self.session.write_pending();
+    }
+
+    fn take_deferred_failures(&self) -> Vec<crate::DeferredFailure> {
+        self.session.take_deferred_failures()
+    }
+
     fn changes(&self) -> &ChangeSignal {
         self.session.changes()
     }
@@ -148,5 +180,8 @@ impl Drop for HostView {
             // dropping its own view must not try to join the current thread.
             let _ = worker.join();
         }
+        // Whatever the host's loop accepted without waiting is made durable
+        // before the view goes.
+        self.session.write_pending();
     }
 }

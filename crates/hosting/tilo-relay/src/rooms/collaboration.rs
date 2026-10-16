@@ -19,14 +19,19 @@ use tilo_peer_state::join::{
     verify_membership_proof,
 };
 use tilo_relay_session::rooms::{
-    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
-    RemoveMemberRequest, SetMemberRoleRequest,
+    CancelInvitationRequest, GrantAppAuthorshipRequest, IssueInvitationRequest, IssuedInvitation,
+    PendingInvitation, RemoveMemberRequest, SetMemberRoleRequest,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use tilo_peer_state::StatePeer;
 
+use tilo_action_policy::roles::governance;
+
+use super::authority::RoomOp;
 use super::{GovernedRoom, RoomRecord, Rooms, system_time};
+use crate::host_authority::HostOperation;
+use tilo_lock::MutexRecover as _;
 
 /// A verified redemption to admit, and what its receipt answers for.
 pub(super) struct Redeeming<'a> {
@@ -53,15 +58,6 @@ const MAX_PENDING_CHALLENGES: usize = 4096;
 const CHALLENGE_LIFETIME_NS: u64 = 60_000_000_000;
 /// The longest an invitation may stay redeemable.
 const MAX_INVITATION_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
-
-/// Delegate one application's workspace authorship, with an idempotency key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GrantAppAuthorshipRequest {
-    /// Caller-chosen request identifier.
-    pub request_id: [u8; 32],
-    /// The exact registered application identifier.
-    pub app: String,
-}
 
 /// A committed governance change.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,8 +281,9 @@ fn current_bootstrap(
 }
 
 impl Rooms {
-    /// Issue an invitation to `room` for `administrator`, a device of this
-    /// relay's own user.
+    /// Issue an invitation to `room` for `administrator`: a device of this
+    /// relay's own user, or of a member the room lets invite with the
+    /// invitation's role.
     ///
     /// # Errors
     ///
@@ -298,13 +295,17 @@ impl Rooms {
         request: IssueInvitationRequest,
     ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "invitation.issue")?;
-        let issued = self.stage_issue(
-            &mut *self.room(room).await?.lock().await,
-            administrator,
-            request,
-            now,
-        )?;
+        let issued = {
+            let governed = self.room(room).await?;
+            let mut governed = governed.lock().await;
+            self.authorize(
+                administrator,
+                Some(&governed),
+                RoomOp::Invite(request.role.into()),
+                now,
+            )?;
+            self.stage_issue(&mut governed, administrator, request, now)?
+        };
         self.written(room, false).await?;
         Ok(issued)
     }
@@ -404,14 +405,15 @@ impl Rooms {
         administrator: &DeviceCert,
         request: CancelInvitationRequest,
     ) -> Result<(), CollaborationError> {
-        self.authorize(
-            administrator,
-            tilo_clock::unix_now_ns(),
-            "invitation.cancel",
-        )?;
         let digest = request_digest(&request)?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
+        self.authorize(
+            administrator,
+            Some(&room),
+            RoomOp::Govern(governance::INVITE),
+            tilo_clock::unix_now_ns(),
+        )?;
         let mut state = room.collaboration().clone();
         if let Some(prior) = state
             .invitations
@@ -459,9 +461,14 @@ impl Rooms {
         administrator: &DeviceCert,
     ) -> Result<Vec<PendingInvitation>, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "invitation.pending")?;
         let room = self.room(room).await?;
         let room = room.lock().await;
+        self.authorize(
+            administrator,
+            Some(&room),
+            RoomOp::Govern(governance::INVITE),
+            now,
+        )?;
         let redeemed = |invite_id: [u8; 32]| {
             room.collaboration()
                 .join_completions
@@ -501,7 +508,7 @@ impl Rooms {
     )]
     pub async fn enter(&self, room: &str, device: &DeviceCert) -> Result<bool, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(device, now, "room.enter")?;
+        self.authorize(device, None, RoomOp::Host(HostOperation::EnterRoom), now)?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let mut candidate = room.peer().clone();
@@ -528,16 +535,16 @@ impl Rooms {
         request: SetMemberRoleRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "member.role.set")?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
+        self.authorize_role_change(&room, administrator, &request, now)?;
         let key = self.inner.host.key.clone();
         self.administer(
             &mut room,
             request.request_id,
             request_digest(&request)?,
             |peer| {
-                peer.set_member_role(
+                peer.governance_mut().set_member_role(
                     request.user_public_key,
                     request.role,
                     &key,
@@ -563,7 +570,12 @@ impl Rooms {
         grants: Vec<tilo_action_policy::Grant>,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "room.grants.put")?;
+        self.authorize(
+            administrator,
+            None,
+            RoomOp::Host(HostOperation::PutRoomGrants),
+            now,
+        )?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let key = self.inner.host.key.clone();
@@ -571,14 +583,18 @@ impl Rooms {
             &mut room,
             request_id,
             request_digest(&grants)?,
-            |peer| peer.put_governed_grants(&grants, &key, system_time(now)),
+            |peer| {
+                peer.governance_mut()
+                    .put_governed_grants(&grants, &key, system_time(now))
+            },
             now,
         )
         .await
     }
 
     /// Make `user_public_key` an administrator of `room`: an editor holding
-    /// every governance action, as the room's Owner role.
+    /// every governance action, still bounded by their role
+    /// ([`tilo_action_policy::roles::administrator_grant`]).
     ///
     /// # Errors
     ///
@@ -592,7 +608,12 @@ impl Rooms {
         user_public_key: [u8; 32],
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "member.administrator.set")?;
+        self.authorize(
+            administrator,
+            None,
+            RoomOp::Host(HostOperation::SetAdministrator),
+            now,
+        )?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let key = self.inner.host.key.clone();
@@ -600,7 +621,13 @@ impl Rooms {
             &mut room,
             request_id,
             request_digest(&("administrator", user_public_key))?,
-            |peer| peer.set_member_administrator(user_public_key, &key, system_time(now)),
+            |peer| {
+                peer.governance_mut().set_member_administrator(
+                    user_public_key,
+                    &key,
+                    system_time(now),
+                )
+            },
             now,
         )
         .await
@@ -646,7 +673,7 @@ impl Rooms {
             let change = tilo_action_policy::Change::RemoveMember {
                 person: hex::encode(person),
             };
-            self.authorize_member_change(&room, administrator, &change, now)?;
+            self.authorize(administrator, Some(&room), RoomOp::Change(&change), now)?;
         }
         let key = self.inner.host.key.clone();
         let completion = self
@@ -657,7 +684,9 @@ impl Rooms {
                 |peer| {
                     let mut changed = false;
                     for person in people {
-                        changed |= peer.remove_member(*person, &key, system_time(now))?;
+                        changed |=
+                            peer.governance_mut()
+                                .remove_member(*person, &key, system_time(now))?;
                     }
                     Ok(changed)
                 },
@@ -775,7 +804,7 @@ impl Rooms {
             },
         };
         let room_id = room.room().to_owned();
-        let by = self.authorize_member_change(&room, administrator, &change, now)?;
+        let by = self.authorize(administrator, Some(&room), RoomOp::Change(&change), now)?;
         let key = self.inner.host.key.clone();
         let target = request.user_public_key;
         let completion = self
@@ -784,10 +813,19 @@ impl Rooms {
                 request.request_id,
                 request_digest(&(membership, &request))?,
                 |peer| match membership {
-                    Membership::Remove => peer.remove_member(target, &key, system_time(now)),
-                    Membership::Ban => peer.ban_member(target, &by, &key, system_time(now)),
-                    Membership::Unban => peer.unban_member(target, &key, system_time(now)),
-                    Membership::Restrict(until_ms) => peer.put_governed_grants(
+                    Membership::Remove => {
+                        peer.governance_mut()
+                            .remove_member(target, &key, system_time(now))
+                    }
+                    Membership::Ban => {
+                        peer.governance_mut()
+                            .ban_member(target, &by, &key, system_time(now))
+                    }
+                    Membership::Unban => {
+                        peer.governance_mut()
+                            .unban_member(target, &key, system_time(now))
+                    }
+                    Membership::Restrict(until_ms) => peer.governance_mut().put_governed_grants(
                         &[tilo_action_policy::roles::restriction_grant(
                             &room_id,
                             &person,
@@ -797,7 +835,7 @@ impl Rooms {
                         &key,
                         system_time(now),
                     ),
-                    Membership::Unrestrict => peer.remove_governed_grants(
+                    Membership::Unrestrict => peer.governance_mut().remove_governed_grants(
                         &[tilo_action_policy::roles::restriction_grant_id(&person)],
                         &key,
                         system_time(now),
@@ -813,44 +851,6 @@ impl Rooms {
             "workspace membership change committed"
         );
         Ok(completion)
-    }
-
-    /// The person deciding `change`, when `device` may make it in `room`:
-    /// the owner for a device of the relay's user, otherwise the member whose
-    /// device it is, held to the room's policy.
-    fn authorize_member_change(
-        &self,
-        room: &GovernedRoom,
-        device: &DeviceCert,
-        change: &tilo_action_policy::Change,
-        now: u64,
-    ) -> Result<String, CollaborationError> {
-        let owner = hex::encode(room.peer().authority().user_public_key);
-        if self.authorize(device, now, change.action()).is_ok() {
-            if let tilo_action_policy::Change::RemoveMember { person }
-            | tilo_action_policy::Change::Ban { person }
-            | tilo_action_policy::Change::Restrict { person, .. } = change
-                && *person == owner
-            {
-                return Err(CollaborationError::new("the owner cannot be removed"));
-            }
-            return Ok(owner);
-        }
-        if self.revocations().is_revoked(&device.device_public_key) {
-            return Err(CollaborationError::new("device revoked"));
-        }
-        let member = room
-            .peer()
-            .permissions(device.device_public_key, system_time(now))
-            .map_err(CollaborationError::new)?;
-        let bound = tilo_action_policy::roles::foreign_device_bound();
-        let authority = member.authority(&bound);
-        let cx = tilo_action_policy::Context::at_time(system_time(now));
-        member
-            .policy
-            .check(&member.person, &authority, change, &cx, false)
-            .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
-        Ok(member.person.clone())
     }
 
     /// Commit application authorship under the current owner's authority.
@@ -869,7 +869,12 @@ impl Rooms {
         request: GrantAppAuthorshipRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "app.authorship.grant")?;
+        self.authorize(
+            administrator,
+            None,
+            RoomOp::Host(HostOperation::GrantAppAuthorship),
+            now,
+        )?;
         if request.request_id == [0; 32] {
             return Err(CollaborationError::new(
                 "request identifier must be nonzero",
@@ -885,18 +890,16 @@ impl Rooms {
         // Validate retries against today's exact certificate, admission,
         // administration and governor custody through the same typed command.
         let key = self.inner.host.key.clone();
-        room.peer().clone().apply_workspace_membership_command(
-            administrator,
-            &command,
-            &key,
-            system_time(now),
-        )?;
+        room.peer()
+            .clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(administrator, &command, &key, system_time(now))?;
         self.administer(
             &mut room,
             request.request_id,
             request_digest(&("app.authorship.grant", &request))?,
             |peer| {
-                peer.apply_workspace_membership_command(
+                peer.workspace_mut().apply_workspace_membership_command(
                     administrator,
                     &command,
                     &key,
@@ -937,7 +940,12 @@ impl Rooms {
             ));
         }
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "bot.govern")?;
+        self.authorize(
+            administrator,
+            None,
+            RoomOp::Host(HostOperation::GovernBot),
+            now,
+        )?;
         command.validate()?;
         // The command names itself: the same install or renewal sent again
         // is the same administration request.
@@ -945,18 +953,16 @@ impl Rooms {
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let key = self.inner.host.key.clone();
-        room.peer().clone().apply_workspace_membership_command(
-            administrator,
-            &command,
-            &key,
-            system_time(now),
-        )?;
+        room.peer()
+            .clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(administrator, &command, &key, system_time(now))?;
         self.administer(
             &mut room,
             digest,
             digest,
             |peer| {
-                peer.apply_workspace_membership_command(
+                peer.workspace_mut().apply_workspace_membership_command(
                     administrator,
                     &command,
                     &key,
@@ -985,6 +991,7 @@ impl Rooms {
             .lock()
             .await
             .peer()
+            .governance()
             .installation(id, now))
     }
 
@@ -1010,7 +1017,7 @@ impl Rooms {
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let mut candidate = room.peer().clone();
-        let changed = candidate.apply_member_effect_receipt(
+        let changed = candidate.workspace_mut().apply_member_effect_receipt(
             caller,
             invocation,
             redacted,
@@ -1066,51 +1073,6 @@ impl Rooms {
             })?;
         self.settle(room).await?;
         Ok(GovernanceCompletion { generation })
-    }
-
-    /// Only devices of this relay's own user administer its rooms.
-    pub(super) fn authorize(
-        &self,
-        device: &DeviceCert,
-        now: u64,
-        operation: &'static str,
-    ) -> Result<(), CollaborationError> {
-        let host = &self.inner.host.cert;
-        // An agent is a device of the relay's user too, but it governs
-        // nothing: it joins rooms only through its delegation.
-        #[cfg(feature = "agents")]
-        let agent = self
-            .inner
-            .host
-            .agents
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&device.device_public_key);
-        #[cfg(not(feature = "agents"))]
-        let agent = false;
-        let result = if device.user_public_key != host.user_public_key {
-            Err(CollaborationError::new(
-                "room administration requires a device of the relay's user",
-            ))
-        } else if agent {
-            Err(CollaborationError::new(
-                "room administration requires a person's device, not an agent's",
-            ))
-        } else if self.revocations().is_revoked(&device.device_public_key) {
-            Err(CollaborationError::new("device revoked"))
-        } else {
-            tilo_user_identity::verify_device_cert_at(device, now)
-                .map_err(|error| CollaborationError::new(error.to_string()))
-        };
-        if let Err(reason) = &result {
-            tracing::warn!(
-                device = %hex::encode(device.device_public_key),
-                operation,
-                %reason,
-                "room administration denied"
-            );
-        }
-        result
     }
 
     pub(super) fn inspect(
@@ -1181,11 +1143,7 @@ impl Rooms {
     /// Queue `written` for `room`'s next write. True when it is the first
     /// since the room last took them, so its sender starts the write.
     fn queue_write(&self, room: &str, written: Written) -> bool {
-        let mut queued = self
-            .inner
-            .queued_writes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queued = self.inner.queued_writes.lock_recover();
         let waiting = queued.entry(room.to_owned()).or_default();
         waiting.push(written);
         let first = waiting.len() == 1;
@@ -1197,8 +1155,7 @@ impl Rooms {
         let take = || {
             self.inner
                 .queued_writes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .remove(room_id)
                 .unwrap_or_default()
         };
@@ -1426,7 +1383,8 @@ impl Rooms {
             let admitted = Self::redeemable(room, redemption.join().invite_id()).and_then(|()| {
                 // A refused admission leaves the others' candidate as it was.
                 let mut next = candidate.clone();
-                next.admit_invited_member(redemption, &self.inner.host.key, system_time(now))
+                next.governance_mut()
+                    .admit_invited_member(redemption, &self.inner.host.key, system_time(now))
                     .map_err(|error| {
                         tracing::warn!(
                             room = %room.room(),
@@ -1551,7 +1509,7 @@ impl Rooms {
         }
         let mut nonce = [0; 32];
         getrandom::fill(&mut nonce).map_err(|error| CollaborationError::new(error.to_string()))?;
-        let challenge = room.peer().membership_challenge(
+        let challenge = room.peer().governance().membership_challenge(
             room.workspace_id(),
             &request.device_cert,
             request.request_id,
@@ -1610,6 +1568,7 @@ impl Rooms {
         )?;
         let role = room
             .peer()
+            .governance()
             .verify_member_refresh(&membership, system_time(now))?;
         let invite_id = room
             .collaboration()

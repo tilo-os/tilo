@@ -1522,18 +1522,6 @@ impl SpeakerConsentView {
         crate::shell::i18n::t(self.key("a11y-speaker-join-decline", "a11y-speaker-listen-decline"))
     }
 
-    /// What answering did, for the confirmation toast.
-    #[must_use]
-    pub fn outcome(&self, approved: bool) -> String {
-        let key = match (self.scope, approved) {
-            (SpeakerConsentScope::Play(_), true) => "host-fabric-speaker-joined",
-            (SpeakerConsentScope::Play(_), false) => "host-fabric-speaker-declined",
-            (SpeakerConsentScope::Listen, true) => "host-fabric-speaker-listen-allowed",
-            (SpeakerConsentScope::Listen, false) => "host-fabric-speaker-listen-declined",
-        };
-        crate::shell::i18n::t_args(key, &self.args())
-    }
-
     /// Title of the allow or decline action search offers.
     #[must_use]
     pub fn action_title(&self, approved: bool) -> String {
@@ -1603,18 +1591,6 @@ impl SpeakerMembershipView {
             "a11y-speaker-membership-description",
             "a11y-speaker-listener-description",
         ))
-    }
-
-    /// What withdrawing did, for the confirmation toast.
-    #[must_use]
-    pub fn left(&self) -> String {
-        crate::shell::i18n::t_args(
-            self.key(
-                "host-fabric-speaker-left",
-                "host-fabric-speaker-listen-stopped",
-            ),
-            &self.args(str::to_string),
-        )
     }
 
     #[must_use]

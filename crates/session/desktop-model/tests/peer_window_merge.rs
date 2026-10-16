@@ -30,6 +30,7 @@ fn group_with(tab: Tab) -> WindowGroup {
         active_tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 

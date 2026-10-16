@@ -14,7 +14,7 @@ use ui::num::f32_of_f64;
 use ui::num::f64_of_usize;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Id, Identified, JsonSchema, Keyed, Model};
+use ui::tilo_resource::{self, Id, Identified, JsonSchema, Keyed, Map, Model};
 use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 
 /// The largest artwork side, in units.
@@ -558,7 +558,7 @@ pub struct Artwork {
     /// [`Artwork::settle`]).
     pub marks: Keyed<Mark>,
     /// Media presets saved in this artwork, by id.
-    pub media: BTreeMap<String, crate::media::MediumSpec>,
+    pub media: Map<crate::media::MediumSpec>,
     pub reference: Option<Reference>,
     pub selection: Option<Selection>,
 }
@@ -572,7 +572,7 @@ impl Default for Artwork {
             ground: Ground::default(),
             layers: Keyed::new(),
             marks: Keyed::new(),
-            media: BTreeMap::new(),
+            media: Map::new(),
             reference: None,
             selection: None,
         }
@@ -650,17 +650,19 @@ impl Artwork {
         art
     }
 
-    /// Add `mark`, or replace the mark with its id.
+    /// Add `mark`, or replace the mark with its id. Found and added one at a
+    /// time, so a copy of the artwork remembers which mark changed or came,
+    /// and saving it writes that mark, not every one.
     pub fn put_mark(&mut self, mark: Mark) {
-        match self.marks.iter_mut().find(|held| held.id == mark.id) {
+        match self.marks.find_mut(&mark.id()) {
             Some(held) => *held = mark,
             None => self.marks.push(mark),
         }
     }
 
-    /// Add `layer`, or replace the layer with its id.
+    /// Add `layer`, or replace the layer with its id, as [`Self::put_mark`].
     pub fn put_layer(&mut self, layer: Layer) {
-        match self.layers.iter_mut().find(|held| held.id == layer.id) {
+        match self.layers.find_mut(&layer.id()) {
             Some(held) => *held = layer,
             None => self.layers.push(layer),
         }

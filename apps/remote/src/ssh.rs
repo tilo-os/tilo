@@ -12,7 +12,7 @@
 //! never falls back to a fabricated terminal.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail};
@@ -24,6 +24,7 @@ use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 
 use crate::session::SessionStatus;
 use crate::vt::VtGrid;
+use ui::lock::MutexRecover as _;
 
 /// Keep the UI responsive under a stalled SSH transport without allowing a
 /// key-repeat storm or a hostile peer to accumulate unbounded process memory.
@@ -316,7 +317,7 @@ impl SshSession {
             )
             .await
             {
-                let mut s = lock_recover(&status_worker);
+                let mut s = status_worker.lock_recover();
                 if !matches!(*s, SessionStatus::Failed(_)) {
                     *s = SessionStatus::Failed(e.to_string());
                 }
@@ -334,13 +335,13 @@ impl SshSession {
     }
 
     pub fn status(&self) -> SessionStatus {
-        lock_recover(&self.status).clone()
+        self.status.lock_recover().clone()
     }
 
     /// The rejected host-key observation, if verification stopped the
     /// handshake. This public metadata is deliberately separate from secrets.
     pub fn host_key_issue(&self) -> Option<HostKeyIssue> {
-        lock_recover(&self.host_key_issue).clone()
+        self.host_key_issue.lock_recover().clone()
     }
 
     /// Drain any pending remote output into the grid. Returns true if the
@@ -413,13 +414,6 @@ struct InputMessage {
     ack: Option<std::sync::mpsc::Sender<Result<(), String>>>,
 }
 
-/// Locks `m`, recovering a poisoned mutex instead of panicking: one
-/// worker thread's earlier panic must not cascade into every later read
-/// of shared session state.
-fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// Fail-closed host-key verifier. It checks only a device-private database;
 /// saved Remote profiles remain safe to collaborate on without carrying trust.
 struct Handler {
@@ -454,7 +448,7 @@ impl client::Handler for Handler {
             }
             Err(error) => HostKeyIssue::StoreFailure(error),
         };
-        *lock_recover(&self.issue) = Some(issue);
+        *self.issue.lock_recover() = Some(issue);
         Ok(false)
     }
 }
@@ -500,7 +494,7 @@ async fn run_session(
     )
     .await
     .map_err(|e| {
-        lock_recover(&host_key_issue).as_ref().map_or_else(
+        host_key_issue.lock_recover().as_ref().map_or_else(
             || anyhow!("connect: {e}"),
             |issue| anyhow!(issue.message(&host, port)),
         )
@@ -541,7 +535,7 @@ async fn run_session(
         .await?;
     channel.request_shell(true).await?;
 
-    *lock_recover(&status) = SessionStatus::Connected;
+    *status.lock_recover() = SessionStatus::Connected;
 
     let mut channel = channel;
     loop {
@@ -583,7 +577,7 @@ async fn run_session(
         .disconnect(Disconnect::ByApplication, "", "en")
         .await;
     {
-        let mut s = lock_recover(&status);
+        let mut s = status.lock_recover();
         if *s == SessionStatus::Connected {
             *s = SessionStatus::Closed;
         }

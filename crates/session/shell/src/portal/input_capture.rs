@@ -8,6 +8,7 @@
     reason = "portal XML fixes these parameter names"
 )]
 
+use super::reply::{Ended, OrFail, Outcome, Reply, Results, answer, ensure, reply};
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::io;
@@ -27,8 +28,6 @@ use reis::enumflags2::BitFlags;
 use reis::request::{Connection as EisConnection, Device, DeviceCapability, EisRequest, Seat};
 #[cfg(target_os = "linux")]
 use zbus::interface;
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
@@ -436,19 +435,23 @@ impl InputCaptureBackend {
         app_id: String,
         parent_window: String,
         options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let requested = opt_u32(&options, "capabilities").unwrap_or(0) & capability::ALL;
-        if requested == 0 {
-            return (2, HashMap::new());
-        }
-        self.create_legacy(
-            header,
-            handle,
-            session_handle,
-            app_id,
-            Some(parent_window),
-            requested,
-        )
+    ) -> Reply {
+        answer(async move {
+            let requested = crate::portal::option::<u32>(&options, "capabilities").unwrap_or(0)
+                & capability::ALL;
+            if requested == 0 {
+                return Err(Ended::Failed);
+            }
+            self.create_legacy(
+                header,
+                handle,
+                session_handle,
+                app_id,
+                Some(parent_window),
+                requested,
+            )
+            .await
+        })
         .await
     }
     async fn create_session2(
@@ -461,8 +464,7 @@ impl InputCaptureBackend {
         if !self.compositor.available() {
             return HashMap::new();
         }
-        let sender = header.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
+        let Ok(auth) = authenticate_call(&self.ctx, &header, &app_id, None).await else {
             return HashMap::new();
         };
         let key = session_handle.to_string();
@@ -510,90 +512,88 @@ impl InputCaptureBackend {
         app_id: String,
         parent_window: String,
         options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let requested = opt_u32(&options, "capabilities").unwrap_or(0) & capability::ALL;
-        let requested_persist_mode = match requested_persist_mode(&options) {
-            Ok(mode) => mode,
-            Err(()) => return (2, HashMap::new()),
-        };
-        if requested == 0 || !self.compositor.available() {
-            return (2, HashMap::new());
-        }
-        let sender = header.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        let key = session_handle.to_string();
-        if !self.session_for(&key, auth.owner.as_str(), &app_id, &auth.caller) {
-            return (2, HashMap::new());
-        }
-        let request = handle.to_string();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id: app_id.clone(),
-            resource: LifecycleResource::Prompt,
-        };
-        if !matches!(
+    ) -> Reply {
+        answer(async move {
+            let requested = crate::portal::option::<u32>(&options, "capabilities").unwrap_or(0)
+                & capability::ALL;
+            let requested_persist_mode = match requested_persist_mode(&options) {
+                Ok(mode) => mode,
+                Err(()) => return Err(Ended::Failed),
+            };
+            if requested == 0 || !self.compositor.available() {
+                return Err(Ended::Failed);
+            }
+            let auth = authenticate_call(&self.ctx, &header, &app_id, Some(&parent_window))
+                .await
+                .or_fail()?;
+            let key = session_handle.to_string();
+            ensure(self.session_for(&key, auth.owner.as_str(), &app_id, &auth.caller))?;
+            let request = handle.to_string();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id: app_id.clone(),
+                resource: LifecycleResource::Prompt,
+            };
             self.lifecycle
-                .register_request(&self.connection, &request, entry, |_| {})
-                .await,
-            Ok(true)
-        ) {
-            return (2, HashMap::new());
-        }
-        let allowed = flow::resolve(
-            &self.ctx,
-            auth.caller.clone(),
-            CapabilityKind::InputCapture,
-            Capability::RemoteDesktop {
-                scope: Expiry::AfterUse,
-            },
-        )
+                .with_request(
+                    &self.connection,
+                    &request,
+                    entry,
+                    |_: &LifecycleEntry| {},
+                    async {
+                        let allowed = flow::resolve(
+                            &self.ctx,
+                            auth.caller.clone(),
+                            CapabilityKind::InputCapture,
+                            Capability::RemoteDesktop {
+                                scope: Expiry::AfterUse,
+                            },
+                        )
+                        .await
+                        .is_allowed();
+                        if allowed {
+                            Ok(())
+                        } else {
+                            Err(Ended::Cancelled)
+                        }
+                    },
+                )
+                .await?;
+            let started = self.compositor.state.lock().ok().is_some_and(|mut state| {
+                let zone_set = state.zone_set;
+                state.sessions.get_mut(&key).is_some_and(|session| {
+                    if session.started {
+                        return false;
+                    }
+                    session.started = true;
+                    session.capabilities = requested;
+                    session.zone_set = zone_set;
+                    true
+                })
+            });
+            ensure(started)?;
+            let mut results = HashMap::new();
+            insert_value(&mut results, "capabilities", Value::U32(requested));
+            let clipboard_enabled = self.compositor.state.lock().ok().is_some_and(|state| {
+                state
+                    .sessions
+                    .get(&key)
+                    .is_some_and(|session| session.clipboard_requested)
+            });
+            insert_value(
+                &mut results,
+                "clipboard_enabled",
+                Value::Bool(clipboard_enabled),
+            );
+            // Tilo currently has no durable input-capture restore store. Explicitly
+            // declining persistence is preferable to silently accepting it: the
+            // caller can see that it must prompt again next time.
+            if requested_persist_mode != 0 {
+                insert_value(&mut results, "persist_mode", Value::U32(0));
+            }
+            Ok(results)
+        })
         .await
-        .is_allowed();
-        self.lifecycle
-            .complete_request_object(&self.connection, &request)
-            .await;
-        if !allowed {
-            return (1, HashMap::new());
-        }
-        let started = self.compositor.state.lock().ok().is_some_and(|mut state| {
-            let zone_set = state.zone_set;
-            state.sessions.get_mut(&key).is_some_and(|session| {
-                if session.started {
-                    return false;
-                }
-                session.started = true;
-                session.capabilities = requested;
-                session.zone_set = zone_set;
-                true
-            })
-        });
-        if !started {
-            return (2, HashMap::new());
-        }
-        let mut results = HashMap::new();
-        insert_value(&mut results, "capabilities", Value::U32(requested));
-        let clipboard_enabled = self.compositor.state.lock().ok().is_some_and(|state| {
-            state
-                .sessions
-                .get(&key)
-                .is_some_and(|session| session.clipboard_requested)
-        });
-        insert_value(
-            &mut results,
-            "clipboard_enabled",
-            Value::Bool(clipboard_enabled),
-        );
-        // Tilo currently has no durable input-capture restore store. Explicitly
-        // declining persistence is preferable to silently accepting it: the
-        // caller can see that it must prompt again next time.
-        if requested_persist_mode != 0 {
-            insert_value(&mut results, "persist_mode", Value::U32(0));
-        }
-        (0, results)
     }
     async fn get_zones(
         &self,
@@ -602,51 +602,51 @@ impl InputCaptureBackend {
         session_handle: ObjectPath<'_>,
         app_id: String,
         _options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let sender = header.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
-            return (2, HashMap::new());
-        };
-        let key = session_handle.to_string();
-        if !self.session_for(&key, auth.owner.as_str(), &app_id, &auth.caller) {
-            return (2, HashMap::new());
-        }
-        let request = handle.to_string();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id,
-            resource: LifecycleResource::Prompt,
-        };
-        if !matches!(
-            self.lifecycle
-                .register_request(&self.connection, &request, entry, |_| {})
-                .await,
-            Ok(true)
-        ) {
-            return (2, HashMap::new());
-        }
-        let (zones, zone_set) = self
-            .compositor
-            .state
-            .lock()
-            .map(|state| (state.zones.clone(), state.zone_set))
-            .unwrap_or_default();
-        self.lifecycle
-            .complete_request_object(&self.connection, &request)
-            .await;
-        let mut results = HashMap::new();
-        insert_value(
-            &mut results,
-            "zones",
-            Value::from(
-                zones
-                    .into_iter()
-                    .map(|z| (z.width, z.height, z.x, z.y))
-                    .collect::<Vec<_>>(),
-            ),
-        );
-        insert_value(&mut results, "zone_set", Value::U32(zone_set));
-        (0, results)
+    ) -> Reply {
+        answer(async move {
+            let auth = authenticate_call(&self.ctx, &header, &app_id, None)
+                .await
+                .or_fail()?;
+            let key = session_handle.to_string();
+            ensure(self.session_for(&key, auth.owner.as_str(), &app_id, &auth.caller))?;
+            let request = handle.to_string();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id,
+                resource: LifecycleResource::Prompt,
+            };
+            let (zones, zone_set) = self
+                .lifecycle
+                .with_request(
+                    &self.connection,
+                    &request,
+                    entry,
+                    |_: &LifecycleEntry| {},
+                    async {
+                        Ok(self
+                            .compositor
+                            .state
+                            .lock()
+                            .map(|state| (state.zones.clone(), state.zone_set))
+                            .unwrap_or_default())
+                    },
+                )
+                .await?;
+            let mut results = HashMap::new();
+            insert_value(
+                &mut results,
+                "zones",
+                Value::from(
+                    zones
+                        .into_iter()
+                        .map(|z| (z.width, z.height, z.x, z.y))
+                        .collect::<Vec<_>>(),
+                ),
+            );
+            insert_value(&mut results, "zone_set", Value::U32(zone_set));
+            Ok(results)
+        })
+        .await
     }
     async fn set_pointer_barriers(
         &self,
@@ -657,59 +657,59 @@ impl InputCaptureBackend {
         _options: HashMap<String, OwnedValue>,
         barriers: Vec<HashMap<String, OwnedValue>>,
         zone_set: u32,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let sender = header.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
-            return (2, HashMap::new());
-        };
-        let key = session_handle.to_string();
-        if !self.session_for(&key, auth.owner.as_str(), &app_id, &auth.caller)
-            || barriers.len() > MAX_BARRIERS
-        {
-            return (2, HashMap::new());
-        }
-        let request = handle.to_string();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id,
-            resource: LifecycleResource::Prompt,
-        };
-        if !matches!(
-            self.lifecycle
-                .register_request(&self.connection, &request, entry, |_| {})
-                .await,
-            Ok(true)
-        ) {
-            return (2, HashMap::new());
-        }
-        let (zones, current_zone_set) = self
-            .compositor
-            .state
-            .lock()
-            .map(|state| (state.zones.clone(), state.zone_set))
-            .unwrap_or_default();
-        let mut accepted = vec![];
-        let mut failed = vec![];
-        for raw in barriers {
-            match parse_barrier(&raw)
-                .filter(|barrier| zone_set == current_zone_set && valid_barrier(barrier, &zones))
+    ) -> Reply {
+        answer(async move {
+            let auth = authenticate_call(&self.ctx, &header, &app_id, None)
+                .await
+                .or_fail()?;
+            let key = session_handle.to_string();
+            if !self.session_for(&key, auth.owner.as_str(), &app_id, &auth.caller)
+                || barriers.len() > MAX_BARRIERS
             {
-                Some(barrier) => accepted.push(barrier),
-                None => failed.push(opt_u32(&raw, "barrier_id").unwrap_or(0)),
+                return Err(Ended::Failed);
             }
-        }
-        if let Ok(mut state) = self.compositor.state.lock()
-            && let Some(session) = state.sessions.get_mut(&key)
-        {
-            session.barriers = accepted;
-            session.zone_set = current_zone_set;
-        }
-        self.lifecycle
-            .complete_request_object(&self.connection, &request)
-            .await;
-        let mut results = HashMap::new();
-        insert_value(&mut results, "failed_barriers", Value::from(failed));
-        (0, results)
+            let request = handle.to_string();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id,
+                resource: LifecycleResource::Prompt,
+            };
+            let no_cancel = |_: &LifecycleEntry| {};
+            let failed = self
+                .lifecycle
+                .with_request(&self.connection, &request, entry, no_cancel, async {
+                    let (zones, current_zone_set) = self
+                        .compositor
+                        .state
+                        .lock()
+                        .map(|state| (state.zones.clone(), state.zone_set))
+                        .unwrap_or_default();
+                    let mut accepted = vec![];
+                    let mut failed = vec![];
+                    for raw in barriers {
+                        match parse_barrier(&raw).filter(|barrier| {
+                            zone_set == current_zone_set && valid_barrier(barrier, &zones)
+                        }) {
+                            Some(barrier) => accepted.push(barrier),
+                            None => failed.push(
+                                crate::portal::option::<u32>(&raw, "barrier_id").unwrap_or(0),
+                            ),
+                        }
+                    }
+                    if let Ok(mut state) = self.compositor.state.lock()
+                        && let Some(session) = state.sessions.get_mut(&key)
+                    {
+                        session.barriers = accepted;
+                        session.zone_set = current_zone_set;
+                    }
+                    Ok(failed)
+                })
+                .await?;
+            let mut results = HashMap::new();
+            insert_value(&mut results, "failed_barriers", Value::from(failed));
+            Ok(results)
+        })
+        .await
     }
     async fn enable(
         &self,
@@ -717,9 +717,11 @@ impl InputCaptureBackend {
         session_handle: ObjectPath<'_>,
         app_id: String,
         _options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        self.set_enabled(header, &session_handle, &app_id, true)
-            .await
+    ) -> Reply {
+        reply(
+            self.set_enabled(header, &session_handle, &app_id, true)
+                .await,
+        )
     }
     async fn disable(
         &self,
@@ -727,9 +729,11 @@ impl InputCaptureBackend {
         session_handle: ObjectPath<'_>,
         app_id: String,
         _options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        self.set_enabled(header, &session_handle, &app_id, false)
-            .await
+    ) -> Reply {
+        reply(
+            self.set_enabled(header, &session_handle, &app_id, false)
+                .await,
+        )
     }
     async fn release(
         &self,
@@ -737,8 +741,8 @@ impl InputCaptureBackend {
         session_handle: ObjectPath<'_>,
         app_id: String,
         _options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        self.deactivate(header, &session_handle, &app_id).await
+    ) -> Reply {
+        reply(self.deactivate(header, &session_handle, &app_id).await)
     }
     async fn connect_to_eis(
         &self,
@@ -747,8 +751,7 @@ impl InputCaptureBackend {
         app_id: String,
         _options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<OwnedFd> {
-        let sender = header.sender().cloned().map(OwnedUniqueName::from);
-        let auth = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None)
+        let auth = authenticate_call(&self.ctx, &header, &app_id, None)
             .await
             .map_err(|_| zbus::fdo::Error::AccessDenied("untrusted InputCapture caller".into()))?;
         let key = session_handle.to_string();
@@ -811,16 +814,11 @@ impl InputCaptureBackend {
         app_id: String,
         parent: Option<String>,
         requested: u32,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        if !self.compositor.available() {
-            return (2, HashMap::new());
-        }
-        let sender = header.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, parent.as_deref()).await
-        else {
-            return (2, HashMap::new());
-        };
+    ) -> Outcome {
+        ensure(self.compositor.available())?;
+        let auth = authenticate_call(&self.ctx, &header, &app_id, parent.as_deref())
+            .await
+            .or_fail()?;
         let key = session_handle.to_string();
         let inserted = self.compositor.state.lock().ok().is_some_and(|mut state| {
             if state.sessions.len() >= MAX_SESSIONS || state.sessions.contains_key(&key) {
@@ -834,9 +832,7 @@ impl InputCaptureBackend {
             state.sessions.insert(key.clone(), session);
             true
         });
-        if !inserted {
-            return (2, HashMap::new());
-        }
+        ensure(inserted)?;
         let state = self.compositor.state.clone();
         let cleanup_key = key.clone();
         let session_entry = LifecycleEntry {
@@ -853,7 +849,7 @@ impl InputCaptureBackend {
             Ok(true)
         ) {
             close_session(&self.compositor.state, &key);
-            return (2, HashMap::new());
+            return Err(Ended::Failed);
         }
         let request = handle.to_string();
         let request_entry = LifecycleEntry {
@@ -861,20 +857,19 @@ impl InputCaptureBackend {
             app_id,
             resource: LifecycleResource::Prompt,
         };
-        if !matches!(
-            self.lifecycle
-                .register_request(&self.connection, &request, request_entry, |_| {})
-                .await,
-            Ok(true)
-        ) {
-            return (2, HashMap::new());
-        }
+        let no_cancel = |_: &LifecycleEntry| {};
         self.lifecycle
-            .complete_request_object(&self.connection, &request)
-            .await;
+            .with_request(
+                &self.connection,
+                &request,
+                request_entry,
+                no_cancel,
+                async { Ok(()) },
+            )
+            .await?;
         let mut results = HashMap::new();
         insert_value(&mut results, "capabilities", Value::U32(requested));
-        (0, results)
+        Ok(results)
     }
     async fn set_enabled(
         &self,
@@ -882,11 +877,10 @@ impl InputCaptureBackend {
         session_handle: &ObjectPath<'_>,
         app_id: &str,
         enabled: bool,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let sender = header.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), app_id, None).await else {
-            return (2, HashMap::new());
-        };
+    ) -> Outcome {
+        let auth = authenticate_call(&self.ctx, &header, app_id, None)
+            .await
+            .or_fail()?;
         let key = session_handle.to_string();
         let changed = self.compositor.state.lock().ok().is_some_and(|mut state| {
             let deactivated = {
@@ -927,18 +921,17 @@ impl InputCaptureBackend {
             self.compositor.wake.poke();
             true
         });
-        (if changed { 0 } else { 2 }, HashMap::new())
+        changed.then(Results::new).ok_or(Ended::Failed)
     }
     async fn deactivate(
         &self,
         header: zbus::message::Header<'_>,
         session_handle: &ObjectPath<'_>,
         app_id: &str,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let sender = header.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), app_id, None).await else {
-            return (2, HashMap::new());
-        };
+    ) -> Outcome {
+        let auth = authenticate_call(&self.ctx, &header, app_id, None)
+            .await
+            .or_fail()?;
         let key = session_handle.to_string();
         let changed = self.compositor.state.lock().ok().is_some_and(|mut state| {
             let signal = {
@@ -967,7 +960,7 @@ impl InputCaptureBackend {
             self.compositor.wake.poke();
             true
         });
-        (if changed { 0 } else { 2 }, HashMap::new())
+        changed.then(Results::new).ok_or(Ended::Failed)
     }
 }
 
@@ -982,7 +975,7 @@ fn close_session(state: &Arc<Mutex<CaptureState>>, key: &str) {
 }
 #[cfg(target_os = "linux")]
 fn parse_barrier(raw: &HashMap<String, OwnedValue>) -> Option<PointerBarrier> {
-    let id = opt_u32(raw, "barrier_id")?;
+    let id = crate::portal::option::<u32>(raw, "barrier_id")?;
     if id == 0 {
         return None;
     }
@@ -1008,15 +1001,11 @@ fn valid_barrier(barrier: &PointerBarrier, zones: &[CaptureZone]) -> bool {
         inside && (vertical_edge || horizontal_edge)
     })
 }
-fn opt_u32(values: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-    u32::try_from(values.get(key)?.try_clone().ok()?).ok()
-}
-
 /// InputCapture v2 accepts the common persistence vocabulary. Until Tilo has
 /// a durable, revocable restore store, a valid request is answered with the
 /// effective mode zero in `Start` rather than a misleading restore record.
 fn requested_persist_mode(values: &HashMap<String, OwnedValue>) -> Result<u32, ()> {
-    let mode = opt_u32(values, "persist_mode").unwrap_or(0);
+    let mode = crate::portal::option::<u32>(values, "persist_mode").unwrap_or(0);
     (mode <= 2).then_some(mode).ok_or(())
 }
 fn insert_value(values: &mut HashMap<String, OwnedValue>, key: &str, value: Value<'_>) {

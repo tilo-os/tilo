@@ -19,15 +19,6 @@
 //! - [`SecretVault`] — the encrypted-at-rest credential store keyed by [`AccountId`] (see
 //!   [`vault`]). Credentials go here, never into [`AccountStore`].
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -65,9 +56,9 @@ pub mod vault;
 pub use vault::{Secret, SecretCustody, SecretVault};
 pub mod secrets;
 pub use secrets::{
-    AccessDecision, AccessRequest, BrokerError, ClipboardLease, CredentialBroker,
-    CredentialCandidate, CredentialGrant, CredentialOwner, CredentialProposal, CredentialScope,
-    GeneratedPasswordPolicy, GrantLifetime, SecretId, SecretItem, SecretItemKind, SecretStore,
+    AccessDecision, AccessRequest, BrokerError, ClipboardLease, CredentialBroker, CredentialGrant,
+    CredentialOwner, CredentialProposal, CredentialScope, GeneratedPasswordPolicy, GrantLifetime,
+    SecretId, SecretItem, SecretItemKind, SecretStore,
 };
 #[cfg(feature = "person")]
 pub mod person;

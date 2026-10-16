@@ -517,7 +517,6 @@ impl Core {
             title: tr("snippets-untitled"),
             folder,
         }));
-        self.toast(&tr("snippets-created"));
     }
 
     /// Open the snippet this view is about to create once it is presented,
@@ -577,12 +576,10 @@ impl Core {
             snippet: id.clone(),
             title: Some(tr_with("snippets-copy-title", &[("title", &title)])),
         }));
-        self.toast(&tr("snippets-duplicated"));
     }
 
-    fn delete(&mut self, id: &SnippetId) {
+    fn delete(&self, id: &SnippetId) {
         self.submit(Snippets::DELETE.with(id.clone()));
-        self.toast(&tr("snippets-deleted"));
     }
 
     fn set_language(&self, id: &SnippetId, language: Language) {

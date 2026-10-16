@@ -20,24 +20,31 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tilo_vm_protocol::InputAction;
 use tilo_vm_protocol::input::{
-    ABS_X, ABS_Y, GamepadInput, KEY_LEFTSHIFT, combo_codes, gamepad_combo, text_strokes,
+    ABS_X, ABS_Y, BTN_LEFT, GamepadInput, KEY_LEFTSHIFT, combo_codes, gamepad_combo, text_strokes,
 };
+use tilo_vm_protocol::profile::{DeviceClass, DeviceProfile, profile, profile_key, profile_names};
 
 use crate::error::DaemonError;
 
 pub const EV_SYN: u16 = 0;
 pub const EV_KEY: u16 = 1;
+pub const EV_REL: u16 = 2;
 pub const EV_ABS: u16 = 3;
+pub const EV_MSC: u16 = 4;
+pub const EV_LED: u16 = 0x11;
+pub const EV_REP: u16 = 0x14;
 pub const ABS_PRESSURE: u16 = 0x18;
 pub const ABS_MT_SLOT: u16 = 0x2f;
 pub const ABS_MT_POSITION_X: u16 = 0x35;
 pub const ABS_MT_POSITION_Y: u16 = 0x36;
 pub const ABS_MT_TRACKING_ID: u16 = 0x39;
+pub const ABS_MT_TOOL_TYPE: u16 = 0x37;
 pub const BTN_TOOL_PEN: u16 = 0x140;
 pub const BTN_TOOL_FINGER: u16 = 0x145;
 pub const BTN_TOUCH: u16 = 0x14a;
 pub const BTN_STYLUS: u16 = 0x14b;
 pub const BTN_TOOL_DOUBLETAP: u16 = 0x14d;
+pub const BTN_TOOL_TRIPLETAP: u16 = 0x14e;
 
 /// Touch contacts the touchscreen tracks at once.
 pub const TOUCH_SLOTS: i32 = 10;
@@ -51,6 +58,11 @@ pub const MOTION_STEP_MS: u32 = 10;
 pub const TAP_MS: u32 = 60;
 /// How long a gamepad control stays pressed, and the pause after it.
 pub const PRESS_MS: u32 = 60;
+/// How long touchpad fingers rest before they move, so libinput sees a scroll or
+/// swipe start from stationary contacts rather than a flick.
+pub const SETTLE_MS: u32 = 40;
+/// Distance between fingers of a multi-finger touchpad gesture.
+pub const FINGER_GAP_MM: i32 = 14;
 
 /// Which device an event goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -60,6 +72,8 @@ pub enum Device {
     Touch,
     Pen,
     Gamepad,
+    /// A device plugged from a checked-in profile, by the profile's name.
+    Profile(&'static str),
 }
 
 /// One kernel input event, before its timestamp.
@@ -76,13 +90,17 @@ pub struct Event {
 pub enum Step {
     Emit(Event),
     WaitMs(u32),
+    /// Create the profile's device.
+    Plug(&'static str),
+    /// Destroy it.
+    Unplug(&'static str),
 }
 
 impl Step {
     pub fn event(self) -> Option<Event> {
         match self {
             Self::Emit(event) => Some(event),
-            Self::WaitMs(_) => None,
+            Self::WaitMs(_) | Self::Plug(_) | Self::Unplug(_) => None,
         }
     }
 }
@@ -131,6 +149,10 @@ fn lerp(from: u32, to: u32, step: u32, steps: u32) -> u32 {
 pub struct Encoder {
     next_tracking_id: i32,
     out: Vec<Step>,
+    /// Profile devices plugged so far, by name.
+    plugged: BTreeMap<&'static str, DeviceProfile>,
+    /// The plugged keyboard profile that `Key` and `Type` go to, if any.
+    keyboard: Option<&'static str>,
 }
 
 impl Encoder {
@@ -148,10 +170,173 @@ impl Encoder {
         }
     }
 
-    /// A key press or release followed by its report.
+    /// A key press or release followed by its report, on the keyboard the user
+    /// types on: a plugged profile keyboard, else the default one.
     fn key(&mut self, code: u16, down: bool) {
-        self.emit(Device::Keyboard, EV_KEY, code, i32::from(down));
-        self.syn(Device::Keyboard);
+        let keyboard = self.keyboard.map_or(Device::Keyboard, Device::Profile);
+        self.emit(keyboard, EV_KEY, code, i32::from(down));
+        self.syn(keyboard);
+    }
+
+    fn plug(&mut self, name: &str) -> Result<(), String> {
+        let key = profile_key(name).ok_or_else(|| unknown_profile(name))?;
+        if self.plugged.contains_key(key) {
+            return Err(format!("{key} is already plugged in; unplug it first"));
+        }
+        let device = profile(key)?;
+        if device.class == DeviceClass::Keyboard {
+            self.keyboard = Some(key);
+        }
+        self.plugged.insert(key, device);
+        self.out.push(Step::Plug(key));
+        Ok(())
+    }
+
+    fn unplug(&mut self, name: &str) -> Result<(), String> {
+        let key = profile_key(name).ok_or_else(|| unknown_profile(name))?;
+        if self.plugged.remove(key).is_none() {
+            return Err(format!("{key} is not plugged in"));
+        }
+        if self.keyboard == Some(key) {
+            self.keyboard = None;
+        }
+        self.out.push(Step::Unplug(key));
+        Ok(())
+    }
+
+    /// The plugged touchpad, with its device.
+    fn touchpad(&self) -> Result<(Device, DeviceProfile), String> {
+        self.plugged
+            .iter()
+            .find(|(_, device)| device.class == DeviceClass::Touchpad)
+            .map(|(name, device)| (Device::Profile(name), device.clone()))
+            .ok_or_else(|| {
+                "no touchpad is plugged in: tilo-vm input device plug lenovo-83ed-touchpad".into()
+            })
+    }
+
+    /// Fingers touch down on the touchpad at `at` (device units), one slot each.
+    fn pad_down(&mut self, pad: (Device, &DeviceProfile), at: &[(i32, i32)]) {
+        let (device, profile) = pad;
+        for (slot, _) in (0..).zip(at) {
+            self.emit(device, EV_ABS, ABS_MT_SLOT, slot);
+            let id = self.next_tracking_id;
+            self.next_tracking_id = id.checked_add(1).filter(|n| *n < 65_536).unwrap_or(0);
+            self.emit(device, EV_ABS, ABS_MT_TRACKING_ID, id);
+            if profile.axis(ABS_MT_TOOL_TYPE).is_some() {
+                // MT_TOOL_FINGER: a real pad names what touched it.
+                self.emit(device, EV_ABS, ABS_MT_TOOL_TYPE, 0);
+            }
+        }
+        self.pad_at(pad, at);
+        self.emit(device, EV_KEY, BTN_TOUCH, 1);
+        self.emit(device, EV_KEY, pad_tool(at.len()), 1);
+        self.syn(device);
+    }
+
+    fn pad_at(&mut self, (device, _): (Device, &DeviceProfile), at: &[(i32, i32)]) {
+        for (slot, (x, y)) in (0..).zip(at) {
+            self.emit(device, EV_ABS, ABS_MT_SLOT, slot);
+            self.emit(device, EV_ABS, ABS_MT_POSITION_X, *x);
+            self.emit(device, EV_ABS, ABS_MT_POSITION_Y, *y);
+        }
+        if let Some((x, y)) = at.first() {
+            self.emit(device, EV_ABS, ABS_X, *x);
+            self.emit(device, EV_ABS, ABS_Y, *y);
+        }
+    }
+
+    fn pad_up(&mut self, device: Device, fingers: usize) {
+        for slot in (0..).take(fingers) {
+            self.emit(device, EV_ABS, ABS_MT_SLOT, slot);
+            self.emit(device, EV_ABS, ABS_MT_TRACKING_ID, -1);
+        }
+        self.emit(device, EV_KEY, BTN_TOUCH, 0);
+        self.emit(device, EV_KEY, pad_tool(fingers), 0);
+        self.syn(device);
+    }
+
+    /// Where `fingers` rest when their centroid is at `centre`: side by side.
+    fn pad_fingers(profile: &DeviceProfile, centre: (i32, i32), fingers: u8) -> Vec<(i32, i32)> {
+        let gap = profile.mm_to_units(ABS_MT_POSITION_X, FINGER_GAP_MM);
+        let count = i32::from(fingers);
+        (0..count)
+            .map(|i| {
+                let offset = i
+                    .saturating_mul(2)
+                    .saturating_sub(count.saturating_sub(1))
+                    .saturating_mul(gap)
+                    / 2;
+                (centre.0.saturating_add(offset), centre.1)
+            })
+            .collect()
+    }
+
+    fn touchpad_action(&mut self, action: &InputAction) -> Result<(), String> {
+        let (device, profile) = self.touchpad()?;
+        let pad = (device, &profile);
+        let centre = profile.centre();
+        match action {
+            InputAction::TouchpadTap { fingers } => {
+                let at = Self::pad_fingers(&profile, centre, *fingers);
+                self.pad_down(pad, &at);
+                self.wait(TAP_MS);
+                self.pad_up(device, at.len());
+            }
+            InputAction::TouchpadClick => {
+                let at = Self::pad_fingers(&profile, centre, 1);
+                self.pad_down(pad, &at);
+                self.wait(TAP_MS);
+                self.emit(device, EV_KEY, BTN_LEFT, 1);
+                self.syn(device);
+                self.wait(PRESS_MS);
+                self.emit(device, EV_KEY, BTN_LEFT, 0);
+                self.syn(device);
+                self.wait(TAP_MS);
+                self.pad_up(device, at.len());
+            }
+            InputAction::TouchpadSwipe {
+                fingers,
+                dx_mm,
+                dy_mm,
+                duration_ms,
+            } => {
+                let dx = profile.mm_to_units(ABS_MT_POSITION_X, i32::from(*dx_mm));
+                let dy = profile.mm_to_units(ABS_MT_POSITION_Y, i32::from(*dy_mm));
+                // Start so the movement is centred on the pad and never leaves it.
+                let start = (
+                    centre.0.saturating_sub(dx / 2),
+                    centre.1.saturating_sub(dy / 2),
+                );
+                let at = Self::pad_fingers(&profile, start, *fingers);
+                self.pad_down(pad, &at);
+                self.wait(SETTLE_MS);
+                let steps = i32::try_from((duration_ms / MOTION_STEP_MS).max(1)).unwrap_or(1);
+                for step in 1..=steps {
+                    let moved: Vec<(i32, i32)> = at
+                        .iter()
+                        .map(|(x, y)| {
+                            (
+                                x.saturating_add(
+                                    dx.saturating_mul(step).checked_div(steps).unwrap_or(0),
+                                ),
+                                y.saturating_add(
+                                    dy.saturating_mul(step).checked_div(steps).unwrap_or(0),
+                                ),
+                            )
+                        })
+                        .collect();
+                    self.pad_at(pad, &moved);
+                    self.syn(device);
+                    self.wait(MOTION_STEP_MS);
+                }
+                // Lift after a pause, so a fast flick is not read as a fling.
+                self.wait(SETTLE_MS);
+                self.pad_up(device, at.len());
+            }
+            _ => return Err("not a touchpad action".into()),
+        }
+        Ok(())
     }
 
     fn pointer_to(&mut self, x: u32, y: u32) {
@@ -262,8 +447,15 @@ impl Encoder {
     /// A combo, character or gamepad control that does not map (callers
     /// validate first).
     pub fn encode(&mut self, actions: &[InputAction]) -> Result<Vec<Step>, String> {
+        // All or nothing: a refused action leaves neither its batch's steps (they would
+        // run with the next request) nor its plug state behind.
+        let saved = (self.next_tracking_id, self.plugged.clone(), self.keyboard);
         for action in actions {
-            self.action(action)?;
+            if let Err(error) = self.action(action) {
+                (self.next_tracking_id, self.plugged, self.keyboard) = saved;
+                self.out.clear();
+                return Err(error);
+            }
         }
         Ok(std::mem::take(&mut self.out))
     }
@@ -294,6 +486,21 @@ impl Encoder {
                     }
                 }
             }
+            InputAction::KeyDown { combo } => {
+                for code in combo_codes(combo)? {
+                    self.key(code, true);
+                }
+            }
+            InputAction::KeyUp { combo } => {
+                for code in combo_codes(combo)?.into_iter().rev() {
+                    self.key(code, false);
+                }
+            }
+            InputAction::DevicePlug { profile } => self.plug(profile)?,
+            InputAction::DeviceUnplug { profile } => self.unplug(profile)?,
+            InputAction::TouchpadTap { .. }
+            | InputAction::TouchpadSwipe { .. }
+            | InputAction::TouchpadClick => self.touchpad_action(action)?,
             InputAction::Move { x, y } => self.pointer_to(*x, *y),
             InputAction::Click { button, at } => {
                 if let Some((x, y)) = at {
@@ -386,6 +593,19 @@ impl Encoder {
             }
         }
         Ok(())
+    }
+}
+
+fn unknown_profile(name: &str) -> String {
+    format!("'{name}' is no device profile (known: {})", profile_names())
+}
+
+/// The `BTN_TOOL_*` button that says how many fingers are on a touchpad.
+fn pad_tool(fingers: usize) -> u16 {
+    match fingers {
+        0 | 1 => BTN_TOOL_FINGER,
+        2 => BTN_TOOL_DOUBLETAP,
+        _ => BTN_TOOL_TRIPLETAP,
     }
 }
 
@@ -521,6 +741,11 @@ impl Devices {
                 Device::Touch => uinput::touchscreen(seat, self.touch.0, self.touch.1)?,
                 Device::Pen => uinput::pen(seat, self.touch.0, self.touch.1)?,
                 Device::Gamepad => uinput::gamepad(seat)?,
+                Device::Profile(name) => {
+                    return Err(std::io::Error::other(format!(
+                        "{name} is not plugged in (tilo-vm input device plug {name})"
+                    )));
+                }
             };
             if !matches!(device, Device::Keyboard | Device::Pointer) {
                 // Plugged in just now: let udev tag it for the seat and the
@@ -535,6 +760,25 @@ impl Devices {
             .ok_or_else(|| std::io::Error::other("device vanished"))
     }
 
+    /// Create the device of a checked-in profile on this seat, as plugging it in does.
+    fn plug(&mut self, name: &'static str) -> std::io::Result<()> {
+        let device = profile(name).map_err(std::io::Error::other)?;
+        let file = uinput::profile(&self.seat, &device)?;
+        self.open.insert(Device::Profile(name), file);
+        // Let udev tag it for the seat (and run its hwdb and input_id rules) and the
+        // compositor open it before the first event.
+        let _ = std::process::Command::new("udevadm").arg("settle").status();
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        Ok(())
+    }
+
+    /// Destroy the device, as unplugging it does, and give the compositor time to see it go.
+    fn unplug(&mut self, name: &'static str) {
+        self.open.remove(&Device::Profile(name));
+        let _ = std::process::Command::new("udevadm").arg("settle").status();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
     fn run(&mut self, steps: &[Step]) -> (u64, Option<String>) {
         let mut written: u64 = 0;
         for step in steps {
@@ -542,6 +786,12 @@ impl Devices {
                 Step::WaitMs(ms) => {
                     std::thread::sleep(std::time::Duration::from_millis(u64::from(*ms)));
                 }
+                Step::Plug(name) => {
+                    if let Err(e) = self.plug(name) {
+                        return (written, Some(format!("plug {name}: {e}")));
+                    }
+                }
+                Step::Unplug(name) => self.unplug(name),
                 Step::Emit(ev) => {
                     let result = self
                         .get(ev.device)
@@ -628,10 +878,13 @@ mod uinput {
         KEY_MAX_USED, gamepad_buttons,
     };
 
+    use tilo_vm_protocol::profile::{AbsAxis, DeviceProfile};
+
     use super::{
         ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_PRESSURE, ABS_X,
         ABS_Y, BTN_STYLUS, BTN_TOOL_DOUBLETAP, BTN_TOOL_FINGER, BTN_TOOL_PEN, BTN_TOUCH, EV_ABS,
-        EV_KEY, EV_SYN, PRESSURE_MAX, STICK_MAX, STICK_MIN, TOUCH_SLOTS, TRIGGER_MAX,
+        EV_KEY, EV_LED, EV_MSC, EV_REL, EV_REP, EV_SYN, PRESSURE_MAX, STICK_MAX, STICK_MIN,
+        TOUCH_SLOTS, TRIGGER_MAX,
     };
 
     const fn io(nr: Ioctl) -> Ioctl {
@@ -645,7 +898,10 @@ mod uinput {
     const UI_ABS_SETUP: Ioctl = iow(4, size_of::<AbsSetup>());
     const UI_SET_EVBIT: Ioctl = iow(100, size_of::<libc::c_int>());
     const UI_SET_KEYBIT: Ioctl = iow(101, size_of::<libc::c_int>());
+    const UI_SET_RELBIT: Ioctl = iow(102, size_of::<libc::c_int>());
     const UI_SET_ABSBIT: Ioctl = iow(103, size_of::<libc::c_int>());
+    const UI_SET_MSCBIT: Ioctl = iow(104, size_of::<libc::c_int>());
+    const UI_SET_LEDBIT: Ioctl = iow(105, size_of::<libc::c_int>());
     const UI_SET_PHYS: Ioctl = iow(108, size_of::<*const libc::c_char>());
     const UI_SET_PROPBIT: Ioctl = iow(110, size_of::<libc::c_int>());
     const BUS_VIRTUAL: u16 = 0x06;
@@ -722,15 +978,29 @@ mod uinput {
         (minimum, maximum): (i32, i32),
         resolution: i32,
     ) -> std::io::Result<()> {
-        ioctl(file, UI_SET_ABSBIT, i32::from(code))?;
+        axis_setup(
+            file,
+            &AbsAxis {
+                code,
+                min: minimum,
+                max: maximum,
+                fuzz: 0,
+                flat: 0,
+                resolution,
+            },
+        )
+    }
+
+    fn axis_setup(file: &File, axis: &AbsAxis) -> std::io::Result<()> {
+        ioctl(file, UI_SET_ABSBIT, i32::from(axis.code))?;
         let abs = AbsSetup {
-            code,
+            code: axis.code,
             value: 0,
-            minimum,
-            maximum,
-            fuzz: 0,
-            flat: 0,
-            resolution,
+            minimum: axis.min,
+            maximum: axis.max,
+            fuzz: axis.fuzz,
+            flat: axis.flat,
+            resolution: axis.resolution,
         };
         ioctl_ptr(file, UI_ABS_SETUP, (&raw const abs).cast())
     }
@@ -743,13 +1013,24 @@ mod uinput {
     }
 
     fn create(file: &File, name: &str, product: u16, phys: &str) -> std::io::Result<()> {
+        create_as(file, name, (BUS_VIRTUAL, 0x7469, product, 1), phys)
+    }
+
+    /// Register the device under `(bus, vendor, product, version)`, the identity
+    /// udev's hwdb and libinput's quirks match on.
+    fn create_as(
+        file: &File,
+        name: &str,
+        (bustype, vendor, product, version): (u16, u16, u16, u16),
+        phys: &str,
+    ) -> std::io::Result<()> {
         let phys = std::ffi::CString::new(phys).map_err(std::io::Error::other)?;
         ioctl_ptr(file, UI_SET_PHYS, phys.as_ptr().cast())?;
         let mut setup = Setup {
-            bustype: BUS_VIRTUAL,
-            vendor: 0x7469,
+            bustype,
+            vendor,
             product,
-            version: 1,
+            version,
             name: [0; 80],
             ff_effects_max: 0,
         };
@@ -817,6 +1098,47 @@ mod uinput {
         Ok(file)
     }
 
+    /// The device a checked-in profile describes: real hardware's identity and
+    /// capabilities, on this seat (`phys` stays the seat so udev tags it for it).
+    pub fn profile(seat: &str, device: &DeviceProfile) -> std::io::Result<File> {
+        let mut kinds = vec![EV_KEY];
+        for (present, kind) in [
+            (!device.rel.is_empty(), EV_REL),
+            (!device.abs.is_empty(), EV_ABS),
+            (!device.msc.is_empty(), EV_MSC),
+            (!device.led.is_empty(), EV_LED),
+            (device.rep, EV_REP),
+        ] {
+            if present {
+                kinds.push(kind);
+            }
+        }
+        let file = open(&kinds)?;
+        for prop in &device.props {
+            ioctl(&file, UI_SET_PROPBIT, i32::from(*prop))?;
+        }
+        keys(&file, device.key.iter().copied())?;
+        for code in &device.rel {
+            ioctl(&file, UI_SET_RELBIT, i32::from(*code))?;
+        }
+        for abs in &device.abs {
+            axis_setup(&file, abs)?;
+        }
+        for code in &device.msc {
+            ioctl(&file, UI_SET_MSCBIT, i32::from(*code))?;
+        }
+        for code in &device.led {
+            ioctl(&file, UI_SET_LEDBIT, i32::from(*code))?;
+        }
+        create_as(
+            &file,
+            &device.name,
+            (device.bus, device.vendor, device.product, device.version),
+            seat,
+        )?;
+        Ok(file)
+    }
+
     /// Write one `struct input_event`; the kernel stamps the time.
     pub fn write(mut file: &File, kind: u16, code: u16, value: i32) -> std::io::Result<()> {
         let mut bytes = vec![0_u8; size_of::<libc::timeval>()];
@@ -847,6 +1169,12 @@ mod uinput {
         Err(unsupported())
     }
     pub fn gamepad(_seat: &str) -> std::io::Result<File> {
+        Err(unsupported())
+    }
+    pub fn profile(
+        _seat: &str,
+        _device: &tilo_vm_protocol::profile::DeviceProfile,
+    ) -> std::io::Result<File> {
         Err(unsupported())
     }
     pub fn write(_file: &File, _kind: u16, _code: u16, _value: i32) -> std::io::Result<()> {
@@ -1136,5 +1464,209 @@ mod tests {
         assert!(steps.contains(&Step::WaitMs(250)));
         assert_eq!(stick_value(100), STICK_MAX);
         assert_eq!(stick_value(0), 0);
+    }
+
+    fn keyboard_events(steps: &[Step]) -> Vec<(Device, u16, i32)> {
+        emitted(steps)
+            .into_iter()
+            .filter(|e| e.kind == EV_KEY)
+            .map(|e| (e.device, e.code, e.value))
+            .collect()
+    }
+
+    const KB: &str = "lenovo-83ed-keyboard";
+    const TP: &str = "lenovo-83ed-touchpad";
+
+    fn plug(name: &str) -> InputAction {
+        InputAction::DevicePlug {
+            profile: name.into(),
+        }
+    }
+
+    #[test]
+    fn a_plugged_keyboard_profile_takes_the_keys_until_it_is_unplugged() {
+        let mut encoder = Encoder::default();
+        let key = |combo: &str| InputAction::Key {
+            combos: vec![combo.into()],
+        };
+        let before = encoder.encode(&[key("y")]).unwrap();
+        assert!(
+            emitted(&before)
+                .iter()
+                .all(|e| e.device == Device::Keyboard)
+        );
+
+        let plugged = encoder.encode(&[plug(KB), key("y")]).unwrap();
+        assert_eq!(plugged[0], Step::Plug(KB));
+        assert_eq!(
+            keyboard_events(&plugged),
+            [(Device::Profile(KB), 21, 1), (Device::Profile(KB), 21, 0)]
+        );
+        // Held modifiers go through the same keyboard, up in reverse order.
+        let held = encoder
+            .encode(&[
+                InputAction::KeyDown {
+                    combo: "ctrl+shift".into(),
+                },
+                InputAction::KeyUp {
+                    combo: "ctrl+shift".into(),
+                },
+            ])
+            .unwrap();
+        assert_eq!(
+            keyboard_events(&held)
+                .iter()
+                .map(|(_, c, v)| (*c, *v))
+                .collect::<Vec<_>>(),
+            [(29, 1), (42, 1), (42, 0), (29, 0)]
+        );
+        assert!(
+            keyboard_events(&held)
+                .iter()
+                .all(|(d, _, _)| *d == Device::Profile(KB))
+        );
+
+        let unplugged = encoder
+            .encode(&[InputAction::DeviceUnplug { profile: KB.into() }, key("y")])
+            .unwrap();
+        assert_eq!(unplugged[0], Step::Unplug(KB));
+        assert!(
+            emitted(&unplugged)
+                .iter()
+                .all(|e| e.device == Device::Keyboard)
+        );
+    }
+
+    #[test]
+    fn plugging_twice_or_unplugging_nothing_is_refused() {
+        let mut encoder = Encoder::default();
+        encoder.encode(&[plug(TP)]).unwrap();
+        assert!(
+            encoder
+                .encode(&[plug(TP)])
+                .unwrap_err()
+                .contains("already plugged")
+        );
+        let error = encoder
+            .encode(&[InputAction::DeviceUnplug { profile: KB.into() }])
+            .unwrap_err();
+        assert!(error.contains("not plugged"), "{error}");
+        let error = encoder.encode(&[plug("nope")]).unwrap_err();
+        assert!(error.contains("lenovo-83ed-mouse"), "{error}");
+    }
+
+    #[test]
+    fn a_refused_batch_leaves_no_steps_or_plugs_behind() {
+        let mut encoder = Encoder::default();
+        let error = encoder.encode(&[plug(KB), plug("nope")]).unwrap_err();
+        assert!(error.contains("no device profile"), "{error}");
+        // The keyboard was not plugged by the failed batch, and nothing is queued.
+        let steps = encoder
+            .encode(&[InputAction::Key {
+                combos: vec!["a".into()],
+            }])
+            .unwrap();
+        assert!(emitted(&steps).iter().all(|e| e.device == Device::Keyboard));
+        assert!(steps.iter().all(|s| !matches!(s, Step::Plug(_))));
+        encoder.encode(&[plug(KB)]).unwrap();
+    }
+
+    #[test]
+    fn a_touchpad_gesture_needs_a_plugged_touchpad() {
+        let error = Encoder::default()
+            .encode(&[InputAction::TouchpadTap { fingers: 1 }])
+            .unwrap_err();
+        assert!(
+            error.contains("device plug lenovo-83ed-touchpad"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_touchpad_tap_is_a_contact_at_the_centre_then_lift() {
+        let steps = Encoder::default()
+            .encode(&[plug(TP), InputAction::TouchpadTap { fingers: 1 }])
+            .unwrap();
+        let pad = Device::Profile(TP);
+        let evs = emitted(&steps);
+        assert!(evs.iter().all(|e| e.device == pad));
+        let abs = on(&steps, pad, EV_ABS);
+        assert!(abs.contains(&(ABS_MT_POSITION_X, 1570)), "{abs:?}");
+        assert!(abs.contains(&(ABS_MT_POSITION_Y, 921)), "{abs:?}");
+        // The pad names what touched it, like the real one.
+        assert!(abs.contains(&(ABS_MT_TOOL_TYPE, 0)));
+        assert_eq!(
+            on(&steps, pad, EV_KEY),
+            [
+                (BTN_TOUCH, 1),
+                (BTN_TOOL_FINGER, 1),
+                (BTN_TOUCH, 0),
+                (BTN_TOOL_FINGER, 0)
+            ]
+        );
+        assert!(steps.contains(&Step::WaitMs(TAP_MS)));
+    }
+
+    #[test]
+    fn a_two_finger_swipe_moves_both_fingers_in_parallel_in_device_units() {
+        let steps = Encoder::default()
+            .encode(&[
+                plug(TP),
+                InputAction::TouchpadSwipe {
+                    fingers: 2,
+                    dx_mm: 0,
+                    dy_mm: -20,
+                    duration_ms: 40,
+                },
+            ])
+            .unwrap();
+        let pad = Device::Profile(TP);
+        assert_eq!(
+            on(&steps, pad, EV_KEY),
+            [
+                (BTN_TOUCH, 1),
+                (BTN_TOOL_DOUBLETAP, 1),
+                (BTN_TOUCH, 0),
+                (BTN_TOOL_DOUBLETAP, 0)
+            ]
+        );
+        let ys: Vec<i32> = on(&steps, pad, EV_ABS)
+            .into_iter()
+            .filter(|(code, _)| *code == ABS_MT_POSITION_Y)
+            .map(|(_, v)| v)
+            .collect();
+        // 20 mm at 24 units/mm is 480 units, centred on y 921 (down at 921+240),
+        // two fingers, four 10 ms steps after the touch-down report.
+        assert_eq!(ys.len(), 2 * (1 + 4));
+        assert_eq!(ys[0], 921 + 240);
+        assert_eq!(ys[ys.len() - 1], 921 - 240);
+        // The fingers stay a hand's width apart horizontally.
+        let xs: Vec<i32> = on(&steps, pad, EV_ABS)
+            .into_iter()
+            .filter(|(code, _)| *code == ABS_MT_POSITION_X)
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(xs[1] - xs[0], 14 * 24);
+        let max_x = profile(TP).unwrap().axis(ABS_MT_POSITION_X).unwrap().max;
+        assert!(xs.iter().all(|x| (0..=max_x).contains(x)));
+    }
+
+    #[test]
+    fn a_clickpad_click_presses_the_button_with_a_finger_on_the_pad() {
+        let steps = Encoder::default()
+            .encode(&[plug(TP), InputAction::TouchpadClick])
+            .unwrap();
+        let keys = on(&steps, Device::Profile(TP), EV_KEY);
+        assert_eq!(
+            keys,
+            [
+                (BTN_TOUCH, 1),
+                (BTN_TOOL_FINGER, 1),
+                (BTN_LEFT, 1),
+                (BTN_LEFT, 0),
+                (BTN_TOUCH, 0),
+                (BTN_TOOL_FINGER, 0)
+            ]
+        );
     }
 }

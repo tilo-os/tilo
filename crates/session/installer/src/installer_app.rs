@@ -106,17 +106,8 @@ pub const FIDO2_LABELS: [&str; 2] = ["No security key", "Enroll security key"];
 /// The heading of the media codecs opt-in.
 pub const CODECS_TITLE: &str = "Play more video and audio formats";
 
-/// The Media step's one large button. Nothing is chosen until it is pressed.
-pub const CODECS_INSTALL: &str = "Install";
-
-/// The quiet way past the Media step without choosing the formats.
-pub const CODECS_SKIP: &str = "Not now";
-
 /// What the Media step says once Install was pressed, above its Undo.
 pub const CODECS_CHOSEN: &str = "Chosen: installed once the new system is online";
-
-/// Withdraws the choice before the install starts.
-pub const CODECS_UNDO: &str = "Undo";
 
 /// The one short line under the title. The installer only records the
 /// choice; the installed system downloads the formats once it is online.
@@ -1073,7 +1064,7 @@ impl InstallerApp {
     /// Imager's setup choices. Nothing is confirmed; Review still shows every
     /// choice and requires the typed confirmation.
     fn apply_internal_handoff(&mut self, handoff: crate::internal_handoff::Handoff) {
-        let profile = handoff.media_profile();
+        let profile = crate::internal_handoff::media_profile(&handoff);
         self.internal_handoff = Some(handoff);
         if !self.bind_internal_handoff() {
             self.internal_handoff = None;
@@ -1126,7 +1117,7 @@ impl InstallerApp {
         self.internal_handoff
             .as_ref()
             .filter(|_| self.disks.iter().any(Disk::hosts_staged_installer))
-            .map(crate::internal_handoff::Handoff::host)
+            .map(|handoff| handoff.host_os)
     }
 
     fn selected_disk_hosts_installer(&self) -> bool {
@@ -2158,15 +2149,16 @@ impl InstallerApp {
             step_index(self.step),
         ))];
 
+        let mut actions: Vec<Box<dyn Widget>> = Vec::new();
         match self.step {
-            Step::Network => self.compose_network_step(theme, &mut children),
-            Step::Disk => self.compose_disk_step(theme, &mut children),
-            Step::Account => self.compose_account_step(theme, &mut children),
-            Step::Keyboard => self.compose_keyboard_step(theme, &mut children),
-            Step::Options => self.compose_options_step(theme, &mut children),
-            Step::Media => self.compose_media_step(theme, &mut children),
-            Step::Review => self.compose_review_step(theme, &mut children),
-            Step::Install => self.compose_install_step(theme, &mut children),
+            Step::Network => self.compose_network_step(theme, &mut children, &mut actions),
+            Step::Disk => self.compose_disk_step(theme, &mut children, &mut actions),
+            Step::Account => self.compose_account_step(theme, &mut children, &mut actions),
+            Step::Keyboard => self.compose_keyboard_step(theme, &mut children, &mut actions),
+            Step::Options => self.compose_options_step(theme, &mut children, &mut actions),
+            Step::Media => self.compose_media_step(theme, &mut children, &mut actions),
+            Step::Review => self.compose_review_step(theme, &mut children, &mut actions),
+            Step::Install => self.compose_install_step(theme, &mut children, &mut actions),
         }
 
         // A staged install has no medium to pull: offer the way back to the
@@ -2177,7 +2169,7 @@ impl InstallerApp {
                 InstallState::Running | InstallState::Done
             )
         {
-            children.push(Box::new(
+            actions.push(Box::new(
                 ActionButton::new(
                     &format!("Return to {}", host.display_name()),
                     self.control(op::SESSION, "return-to-host", Value::Null),
@@ -2186,10 +2178,11 @@ impl InstallerApp {
             ));
         }
 
-        // A transient validation/error line under every step's controls.
+        // Validation stays alongside the actions, outside the content viewport.
         if !self.status.is_empty() {
-            children.push(Box::new(
+            actions.push(Box::new(
                 Text::new(&self.status)
+                    .with_id("installer.validation")
                     .with_role(TextRole::Caption)
                     .with_color(theme.tokens.colors.semantic.danger)
                     .with_live(Politeness::Assertive),
@@ -2197,16 +2190,40 @@ impl InstallerApp {
         }
 
         let card: Box<dyn Widget> = Box::new(Card::new(children));
-        Box::new(
-            Scrollable::new_vertical()
-                .fill_parent_height()
-                .with_persisted_offset(Rc::clone(&self.viewport_offset))
-                .always_visible()
-                .with_child(Box::new(ViewportStage::new(card))),
-        )
+        let scroll = Scrollable::new_vertical()
+            .fill_parent_height()
+            .with_focus_reveal()
+            .with_persisted_offset(Rc::clone(&self.viewport_offset))
+            .always_visible()
+            .with_child(Box::new(ViewportStage::new(card)));
+        let mut page = ui::widget::Column::new()
+            .with_no_padding()
+            .with_gap(0.0)
+            .push(Box::new(scroll));
+        if !actions.is_empty() {
+            let mut footer = ui::widget::Column::new()
+                .with_id("installer.actions")
+                .with_intrinsic_height()
+                .with_gap(theme.tokens.spacing.s2);
+            for action in actions {
+                footer = footer.push(action);
+            }
+            page = page.push(Box::new(
+                ui::widget::Container::new()
+                    .with_no_padding()
+                    .with_centered_max_width(theme.tokens.metrics.readable_width)
+                    .with_child(Box::new(footer)),
+            ));
+        }
+        Box::new(page)
     }
 
-    fn compose_network_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_network_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
 
         children.push(Box::new(
@@ -2301,7 +2318,7 @@ impl InstallerApp {
             } else {
                 "Continue offline"
             };
-        children.push(self.nav_row(Step::Network, self.next_control(), continue_label, false));
+        actions.push(self.nav_row(Step::Network, self.next_control(), continue_label, false));
     }
 
     /// Add the Wi-Fi error or the currently visible network choices.
@@ -2346,7 +2363,12 @@ impl InstallerApp {
         }
     }
 
-    fn compose_disk_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_disk_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let danger = theme.tokens.colors.semantic.danger;
 
         children.push(Box::new(
@@ -2362,7 +2384,7 @@ impl InstallerApp {
         ));
         if self.disks.is_empty() {
             children.push(Box::new(
-                Text::new("No disks found — is this running on real hardware?")
+                Text::new(&crate::i18n::t("installer-storage-no-drives"))
                     .with_role(TextRole::Body)
                     .with_color(danger),
             ));
@@ -2416,7 +2438,7 @@ impl InstallerApp {
                     .with_color(theme.status_success),
             ));
         }
-        children.push(self.nav_row(
+        actions.push(self.nav_row(
             Step::Disk,
             self.next_control(),
             "Next",
@@ -2464,19 +2486,19 @@ impl InstallerApp {
                 .with_test_id("install_method"),
             ));
         }
-        let guidance = if self.install_method == InstallMethod::Erase {
-            "Erase disk deletes every partition and operating system on the selected disk."
+        let guidance = crate::i18n::t(if self.install_method == InstallMethod::Erase {
+            "installer-storage-erase-warning"
         } else {
-            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (35 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
-        };
+            "installer-storage-keep-guidance"
+        });
         children.push(Box::new(
-            Text::new(guidance).with_role(TextRole::Caption).with_color(
-                if self.install_method == InstallMethod::Erase {
+            Text::new(&guidance)
+                .with_role(TextRole::Caption)
+                .with_color(if self.install_method == InstallMethod::Erase {
                     danger
                 } else {
                     dim
-                },
-            ),
+                }),
         ));
     }
 
@@ -2542,7 +2564,12 @@ impl InstallerApp {
         ));
     }
 
-    fn compose_account_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_account_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
 
         let completion = self.profile_completion.unwrap_or_default();
@@ -2557,23 +2584,34 @@ impl InstallerApp {
             })
             .with_role(TextRole::Title),
         ));
-        if self.profile_completion.is_none() || !completion.username.is_complete() {
-            children.push(Box::new(Text::new("Username").with_role(TextRole::Body)));
+        if self.profile_completion.is_none() || !completion.full_name.is_complete() {
             children.push(Box::new(
-                TextInput::from_state(&self.username).with_id("installer.username"),
+                Text::new(&crate::i18n::t("installer-account-name")).with_role(TextRole::Body),
             ));
             children.push(Box::new(
-                Text::new("Used to sign in and for your home directory.")
+                TextInput::from_state(&self.full_name)
+                    .with_id("installer.full_name")
+                    .with_accessible_name(crate::i18n::t("installer-account-name")),
+            ));
+            children.push(Box::new(
+                Text::new(&crate::i18n::t("installer-account-name-note"))
                     .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         }
-        if self.profile_completion.is_none() || !completion.full_name.is_complete() {
+        if self.profile_completion.is_none() || !completion.username.is_complete() {
             children.push(Box::new(
-                Text::new("Full name (optional)").with_role(TextRole::Body),
+                Text::new(&crate::i18n::t("installer-account-username")).with_role(TextRole::Body),
             ));
             children.push(Box::new(
-                TextInput::from_state(&self.full_name).with_id("installer.full_name"),
+                TextInput::from_state(&self.username)
+                    .with_id("installer.username")
+                    .with_accessible_name(crate::i18n::t("installer-account-username")),
+            ));
+            children.push(Box::new(
+                Text::new(&crate::i18n::t("installer-account-username-note"))
+                    .with_role(TextRole::Caption)
+                    .with_color(dim),
             ));
         }
         let tpm_pin = matches!(
@@ -2581,53 +2619,74 @@ impl InstallerApp {
             VerifiedBootState::TargetVerified
         );
         children.push(Box::new(
-            Text::new(if tpm_pin {
-                "TPM-protected startup PIN"
+            Text::new(&crate::i18n::t(if tpm_pin {
+                "installer-account-pin"
             } else {
-                "Startup and unlock passphrase"
-            })
+                "installer-account-password"
+            }))
             .with_role(TextRole::Body),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password")
+                .with_accessible_name(crate::i18n::t(if tpm_pin {
+                    "installer-account-pin"
+                } else {
+                    "installer-account-password"
+                }))
                 .with_external_buffer(Arc::clone(&self.password))
                 .with_secret(true),
         ));
         children.push(Box::new(
-            Text::new(if tpm_pin {
-                "Use at least 6 digits. The TPM rate-limits guesses; keep the recovery key for hardware changes."
+            Text::new(&crate::i18n::t(if tpm_pin {
+                "installer-account-pin-note"
             } else {
-                "Choose at least 15 characters, ideally several unrelated words. It decrypts the disk at startup and unlocks your session later."
-            })
+                "installer-account-password-note"
+            }))
             .with_role(TextRole::Caption)
             .with_color(dim),
         ));
         children.push(Box::new(
-            Text::new(if tpm_pin {
-                "Confirm TPM-protected startup PIN"
+            Text::new(&crate::i18n::t(if tpm_pin {
+                "installer-account-pin-confirm"
             } else {
-                "Confirm startup and unlock passphrase"
-            })
+                "installer-account-password-confirm"
+            }))
             .with_role(TextRole::Body),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password_confirm")
+                .with_accessible_name(crate::i18n::t(if tpm_pin {
+                    "installer-account-pin-confirm"
+                } else {
+                    "installer-account-password-confirm"
+                }))
                 .with_external_buffer(Arc::clone(&self.password_confirmation))
                 .with_secret(true),
         ));
-        children.push(self.nav_row(Step::Account, self.next_control(), "Next", false));
+        actions.push(self.nav_row(Step::Account, self.next_control(), "Next", false));
     }
 
-    fn compose_keyboard_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_keyboard_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
 
         children.push(Box::new(
-            Text::new("Keyboard layout").with_role(TextRole::Title),
+            Text::new(&crate::i18n::t("installer-welcome-title")).with_role(TextRole::Title),
         ));
         children.push(Box::new(
-            Text::new("Pick the layout that matches your keyboard. The preview below shows exactly what each key will type.")
+            Text::new(&crate::i18n::t("installer-welcome-note")).with_role(TextRole::Body),
+        ));
+        children.push(Box::new(
+            Text::new("Keyboard layout").with_role(TextRole::Body),
+        ));
+        children.push(Box::new(
+            Text::new(&crate::i18n::t("installer-keyboard-note"))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
@@ -2637,15 +2696,20 @@ impl InstallerApp {
                 .with_placeholder("Select a keyboard layout"),
         ));
         children.push(Box::new(KeyboardView::new(&self.keymap)));
+        actions.push(self.nav_row(Step::Keyboard, self.next_control(), "Next", false));
         children.push(Box::new(
             Text::new("Need files from this computer, or removing an alongside Tilo install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
-        children.push(self.nav_row(Step::Keyboard, self.next_control(), "Next", false));
     }
 
-    fn compose_options_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_options_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
         let completion = self.profile_completion.unwrap_or_default();
 
@@ -2748,7 +2812,7 @@ impl InstallerApp {
             ));
         }
 
-        children.push(self.nav_row(
+        actions.push(self.nav_row(
             Step::Options,
             self.next_control(),
             "Next",
@@ -2760,7 +2824,12 @@ impl InstallerApp {
     /// Install button, with a quiet way past it. Nothing is chosen until
     /// Install is pressed; afterwards the step says so and offers Undo until
     /// the install begins.
-    fn compose_media_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_media_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
         children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
         children.push(centered_media_control(Box::new(
@@ -2779,7 +2848,8 @@ impl InstallerApp {
                 .with_color(dim)
                 .with_align(ui::ParagraphAlign::Center),
         ));
-        children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s4)));
+        // Media selection and its return/continue routes share the pinned region.
+        let children = actions;
         if self.codecs {
             children.push(centered_media_control(Box::new(
                 Row::new()
@@ -2929,7 +2999,12 @@ impl InstallerApp {
         clippy::too_many_lines,
         reason = "the review is one linear visual composition and splitting it would obscure its exact destructive-plan ordering"
     )]
-    fn compose_review_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_review_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
 
@@ -3114,7 +3189,7 @@ impl InstallerApp {
         let begin_disabled = !self.encryption_ready()
             || !self.destructive_confirmation_ready()
             || !self.filesystem_policy_ready();
-        children.push(self.nav_row(
+        actions.push(self.nav_row(
             Step::Review,
             self.control(op::REVIEW, "begin", Value::Null),
             "Begin Install",
@@ -3122,7 +3197,12 @@ impl InstallerApp {
         ));
     }
 
-    fn compose_install_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_install_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
         let friendly_status = friendly_install_status(&self.status_lines);
@@ -3169,7 +3249,7 @@ impl InstallerApp {
                             .with_live(Politeness::Assertive),
                     ));
                 }
-                children.push(self.finish_row(!self.recovery_key_saved));
+                actions.push(self.finish_row(!self.recovery_key_saved));
             }
             InstallState::Failed => {
                 children.push(Box::new(
@@ -3194,7 +3274,7 @@ impl InstallerApp {
                     self.status_lines.clone(),
                     STATUS_LOG_HEIGHT,
                 )));
-                children.push(Box::new(ActionButton::new(
+                actions.push(Box::new(ActionButton::new(
                     "Review storage",
                     self.back_control(),
                 )));
@@ -4005,10 +4085,18 @@ mod tests {
     }
 
     fn layout_at(app: &mut InstallerApp, width: f32, height: f32) {
-        let theme = Theme::dark();
+        layout_with_theme(app, width, height, &Theme::dark());
+    }
+
+    fn layout_with_theme(
+        app: &mut InstallerApp,
+        width: f32,
+        height: f32,
+        theme: &Theme,
+    ) -> HashMap<NodeId, *mut dyn Widget> {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let app_node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let app_node = app.build_layout(&mut taffy, theme, &mut node_map);
         let viewport = taffy
             .new_with_children(
                 Style {
@@ -4039,6 +4127,101 @@ mod tests {
             )
             .expect("compute compact installer layout");
         app.apply_layout(&taffy, app_node, Point::ORIGIN);
+        node_map
+    }
+
+    #[test]
+    fn welcome_and_account_explain_choices_in_person_first_order() {
+        let mut app = InstallerApp::with_disks(Vec::new());
+        layout_at(&mut app, 800.0, 600.0);
+        assert!(find_accessible(&app, &crate::i18n::t("installer-welcome-title")).is_some());
+        assert!(find_accessible(&app, &crate::i18n::t("installer-welcome-note")).is_some());
+        let next = find_test_id(&app, "Next").expect("first-page continuation");
+        assert!(next.get_rect().height() > 0.0);
+        assert!(next.get_rect().y0 >= 0.0);
+        assert!(
+            next.get_rect().y1 <= 600.0,
+            "continue must not begin below the fold"
+        );
+
+        app.step = Step::Account;
+        app.dirty_structure = true;
+        layout_at(&mut app, 800.0, 600.0);
+        let name = find_test_id(&app, "installer.full_name").expect("display name field");
+        let username = find_test_id(&app, "installer.username").expect("sign-in field");
+        assert!(name.get_rect().height() > 0.0);
+        assert!(username.get_rect().y0 >= name.get_rect().y1);
+        assert!(find_accessible(&app, &crate::i18n::t("installer-account-name-note")).is_some());
+        let next = find_test_id(&app, "Next").expect("account continuation");
+        assert!(
+            next.get_rect().y1 <= 600.0,
+            "continue must remain visible at normal text size"
+        );
+    }
+
+    #[test]
+    fn account_fields_have_localized_accessible_names_without_exposing_secrets() {
+        for pin in [false, true] {
+            let mut app = InstallerApp::with_disks(Vec::new());
+            app.step = Step::Account;
+            app.tpm2 = pin;
+            app.secure_boot = pin;
+            app.kernel_lockdown = pin;
+            app.target_verified_boot = pin;
+            *app.password.lock().unwrap() = "private-startup-secret".into();
+            *app.password_confirmation.lock().unwrap() = "private-startup-secret".into();
+            let _ = build(&mut app);
+            for (id, key, protected) in [
+                ("installer.full_name", "installer-account-name", false),
+                ("installer.username", "installer-account-username", false),
+                (
+                    "installer.password",
+                    if pin {
+                        "installer-account-pin"
+                    } else {
+                        "installer-account-password"
+                    },
+                    true,
+                ),
+                (
+                    "installer.password_confirm",
+                    if pin {
+                        "installer-account-pin-confirm"
+                    } else {
+                        "installer-account-password-confirm"
+                    },
+                    true,
+                ),
+            ] {
+                let access = find_test_id(&app, id).unwrap().accessibility().unwrap();
+                assert_eq!(
+                    access.name.as_deref(),
+                    Some(crate::i18n::t(key).as_str()),
+                    "{id}"
+                );
+                assert_eq!(access.state.protected, protected, "{id}");
+                if protected {
+                    assert!(access.value.is_none(), "a named secret must remain private");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn storage_explains_missing_drives_and_the_confirmation_boundary() {
+        let mut app = InstallerApp::with_disks(Vec::new());
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+        assert!(find_accessible(&app, &crate::i18n::t("installer-storage-no-drives")).is_some());
+        assert!(
+            find_accessible(&app, &crate::i18n::t("installer-storage-erase-warning")).is_some()
+        );
+        app.install_method = InstallMethod::Alongside;
+        app.dirty_structure = true;
+        let _ = build(&mut app);
+        assert!(
+            find_accessible(&app, &crate::i18n::t("installer-storage-keep-guidance")).is_some()
+        );
     }
 
     // --- pure state-machine ---------------------------------------
@@ -4619,11 +4802,7 @@ mod tests {
             app.kernel_lockdown = true;
             app.target_verified_boot = true;
             let _ = build(&mut app);
-            let card = find_named(&app, "InstallerCard").expect("review card");
-            let begin_disabled = card
-                .children()
-                .last()
-                .and_then(|nav| nav.children().last().map(|b| !b.is_focusable()));
+            let begin_disabled = find_test_id(&app, "Begin Install").map(|b| !b.is_focusable());
             assert_eq!(begin_disabled, Some(true), "Begin disabled until ack");
 
             // Acknowledgement alone is insufficient because the passphrase is mandatory.
@@ -4638,11 +4817,7 @@ mod tests {
             app2.erase_confirmation.set("/dev/sda".to_string());
             *app2.password.lock().unwrap() = "804927".to_string();
             let _ = build(&mut app2);
-            let card2 = find_named(&app2, "InstallerCard").expect("review card");
-            let begin_enabled = card2
-                .children()
-                .last()
-                .and_then(|nav| nav.children().last().map(|b| b.is_focusable()));
+            let begin_enabled = find_test_id(&app2, "Begin Install").map(Widget::is_focusable);
             assert_eq!(begin_enabled, Some(true), "Begin enabled once acknowledged");
         }
         // Phase `whole_disk_install_requires_exact_typed_device_confirmation`.
@@ -4675,11 +4850,7 @@ mod tests {
                 "typing the confirmation must rebuild the disabled Begin button"
             );
             let _ = build(&mut app);
-            let card = find_named(&app, "InstallerCard").expect("review card");
-            let begin_enabled = card
-                .children()
-                .last()
-                .and_then(|nav| nav.children().last().map(|button| button.is_focusable()));
+            let begin_enabled = find_test_id(&app, "Begin Install").map(Widget::is_focusable);
             assert_eq!(begin_enabled, Some(true));
             let field = find_test_id(&app, "installer.erase_confirmation")
                 .and_then(Widget::accessibility)
@@ -5705,7 +5876,13 @@ mod tests {
                 .iter()
                 .find(|child| child.test_id() == Some("recovery_ack"))
                 .expect("recovery-key acknowledgement");
-            let nav = controls.last().expect("review navigation");
+            let footer = find_test_id(&app, "installer.actions").expect("pinned review actions");
+            let nav = footer
+                .children()
+                .into_iter()
+                .next()
+                .expect("review navigation");
+            let scroll = find_named(&app, "Scrollable").expect("review content viewport");
             // Full height is the toolkit's regular control height, the
             // height every single-line field takes.
             let full = ui::widget::ControlSize::Regular.height(&Theme::dark());
@@ -5728,14 +5905,145 @@ mod tests {
                 "acknowledgement overlaps confirmation input"
             );
             assert!(
-                nav.get_rect().y0 >= ack.get_rect().y1,
-                "navigation overlaps acknowledgement"
+                nav.get_rect().y0 >= scroll.get_rect().y1,
+                "navigation overlaps the scrolling confirmation region"
             );
             assert!(
-                card.get_rect().y1 >= nav.get_rect().y1,
-                "navigation escaped review card"
+                nav.get_rect().y1 <= 768.0,
+                "pinned navigation escaped the viewport"
             );
         }
+    }
+
+    #[test]
+    fn pinned_actions_fit_large_text_and_focus_reveals_only_step_content() {
+        for base in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for scale in [1.0, 2.0] {
+                let theme = base.clone().with_text_scale(scale);
+                for step in [
+                    Step::Keyboard,
+                    Step::Network,
+                    Step::Disk,
+                    Step::Account,
+                    Step::Options,
+                    Step::Media,
+                    Step::Review,
+                    Step::Install,
+                ] {
+                    let mut app = InstallerApp::for_shot(step);
+                    if step == Step::Install {
+                        app.shot_finished();
+                        app.recovery_key_saved = true;
+                    }
+                    app.set_status("Check your choices before continuing.");
+                    layout_with_theme(&mut app, 800.0, 600.0, &theme);
+                    let footer = find_test_id(&app, "installer.actions").expect("pinned actions");
+                    let scroll = find_named(&app, "Scrollable").expect("content viewport");
+                    assert!(
+                        footer.get_rect().y0 >= scroll.get_rect().y1,
+                        "{step:?}/{scale}: actions overlap content"
+                    );
+                    assert!(
+                        footer.get_rect().y0 >= 0.0 && footer.get_rect().y1 <= 600.0,
+                        "{step:?}/{scale}: actions outside viewport: {:?}",
+                        footer.get_rect()
+                    );
+                    assert!(
+                        scroll.get_rect().height() > 0.0,
+                        "content viewport collapsed"
+                    );
+                    let status = find_accessible(&app, "Check your choices before continuing.")
+                        .expect("validation line");
+                    assert_eq!(status.live, Some(Politeness::Assertive));
+                    let validation =
+                        find_test_id(footer, "installer.validation").expect("pinned validation");
+                    assert!(
+                        validation.get_rect().height() > 0.0 && validation.get_rect().y1 <= 600.0
+                    );
+                    assert!(!has_test_id(scroll, "installer.actions"));
+                }
+
+                for variant in 0..3 {
+                    let mut app = staged_app();
+                    let action = match variant {
+                        0 => {
+                            app.step = Step::Account;
+                            "return_to_host"
+                        }
+                        1 => {
+                            app.shot_failed();
+                            "Review storage"
+                        }
+                        _ => {
+                            app.step = Step::Media;
+                            app.codecs = true;
+                            "Next"
+                        }
+                    };
+                    layout_with_theme(&mut app, 800.0, 600.0, &theme);
+                    let footer = find_test_id(&app, "installer.actions").expect("variant footer");
+                    let button = find_test_id(footer, action).expect("retained pinned action");
+                    assert!(
+                        button.get_rect().height() > 0.0 && button.get_rect().y1 <= 600.0,
+                        "{action}/{scale} escaped viewport: {:?}",
+                        button.get_rect()
+                    );
+                }
+
+                assert_account_focus_reveal(&theme);
+            }
+        }
+    }
+
+    fn assert_account_focus_reveal(theme: &Theme) {
+        let mut account = InstallerApp::for_shot(Step::Account);
+        let nodes = layout_with_theme(&mut account, 800.0, 600.0, theme);
+        let next = find_test_id(&account, "Next").expect("Next").get_rect();
+        let confirm =
+            find_test_id(&account, "installer.password_confirm").expect("password confirmation");
+        assert!(confirm.is_focusable());
+        let target = nodes
+            .values()
+            .copied()
+            .find(|&widget| {
+                // SAFETY: the production node map belongs to the still-live,
+                // unchanged app tree. No pointer survives the next rebuild.
+                unsafe { (*widget).test_id() == Some("installer.password_confirm") }
+            })
+            .expect("confirmation layout node");
+        assert!(
+            account.reveal_descendant(target),
+            "focus reveal must find the input"
+        );
+        let nodes = layout_with_theme(&mut account, 800.0, 600.0, theme);
+        let confirm = find_test_id(&account, "installer.password_confirm")
+            .unwrap()
+            .get_rect();
+        let viewport = find_named(&account, "Scrollable").unwrap().get_rect();
+        assert!(
+            confirm.y0 >= viewport.y0 && confirm.y1 <= viewport.y1,
+            "focused confirmation not revealed: {confirm:?} in {viewport:?}"
+        );
+        assert_eq!(
+            find_test_id(&account, "Next").unwrap().get_rect(),
+            next,
+            "revealing a field moved pinned navigation"
+        );
+        let offset = account.viewport_offset.get();
+        let next_target = nodes
+            .values()
+            .copied()
+            .find(|&widget| {
+                // SAFETY: the current production node map, as above.
+                unsafe { (*widget).test_id() == Some("Next") }
+            })
+            .expect("Next layout node");
+        assert!(account.reveal_descendant(next_target));
+        assert_eq!(
+            account.viewport_offset.get(),
+            offset,
+            "footer focus scrolled content"
+        );
     }
 
     /// Count focusable widgets anywhere in the subtree (the Account step's
@@ -5797,8 +6105,8 @@ mod tests {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
             let _ = build(&mut app);
-            let card = find_named(&app, "InstallerCard").expect("disk card");
-            let next_disabled = card
+            let footer = find_test_id(&app, "installer.actions").expect("disk actions");
+            let next_disabled = footer
                 .children()
                 .last()
                 .and_then(|nav| nav.children().last().map(|b| !b.is_focusable()));
@@ -5808,8 +6116,8 @@ mod tests {
             app2.step = Step::Disk;
             app2.selected_disk = Some(0);
             let _ = build(&mut app2);
-            let card2 = find_named(&app2, "InstallerCard").expect("disk card");
-            let next_enabled = card2
+            let footer2 = find_test_id(&app2, "installer.actions").expect("disk actions");
+            let next_enabled = footer2
                 .children()
                 .last()
                 .and_then(|nav| nav.children().last().map(|b| b.is_focusable()));

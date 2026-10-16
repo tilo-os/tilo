@@ -8,7 +8,7 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tilo_actions::ActionBinding;
@@ -17,6 +17,7 @@ use ui_core::LocalState;
 
 use super::controls::Actions;
 use super::dispatch::Submit;
+use tilo_lock::MutexRecover as _;
 
 /// One field of a form, whatever its type.
 trait Slot: Send + Sync {
@@ -85,7 +86,7 @@ impl<P: Params> Form<P> {
                 .collect::<Vec<_>>()
                 .join("."),
         };
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slots = self.slots.lock_recover();
         if let Some(state) = slots
             .get(&key)
             .and_then(|slot| slot.any().downcast_ref::<LocalState<V>>())
@@ -131,8 +132,7 @@ impl<P: Params> Form<P> {
 
 fn read<P: Params>(slots: &Slots) -> Result<P, String> {
     let fields = slots
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .iter()
         .map(|(key, slot)| Ok((key.clone(), slot.json()?)))
         .collect::<Result<serde_json::Map<_, _>, String>>()?;
@@ -140,11 +140,7 @@ fn read<P: Params>(slots: &Slots) -> Result<P, String> {
 }
 
 fn clear(slots: &Slots) {
-    for slot in slots
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .values()
-    {
+    for slot in slots.lock_recover().values() {
         slot.clear();
     }
 }

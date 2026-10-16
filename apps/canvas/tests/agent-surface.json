@@ -2219,74 +2219,7 @@
                     "properties": {
                       "action": {
                         "type": "object",
-                        "required": [
-                          "op"
-                        ],
-                        "properties": {
-                          "op": {
-                            "oneOf": [
-                              {
-                                "type": "object",
-                                "required": [
-                                  "action",
-                                  "args"
-                                ],
-                                "properties": {
-                                  "action": {
-                                    "type": "string",
-                                    "const": "field-edit"
-                                  },
-                                  "args": {
-                                    "type": "object"
-                                  }
-                                },
-                                "additionalProperties": false
-                              },
-                              {
-                                "type": "object",
-                                "required": [
-                                  "action",
-                                  "args"
-                                ],
-                                "properties": {
-                                  "action": {
-                                    "type": "string",
-                                    "enum": [
-                                      "paint",
-                                      "draw",
-                                      "edit-marks",
-                                      "remove-marks",
-                                      "arrange",
-                                      "add-layer",
-                                      "edit-layer",
-                                      "remove-layer",
-                                      "set-artwork",
-                                      "save-medium",
-                                      "remove-medium",
-                                      "align",
-                                      "set-reference",
-                                      "import-svg",
-                                      "open-picture",
-                                      "new-artwork",
-                                      "open-artwork",
-                                      "select",
-                                      "use-selection",
-                                      "combine"
-                                    ]
-                                  },
-                                  "args": {
-                                    "type": "object"
-                                  }
-                                },
-                                "additionalProperties": false
-                              }
-                            ]
-                          },
-                          "at": {
-                            "type": "integer"
-                          }
-                        },
-                        "additionalProperties": false
+                        "description": "One action value, as the `apply` action's `apply` parameter describes it"
                       }
                     },
                     "additionalProperties": false

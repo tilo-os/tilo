@@ -189,6 +189,17 @@ pub trait Apply {
     /// Run the in-VM `tilo-control` against this session.
     fn control(&mut self, session: &Session, args: &[String])
     -> Result<ControlResult, DaemonError>;
+    /// Run a secret-bearing semantic invocation without public argument values.
+    fn private_control(
+        &mut self,
+        _session: &Session,
+        _args: &[String],
+        _input: &str,
+    ) -> Result<ControlResult, DaemonError> {
+        Err(DaemonError::InvalidParams(
+            "private control is unavailable in this backend".into(),
+        ))
+    }
     /// PNG of the session's live scene.
     fn shot(&mut self, session: &Session) -> Result<Vec<u8>, DaemonError>;
     /// Capabilities and `SELinux` domain of the running session process,
@@ -234,6 +245,15 @@ pub trait Apply {
         session: &Session,
         tapp: &std::path::Path,
     ) -> Result<String, DaemonError>;
+    /// The packages in `session` user's own store (`registry.toml` of
+    /// `~/.local/share/tilo-apps`); none when it has no registry.
+    fn user_packages(
+        &mut self,
+        session: &Session,
+    ) -> Result<Vec<package_store::registry::InstalledPackage>, DaemonError>;
+    /// Whether the image itself, below any merged layer, ships the native
+    /// toolkit `/usr/lib/tilo-runtime/<version>`.
+    fn image_has_runtime(&mut self, version: &str) -> bool;
     /// Select an authenticated development-cohort package, preserving holds.
     fn install_cohort_app(
         &mut self,
@@ -786,8 +806,16 @@ pub struct RecordingApply {
     /// Scripted readiness observations, consumed once per restarted session.
     pub readiness_replies: std::collections::VecDeque<Result<(), String>>,
 
+    /// The rows of the session user's own package registry.
+    pub user_packages: Vec<package_store::registry::InstalledPackage>,
+    /// The `tilo-runtime/<version>` directories the image itself ships.
+    pub image_runtimes: Vec<String>,
     /// Exact normal installer output for production cohort selection tests.
     pub cohort_replies: std::collections::VecDeque<String>,
+    /// Scripted observations from the maintained selection reader.
+    pub cohort_selections: std::collections::VecDeque<crate::SelectedApps>,
+    /// Runtime namespace supplied by cohort fixtures.
+    pub cohort_runtime_root: Option<PathBuf>,
     /// The machine's own session, when it has one.
     pub device: Option<DeviceSession>,
     /// Every call is copied here too, for a test that hands this to a daemon.
@@ -1057,7 +1085,7 @@ impl Apply for RecordingApply {
         _layers: &[PathBuf],
     ) -> Result<crate::SelectedApps, DaemonError> {
         self.call(format!("cohort_selected_apps {}", session.user));
-        Ok(crate::SelectedApps::default())
+        Ok(self.cohort_selections.pop_front().unwrap_or_default())
     }
     fn cohort_runtime_view(
         &mut self,
@@ -1065,7 +1093,10 @@ impl Apply for RecordingApply {
         _layers: &[PathBuf],
         _prior: bool,
     ) -> Result<PathBuf, DaemonError> {
-        Ok(PathBuf::from("/"))
+        Ok(self
+            .cohort_runtime_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/")))
     }
     fn install_cohort_app_in_view(
         &mut self,
@@ -1083,6 +1114,15 @@ impl Apply for RecordingApply {
                 .join(",")
         ));
         self.install_cohort_app(session, tapp)
+    }
+    fn user_packages(
+        &mut self,
+        _session: &Session,
+    ) -> Result<Vec<package_store::registry::InstalledPackage>, DaemonError> {
+        Ok(self.user_packages.clone())
+    }
+    fn image_has_runtime(&mut self, version: &str) -> bool {
+        self.image_runtimes.iter().any(|shipped| shipped == version)
     }
     fn install_cohort_app(
         &mut self,

@@ -18,9 +18,14 @@ use crate::background::Background;
 use crate::time::Duration;
 use crate::wake::WakeHandle;
 
+use tilo_lock::MutexRecover as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill, ImageBrush, ImageData as PenikoImage};
+
+/// Pixels a host decoded itself, for [`HostImageLoader::complete_decoded`]
+/// (the browser's own decoders, so the page's module carries none).
+pub use tilo_image_codec::DecodedImage;
 
 /// Fetches the raw encoded bytes for a URL, or `None` on failure. Invoked as
 /// background work, so it may block on I/O.
@@ -179,10 +184,7 @@ impl Shared {
 
     /// Exact request identity, rather than its URL, owns pending custody.
     fn settle(&self, url: &str, request: &Arc<RequestIdentity>, slot: Slot) -> bool {
-        let mut cache = self
-            .slots
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = self.slots.lock_recover();
         if !cache.slots.get(url).is_some_and(
             |entry| matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, request)),
         ) {
@@ -405,11 +407,7 @@ impl Drop for HostImageLoader {
         // sweep below, or observes disconnection and settles its own identity.
         self.requests.take();
         let unfinished: Vec<_> = {
-            let slots = self
-                .shared
-                .slots
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let slots = self.shared.slots.lock_recover();
             slots
                 .slots
                 .iter()
@@ -444,9 +442,7 @@ struct NativeState {
 
 impl NativeLoader {
     fn state(&self) -> std::sync::MutexGuard<'_, NativeState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// Start a job for each queued request while a worker slot is free.
@@ -625,11 +621,7 @@ impl ImageStore {
                 }
             }
             Err(TrySendError::Full(_)) => {
-                let mut cache = self
-                    .shared
-                    .slots
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut cache = self.shared.slots.lock_recover();
                 if cache.slots.get(url).is_some_and(|entry| {
                     matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, &request))
                 }) {
@@ -642,6 +634,22 @@ impl ImageStore {
             }
         }
         None
+    }
+
+    /// Forget every load that failed, so the next [`get`](Self::get) of its
+    /// URL asks the fetcher again. A failure is cached (it would otherwise be
+    /// re-fetched every frame), which is wrong for a source whose bytes were
+    /// not available yet and now are: a caller that knows they changed calls
+    /// this. Returns whether any failure was forgotten.
+    pub fn forget_failed(&self) -> bool {
+        let Ok(mut slots) = self.shared.slots.lock() else {
+            return false;
+        };
+        let before = slots.slots.len();
+        slots
+            .slots
+            .retain(|_, entry| !matches!(entry.slot, Slot::Failed));
+        slots.slots.len() != before
     }
 
     /// Whether `url` has been requested yet (Ready/Loading/Failed all count).
@@ -781,6 +789,26 @@ pub fn paint_image_cover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgetting_failures_lets_an_image_whose_bytes_arrived_load() {
+        use std::sync::{Arc, RwLock};
+        let bytes = Arc::new(RwLock::new(None::<Vec<u8>>));
+        let source = Arc::clone(&bytes);
+        let fetch: Fetcher = Arc::new(move |_| source.read().ok()?.clone());
+        let store = ImageStore::new(&fetch);
+        store.get("asset:late");
+        store.block_until_idle(Duration::from_secs(2));
+        assert!(store.get("asset:late").is_none(), "no bytes yet: failed");
+        *bytes.write().unwrap() = Some(png_bytes(4, 3, [9, 9, 9]));
+        store.block_until_idle(Duration::from_secs(2));
+        assert!(store.get("asset:late").is_none(), "a failure is cached");
+        assert!(store.forget_failed());
+        assert!(!store.forget_failed(), "nothing left to forget");
+        store.get("asset:late");
+        store.block_until_idle(Duration::from_secs(2));
+        assert!(store.get("asset:late").is_some());
+    }
 
     #[test]
     fn failed_host_image_can_retry_only_its_admitted_request_and_decode_real_bytes() {

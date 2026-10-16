@@ -52,6 +52,38 @@ by a token:
 - **Every invocation passes the same capability gate** as the palette, as the
   person at this session.
 
+`actions invoke` answers once the action has settled (up to 5 s; `--wait=MS`
+for another bound, at most 30 s), with its result and a nonzero exit when it
+failed; `--no-wait` answers the admission receipt, and an invocation sent
+`--device` to another machine answers once that device has it. There is no
+`actions status` to poll for an action that finishes.
+
+`actions list` leads with what the desktop's apps offer: live app resources and
+their actions, then applications and the rest in the palette's order. Files and
+folders stay out unless asked (`--files`, or `--kind file`), because a search
+for an app's action is otherwise answered by every same-named file on the disk
+ahead of it. `--kind KIND` (repeatable; `application`, `action`, `note`,
+`record`, `tab`, `file`, …) narrows to those kinds:
+
+```bash
+tilo-control actions list markdown --kind application --kind action
+tilo-control actions list markdown --files          # now the files too, after the apps
+```
+
+On the wire these are `kinds` and `files` on `actions_enumerate`.
+
+### An agent in a terminal uses the agent door, not this socket
+
+An AI agent running in a terminal inside the person's own session (Claude
+Code in Alacritty, say) is a descendant of an app this session launched, so
+this socket refuses it — rightly: it would carry the admin's whole authority,
+unattributed. It connects to the session's **agent door** instead
+(`$XDG_RUNTIME_DIR/tilo-session/agent.sock`), through
+`tilo-runtime-mcp --connect`, and acts as an agent member the person admits:
+attributed, limited to what the workspace grants that agent, and revoked with
+its membership. It is offered path-addressed tools (`tilo_ls`, `tilo_read`,
+`tilo_do`, `tilo_find`) rather than ids: `notes/Todo/body#append-paragraph`.
+See [`runtime-mcp.md`](runtime-mcp.md#inside-a-tilo-session).
 ### Observing an installed native application's exact window
 
 Store's native `open` action is a background action with an explicit JSON result.
@@ -614,6 +646,8 @@ refuses it again at run time.
 |---|---|
 | Command + response shapes | `crates/session/shell/src/compositor/test_control.rs` |
 | Device admin's control socket | `crates/session/shell/src/compositor/admin_control.rs` |
+| Session agent door (peer check, serving) | `crates/session/shell/src/compositor/agent_door.rs`, client route and MCP gate in `crates/runtime/tilo-runtime/src/session_door.rs` |
+| Agent door consent | `crates/session/shell/src/shell/agent_admission.rs` |
 | CLI (`tilo-control`) | `crates/session/control-cli` |
 | Launcher coverage proof | `crates/session/shell/src/shell/overlay_host/launcher_action_coverage_tests.rs` |
 | Live enumerate / resolve | `crates/session/shell/src/compositor/native.rs` |

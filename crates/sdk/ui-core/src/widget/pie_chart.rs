@@ -32,8 +32,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, chart_nav_action, handle_chart_event,
-    moved_index,
+    ChartInspection, InteractiveChart, chart_nav_action, handle_chart_event,
 };
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -692,19 +691,14 @@ impl InteractiveChart for PieChart {
         self.activated = Some(slice.id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let indices = self
-            .sectors_at(crate::time::now())
-            .into_iter()
-            .map(|sector| sector.index)
-            .collect::<Vec<_>>();
-        let position = self
-            .inspection
-            .hovered
-            .and_then(|index| indices.iter().position(|candidate| *candidate == index));
-        self.inspection.hovered = moved_index(position, indices.len(), action)
-            .and_then(|position| indices.get(position).copied());
-        self.inspection.hovered.is_some()
+    fn keyboard_items(&self) -> Vec<usize> {
+        let sectors = self.sectors_at(crate::time::now());
+        sectors.into_iter().map(|sector| sector.index).collect()
+    }
+    /// Keyboard inspection leaves the pointer alone: the tooltip places itself
+    /// per [`PieTooltipAnchor`].
+    fn anchor(&self, _index: &usize) -> Option<Point> {
+        None
     }
 }
 
@@ -919,15 +913,12 @@ impl Widget for PieChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        let Some(id) = crate::widget::chart_navigation::activated_id(
+        crate::widget::chart_navigation::activate(
+            &mut self.activated,
             action,
             key_path,
             self.slices.iter().filter(|s| s.interactive).map(|s| &s.id),
-        ) else {
-            return false;
-        };
-        self.activated = Some(id.clone());
-        true
+        )
     }
     fn name(&self) -> &'static str {
         "PieChart"

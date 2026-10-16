@@ -30,7 +30,7 @@ if [[ ${#apps[@]} -eq 0 ]]; then
 fi
 
 cargo build --locked --quiet -p tilo-app-cli --bin tilo-app
-tilo_app=$PWD/target/debug/tilo-app
+tilo_app=${CARGO_TARGET_DIR:-$PWD/target}/debug/tilo-app
 # Examples share the same dependency feature set. Link the selected binaries
 # in one Cargo graph instead of serializing ten independent builds. Each
 # scenario still performs its normal Cargo freshness check and native audit.

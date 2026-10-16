@@ -94,6 +94,8 @@ impl App {
 
     /// Invalidate declarations derived from document or widget-local state.
     fn invalidate_widget_resource_cache(&mut self) {
+        // What the widgets declare changed, and so may their semantics.
+        self.mark_semantic_tree_stale();
         // At `u64::MAX` there is no fresh key to issue. Eviction still makes
         // each later materialisation a new snapshot, so it cannot alias a
         // retained tree that happened to have the same terminal generation.
@@ -722,16 +724,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|actions| !actions.is_empty())
             {
-                if self
-                    .collaboration
-                    .manager
-                    .send(CollabRequest::PublishActions {
-                        app_id: publication_app_id,
-                        actions: Vec::new(),
-                    })
-                {
-                    self.actions.last_published_actions = Some(Vec::new());
-                }
+                self.withdraw_action_surface(publication_app_id);
             }
             return;
         }
@@ -779,16 +772,7 @@ impl App {
             {
                 return;
             }
-            if self
-                .collaboration
-                .manager
-                .send(CollabRequest::PublishActions {
-                    app_id: crate::collaboration::local_app_id(),
-                    actions: Vec::new(),
-                })
-            {
-                self.actions.last_published_actions = Some(Vec::new());
-            }
+            self.withdraw_action_surface(crate::collaboration::local_app_id());
             return;
         }
         let descriptors = tilo_actions::door::survey(&resources);
@@ -796,20 +780,48 @@ impl App {
         if self.actions.last_published_actions.as_ref() == Some(&descriptors) {
             return;
         }
-        let actions = descriptors
-            .iter()
-            .map(crate::collaboration::ExportedAction::from)
-            .collect();
+        // Only what changed since the broker's copy crosses: each distinct
+        // catalogue entry once, and per resource action its own fields. With
+        // nothing the broker is known to hold (first publication, or it
+        // refused the last one) the delta is a reset.
+        let prior = self
+            .actions
+            .last_published_actions
+            .as_deref()
+            .zip(self.actions.published_surface.as_ref())
+            .map(|(descriptors, state)| (state, descriptors));
+        let (delta, state) = crate::collaboration::SurfacePublication::next(prior, &descriptors);
         // A surface the transport did not take is retried on the next frame.
+        if delta.is_empty()
+            || self
+                .collaboration
+                .manager
+                .send(CollabRequest::PublishActionSurface {
+                    app_id: publication_app_id,
+                    delta,
+                })
+        {
+            self.actions.last_published_actions = Some(descriptors);
+            self.actions.published_surface = Some(state);
+        }
+    }
+
+    /// Withdraw everything this app published: a reset delta with nothing in it.
+    fn withdraw_action_surface(&mut self, app_id: String) {
         if self
             .collaboration
             .manager
-            .send(CollabRequest::PublishActions {
-                app_id: publication_app_id,
-                actions,
+            .send(CollabRequest::PublishActionSurface {
+                app_id,
+                delta: crate::collaboration::SurfaceDelta {
+                    reset: true,
+                    ..crate::collaboration::SurfaceDelta::default()
+                },
             })
         {
-            self.actions.last_published_actions = Some(descriptors);
+            self.actions.last_published_actions = Some(Vec::new());
+            self.actions.published_surface =
+                Some(crate::collaboration::SurfacePublication::default());
         }
     }
 
@@ -829,11 +841,13 @@ impl App {
             )?;
             let permissions = self.permission_ctx.directory_witness()?;
             let reusable = owners.iter().all(|owner| owner.generation.is_some());
+            // Described, not made: making a provider can build its index,
+            // and this runs on every frame that publishes the surface.
             let directory_providers =
-                crate::bound_dispatch::search_providers(self.root_widget.as_ref());
+                crate::bound_dispatch::search_provider_descriptors(self.root_widget.as_ref());
             let provider_domains = directory_providers
                 .iter()
-                .map(|provider| provider.action_directory_invocation_domain())
+                .map(|provider| provider.invocation_domain)
                 .collect();
             let witness = action_directory_snapshot::DirectoryWitness {
                 registry_generation: self.actions.action_registry_generation,
@@ -856,11 +870,7 @@ impl App {
                     .map(|provider| {
                         format!(
                             "{}:{:?}:{:?}",
-                            provider.name(),
-                            provider
-                                .callback_binding()
-                                .map(|binding| binding.lifetime_id),
-                            provider.action_directory_generation()
+                            provider.name, provider.owner, provider.generation
                         )
                     })
                     .collect(),
@@ -1840,7 +1850,7 @@ impl App {
                 error: tilo_actions::ActionFailure {
                     code: crate::bound_dispatch::door_error_code(&error).to_string(),
                     message: error.to_string(),
-                    details: None,
+                    details: error.failure_details(),
                     retryable: false,
                 },
             },
@@ -2151,14 +2161,25 @@ impl App {
             scope,
             ..
         } = *invocation;
+        // The typed text of a prompt travels to the broker as the argument the
+        // action itself names for it.
+        let prompted_arguments = typed_arguments
+            .is_none()
+            .then(|| argument.and_then(|text| spec.prompt_arguments(text)))
+            .flatten();
+        let (broker_arguments, broker_argument) = if prompted_arguments.is_some() {
+            (prompted_arguments.as_ref(), None)
+        } else {
+            (typed_arguments, argument)
+        };
         if spec.deferred_invocation_type().is_some()
             && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred
             && !broker_admitted
         {
             return self.invoke_via_broker(
                 address,
-                typed_arguments,
-                argument,
+                broker_arguments,
+                broker_argument,
                 confirmation_evidence,
             );
         }
@@ -2182,8 +2203,8 @@ impl App {
         if action.locus() == tilo_actions::ExecutionLocus::ServerPreferred && !broker_admitted {
             return self.invoke_via_broker(
                 address,
-                typed_arguments,
-                argument,
+                broker_arguments,
+                broker_argument,
                 confirmation_evidence,
             );
         }
@@ -2826,7 +2847,7 @@ impl App {
                         error: tilo_actions::ActionFailure {
                             code: crate::bound_dispatch::door_error_code(error).to_string(),
                             message: error.to_string(),
-                            details: None,
+                            details: error.failure_details(),
                             retryable: false,
                         },
                     },
@@ -4342,6 +4363,8 @@ impl App {
     /// that component's own frame: for a test, or a host, reaching into the
     /// mounted app between frames. `None` without a mounted component.
     pub fn with_component_root<U>(&mut self, f: impl FnOnce(&mut dyn Widget) -> U) -> Option<U> {
+        // Whatever `f` does to it is no change the tracking sees.
+        self.mark_semantic_tree_stale();
         let bound = self
             .root_widget
             .as_any_mut()?

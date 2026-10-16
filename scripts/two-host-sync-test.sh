@@ -9,11 +9,11 @@
 # Terminal 2 (peer):
 #   ./scripts/two-host-sync-test.sh peer
 #
-# Owner: launches `shell --mode hosted --enable-peer-sync`,
+# Owner: launches `shell --backend winit` (peer sync is on by default),
 # prints an invite token via /invite, copies it to clipboard, and
 # pauses for the peer to connect.
 #
-# Peer: launches `shell --mode hosted --enable-peer-sync`,
+# Peer: launches `shell --backend winit`,
 # waits for the user to paste the token into /connect, then both
 # trees should converge on each other's edits.
 #
@@ -25,11 +25,11 @@ ROLE="${1:-}"
 case "$ROLE" in
   owner)
     echo "[two-host] Starting owner. Use /invite in the palette to mint a token."
-    exec cargo run -p shell --bin shell -- --mode hosted --enable-peer-sync
+    exec cargo run -p shell --bin shell -- --backend winit
     ;;
   peer)
     echo "[two-host] Starting peer. Use /connect in the palette and paste the owner's token."
-    exec cargo run -p shell --bin shell -- --mode hosted --enable-peer-sync
+    exec cargo run -p shell --bin shell -- --backend winit
     ;;
   *)
     echo "Usage: $0 {owner|peer}" >&2

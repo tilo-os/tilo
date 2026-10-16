@@ -191,7 +191,7 @@ impl Continuation {
         tilo_actions::ActionFailure {
             code,
             message,
-            details: None,
+            details: error.failure_details(),
             retryable: false,
         }
     }
@@ -276,14 +276,19 @@ pub fn current_participant() -> Option<tilo_actions::ParticipantId> {
 /// person always may. A remote actor may only when it is the current host-set
 /// invoker, it has its own participant view, and the operation declares that
 /// it changes only the invoking participant's view
-/// ([`tilo_actions::PARTICIPANT_VIEW_TAG`]). Every other View operation would
-/// move somebody else's private view and stays refused.
+/// ([`tilo_actions::PARTICIPANT_VIEW_TAG`]). A read of the document
+/// ([`tilo_actions::DOCUMENT_READ_TAG`]) moves nothing, so any actor the
+/// broker admitted may run it: it is a View operation only because it
+/// changes no document, and refusing it as "somebody else's view" left an
+/// agent that may read a note unable to read it. Every other View operation
+/// would move somebody else's private view and stays refused.
 pub fn view_operation_permitted(
     actor: &str,
     local_author: &str,
     contract: &tilo_actions::ActionContract,
 ) -> bool {
     actor == local_author
+        || contract.reads_document()
         || (contract.is_participant_view()
             && current_invoker()
                 .is_some_and(|invoker| invoker.actor == actor && invoker.participant.is_some()))

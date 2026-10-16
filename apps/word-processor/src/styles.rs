@@ -2,7 +2,7 @@
 //! Heading 1–3, List Item, Quote, plus user-defined ones) that every block
 //! resolves against. Editing a style updates *every* block of that style: the
 //! component-instance model, not per-instance formatting. Persisted in the
-//! document (qdoc meta) so it round-trips and survives reopen.
+//! document (tilo-doc meta) so it round-trips and survives reopen.
 
 use crate::num;
 use serde::{Deserialize, Serialize};

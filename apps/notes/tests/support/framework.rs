@@ -76,12 +76,12 @@ pub fn edit_body(app: &mut TestApp<NotesShell>, page: PageId, op: &tilo_document
 
 /// The notebook `app` shows, as its window shows it.
 pub fn shown(app: &TestApp<NotesShell>) -> notes::Workspace {
-    notes::Workspace::of(std::rc::Rc::new(app.state()), &notes::Workspace::default())
+    notes::Workspace::of(&app.state(), &notes::Workspace::default())
 }
 
 /// The notes at the notebook's root, in their order.
 pub fn root_order(app: &TestApp<NotesShell>) -> Vec<PageId> {
-    notes::Workspace::of(std::rc::Rc::new(app.state()), &notes::Workspace::default())
+    notes::Workspace::of(&app.state(), &notes::Workspace::default())
         .children_of(None)
         .iter()
         .map(|page| page.id)

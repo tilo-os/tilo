@@ -1,8 +1,14 @@
-//! A small, per-launch signing broker protocol.
+//! A small, per-launch identity broker protocol.
 //!
-//! The launcher owns the private share and passes the sandbox exactly one end
-//! of a connected Unix socket.  The app can read public identity metadata and
-//! request signatures, but cannot export the share or enumerate identities.
+//! The launcher passes the sandbox exactly one end of a connected Unix socket
+//! and serves public identity metadata on the other. It holds no secret: it
+//! reads the record's public fields without contacting the secret provider.
+//! The app can read that metadata but cannot export a share, enumerate
+//! identities, or obtain a signature: a root signature over the right 32
+//! bytes is a device certificate or a revocation, so the root key is never a
+//! signing oracle for an application, and `sign` is refused. Signatures an
+//! app needs go through the identity service, which binds each one to a
+//! granted action.
 
 use std::io::{self, Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
@@ -13,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 use wire_frame::{FrameError, Framing};
 
-use super::{NotAvailable, SigningIdentity, SigningSource};
+use super::{IdentityMetadata, NotAvailable, SigningIdentity, SigningSource};
 
 pub const BROKER_ENV_VAR: &str = "TILO_IDENTITY_BROKER_FD";
 pub const BROKER_CHILD_FD: RawFd = 15;
@@ -48,17 +54,29 @@ fn read_frame(stream: &mut UnixStream) -> io::Result<(u8, Vec<u8>)> {
     Ok((status[0], payload))
 }
 
-/// Serve one application's inherited connection until it exits or closes it.
+/// What `sign` always answers. The broker holds no key, and the checked path
+/// for application signatures is the identity service.
+const SIGN_REFUSAL: &[u8] = b"the root signing key is never brokered to an application; \
+                              request signatures through the identity service";
+
+/// Serve one application's inherited connection until it exits or closes it:
+/// `metadata` answers the metadata operation, and every `sign` is refused.
 ///
 /// # Errors
 ///
 /// Returns an error if a frame can't be read or written, other than the
 /// peer closing the connection (which ends the loop with `Ok(())`).
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "public API also called with an owned SigningIdentity from crates/packaging/launcher, outside this pass's scope to update"
-)]
-pub fn serve(mut stream: UnixStream, identity: SigningIdentity) -> io::Result<()> {
+pub fn serve_metadata(mut stream: UnixStream, metadata: &IdentityMetadata) -> io::Result<()> {
+    let encoded = serde_json::to_vec(&PublicMetadata {
+        display_name: metadata.display_name.clone(),
+        avatar_color: metadata.avatar_color,
+        group_public_key: metadata.group_public_key,
+        threshold: metadata.threshold,
+        total_shares: metadata.total_shares,
+        share_index: metadata.share_index,
+        single_device: metadata.single_device,
+    })
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     loop {
         let (op, payload) = match read_frame(&mut stream) {
             Ok(frame) => frame,
@@ -66,24 +84,8 @@ pub fn serve(mut stream: UnixStream, identity: SigningIdentity) -> io::Result<()
             Err(error) => return Err(error),
         };
         match op {
-            OP_METADATA if payload.is_empty() => {
-                let metadata = PublicMetadata {
-                    display_name: identity.display_name.clone(),
-                    avatar_color: identity.avatar_color,
-                    group_public_key: identity.group_public_key,
-                    threshold: identity.threshold,
-                    total_shares: identity.total_shares,
-                    share_index: identity.share_index,
-                    single_device: identity.is_single_device(),
-                };
-                let encoded = serde_json::to_vec(&metadata)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                write_frame(&mut stream, 0, &encoded)?;
-            }
-            OP_SIGN => match identity.sign_local(&payload) {
-                Ok(signature) => write_frame(&mut stream, 0, &signature)?,
-                Err(error) => write_frame(&mut stream, 1, error.to_string().as_bytes())?,
-            },
+            OP_METADATA if payload.is_empty() => write_frame(&mut stream, 0, &encoded)?,
+            OP_SIGN => write_frame(&mut stream, 1, SIGN_REFUSAL)?,
             _ => write_frame(&mut stream, 1, b"unsupported identity broker operation")?,
         }
     }
@@ -166,42 +168,61 @@ pub(crate) fn sign(stream: &Mutex<UnixStream>, message: &[u8]) -> Result<[u8; 64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{SigningKey, Verifier};
     use std::os::fd::IntoRawFd;
 
+    fn ada() -> IdentityMetadata {
+        IdentityMetadata {
+            display_name: "Ada".into(),
+            avatar_color: [1, 2, 3],
+            group_public_key: [42; 32],
+            threshold: 1,
+            total_shares: 1,
+            share_index: 1,
+            single_device: true,
+        }
+    }
+
     #[test]
-    fn broker_signs_over_pinned_bounded_frames_without_exposing_the_key() {
-        // phase: broker_signs_without_exposing_the_key
+    fn broker_answers_metadata_and_refuses_every_sign_over_pinned_bounded_frames() {
+        // phase: broker_serves_metadata_and_refuses_to_sign
+        // The broker holds no key. It answers metadata and refuses `sign`
+        // with the bytes a root-capable record was always refused with, so
+        // an app that asks behaves as it always did.
         {
-            let key = SigningKey::from_bytes(&[42; 32]);
-            let verifier = key.verifying_key();
-            let identity = SigningIdentity::from_local_parts(
-                "Ada".into(),
-                [1, 2, 3],
-                verifier.to_bytes(),
-                1,
-                1,
-                1,
-                Some(key),
-            );
             let (host, mut app) = UnixStream::pair().unwrap();
-            let thread = std::thread::spawn(move || serve(host, identity).unwrap());
+            let thread = std::thread::spawn(move || serve_metadata(host, &ada()).unwrap());
 
             write_frame(&mut app, OP_METADATA, &[]).unwrap();
             let (status, metadata) = read_frame(&mut app).unwrap();
             assert_eq!(status, 0);
-            assert!(!String::from_utf8_lossy(&metadata).contains("secret"));
+            let served: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+            let group_public_key = [42_u8; 32];
+            assert_eq!(
+                served,
+                serde_json::json!({
+                    "display_name": "Ada",
+                    "avatar_color": [1, 2, 3],
+                    "group_public_key": group_public_key,
+                    "threshold": 1,
+                    "total_shares": 1,
+                    "share_index": 1,
+                    "single_device": true,
+                })
+            );
 
-            let message = b"brokered operation";
-            write_frame(&mut app, OP_SIGN, message).unwrap();
-            let (status, signature) = read_frame(&mut app).unwrap();
-            assert_eq!(status, 0);
-            verifier
-                .verify(
-                    message,
-                    &ed25519_dalek::Signature::from_slice(&signature).unwrap(),
-                )
-                .unwrap();
+            write_frame(&mut app, OP_SIGN, b"brokered operation").unwrap();
+            let (status, reply) = read_frame(&mut app).unwrap();
+            assert_eq!(status, 1, "the broker must never sign for an app");
+            assert_eq!(
+                reply,
+                b"the root signing key is never brokered to an application; \
+                  request signatures through the identity service"
+            );
+            // The connection stays usable: metadata still answers after a refusal.
+            write_frame(&mut app, OP_METADATA, &[]).unwrap();
+            assert_eq!(read_frame(&mut app).unwrap(), (0, metadata));
+            write_frame(&mut app, 9, &[]).unwrap();
+            assert_eq!(read_frame(&mut app).unwrap().0, 1);
             drop(app);
             thread.join().unwrap();
         }
@@ -237,22 +258,19 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn inherited_broker_fd_is_consumed_exactly_once() {
-        let key = SigningKey::from_bytes(&[43; 32]);
-        let identity = SigningIdentity::from_local_parts(
-            "Ada".into(),
-            [1, 2, 3],
-            key.verifying_key().to_bytes(),
-            1,
-            1,
-            1,
-            Some(key),
-        );
         let (host, app) = UnixStream::pair().unwrap();
-        let thread = std::thread::spawn(move || serve(host, identity).unwrap());
+        let thread = std::thread::spawn(move || serve_metadata(host, &ada()).unwrap());
         let raw = app.into_raw_fd();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(BROKER_ENV_VAR, raw.to_string());
         let connected = connect_from_env().unwrap();
+        assert_eq!(connected.display_name(), "Ada");
+        assert_eq!(connected.group_public_key(), [42; 32]);
+        assert!(connected.is_single_device());
+        assert!(
+            connected.sign(b"anything").is_err(),
+            "an app's broker connection never yields a signature"
+        );
         match connect_from_env() {
             Err(NotAvailable::ConnectionFailed(error)) => {
                 assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);

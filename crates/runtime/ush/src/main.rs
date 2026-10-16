@@ -11,15 +11,6 @@
 //! confinement, and because `pkg` inside a guest and the supervisor outside it
 //! are two halves of one protocol — splitting them would let the halves drift.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -248,9 +239,7 @@ fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
 /// `$XDG_RUNTIME_DIR/tilo/services/ush.sock` — the path `tilo-launcher` looks in
 /// for a `[sandbox.services]` entry named `ush`.
 fn default_service_socket() -> PathBuf {
-    let runtime = tilo_paths::xdg::runtime_dir()
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
-    runtime.join("tilo/services/ush.sock")
+    tilo_paths::xdg::runtime_dir_or_default().join("tilo/services/ush.sock")
 }
 
 fn init_tracing(verbose: bool) {
@@ -545,7 +534,7 @@ explain when the host does not offer them.\n";
         // Everything the guest may write, in here: scratch, its own `/var`,
         // home, and whatever was granted (named again so a later remount can't
         // widen it). `/usr` and `/etc` are read-only images and get no rule.
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+        let home = tilo_paths::home().unwrap_or_else(|| PathBuf::from("/"));
         let mut rw: Vec<PathBuf> = ["/tmp", "/var", "/run", "/dev", "/proc"]
             .iter()
             .map(PathBuf::from)

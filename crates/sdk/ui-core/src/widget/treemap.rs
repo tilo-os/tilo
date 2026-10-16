@@ -7,7 +7,7 @@
 
 use crate::widget::ModelPath;
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -20,7 +20,7 @@ use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
 };
 
 #[derive(Clone, Debug)]
@@ -256,18 +256,14 @@ impl InteractiveChart for Treemap {
         self.activated = Some(item.id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self.valid_items();
-        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
-        if let Some(rect) = self
-            .layout()
+    fn keyboard_items(&self) -> Vec<usize> {
+        self.valid_items()
+    }
+    fn anchor(&self, &index: &usize) -> Option<Point> {
+        self.layout()
             .into_iter()
-            .find(|tile| Some(tile.index) == self.inspection.hovered)
-            .map(|tile| self.tile_rect(tile))
-        {
-            self.inspection.pointer = rect.center();
-        }
-        self.inspection.hovered.is_some()
+            .find(|tile| tile.index == index)
+            .map(|tile| self.tile_rect(tile).center())
     }
 }
 
@@ -282,25 +278,8 @@ impl Widget for Treemap {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.inspection.keyboard
-            && let Some(rect) = self
-                .layout()
-                .into_iter()
-                .find(|tile| Some(tile.index) == self.inspection.hovered)
-                .map(|tile| self.tile_rect(tile))
-        {
-            self.inspection.pointer = rect.center();
-        }
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 10.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        self.follow_keyboard_anchor();
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         for tile in self.layout() {
             let Some(item) = self.items.get(tile.index) else {
                 continue;
@@ -409,15 +388,12 @@ impl Widget for Treemap {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        let Some(id) = crate::widget::chart_navigation::activated_id(
+        crate::widget::chart_navigation::activate(
+            &mut self.activated,
             action,
             key_path,
             self.items.iter().map(|item| &item.id),
-        ) else {
-            return false;
-        };
-        self.activated = Some(id.clone());
-        true
+        )
     }
     fn name(&self) -> &'static str {
         "Treemap"

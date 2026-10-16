@@ -13,14 +13,18 @@
     reason = "one end-to-end scenario whose relays and sessions live until it ends"
 )]
 
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::CommitNamed as _;
+use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
-use tilo_relay::rooms::{RemoveMemberRequest, RoomAdminClient, RoomCommand, RoomReply};
+use tilo_relay::rooms::{
+    CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, IssueInvitationRequest, IssuedInvitation,
+    RECORD_EFFECT_RECEIPT, RemoveMemberRequest, RoomAdminClient, RoomListing, member_resource,
+};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -68,6 +72,71 @@ async fn session(relay: &Relay, device: &TestDevice, workspace_id: u64) -> Relay
     RelayCoeditSession::join(client, workspace_id, device.device_pubkey()).unwrap()
 }
 
+/// Alice's `device` creates a room named `name` on her relay and enters it
+/// as its owner, through the relay's own host actions on a workspace she
+/// holds there.
+async fn create_and_enter(
+    relay: &Relay,
+    host: &TestDevice,
+    device: &TestDevice,
+    name: &str,
+) -> RoomListing {
+    use governance_actions::{HOME_WORKSPACE, host_action, subscribed};
+    let home = subscribed(relay, device, HOME_WORKSPACE).await;
+    let created: CreatedRoom = host_action(
+        &home,
+        host,
+        HOME_WORKSPACE,
+        CREATE_ROOM,
+        serde_json::json!({ "name": name }),
+    )
+    .await;
+    assert_eq!(created.room.name, name);
+    let entered: EnteredRoom = host_action(
+        &home,
+        host,
+        HOME_WORKSPACE,
+        ENTER_ROOM,
+        serde_json::json!({ "room": created.room.room }),
+    )
+    .await;
+    assert!(
+        entered.changed,
+        "the device is admitted as the room's owner's"
+    );
+    created.room
+}
+
+/// An invitation to `room` carrying `role`, for `person` only, that the
+/// room's owner `issuer` issues.
+async fn invite(
+    relay: &Relay,
+    issuer: &TestDevice,
+    room: &str,
+    role: MemberRole,
+    person: [u8; 32],
+) -> IssuedInvitation {
+    relay
+        .rooms()
+        .unwrap()
+        .issue(
+            room,
+            &issuer.cert,
+            IssueInvitationRequest {
+                request_id: *blake3::hash(&person).as_bytes(),
+                role,
+                recipient_user_public_key: Some(person),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns()
+                    .checked_add(600_000_000_000)
+                    .unwrap(),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap()
+}
+
 /// Apply what `session` receives to `peer` until `done` holds, recording
 /// every presence payload by its author.
 async fn receive_until(
@@ -99,9 +168,9 @@ async fn receive_until(
 }
 
 fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
-    let (channel, kind) = tilo_peer_state::transport::retention(message, false).unwrap();
+    let (channel, kind) = neighbour_wire::retention(message, false).unwrap();
     let body = postcard::to_stdvec(message).unwrap();
-    if kind == tilo_peer_state::transport::Retention::Checkpoint {
+    if kind == neighbour_wire::Retention::Checkpoint {
         session.publish_checkpoint(channel, body)
     } else {
         session.publish_retained_delta(channel, body)
@@ -150,46 +219,12 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     let address = relay.node_addr();
 
     // Alice's laptop creates a room on her relay and enters it as its owner.
-    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
-    let room = admin
-        .create(address.clone(), "Design review")
-        .await
-        .unwrap();
-    assert_eq!(room.name, "Design review");
-    assert!(matches!(
-        admin
-            .send(
-                address.clone(),
-                RoomCommand::Enter {
-                    room: room.room.clone()
-                }
-            )
-            .await
-            .unwrap(),
-        RoomReply::Entered { changed: true }
-    ));
-
-    // Bob's device cannot administer Alice's rooms.
-    let intruder = RoomAdminClient::new(device_endpoint(&phone).await, phone.cert.clone());
-    assert!(
-        intruder
-            .send(address.clone(), RoomCommand::List)
-            .await
-            .is_err()
-    );
+    // (That Bob's device cannot is `governance_actions`'s to show.)
+    let room = create_and_enter(&relay, &host, &laptop, "Design review").await;
 
     // Alice invites Bob's person; his device redeems through the signed
     // address the invitation carries and is admitted by the room's governor.
-    let invitation = admin
-        .invite(
-            address.clone(),
-            &room.room,
-            MemberRole::Editor,
-            Some(bob.user_pk),
-            Duration::from_secs(600),
-        )
-        .await
-        .unwrap();
+    let invitation = invite(&relay, &laptop, &room.room, MemberRole::Editor, bob.user_pk).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -368,23 +403,20 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     )
     .await;
 
-    // Alice removes Bob: the relay stops admitting his device.
-    let RoomReply::Governance { generation } = admin
-        .send(
+    // Alice removes Bob: the relay stops admitting his device. Removal is
+    // still asked at the administration door.
+    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
+    let generation = admin
+        .remove(
             address.clone(),
-            RoomCommand::Remove {
-                room: room.room.clone(),
-                request: RemoveMemberRequest {
-                    request_id: [9; 32],
-                    user_public_key: bob.user_pk,
-                },
+            &room.room,
+            RemoveMemberRequest {
+                request_id: [9; 32],
+                user_public_key: bob.user_pk,
             },
         )
         .await
-        .unwrap()
-    else {
-        panic!("a governance change")
-    };
+        .unwrap();
     assert!(generation > room.generation);
     let refused = async {
         let client = RelayClient::connect_to_pinned_host(
@@ -473,16 +505,24 @@ async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
     .unwrap();
     let rooms = relay.rooms().unwrap();
     let room = rooms.create("Private terminal audit").await.unwrap();
-    let client = RoomAdminClient::new(device_endpoint(&member).await, member.cert.clone());
+    let workspace = room.workspace_id;
     let invocation = uuid::Uuid::new_v4();
     let receipt = terminal_audit(&hex::encode(bob.user_pk), invocation);
-    let command = || RoomCommand::RecordEffectReceipt {
-        room: room.room.clone(),
-        invocation,
-        redacted: receipt.clone(),
+    // The member's own `tilo.member` action, recording `redacted` as the
+    // receipt of `invocation`.
+    let record = |invocation: uuid::Uuid, redacted: &[u8]| {
+        governance_actions::invocation(
+            tilo_relay::rooms::MEMBER_ACTIONS_PROVIDER,
+            member_resource(&room.room),
+            RECORD_EFFECT_RECEIPT,
+            serde_json::json!({
+                "invocation": invocation.to_string(),
+                "redacted": String::from_utf8(redacted.to_vec()).unwrap(),
+            }),
+        )
     };
     assert!(
-        client.send(relay.node_addr(), command()).await.is_err(),
+        !governance_actions::admitted(&relay, &member, workspace).await,
         "unadmitted device must be refused"
     );
     let issued = rooms
@@ -519,57 +559,52 @@ async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
         )
         .await
         .unwrap();
-    let first = client.send(relay.node_addr(), command()).await.unwrap();
-    assert!(matches!(first, RoomReply::Governance { .. }));
+    // The caller is the device the relay session authenticated: there is no
+    // certificate to name besides it.
+    let client = governance_actions::subscribed(&relay, &member, workspace).await;
+    let ask = |message| governance_actions::ask(&client, &host, workspace, message);
+    let first = governance_actions::outcome(ask(record(invocation, &receipt)).await).unwrap();
+    assert!(first["generation"].as_u64().is_some(), "{first}");
     assert_eq!(
-        client.send(relay.node_addr(), command()).await.unwrap(),
+        governance_actions::outcome(ask(record(invocation, &receipt)).await).unwrap(),
         first,
         "exact retry retains the original generation"
     );
-    let changed =
-        StatePeer::validate_workspace_effect_receipt_encoding(invocation, &receipt).unwrap();
+    let changed = tilo_peer_state::PeerWorkspace::validate_workspace_effect_receipt_encoding(
+        invocation, &receipt,
+    )
+    .unwrap();
     let mut changed = changed.clone();
     changed.completed_at = 2;
     assert!(
-        client
-            .send(
-                relay.node_addr(),
-                RoomCommand::RecordEffectReceipt {
-                    room: room.room.clone(),
-                    invocation,
-                    redacted: serde_json::to_vec(&changed).unwrap(),
-                }
-            )
-            .await
-            .is_err(),
+        governance_actions::outcome(
+            ask(record(invocation, &serde_json::to_vec(&changed).unwrap())).await
+        )
+        .is_err(),
         "conflicting terminal retry must be refused"
     );
     let spoof = uuid::Uuid::new_v4();
     assert!(
-        client
-            .send(
-                relay.node_addr(),
-                RoomCommand::RecordEffectReceipt {
-                    room: room.room.clone(),
-                    invocation: spoof,
-                    redacted: terminal_audit(&hex::encode(alice.user_pk), spoof),
-                }
-            )
+        governance_actions::outcome(
+            ask(record(
+                spoof,
+                &terminal_audit(&hex::encode(alice.user_pk), spoof)
+            ))
             .await
-            .is_err(),
+        )
+        .is_err(),
         "a member must not impersonate the governor"
     );
-    assert!(
-        client
-            .send(relay.node_addr(), RoomCommand::List)
+    assert_eq!(
+        governance_actions::outcome(
+            ask(governance_actions::host_operation(
+                tilo_relay::rooms::LIST_ROOMS,
+                serde_json::json!({})
+            ))
             .await
-            .is_err(),
+        ),
+        Err(tilo_actions::remote::ActionHostError::UnknownAction),
         "recording personal audit confers no administration"
-    );
-    let mismatched = RoomAdminClient::new(device_endpoint(&host).await, member.cert.clone());
-    assert!(
-        mismatched.send(relay.node_addr(), command()).await.is_err(),
-        "certificate must equal the authenticated Iroh endpoint"
     );
     let mut malformed = changed;
     malformed.invocation = tilo_actions::InvocationId::new();
@@ -581,17 +616,14 @@ async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
             "must not publish",
         ));
     assert!(
-        client
-            .send(
-                relay.node_addr(),
-                RoomCommand::RecordEffectReceipt {
-                    room: room.room.clone(),
-                    invocation: malformed.invocation.0,
-                    redacted: serde_json::to_vec(&malformed).unwrap(),
-                }
-            )
+        governance_actions::outcome(
+            ask(record(
+                malformed.invocation.0,
+                &serde_json::to_vec(&malformed).unwrap()
+            ))
             .await
-            .is_err(),
+        )
+        .is_err(),
         "unredacted extra facets must be refused"
     );
     rooms
@@ -606,8 +638,18 @@ async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
         .await
         .unwrap();
     assert!(
-        client.send(relay.node_addr(), command()).await.is_err(),
+        !matches!(
+            governance_actions::try_ask(&client, &host, workspace, record(invocation, &receipt))
+                .await
+                .map(governance_actions::outcome),
+            Ok(Ok(_))
+        ),
         "removal must refuse even a formerly successful retry"
+    );
+    drop(client);
+    assert!(
+        !governance_actions::admitted(&relay, &member, workspace).await,
+        "a removed member is not admitted again"
     );
     relay.shutdown().await;
 }
@@ -647,49 +689,14 @@ type = "String"
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let address = relay.node_addr();
 
     // Alice's laptop creates a room on her relay and enters it as its owner.
-    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
-    let room = admin
-        .create(address.clone(), "Design review")
-        .await
-        .unwrap();
-    assert_eq!(room.name, "Design review");
-    assert!(matches!(
-        admin
-            .send(
-                address.clone(),
-                RoomCommand::Enter {
-                    room: room.room.clone()
-                }
-            )
-            .await
-            .unwrap(),
-        RoomReply::Entered { changed: true }
-    ));
-
-    // Bob's device cannot administer Alice's rooms.
-    let intruder = RoomAdminClient::new(device_endpoint(&phone).await, phone.cert.clone());
-    assert!(
-        intruder
-            .send(address.clone(), RoomCommand::List)
-            .await
-            .is_err()
-    );
+    // (That Bob's device cannot is `governance_actions`'s to show.)
+    let room = create_and_enter(&relay, &host, &laptop, "Design review").await;
 
     // Alice invites Bob's person; his device redeems through the signed
     // address the invitation carries and is admitted by the room's governor.
-    let invitation = admin
-        .invite(
-            address.clone(),
-            &room.room,
-            MemberRole::Editor,
-            Some(bob.user_pk),
-            Duration::from_secs(600),
-        )
-        .await
-        .unwrap();
+    let invitation = invite(&relay, &laptop, &room.room, MemberRole::Editor, bob.user_pk).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -855,49 +862,21 @@ params = []
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let address = relay.node_addr();
 
     // Alice's laptop creates a room on her relay and enters it as its owner.
-    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
-    let room = admin
-        .create(address.clone(), "Design review")
-        .await
-        .unwrap();
-    assert_eq!(room.name, "Design review");
-    assert!(matches!(
-        admin
-            .send(
-                address.clone(),
-                RoomCommand::Enter {
-                    room: room.room.clone()
-                }
-            )
-            .await
-            .unwrap(),
-        RoomReply::Entered { changed: true }
-    ));
-
-    // Bob's device cannot administer Alice's rooms.
-    let intruder = RoomAdminClient::new(device_endpoint(&phone).await, phone.cert.clone());
-    assert!(
-        intruder
-            .send(address.clone(), RoomCommand::List)
-            .await
-            .is_err()
-    );
+    // (That Bob's device cannot is `governance_actions`'s to show.)
+    let room = create_and_enter(&relay, &host, &laptop, "Design review").await;
 
     // Alice invites Bob's person; his device redeems through the signed
     // address the invitation carries and is admitted by the room's governor.
-    let invitation = admin
-        .invite(
-            address.clone(),
-            &room.room,
-            MemberRole::Commenter,
-            Some(bob.user_pk),
-            Duration::from_secs(600),
-        )
-        .await
-        .unwrap();
+    let invitation = invite(
+        &relay,
+        &laptop,
+        &room.room,
+        MemberRole::Commenter,
+        bob.user_pk,
+    )
+    .await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -1060,23 +1039,19 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let address = relay.node_addr();
-    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
-    let room = admin.create(address.clone(), "Demo").await.unwrap();
+    let room = create_and_enter(&relay, &host, &laptop, "Demo").await;
     let mut guests = Vec::new();
     for (seed, name) in [(17, "Ada"), (18, "Bea"), (19, "Cy")] {
         let guest = TestUser::fresh(name);
         let phone = guest.enrol("phone", DeviceCapabilities::member());
-        let invitation = admin
-            .invite(
-                address.clone(),
-                &room.room,
-                MemberRole::Editor,
-                Some(guest.user_pk),
-                Duration::from_secs(600),
-            )
-            .await
-            .unwrap();
+        let invitation = invite(
+            &relay,
+            &laptop,
+            &room.room,
+            MemberRole::Editor,
+            guest.user_pk,
+        )
+        .await;
         let verified = decode_and_verify_invitation(
             &invitation.signed_invitation,
             None,
@@ -1136,3 +1111,18 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
 
 #[path = "governed_rooms/topology_namespace.rs"]
 mod topology_namespace;
+
+#[path = "governed_rooms/governance_actions.rs"]
+mod governance_actions;
+
+#[path = "governed_rooms/spectators.rs"]
+mod spectators;
+
+#[path = "governed_rooms/app_authorship.rs"]
+mod app_authorship;
+
+#[path = "governed_rooms/app_records.rs"]
+mod app_records;
+
+#[path = "governed_rooms/sealed_records.rs"]
+mod sealed_records;

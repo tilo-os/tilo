@@ -67,6 +67,7 @@ fn stub_group(id: u64) -> WindowGroup {
         active_tab: tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 

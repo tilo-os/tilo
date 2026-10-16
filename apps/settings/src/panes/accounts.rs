@@ -34,7 +34,7 @@ use accounts::email::AccountConfig;
 use tracing::warn;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
+use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind, Widget};
 
 use crate::accounts::{AccountDirectory, AccountKind, AccountRoot, AccountView};
 use crate::effects::SettingsEffect;
@@ -44,8 +44,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, setting_row,
-    value_row,
+    Body, El, Item, SettingsSection, StatusTone, card, card_with_action, field_row, item_row, note,
+    row, rows, semantic_status_pill, setting_row, setting_row_described, untitled, value_row,
 };
 
 mod cloud_control;
@@ -119,6 +119,9 @@ pub enum AccountsEffect {
     /// Check and save the account form, or take the sign-in's next step.
     #[effect(label = "Save account")]
     SaveAccountForm,
+    /// Explicitly request Gmail access alongside the Google files sign-in.
+    #[effect(label = "Connect files and Gmail")]
+    ConnectGoogleMail,
     /// Close the account form or sign-in without saving.
     #[effect(view)]
     CancelAccountForm,
@@ -234,6 +237,7 @@ pub(crate) fn answer(
             model.command(AccountViewCommand::Reauthenticate(account));
         }
         AccountsEffect::SaveAccountForm => model.command(AccountViewCommand::Submit),
+        AccountsEffect::ConnectGoogleMail => model.connect_google_mail()?,
         AccountsEffect::CancelAccountForm => model.command(AccountViewCommand::Cancel),
         AccountsEffect::SaveNewPassword => {
             model.command(AccountViewCommand::SubmitReauthentication);
@@ -531,6 +535,7 @@ pub enum AccountViewCommand {
     Edit(String),
     Reauthenticate(String),
     Submit,
+    SubmitGoogleMail,
     Cancel,
     SubmitReauthentication,
     CancelReauthentication,
@@ -926,6 +931,20 @@ impl AccountsPane {
         self.changed = true;
     }
 
+    fn connect_google_mail(&mut self) -> Result<(), String> {
+        if !self
+            .sign_in
+            .as_ref()
+            .is_some_and(cloud_signin::SignInFlow::can_request_google_mail)
+        {
+            return Err(
+                "Open the Google account sign-in form before requesting Gmail access".into(),
+            );
+        }
+        self.command(AccountViewCommand::SubmitGoogleMail);
+        Ok(())
+    }
+
     /// Persist a completed sign-in: the sealed grant first, then the
     /// account metadata, journaled like every other account mutation.
     fn save_signed_in(
@@ -965,7 +984,23 @@ impl AccountsPane {
             }
             merge_config(&mut stored.config, serde_json::Value::Object(identity));
         }
-        Self::commit_account(account_root, stored, Some(&completed.secret))?;
+        let mut accounts = vec![(stored, Some(&completed.secret))];
+        if let Some(mail) = &completed.mail {
+            let mut mail = mail.clone();
+            if let Some(existing) = shared.get(&mail.id) {
+                if existing.type_id.as_str() != "email" {
+                    return Err("the Gmail identity belongs to another account type".into());
+                }
+                let mut config = mail.config.clone();
+                if let Some(name) = existing.config.get("display_name") {
+                    merge_config(&mut config, serde_json::json!({"display_name": name}));
+                }
+                mail = existing.clone();
+                merge_config(&mut mail.config, config);
+            }
+            accounts.push((mail, Some(&completed.secret)));
+        }
+        Self::commit_accounts(account_root, accounts)?;
         Ok(id)
     }
 
@@ -1070,6 +1105,12 @@ impl AccountsPane {
             }
             Some(AccountViewCommand::Edit(id)) => self.open_edit(&id),
             Some(AccountViewCommand::Reauthenticate(id)) => self.open_reauthentication(id),
+            Some(AccountViewCommand::SubmitGoogleMail) => {
+                if let Some(flow) = self.sign_in.as_mut() {
+                    flow.submit_with_google_mail();
+                }
+                self.changed = true;
+            }
             Some(AccountViewCommand::Submit) if self.sign_in.is_some() => {
                 if let Some(flow) = self.sign_in.as_mut() {
                     flow.submit();
@@ -1107,6 +1148,16 @@ impl AccountsPane {
             }
             return;
         }
+        if let Some(account) = stored.as_ref()
+            && account.type_id.as_str() == "email"
+            && account.config_as::<AccountConfig>().is_some_and(|config| {
+                config.auth == accounts::email::AuthMethod::OAuth
+                    && config.imap_host == "imap.gmail.com"
+            })
+        {
+            self.open_sign_in(AccountKind::Mail, Some(account));
+            return;
+        }
         if let Some(account) = stored
             && let Some(kind) = AccountKind::from_type_id(account.type_id.as_str())
             && kind.signs_in()
@@ -1130,31 +1181,21 @@ impl AccountsPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut panel: Vec<El> = Vec::new();
+        let mut panel: Vec<SettingsSection> = Vec::new();
 
-        let mut intro: Vec<El> = Vec::new();
-        intro.push(Box::new(
-            Text::new(&t("accounts-intro")).with_role(ui::TextRole::Caption),
-        ));
+        let mut intro: Vec<Item> = vec![note(&t("accounts-intro"))];
         if self.vault.custody() == accounts::SecretCustody::LocalFile {
-            intro.push(caption(&t("accounts-vault-local")));
+            intro.push(note(&t("accounts-vault-local")));
         }
         if self.is_sample {
             // Be honest that the visible rows are an illustration, not real
             // connected accounts — the store is empty until you add one.
-            intro.push(caption(&t("accounts-empty-sample")));
+            intro.push(note(&t("accounts-empty-sample")));
         } else if self.dir.is_empty() {
             // The live empty state: honest, no fabricated rows.
-            intro.push(caption(&t("accounts-empty")));
+            intro.push(note(&t("accounts-empty")));
         }
-        let mut introduction = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(ui::tokens::Spacing::BASE.s2);
-        for line in intro {
-            introduction = introduction.push(line);
-        }
-        panel.push(Box::new(introduction));
+        panel.push(untitled(rows(intro)));
 
         if let Some(flow) = &self.sign_in {
             panel.push(flow.card(&|button, effect| self.bound(button, effect)));
@@ -1182,9 +1223,9 @@ impl AccountsPane {
         crate::widgets::cards(panel)
     }
 
-    fn browser_identity_card(&self) -> El {
+    fn browser_identity_card(&self) -> SettingsSection {
         let store = self.account_root.store();
-        let mut body = vec![caption(&t("accounts-browser-identity-about"))];
+        let mut body = vec![note(&t("accounts-browser-identity-about"))];
         for account in store.list(&accounts::person::TILO_IDENTITY_TYPE.into()) {
             let id = account.id.as_str().to_owned();
             let toggle = if account.enabled {
@@ -1192,38 +1233,43 @@ impl AccountsPane {
             } else {
                 "accounts-browser-identity-show"
             };
-            body.push(setting_row(
-                &account.display_name,
-                Box::new(self.bound(
-                    Button::new(
-                        &format!("settings.browser-identity.toggle:{id}"),
-                        &t(toggle),
-                    ),
-                    AccountsEffect::SetBrowserIdentityEnabled {
-                        account: id.clone(),
-                        enabled: !account.enabled,
-                    },
-                )),
-            ));
-            if let Some(origin) = account
-                .config
-                .get("origin")
-                .and_then(serde_json::Value::as_str)
-            {
-                body.push(caption(origin));
-            }
-            body.push(Box::new(self.bound(
+            let toggle = self.bound(
+                Button::new(
+                    &format!("settings.browser-identity.toggle:{id}"),
+                    &t(toggle),
+                ),
+                AccountsEffect::SetBrowserIdentityEnabled {
+                    account: id.clone(),
+                    enabled: !account.enabled,
+                },
+            );
+            let remove = self.bound(
                 Button::new(
                     &format!("settings.browser-identity.remove:{id}"),
                     &t("accounts-browser-identity-remove"),
                 ),
                 AccountsEffect::RemoveBrowserIdentity { account: id },
-            )));
+            );
+            let actions: El = Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(toggle))
+                    .push(Box::new(remove)),
+            );
+            let origin = account
+                .config
+                .get("origin")
+                .and_then(serde_json::Value::as_str);
+            body.push(match origin {
+                Some(origin) => setting_row_described(&account.display_name, origin, actions),
+                None => setting_row(&account.display_name, actions),
+            });
         }
         card(&t("accounts-browser-identity-title"), rows(body))
     }
 
-    fn mail_card(&self) -> El {
+    fn mail_card(&self) -> SettingsSection {
         let title = kind_shown(AccountKind::Mail);
         let add = t("accounts-add");
         let add_btn: El = Box::new(self.bound(
@@ -1237,7 +1283,7 @@ impl AccountsPane {
         card_with_action(&title, add_btn, body)
     }
 
-    fn kind_card(&self, kind: AccountKind) -> El {
+    fn kind_card(&self, kind: AccountKind) -> SettingsSection {
         let views = self.dir.views_of(kind);
         let add = t("accounts-add");
         card_with_action(
@@ -1252,9 +1298,9 @@ impl AccountsPane {
         )
     }
 
-    fn kind_body(&self, kind: AccountKind, views: &[AccountView]) -> El {
-        let mut body: Vec<El> = if views.is_empty() {
-            vec![caption(&t_args(
+    fn kind_body(&self, kind: AccountKind, views: &[AccountView]) -> Body {
+        let mut body: Vec<Item> = if views.is_empty() {
+            vec![note(&t_args(
                 "accounts-kind-empty",
                 &[("kind", kind_shown(kind).into())],
             ))]
@@ -1264,9 +1310,9 @@ impl AccountsPane {
         if kind.is_cloud_storage()
             && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.custodian)
         {
-            body.push(caption(&reason));
+            body.push(note(&reason));
         } else if kind.best_effort() {
-            body.push(caption(&t("accounts-best-effort-icloud")));
+            body.push(note(&t("accounts-best-effort-icloud")));
         }
         rows(body)
     }
@@ -1276,11 +1322,7 @@ impl AccountsPane {
     ///
     /// Sample rows report an "Example" status; they do not represent a live
     /// connection.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the full account-row action hierarchy is kept together for auditability"
-    )]
-    fn account_row(&self, view: &AccountView) -> El {
+    fn account_row(&self, view: &AccountView) -> Item {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);
         let mount = self.cloud.mount(&view.id);
@@ -1302,33 +1344,22 @@ impl AccountsPane {
             )
         };
 
-        // Keep identity and health together; maintenance actions get their own
-        // row so narrow layouts remain legible and touch targets never crush
-        // the connection summary.
-        let mut top = Row::new()
-            .push(Box::new(
-                Text::new(&view.label).with_role(ui::TextRole::Body),
-            ))
-            .push(Box::new(Spacer::new()));
+        // Identity and health lead; what is worth knowing hugs the name and
+        // the maintenance actions sit under the text, so narrow layouts stay
+        // legible and touch targets never crush the connection summary.
+        let mut marks: Vec<El> = Vec::new();
         if view.kind.best_effort() {
-            top = top.push(semantic_status_pill(
+            marks.push(semantic_status_pill(
                 &t("accounts-best-effort"),
                 StatusTone::Neutral,
             ));
         }
-        let top = top.push(semantic_status_pill(&status, status_tone));
+        marks.push(semantic_status_pill(&status, status_tone));
 
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(top))
-            .push(Box::new(
-                Text::new(&view.summary)
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-            ));
+        let mut details = vec![view.summary.clone()];
+        let mut actions: Vec<Button> = Vec::new();
         if !self.is_sample {
-            let sync_line = runtime.map_or_else(
+            details.push(runtime.map_or_else(
                 || t("accounts-sync-none"),
                 |status| {
                     let when = status
@@ -1342,11 +1373,6 @@ impl AccountsPane {
                         None => t_args("accounts-sync-when", &[("when", when.into())]),
                     }
                 },
-            );
-            column = column.push(Box::new(
-                Text::new(&sync_line)
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
             ));
             let needs_sign_in = runtime.is_some_and(|status| {
                 status.health == accounts::AccountSyncHealth::NeedsAuthentication
@@ -1363,55 +1389,47 @@ impl AccountsPane {
                 t("accounts-verify")
             };
             let remove = t("accounts-remove");
-            let mut primary_actions = Row::new();
             if !view.kind.is_cloud_storage() {
-                primary_actions = primary_actions.push(Box::new(self.bound(
+                actions.push(self.bound(
                     Button::new(&format!("settings.accounts.edit.{}", view.id), &edit),
                     AccountsEffect::EditAccount {
                         account: view.id.clone(),
                     },
-                )));
-            }
-            let primary_actions = primary_actions
-                .push(Box::new(self.bound(
-                    Button::new(
-                        &format!("settings.accounts.reauth.{}", view.id),
-                        &reauth_label,
-                    ),
-                    AccountsEffect::SignInAgain {
-                        account: view.id.clone(),
-                    },
-                )))
-                .push(Box::new(Spacer::new()));
-            let secondary_actions = Row::new()
-                .push(Box::new(self.bound(
-                    Button::new(&format!("settings.accounts.test.{}", view.id), &check),
-                    AccountsEffect::TestAccount {
-                        account: view.id.clone(),
-                    },
-                )))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    self.bound(
-                        Button::new(&format!("settings.accounts.remove.{}", view.id), &remove)
-                            .role(ui::widget::ButtonRole::Destructive),
-                        AccountsEffect::RemoveAccount {
-                            account: view.id.clone(),
-                        },
-                    ),
                 ));
-            column = column
-                .push(Box::new(primary_actions))
-                .push(Box::new(secondary_actions));
+            }
+            actions.push(self.bound(
+                Button::new(
+                    &format!("settings.accounts.reauth.{}", view.id),
+                    &reauth_label,
+                ),
+                AccountsEffect::SignInAgain {
+                    account: view.id.clone(),
+                },
+            ));
+            actions.push(self.bound(
+                Button::new(&format!("settings.accounts.test.{}", view.id), &check),
+                AccountsEffect::TestAccount {
+                    account: view.id.clone(),
+                },
+            ));
+            actions.push(
+                self.bound(
+                    Button::new(&format!("settings.accounts.remove.{}", view.id), &remove)
+                        .role(ui::widget::ButtonRole::Destructive),
+                    AccountsEffect::RemoveAccount {
+                        account: view.id.clone(),
+                    },
+                ),
+            );
             if let Some(mount) = mount {
-                column = column.push(Box::new(self.sync_actions(&view.id, mount.paused)));
+                actions.extend(self.sync_actions(&view.id, mount.paused));
             }
         }
-        Box::new(column)
+        item_row(&view.label, marks, &details, actions)
     }
 
     /// Sync now, and pause or resume, for a mounted file account.
-    fn sync_actions(&self, id: &str, paused: bool) -> Row {
+    fn sync_actions(&self, id: &str, paused: bool) -> [Button; 2] {
         let (toggle_id, toggle_label, toggle) = if paused {
             (
                 format!("settings.accounts.resume-sync.{id}"),
@@ -1429,8 +1447,8 @@ impl AccountsPane {
                 },
             )
         };
-        Row::new()
-            .push(Box::new(self.bound(
+        [
+            self.bound(
                 Button::new(
                     &format!("settings.accounts.sync-now.{id}"),
                     &t("accounts-sync-now"),
@@ -1438,11 +1456,9 @@ impl AccountsPane {
                 AccountsEffect::SyncNow {
                     account: id.to_owned(),
                 },
-            )))
-            .push(Box::new(
-                self.bound(Button::new(&toggle_id, &toggle_label), toggle),
-            ))
-            .push(Box::new(Spacer::new()))
+            ),
+            self.bound(Button::new(&toggle_id, &toggle_label), toggle),
+        ]
     }
 
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
@@ -1450,7 +1466,7 @@ impl AccountsPane {
         clippy::too_many_lines,
         reason = "the form declares every credential field and accessibility label in one reviewable surface"
     )]
-    fn account_form(&self, kind: AccountKind) -> El {
+    fn account_form(&self, kind: AccountKind) -> SettingsSection {
         let display_name = t("accounts-display-name");
         let identity_name = if kind == AccountKind::Mail {
             t("accounts-email")
@@ -1526,6 +1542,7 @@ impl AccountsPane {
                 AccountsEffect::CancelAccountForm,
             )))
             .push(Box::new(Spacer::new()));
+        let buttons = row(Box::new(buttons));
         let title = t_args(
             if self.form_account_id.is_some() {
                 "accounts-form-edit"
@@ -1538,31 +1555,31 @@ impl AccountsPane {
             &title,
             rows({
                 let mut fields = vec![
-                    setting_row(&display_name, Box::new(name)),
-                    setting_row(&identity_name, Box::new(identity)),
+                    field_row(&display_name, Box::new(name)),
+                    field_row(&identity_name, Box::new(identity)),
                 ];
                 if kind == AccountKind::Mail {
-                    fields.push(setting_row(&login_name, Box::new(user)));
+                    fields.push(field_row(&login_name, Box::new(user)));
                 } else {
-                    fields.push(setting_row(&server_label, Box::new(server)));
+                    fields.push(field_row(&server_label, Box::new(server)));
                 }
                 if kind != AccountKind::Nextcloud {
-                    fields.push(setting_row(&password_label, Box::new(password)));
+                    fields.push(field_row(&password_label, Box::new(password)));
                 }
                 if let Some(error) = &self.form_error {
-                    fields.push(caption(&t_args(
+                    fields.push(note(&t_args(
                         "accounts-save-error",
                         &[("error", error.as_str().into())],
                     )));
                 }
-                fields.push(caption(&t("accounts-form-caption")));
-                fields.push(Box::new(buttons));
+                fields.push(note(&t("accounts-form-caption")));
+                fields.push(buttons);
                 fields
             }),
         )
     }
 
-    fn reauth_form(&self, id: &str) -> El {
+    fn reauth_form(&self, id: &str) -> SettingsSection {
         let password_label = t("accounts-reauth-password");
         let save = t("accounts-reauth-save");
         let cancel = t("accounts-cancel");
@@ -1574,16 +1591,16 @@ impl AccountsPane {
             .with_placeholder(&password_label);
         let mut fields = vec![
             value_row(&t("accounts-reauth-account"), id),
-            setting_row(&t("accounts-reauth-credential"), Box::new(password)),
-            caption(&t("accounts-reauth-caption")),
+            field_row(&t("accounts-reauth-credential"), Box::new(password)),
+            note(&t("accounts-reauth-caption")),
         ];
         if let Some(error) = &self.reauth_error {
-            fields.push(caption(&t_args(
+            fields.push(note(&t_args(
                 "accounts-reauth-error",
                 &[("error", error.as_str().into())],
             )));
         }
-        fields.push(Box::new(
+        fields.push(row(Box::new(
             Row::new()
                 .push(Box::new(self.bound(
                     Button::new("settings.accounts.reauth.save", &save),
@@ -1594,7 +1611,7 @@ impl AccountsPane {
                     AccountsEffect::CancelNewPassword,
                 )))
                 .push(Box::new(Spacer::new())),
-        ));
+        )));
         card(&t("accounts-reauth-title"), rows(fields))
     }
 
@@ -1810,32 +1827,45 @@ impl AccountsPane {
         stored: accounts::Account,
         secret: Option<&accounts::Secret>,
     ) -> Result<(), String> {
-        let id = stored.id.clone();
+        Self::commit_accounts(account_root, vec![(stored, secret)])
+    }
+
+    /// Save related service accounts in one metadata mutation, with credentials
+    /// durable first and compensated together on failure.
+    fn commit_accounts(
+        account_root: &AccountRoot,
+        prepared: Vec<(accounts::Account, Option<&accounts::Secret>)>,
+    ) -> Result<(), String> {
         let mut shared = account_root.store();
         let original_store = shared.clone();
         let original_statuses = account_root.statuses();
         account_root.begin_mutation(&original_store, &original_statuses)?;
-        // Persist credential custody first. If metadata then fails, the only
-        // residue is an unreachable encrypted vault entry, never an account
-        // that applications try to use without its credential.
-        let mut previous_secret = None;
-        if let Some(prepared_secret) = secret {
-            let mut vault = account_root.vault();
-            previous_secret = Some(vault.get(&id));
-            vault.put(&id, prepared_secret);
-            if let Err(error) = vault.try_save() {
-                let _ = account_root.finish_mutation();
-                return Err(format!("could not save credential: {error}"));
+        let mut vault = account_root.vault();
+        let mut previous_secrets = Vec::new();
+        for (stored, secret) in prepared {
+            if let Some(secret) = secret {
+                previous_secrets.push((stored.id.clone(), vault.get(&stored.id)));
+                vault.put(&stored.id, secret);
             }
+            shared.upsert(stored);
         }
-        shared.upsert(stored);
+        if !previous_secrets.is_empty()
+            && let Err(error) = vault.try_save()
+        {
+            let _ = account_root.finish_mutation();
+            return Err(format!("could not save credential: {error}"));
+        }
         if let Err(e) = account_root.save_store(&shared) {
-            if let Some(previous) = previous_secret {
-                let mut vault = account_root.vault();
-                match previous {
-                    Some(secret) => vault.put(&id, &secret),
-                    None => {
-                        vault.remove(&id);
+            // Live records publish each edit before projecting to disk. Restore
+            // that metadata too, and retain the journal if either restoration fails.
+            let metadata_rollback = account_root.save_store(&original_store);
+            if !previous_secrets.is_empty() {
+                for (id, previous) in previous_secrets {
+                    match previous {
+                        Some(secret) => vault.put(&id, &secret),
+                        None => {
+                            vault.remove(&id);
+                        }
                     }
                 }
                 if let Err(rollback) = vault.try_save() {
@@ -1843,6 +1873,11 @@ impl AccountsPane {
                         "could not persist account: {e}; credential rollback also failed: {rollback}"
                     ));
                 }
+            }
+            if let Err(rollback) = metadata_rollback {
+                return Err(format!(
+                    "could not persist account: {e}; metadata rollback also failed: {rollback}"
+                ));
             }
             let _ = account_root.finish_mutation();
             warn!(target: "tilo::settings", op = "account_store_save", error = %e, "failed to persist account metadata");

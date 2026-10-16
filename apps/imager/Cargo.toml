@@ -26,7 +26,9 @@ host-media-writer = []
 flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../crates/platform/tilo-lock" }
 install-profile-model = { path = "../../crates/session/install-profile-model" }
+staging-handoff-model = { path = "../staging-handoff-model" }
 uuid.workspace = true
 base64.workspace = true
 crc32fast.workspace = true
@@ -65,6 +67,7 @@ block-devices = { path = "../../crates/system/block-devices" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 workspace-hack = { version = "0.1" }
+tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

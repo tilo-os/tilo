@@ -91,6 +91,9 @@ pub struct CaptureScene {
     pub person_devices: Vec<settings_store::person_displays::PersonDevice>,
     /// Synthetic attached keyboards; captures never discover the real host.
     pub input_hardware: Option<settings_store::hardware::InputHardwareSnapshot>,
+    /// Stand-in storage summaries of the person's devices, for the
+    /// storage capture.
+    pub storage_devices: Vec<crate::panes::storage::DeviceResidency>,
 }
 
 /// Prepare `fixture`'s capture: every capture shows the sample accounts.
@@ -115,7 +118,96 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         } else {
             Vec::new()
         },
+        storage_devices: if fixture.scenario() == Some(Category::Storage.slug()) {
+            storage_fixture()
+        } else {
+            Vec::new()
+        },
     });
+}
+
+/// Three devices of one person: a laptop holding work nothing else has
+/// yet, a desktop that keeps one workspace and caches another, and a home
+/// server that holds copies of both.
+pub(crate) fn storage_fixture() -> Vec<crate::panes::storage::DeviceResidency> {
+    use crate::panes::storage::DeviceResidency;
+    use runtime_fs::storage::{ResidencySplit, ResidencySummary, WorkspaceResidency};
+    const MB: u64 = 1_000_000;
+    let workspace = |name: &str, kept_here, split| WorkspaceResidency {
+        workspace: name.into(),
+        kept_here,
+        split,
+    };
+    let device = |key: &str, label: &str, current, workspaces| DeviceResidency {
+        key: key.into(),
+        label: label.into(),
+        current,
+        summary: ResidencySummary { workspaces },
+    };
+    vec![
+        device(
+            "fixture-laptop",
+            "Laptop",
+            true,
+            vec![
+                workspace(
+                    "Thesis",
+                    false,
+                    ResidencySplit {
+                        replicated_bytes: 820 * MB,
+                        only_here_bytes: 48 * MB,
+                        only_here_files: 3,
+                        cache_bytes: 1_260 * MB,
+                        ..ResidencySplit::default()
+                    },
+                ),
+                workspace(
+                    "Family photos",
+                    true,
+                    ResidencySplit {
+                        pinned_bytes: 6_400 * MB,
+                        ..ResidencySplit::default()
+                    },
+                ),
+            ],
+        ),
+        device(
+            "fixture-desktop",
+            "Desktop",
+            false,
+            vec![workspace(
+                "Thesis",
+                true,
+                ResidencySplit {
+                    pinned_bytes: 2_080 * MB,
+                    ..ResidencySplit::default()
+                },
+            )],
+        ),
+        device(
+            "fixture-server",
+            "Home server",
+            false,
+            vec![
+                workspace(
+                    "Thesis",
+                    false,
+                    ResidencySplit {
+                        replicated_bytes: 2_080 * MB,
+                        ..ResidencySplit::default()
+                    },
+                ),
+                workspace(
+                    "Family photos",
+                    false,
+                    ResidencySplit {
+                        replicated_bytes: 6_400 * MB,
+                        ..ResidencySplit::default()
+                    },
+                ),
+            ],
+        ),
+    ]
 }
 
 fn codec_status(scenario: Option<&str>) -> Option<crate::codec_pack::CodecPackStatus> {
@@ -221,7 +313,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         None => Staged::Pane(Category::Appearance),
         Some(DEVICE_DISPLAYS) => Staged::Pane(Category::Displays),
         Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
-            Staged::Pane(Category::MouseKeyboard)
+            Staged::Pane(Category::Keyboard)
         }
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),

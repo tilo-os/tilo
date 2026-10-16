@@ -113,7 +113,8 @@ fn content_type(path: &str) -> Option<&'static str> {
         "otf" => "font/otf",
         "ttc" => "font/collection",
         "woff2" => "font/woff2",
-        "txt" | "md" => "text/plain; charset=utf-8",
+        // `ftl`: the entry pages' arrival lines (`locales/`).
+        "txt" | "md" | "ftl" => "text/plain; charset=utf-8",
         _ => return None,
     })
 }
@@ -159,12 +160,29 @@ impl Service {
     }
 
     /// A room by the service's id, or by its room uuid as links name it.
+    /// Only for what anyone holding a guest link may do (redeem a ticket);
+    /// the owner's routes go through [`Self::owned_room`].
     fn room(&self, id: &str) -> Option<Arc<Room>> {
         let rooms = self.rooms.lock().ok()?;
         rooms
             .get(id)
             .or_else(|| rooms.values().find(|room| room.uuid == id))
             .cloned()
+    }
+
+    /// The room with service id `id`, when `query` carries its owner key:
+    /// the capability the `POST /rooms` answer hands the room's creator for
+    /// minting invitations and watching members. Both names that route to
+    /// a room are public (the id is its hostname, the uuid is in every
+    /// guest link), so neither alone opens these routes, and the uuid not
+    /// at all. A missing or wrong key reads as no room, so the routes are
+    /// no oracle for which rooms are live.
+    fn owned_room(&self, id: &str, query: Option<&str>) -> Option<Arc<Room>> {
+        let presented = query?
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("key="))?;
+        let room = self.rooms.lock().ok()?.get(id).cloned()?;
+        room.owned_by(presented).then_some(room)
     }
 
     fn free_port(&self) -> Option<u16> {
@@ -307,11 +325,19 @@ impl Service {
             }
             expiring.stop(child).await;
         });
-        // The page's ticket, then the first guest's.
+        self.created(&room)
+    }
+
+    /// The `POST /rooms` answer for a room just started: the page's ticket,
+    /// the first guest's link, and the owner's URLs, which carry the room's
+    /// owner key (a query rather than a header because an `EventSource`
+    /// cannot send headers). Pages use them as given.
+    fn created(&self, room: &Room) -> Result<serde_json::Value> {
         let limit = self.config.max_guests.saturating_add(1);
         let page = room.ticket(limit).context("no ticket for the page")?;
         let guest = room.ticket(limit).context("no ticket for a guest")?;
         let api = &self.config.public_api;
+        let key = room.owner_key();
         Ok(serde_json::json!({
             "roomId": room.id,
             "origin": room.origin,
@@ -319,10 +345,10 @@ impl Service {
             "userPublicKey": room.user_public_key,
             "expiresAt": room.expires_at_ms,
             "pageTicket": page,
-            "joinUrl": self.join_url(&room, &guest, None)?,
+            "joinUrl": self.join_url(room, &guest, None)?,
             "admit": format!("{api}/rooms/{}/admit", room.id),
-            "events": format!("{api}/rooms/{}/events", room.id),
-            "invitations": format!("{api}/rooms/{}/invitations", room.id),
+            "events": format!("{api}/rooms/{}/events?key={key}", room.id),
+            "invitations": format!("{api}/rooms/{}/invitations?key={key}", room.id),
             "app": format!("{api}/app/"),
         }))
     }
@@ -680,6 +706,7 @@ impl Service {
             _ => request,
         };
         let path = request.uri().path().to_owned();
+        let query = request.uri().query().map(str::to_owned);
         let method = request.method().clone();
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
         let response = match (&method, parts.as_slice()) {
@@ -699,7 +726,12 @@ impl Service {
             (&Method::GET, ["metrics"]) => self.metrics(request.headers()).await,
             (&Method::GET, ["mode"]) => Self::json(
                 StatusCode::OK,
-                &serde_json::json!({"mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str()}),
+                &serde_json::json!({
+                    "mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str(),
+                    // Public like the web entry's version.json: which build
+                    // answers here, for drift reports from outside the cluster.
+                    "revision": ops::get().map_or(ops::UNKNOWN_REVISION, ops::Ops::revision),
+                }),
             ),
             (&Method::POST, ["errors"]) => self.client_error(request.into_body()).await,
             (&Method::POST, ["rooms"]) => match Self::paused() {
@@ -723,10 +755,9 @@ impl Service {
                     }
                 },
             },
-            (&Method::GET, ["rooms", id, "events"]) => match self.room(id) {
-                Some(room) => Self::events(&room),
-                None => Self::error(StatusCode::NOT_FOUND, "no such room"),
-            },
+            (&Method::GET, ["rooms", id, "events"]) => {
+                self.owner_route(id, query.as_deref(), None).await
+            }
             (&Method::POST, ["rooms", id, "admit"]) => {
                 let id = (*id).to_owned();
                 match Self::paused() {
@@ -734,20 +765,38 @@ impl Service {
                     None => self.admit(&id, request.into_body()).await,
                 }
             }
-            (&Method::POST, ["rooms", id, "invitations"]) => match self.room(id) {
-                None => Self::error(StatusCode::NOT_FOUND, "no such room"),
-                Some(_) if Self::paused().is_some() => Self::paused()
-                    .unwrap_or_else(|| Self::error(StatusCode::NOT_FOUND, "not found")),
-                Some(room) => {
-                    match Self::decode_or_default::<InvitationRequest>(request.into_body()).await {
-                        Err(response) => response,
-                        Ok(asked) => self.invitation(&room, asked.record.as_deref()),
-                    }
-                }
-            },
+            (&Method::POST, ["rooms", id, "invitations"]) => {
+                let id = (*id).to_owned();
+                self.owner_route(&id, query.as_deref(), Some(request.into_body()))
+                    .await
+            }
             _ => Self::error(StatusCode::NOT_FOUND, "not found"),
         };
         self.finish(origin.as_deref(), response)
+    }
+
+    /// A room's owner routes, open only with its owner key (see
+    /// [`Self::owned_room`]): with an `invitation` body, one more guest's
+    /// link; without, the member stream.
+    async fn owner_route(
+        &self,
+        id: &str,
+        query: Option<&str>,
+        invitation: Option<hyper::body::Incoming>,
+    ) -> Response<Body> {
+        let Some(room) = self.owned_room(id, query) else {
+            return Self::error(StatusCode::NOT_FOUND, "no such room");
+        };
+        let Some(body) = invitation else {
+            return Self::events(&room);
+        };
+        if let Some(refused) = Self::paused() {
+            return refused;
+        }
+        match Self::decode_or_default::<InvitationRequest>(body).await {
+            Err(response) => response,
+            Ok(asked) => self.invitation(&room, asked.record.as_deref()),
+        }
     }
 
     /// CORS, and for the persistent room the pages allowed to frame it.
@@ -765,6 +814,17 @@ impl Service {
         }
         response
     }
+}
+
+/// Serves one API connection.
+async fn serve(service: Arc<Service>, socket: tokio::net::TcpStream, peer: SocketAddr) {
+    let handler = hyper::service::service_fn(move |request| {
+        let service = Arc::clone(&service);
+        async move { Ok::<_, Infallible>(service.handle(peer, request).await) }
+    });
+    let _ = hyper::server::conn::http1::Builder::new()
+        .serve_connection(hyper_util::rt::TokioIo::new(socket), handler)
+        .await;
 }
 
 #[tokio::main]
@@ -788,7 +848,13 @@ async fn main() -> Result<()> {
         }
         None => Mode::Normal,
     };
-    ops::install(config.state.clone(), initial);
+    let ops = ops::install(config.state.clone(), initial);
+    if let Some(settings) = &config.persistent {
+        ops.set_caps(
+            u64::try_from(config.max_guests).unwrap_or(u64::MAX),
+            u64::try_from(settings.max_spectators).unwrap_or(u64::MAX),
+        );
+    }
     let identity = tls::HostIdentity::generate()?;
     let api = TcpListener::bind(config.api).await?;
     let persistent = match &config.persistent {
@@ -842,16 +908,7 @@ async fn main() -> Result<()> {
             _ = terminate.recv() => break,
             _ = tokio::signal::ctrl_c() => break,
         };
-        let service = Arc::clone(&service);
-        tokio::spawn(async move {
-            let handler = hyper::service::service_fn(move |request| {
-                let service = Arc::clone(&service);
-                async move { Ok::<_, Infallible>(service.handle(peer, request).await) }
-            });
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(hyper_util::rt::TokioIo::new(socket), handler)
-                .await;
-        });
+        tokio::spawn(serve(Arc::clone(&service), socket, peer));
     }
     eprintln!("tilo-room-service: stopping");
     if let Some(persistent) = &service.persistent {
@@ -862,11 +919,24 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Service, guest_link};
+    use super::{Service, content_type, guest_link};
     use tilo_reference::link::{Link, Mode, WebEntries, WebEntry};
+
+    mod owner_routes;
 
     const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
     const ENTRY: &str = "https://rooms.example/open/";
+
+    #[test]
+    fn the_arrival_screens_lines_are_served_as_text() {
+        // The entry pages fetch `locales/<locale>.ftl`; an unknown type is a 404.
+        for locale in ["en-US", "de-DE"] {
+            assert_eq!(
+                content_type(&format!("locales/{locale}.ftl")),
+                Some("text/plain; charset=utf-8")
+            );
+        }
+    }
 
     #[test]
     fn a_guest_link_is_a_route_and_a_ticket() {

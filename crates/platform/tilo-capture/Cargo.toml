@@ -26,6 +26,8 @@ scanner = ["dep:os-actions"]
 test-support = []
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../tilo-lock" }
+tilo-files = { path = "../tilo-files" }
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 thiserror.workspace = true
 

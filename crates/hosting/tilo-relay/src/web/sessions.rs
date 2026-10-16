@@ -28,6 +28,7 @@ use crate::web::protocol::{
     Cursor, EventsPage, MAX_PAGE_BYTES, MAX_PAGE_ENVELOPES, SessionChallenge, SessionGrant,
     envelope_bytes,
 };
+use tilo_lock::MutexRecover as _;
 
 /// A handshake must be finished within this.
 const HANDSHAKE_TTL: Duration = Duration::from_secs(30);
@@ -93,9 +94,7 @@ pub(crate) struct Session {
 
 impl Session {
     fn log(&self) -> MutexGuard<'_, Log> {
-        self.log
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.log.lock_recover()
     }
 
     fn close(&self) {
@@ -144,9 +143,7 @@ pub(crate) struct Sessions {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 impl Sessions {
@@ -277,7 +274,10 @@ impl Sessions {
                         Admit::Closed => return,
                         Admit::Full(back) => envelope = back,
                     }
+                    let waiting = crate::timing::start();
                     drained.await;
+                    // A reader this far behind holds its peer loop's writes.
+                    crate::timing::window("web.log_full_wait", waiting);
                 }
                 pumped.changed.notify_waiters();
             }

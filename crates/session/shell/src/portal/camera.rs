@@ -7,14 +7,13 @@
 //! surface. It never guesses a security capability from translated display
 //! text; microphone access has its own PipeWire/portal path.
 
+use super::reply::{Ended, OrFail, Outcome, Reply, Results, answer};
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::DispatchResult2;
 #[cfg(target_os = "linux")]
@@ -140,61 +139,60 @@ impl AccessBackend {
         hdr: &Header<'_>,
         connection: &Connection,
         request: AccessDialogRequest,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let AccessDialogRequest {
-            handle,
-            app_id,
-            parent_window,
-            title,
-            body,
-        } = request;
-        tracing::debug!(
-            "Access.AccessDialog: app={} title={:?} body={:?}",
-            app_id,
-            title,
-            body
-        );
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        if lockdown::current_policy().disable_camera {
-            return (1, HashMap::new());
-        }
-        let request = handle.as_str().to_owned();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancellation = cancelled.clone();
-        let prompts = self.ctx.prompts.clone();
-        let cancellation_request = request.clone();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id: auth.caller.app_id.clone(),
-            resource: LifecycleResource::Prompt,
-        };
-        if !matches!(
+    ) -> Reply {
+        answer(async move {
+            let AccessDialogRequest {
+                handle,
+                app_id,
+                parent_window,
+                title,
+                body,
+            } = request;
+            tracing::debug!(
+                "Access.AccessDialog: app={} title={:?} body={:?}",
+                app_id,
+                title,
+                body
+            );
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window))
+                .await
+                .or_fail()?;
+            if lockdown::current_policy().disable_camera {
+                return Err(Ended::Cancelled);
+            }
+            let request = handle.as_str().to_owned();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancellation = cancelled.clone();
+            let prompts = self.ctx.prompts.clone();
+            let cancellation_request = request.clone();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id: auth.caller.app_id.clone(),
+                resource: LifecycleResource::Prompt,
+            };
+            let cancel = move |_: &LifecycleEntry| {
+                cancellation.store(true, Ordering::Release);
+                prompts.cancel_request(&cancellation_request);
+            };
             self.lifecycle
-                .register_request(connection, &request, entry, move |_| {
-                    cancellation.store(true, Ordering::Release);
-                    prompts.cancel_request(&cancellation_request);
+                .with_request(connection, &request, entry, cancel, async {
+                    let (kind, cap_template) = camera_capability();
+                    let outcome = flow::resolve_for_request(
+                        &self.ctx,
+                        auth.caller,
+                        kind,
+                        cap_template,
+                        request.clone(),
+                    )
+                    .await;
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(Ended::Cancelled);
+                    }
+                    access_outcome(outcome)
                 })
-                .await,
-            Ok(true)
-        ) {
-            return (2, HashMap::new());
-        }
-        let (kind, cap_template) = camera_capability();
-        let outcome =
-            flow::resolve_for_request(&self.ctx, auth.caller, kind, cap_template, request.clone())
-                .await;
-        self.lifecycle
-            .complete_request_object(connection, &request)
-            .await;
-        if cancelled.load(Ordering::Acquire) {
-            return (1, HashMap::new());
-        }
-        outcome_to_access_response(outcome)
+                .await
+        })
+        .await
     }
 }
 
@@ -207,10 +205,12 @@ pub(super) fn camera_capability() -> (CapabilityKind, Capability) {
     )
 }
 
-fn outcome_to_access_response(outcome: PromptOutcome) -> (u32, HashMap<String, OwnedValue>) {
-    let results: HashMap<String, OwnedValue> = HashMap::new();
-    let code = u32::from(!outcome.is_allowed());
-    (code, results)
+fn access_outcome(outcome: PromptOutcome) -> Outcome {
+    if outcome.is_allowed() {
+        Ok(Results::new())
+    } else {
+        Err(Ended::Cancelled)
+    }
 }
 
 #[cfg(test)]
@@ -229,13 +229,14 @@ mod tests {
         // these assertions: `camera_capability` takes no UI text, so nothing can change it.)
         // Phase `access_allow_returns_zero`.
         {
-            let (code, results) = outcome_to_access_response(PromptOutcome::AllowOnce);
+            let (code, results) =
+                crate::portal::reply::reply(access_outcome(PromptOutcome::AllowOnce));
             assert_eq!(code, 0);
             assert!(results.is_empty());
         }
         // Phase `access_deny_returns_one`.
         {
-            let (code, _) = outcome_to_access_response(PromptOutcome::Deny);
+            let (code, _) = crate::portal::reply::reply(access_outcome(PromptOutcome::Deny));
             assert_eq!(code, 1);
         }
     }

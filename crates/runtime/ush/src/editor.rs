@@ -127,9 +127,11 @@ impl Prepared {
                         .map_err(io::Error::other)?;
                     socket.send(&process_binding::MAGIC)?;
                     socket.send(&challenge)?;
-                    // SAFETY: geteuid reads the current kernel uid without preconditions.
-                    let peer =
-                        process_binding::receive(&*socket, &challenge, unsafe { libc::geteuid() })?;
+                    let peer = process_binding::receive(
+                        &*socket,
+                        &challenge,
+                        rustix::process::geteuid().as_raw(),
+                    )?;
                     if !peer.belongs_to(launch, start)
                         || bounded_binary(Path::new(&format!("/proc/{}/exe", peer.pid())))?
                             != self.qualified_bash

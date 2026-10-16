@@ -24,8 +24,8 @@
 //! The projection is derived from the same closure the palette uses:
 //! [`immediate`](ActionSpec::immediate) projects to zero parameters returning
 //! its pre-encoded action, and
-//! [`prompted`](ActionSpec::prompted) projects to one required
-//! [`Text`](ParamType::Text) parameter named [`PROMPTED_PARAM`] that calls the
+//! [`prompted_param`](ActionSpec::prompted_param) projects to one required
+//! [`Text`](ParamType::Text) parameter, named for what it is, that calls the
 //! app's closure. An affordance, its palette row, and an external invocation
 //! therefore run through one function and produce the same action.
 //!
@@ -255,12 +255,23 @@ impl ActionBinding<()> {
     }
 }
 
-/// The parameter name a [`prompted`](ActionSpec::prompted) spec projects its
-/// single free-text argument under.
-///
-/// Fixed rather than derived from the human prompt: the prompt is localisable
-/// display text, and an external caller addresses parameters by a stable name.
+/// The generic parameter name of an argument that is a bare value: an
+/// accessibility set-value, a content hash ([`ActionSpec::prompted_content`]),
+/// a wire `InvokeArgument::Text` before a descriptor says where it goes.
+/// An app's own prompted action names its parameter
+/// ([`ActionSpec::prompted_param`]) and callers ask [`ActionSpec::prompt_param`].
 pub const PROMPTED_PARAM: &str = "value";
+
+/// The text of an argument object that holds exactly one string, whatever it
+/// is called: what a continuation or an accessibility set-value reads of a
+/// prompted action's arguments without knowing the action's own name for it.
+pub fn sole_text_argument(arguments: &serde_json::Map<String, serde_json::Value>) -> Option<&str> {
+    let mut values = arguments.values();
+    match (values.next(), values.next()) {
+        (Some(serde_json::Value::String(text)), None) => Some(text),
+        _ => None,
+    }
+}
 
 /// Inert envelope produced when the legacy one-field palette cannot satisfy a
 /// typed contract. Hosts recognize it as a refusal; it is never registered or
@@ -792,6 +803,11 @@ impl InvocationBuilder {
     }
 }
 
+/// The facet naming the nested resource an action was addressed through,
+/// when history names the enclosing resource whose action it is
+/// ([`ActionSpec::history_context`]).
+pub const NESTED_RESOURCE_FACET: &str = "part";
+
 /// One action a resource exports to the palette.
 #[derive(Clone)]
 pub struct ActionSpec {
@@ -833,6 +849,10 @@ pub struct ActionSpec {
     /// generic edit, a group) rather than being a verb of its own. See
     /// [`ActionSpec::carrying`].
     carrier: bool,
+    /// The kind and label of the enclosing resource whose action this one
+    /// applies as, for a nested resource's action. See
+    /// [`ActionSpec::applied_as`].
+    applied_as: Option<(String, String)>,
 }
 
 /// Classifies the risk of one invocation from its bound arguments.
@@ -852,6 +872,39 @@ struct TypedActionSeed {
 }
 
 impl ActionSpec {
+    /// Mark this action as applied as the enclosing resource of kind `kind`
+    /// (labelled `label`): a nested resource (a note's rich-text body)
+    /// publishes its document actions re-encoded as the record's field
+    /// edit, so the record's surface, permissions and history decide them.
+    #[must_use]
+    pub fn applied_as(mut self, kind: impl Into<String>, label: impl Into<String>) -> Self {
+        if self.kind == OperationKind::Document {
+            self.applied_as = Some((kind.into(), label.into()));
+        }
+        self
+    }
+
+    /// The history entry of invoking this action on the resource `id`, of
+    /// kind `kind` and labelled `label`. It names that resource, of the kind
+    /// whose action the value is: for a nested resource's action, the
+    /// enclosing resource's kind and label, with the nested resource kept as
+    /// a [`NESTED_RESOURCE_FACET`] facet. Naming the nested kind made the
+    /// change claim a kind its app's surface does not describe, so every
+    /// receiver held it and the signer refused it.
+    #[must_use]
+    pub fn history_context(&self, id: &str, kind: &str, label: &str) -> crate::ActionContext {
+        match &self.applied_as {
+            Some((owner_kind, owner_label)) => {
+                let mut context = crate::ActionContext::for_resource(id, owner_kind, owner_label);
+                context
+                    .facets
+                    .push(crate::ActionFacet::new(NESTED_RESOURCE_FACET, label));
+                context
+            }
+            None => crate::ActionContext::for_resource(id, kind, label),
+        }
+    }
+
     /// Borrow the actual fixed encoding used by the typed invocation builder.
     /// `None` means the builder is opaque, even if its palette input is Immediate.
     /// This is comparison data, never permission to invoke an action.
@@ -1000,6 +1053,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         }
     }
 
@@ -1040,6 +1094,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         })
     }
 
@@ -1074,25 +1129,32 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         }
     }
 
     /// An action that first collects a free-text argument, then builds its
-    /// encoded action from it.
+    /// encoded action from it, the argument being the parameter `param`:
+    /// `ActionParam::required("title", ParamType::Text, "The note's new
+    /// title")`. The name and description are what an agent reads, and the
+    /// description is also the palette's prompt.
     ///
-    /// Projects to one required [`Text`](ParamType::Text) parameter named
-    /// [`PROMPTED_PARAM`], described by `prompt`. The projection and the
-    /// palette share the *same* `build` closure, so an external invocation and
-    /// the on-screen affordance produce the byte-identical [`EncodedAction`].
-    pub fn prompted(
+    /// The projection and the palette share the *same* `build` closure, so an
+    /// external invocation and the on-screen affordance produce the
+    /// byte-identical [`EncodedAction`]. Callers that hold the typed text
+    /// find where it goes with [`Self::prompt_param`], never by name. Name the
+    /// parameter for what it is (`title`, `name`, `comment`): an agent reads
+    /// it, and the generic [`PROMPTED_PARAM`] tells it nothing.
+    pub fn prompted_param(
         id: impl Into<String>,
         label: impl Into<String>,
-        prompt: impl Into<String>,
+        param: ActionParam,
         placeholder: impl Into<String>,
         locus: ExecutionLocus,
         build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        let prompt = prompt.into();
+        let prompt = param.description.to_string();
+        let name = param.name.clone();
         // One `Arc`, shared by the palette's `ActionInput` and the typed
         // projection. Not two closures that happen to agree.
         let build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync> = Arc::new(build);
@@ -1105,13 +1167,9 @@ impl ActionSpec {
             kind: OperationKind::Document,
             operation_type: None,
             contract: ActionContract::default(),
-            params: vec![ActionParam::required_owned(
-                PROMPTED_PARAM,
-                ParamType::Text,
-                prompt.clone(),
-            )],
+            params: vec![param],
             build: InvocationBuilder::Dynamic {
-                build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
+                build: Arc::new(move |args| for_args(args.text(&name).unwrap_or(""))),
                 deferred_type: None,
             },
             input: ActionInput::Prompted {
@@ -1124,7 +1182,35 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         }
+    }
+
+    /// The name of the parameter the typed text of a prompted action goes
+    /// into, or `None` for an action that collects no text. The one place a
+    /// caller holding the text of a prompt (the palette, a broker request, a
+    /// continuation) learns where it belongs.
+    pub fn prompt_param(&self) -> Option<&str> {
+        match self.input {
+            ActionInput::Prompted { .. } => self
+                .params()
+                .iter()
+                .find(|param| param.required)
+                .or_else(|| self.params().first())
+                .map(|param| param.name.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// `text` as this action's typed arguments, when it is a prompted action.
+    pub fn prompt_arguments(
+        &self,
+        text: &str,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let name = self.prompt_param()?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(name.to_owned(), serde_json::Value::String(text.to_owned()));
+        Some(arguments)
     }
 
     /// An immediate effect or view operation owned by the application.
@@ -1162,6 +1248,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         })
     }
 
@@ -1209,6 +1296,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         }
     }
 
@@ -1310,6 +1398,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         }
     }
 
@@ -1343,7 +1432,7 @@ impl ActionSpec {
 
     /// An action whose one argument is the content hash of bytes this
     /// machine already holds, rather than typed words — a separate
-    /// constructor (not a parameter on [`Self::prompted`]) so every
+    /// constructor (not a parameter on [`Self::prompted_param`]) so every
     /// existing action keeps saying exactly what it said.
     pub fn prompted_content(
         id: impl Into<String>,
@@ -1353,7 +1442,14 @@ impl ActionSpec {
         locus: ExecutionLocus,
         build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        let mut spec = Self::prompted(id, label, prompt, placeholder, locus, build);
+        let mut spec = Self::prompted_param(
+            id,
+            label,
+            ActionParam::required_owned(PROMPTED_PARAM, ParamType::Text, prompt.into()),
+            placeholder,
+            locus,
+            build,
+        );
         if let ActionInput::Prompted { collects, .. } = &mut spec.input {
             *collects = Collects::Content;
         }
@@ -1409,6 +1505,29 @@ impl ActionSpec {
     #[must_use]
     pub fn reads_document(mut self) -> Self {
         push_tag(&mut self.contract, crate::contract::DOCUMENT_READ_TAG);
+        self
+    }
+
+    /// Declare this action as the one that opens the file its `path`
+    /// parameter names in this app instance, of any type when `extensions`
+    /// is empty, else of those (lowercase, no dot). Recorded as
+    /// [`OPENS_PATH_TAG`](crate::OPENS_PATH_TAG), so a caller that launches
+    /// the app with a file opens it here, and never through an action
+    /// that only happens to take a `path`. Call after
+    /// [`with_contract`](Self::with_contract), which replaces the tags.
+    #[must_use]
+    pub fn opens_path(mut self, extensions: &[&str]) -> Self {
+        push_tag(&mut self.contract, crate::contract::OPENS_PATH_TAG);
+        for extension in extensions {
+            push_tag(
+                &mut self.contract,
+                &format!(
+                    "{}{}",
+                    crate::contract::OPENS_PATH_EXTENSION_PREFIX,
+                    extension.to_ascii_lowercase()
+                ),
+            );
+        }
         self
     }
 
@@ -2159,10 +2278,10 @@ mod tests {
             ExecutionLocus::ClientLocal,
             EncodedAction::encode_operation("test.open", &()).unwrap(),
         );
-        let prompted = ActionSpec::prompted(
+        let prompted = ActionSpec::prompted_param(
             "rename",
             "Rename",
-            "Name",
+            ActionParam::required("value", ParamType::Text, "Name"),
             "name",
             ExecutionLocus::ClientLocal,
             |value| EncodedAction::encode_operation("test.rename", &value).unwrap(),
@@ -2229,12 +2348,139 @@ mod tests {
         );
     }
 
+    /// A prompted action names its one argument for what it is; every caller
+    /// holding the typed text finds the name through the action, so renaming
+    /// it never needs a caller changed.
+    #[test]
+    fn a_prompted_action_names_its_argument_and_callers_ask_it_for_the_name() {
+        let encode = |title: &str| EncodedAction::encode_operation("test.rename", &title).unwrap();
+        let named = ActionSpec::prompted_param(
+            "rename",
+            "Rename",
+            ActionParam::required("title", ParamType::Text, "The note's new title"),
+            "note title…",
+            ExecutionLocus::ClientLocal,
+            encode,
+        );
+        assert_eq!(named.prompt_param(), Some("title"));
+        assert_eq!(named.params()[0].name.as_ref(), "title");
+        assert_eq!(
+            named.params()[0].description.as_ref(),
+            "The note's new title"
+        );
+        let typed = named.prompt_arguments("Plan").unwrap();
+        assert_eq!(
+            typed,
+            serde_json::json!({"title": "Plan"})
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        // The typed projection and the palette's one-field input build the same bytes.
+        assert_eq!(named.build_json(&typed).unwrap(), encode("Plan"));
+        let ActionInput::Prompted { prompt, build, .. } = &named.input else {
+            panic!("a prompted action prompts");
+        };
+        assert_eq!(prompt, "The note's new title");
+        assert_eq!(build("Plan"), encode("Plan"));
+        // An action that collects no text has no prompt parameter.
+        let immediate =
+            ActionSpec::operation("run", "Run", OperationKind::Effect, "test.run", &()).unwrap();
+        assert_eq!(immediate.prompt_param(), None);
+        assert_eq!(immediate.prompt_arguments("x"), None);
+    }
+
+    #[test]
+    fn the_sole_text_of_an_argument_object_is_found_whatever_it_is_called() {
+        let sole = |value: serde_json::Value| {
+            sole_text_argument(value.as_object().unwrap()).map(str::to_owned)
+        };
+        assert_eq!(sole(serde_json::json!({"title": "a"})), Some("a".into()));
+        assert_eq!(sole(serde_json::json!({"value": "b"})), Some("b".into()));
+        assert_eq!(sole(serde_json::json!({})), None);
+        assert_eq!(sole(serde_json::json!({"a": "x", "b": "y"})), None);
+        assert_eq!(sole(serde_json::json!({"n": 1})), None);
+    }
+
     #[test]
     fn continuation_keys_preserve_tuple_boundaries_and_clone_by_value() {
         let first = ContinuationKey::new("scope", [b"ab".as_slice(), b"c".as_slice()]);
         let second = ContinuationKey::new("scope", [b"a".as_slice(), b"bc".as_slice()]);
         assert_ne!(first, second);
         assert_eq!(first, first.clone());
+    }
+
+    /// An action declares that it opens the file its `path` names, for any
+    /// file or for the extensions it names; one that only takes a `path`
+    /// declares nothing.
+    #[test]
+    fn a_path_opener_is_declared_not_named() {
+        let action = |id: &str| {
+            ActionSpec::typed_operation(
+                id,
+                "Import",
+                "",
+                OperationKind::Effect,
+                "sheets.import",
+                vec![ActionParam::optional("path", ParamType::Text, "File")],
+                |_| EncodedAction::encode_operation("sheets.import", &()).unwrap(),
+            )
+        };
+        let csv = action("import-csv").opens_path(&["CSV"]);
+        assert!(csv.contract.opens_path());
+        assert_eq!(
+            csv.contract.opened_extensions().collect::<Vec<_>>(),
+            ["csv"]
+        );
+        let any = action("open").opens_path(&[]);
+        assert!(any.contract.opens_path());
+        assert_eq!(any.contract.opened_extensions().count(), 0);
+        let iso = action("import-iso");
+        assert!(!iso.contract.opens_path());
+    }
+}
+
+#[cfg(test)]
+mod history_context_tests {
+    use super::*;
+
+    fn spec() -> ActionSpec {
+        ActionSpec::immediate_encoded(
+            "set-block-text",
+            "Set block text",
+            ExecutionLocus::default(),
+            EncodedAction {
+                type_id: "notes.notebook".into(),
+                payload: Vec::new(),
+            },
+        )
+    }
+
+    /// A nested resource's action is the enclosing record's field edit, so
+    /// its history names the record's kind, which the change's claim is
+    /// decided by, and keeps the body it was addressed through as a facet.
+    #[test]
+    fn a_nested_action_is_named_as_the_resource_whose_action_it_is() {
+        let id = "notes.notebook/pages/p1/body";
+        let own = spec().history_context(id, "tilo.rich-text", "Body");
+        let own_resource = own.resource.expect("a resource");
+        assert_eq!(own_resource.kind, "tilo.rich-text");
+        assert!(own.facets.is_empty());
+
+        let nested = spec()
+            .applied_as("notes.notebook", "Notebook")
+            .history_context(id, "tilo.rich-text", "Body");
+        let resource = nested.resource.expect("a resource");
+        assert_eq!(
+            resource.id, id,
+            "still the resource it was addressed through"
+        );
+        assert_eq!(resource.kind, "notes.notebook");
+        assert_eq!(resource.label, "Notebook");
+        assert_eq!(
+            nested.facets,
+            [crate::ActionFacet::new(NESTED_RESOURCE_FACET, "Body")]
+        );
     }
 }
 

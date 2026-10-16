@@ -102,8 +102,7 @@ impl InhibitBackend {
         flags: u32,
         options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<()> {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let auth = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None)
+        let auth = authenticate_call(&self.ctx, &hdr, &app_id, None)
             .await
             .map_err(|_| zbus::fdo::Error::AccessDenied("untrusted portal caller".into()))?;
         if flags == 0 || flags & !SUPPORTED != 0 {
@@ -111,10 +110,7 @@ impl InhibitBackend {
                 "unknown inhibit flags".into(),
             ));
         }
-        let reason = options
-            .get("reason")
-            .and_then(|value| value.try_clone().ok())
-            .and_then(|value| String::try_from(value).ok())
+        let reason = crate::portal::option::<String>(&options, "reason")
             .filter(|value| valid_reason(value))
             .unwrap_or_else(|| format!("{} is active", auth.caller.app_id));
         let key = handle.to_string();
@@ -162,8 +158,7 @@ impl InhibitBackend {
         app_id: String,
         _window: String,
     ) -> u32 {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
+        let Ok(auth) = authenticate_call(&self.ctx, &hdr, &app_id, None).await else {
             return 2;
         };
         let path = session.to_string();

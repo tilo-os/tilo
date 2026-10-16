@@ -251,7 +251,9 @@ impl InputMethodService {
             }
             InputMethodOwner::Composer(engine) => {
                 let runtime = crate::shell::launcher::runtime_dir();
-                let config_home = runtime.join("tilo-session").join("input-method");
+                let config_home = runtime
+                    .join(tilo_paths::login::SESSION_DIR)
+                    .join("input-method");
                 let launch = super::input_method::composer_launch(
                     engine,
                     &request.layout,
@@ -383,7 +385,7 @@ impl InputMethodSocketAuthorization {
         // SAFETY: `credentials.pid` came from the kernel's SO_PEERCRED
         // response and geteuid has no failure mode.
         let peer_group = unsafe { libc::getpgid(credentials.pid) };
-        let expected_uid = unsafe { libc::geteuid() };
+        let expected_uid = rustix::process::geteuid().as_raw();
         credential_decision(
             expected,
             expected_uid,
@@ -1125,8 +1127,7 @@ mod tests {
 
     #[test]
     fn wrong_group_or_same_uid_sibling_is_rejected() {
-        // SAFETY: geteuid has no failure mode.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         assert!(credential_decision(4100, uid, uid, 4100, true));
         assert!(!credential_decision(4100, uid, uid, 4101, true));
         assert!(!credential_decision(4100, uid, uid, 4100, false));

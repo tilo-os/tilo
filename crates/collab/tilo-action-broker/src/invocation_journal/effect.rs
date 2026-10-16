@@ -3,7 +3,7 @@ use super::{
     DurableInvocation, InvocationJournal, InvocationKey, InvocationOwner, InvocationUpdate,
 };
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -159,7 +159,7 @@ impl InvocationJournal {
             return Err("cannot prepare a retired invocation".into());
         }
         record.prepared_effect = Some(prepared.clone());
-        self.snapshot.version = 5;
+        self.snapshot.version = self.snapshot.version.max(5);
         self.commit(at)?;
         Ok(prepared)
     }

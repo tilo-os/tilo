@@ -43,7 +43,14 @@ fn runtime_updates_leave_only_the_build_the_app_runs_on() {
         let (version, bundle) = env.bundle(&name, &toolkit, &runtime_identity);
         let runtime = format!("tilo-runtime/{version}");
         let package = env.runtime_tapp(&name, &bundle, &runtime);
-        let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
+        // Each build after the first replaces the one runtime package's
+        // catalogue record, so it is installed as a replacement.
+        let (ok, out) = env.cmd(&[
+            "install",
+            package.to_str().unwrap(),
+            "--allow-self-signed",
+            "--force",
+        ]);
         assert!(ok, "{out}");
         let app = env.app_tapp(&runtime);
         let (ok, out) = env.cmd(&[
@@ -130,7 +137,14 @@ fn pinned_and_freshly_installed_runtimes_survive_collection() {
     ]);
     assert!(ok, "{out}");
     let package = env.runtime_tapp("fresh", &fresh_bundle, &format!("tilo-runtime/{fresh}"));
-    let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
+    // A second build of the one runtime package is a replacement: the
+    // catalogue holds one verified record per package id.
+    let (ok, out) = env.cmd(&[
+        "install",
+        package.to_str().unwrap(),
+        "--allow-self-signed",
+        "--force",
+    ]);
     assert!(ok, "{out}");
 
     // Phase `nothing_names_them_and_both_stay`: one is pinned, the other was

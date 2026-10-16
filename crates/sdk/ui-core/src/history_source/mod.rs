@@ -10,9 +10,9 @@
 //! Two summary strategies, in order of preference: **structural**, which
 //! materialises the window with [`tilo_doc::snapshot::series`] and
 //! diffs snapshots for real per-paragraph insert/delete counts on
-//! documents carrying the `qdoc` schema; and **patch**, the fallback that
+//! documents carrying the `tilo-doc` schema; and **patch**, the fallback that
 //! reads the change's own patch set via `AutoCommit::diff`, weaker only in
-//! that it can't see qdoc-level concepts like comments or block moves.
+//! that it can't see tilo-doc-level concepts like comments or block moves.
 //! Neither path guesses — an indescribable change gets
 //! `"no visible change"` rather than an invented summary.
 //!
@@ -53,7 +53,7 @@ pub use authors::{
     local_identity_author, participant_display_label, set_room_agents, short_id, stable_hue,
 };
 pub use compare::{CompareError, HistoryComparison, compare_entries};
-pub use detail::{HistoryResourceTarget, HistorySelectionDetail};
+pub use detail::{HistoryResourceTarget, HistorySelectionDetail, contains_opaque_id, human_label};
 pub use digest::{ActivityBrief, ActivityBriefAction, ActivityDigest};
 pub use facets::HistoryFacetIndex;
 pub use groups::{
@@ -75,7 +75,10 @@ pub use runs::{
     AgentRun, RUNS_KEY, RunStep, forget_run, is_run_marker, read_runs, record_run,
     record_run_with_details, run_starting_at,
 };
-pub use schema_ops::{SchemaHistoryOp, SchemaObjectId, schema_operations_since};
+pub use schema_ops::{
+    SchemaChange, SchemaCreation, SchemaHistoryOp, SchemaObjectId, schema_changes_since,
+    schema_operations_since,
+};
 pub use seen::HistorySeenFrontier;
 
 /// The structural path materialises one snapshot per version, so cost is
@@ -107,11 +110,11 @@ pub fn committed_heads(doc: &AutoCommit) -> Vec<ChangeHash> {
     doc.base_heads()
 }
 
-/// Materialize a committed qdoc history entry without committing live edits.
+/// Materialize a committed tilo-doc history entry without committing live edits.
 /// An ID from another document returns `Ok(None)`.
 ///
 /// # Errors
-/// Returns the qdoc error if the selected version cannot be materialized.
+/// Returns the tilo-doc error if the selected version cannot be materialized.
 pub fn materialize_entry(
     doc: &mut AutoCommit,
     id: &HistoryEntryId,
@@ -131,7 +134,12 @@ pub struct HistorySource {
     max_entries: usize,
     record_genesis: bool,
     field_paths: bool,
+    pass_over: Option<PassOver>,
 }
+
+/// Which changes a [`HistorySource`] passes over; see
+/// [`HistorySource::passing_over`].
+pub type PassOver = fn(&automerge::Change) -> bool;
 
 impl Default for HistorySource {
     fn default() -> Self {
@@ -148,7 +156,25 @@ impl HistorySource {
             max_entries: DEFAULT_MAX_ENTRIES,
             record_genesis: true,
             field_paths: true,
+            pass_over: None,
         }
+    }
+
+    /// Pass over the changes `pass_over` names: they are part of the
+    /// document, and of the heads every later row is read at, but they make
+    /// no row and take no place in the window. For a document that also
+    /// keeps view state, such as which workspace a desktop shows, so that
+    /// moving the view neither shows up as history nor pushes what people
+    /// did out of the window. Decided from the change alone, so a reader
+    /// that reads the log from scratch decides it for every change.
+    #[must_use]
+    pub fn passing_over(mut self, pass_over: PassOver) -> Self {
+        self.pass_over = Some(pass_over);
+        self
+    }
+
+    fn passes_over(&self, change: &automerge::Change) -> bool {
+        self.pass_over.is_some_and(|pass_over| pass_over(change))
     }
 
     /// Describe a change that edited a document's fields by how many it
@@ -443,7 +469,7 @@ pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHas
 }
 
 /// Describe a change by reading its own patch set. The fallback for documents
-/// that don't carry the qdoc schema. With `paths`, edited fields are named by
+/// that don't carry the tilo-doc schema. With `paths`, edited fields are named by
 /// their document paths; without, counted.
 fn patch_summary(
     doc: &mut AutoCommit,

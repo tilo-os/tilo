@@ -62,7 +62,7 @@ fn check_retained_publication(
 ) -> Result<(), String> {
     let mut retained = automerge::AutoCommit::new();
     for entry in outgoing.entries() {
-        if let Ok(tilo_peer_state::NeighbourMsg::AppDocument {
+        if let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             record_id,
             envelope,
@@ -250,7 +250,7 @@ fn native_record_observation(
             "app_write_permitted": app_write_permitted,
             "person_write_permitted": person_write_permitted,
             "workspace_administration_permitted": view.peer()
-                .check_workspace_administration(view.device().device_public_key, now).is_ok(),
+                .workspace().check_workspace_administration(view.device().device_public_key, now).is_ok(),
         }))
     })
 }
@@ -285,6 +285,7 @@ pub(super) fn check() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("exact current-device native owner is not admitted".into());
             }
             view.peer()
+                .workspace()
                 .check_workspace_administration(view.device().device_public_key, now)?;
             return Ok(view.generation());
         }

@@ -22,6 +22,19 @@ def git(root, *args):
     return subprocess.check_output(["git", "-C", str(root), *args])
 
 
+def committed_tree(root):
+    """HEAD's tree, or the index's in a repository without commits.
+
+    t checks run on a copy of the tree without .git, under
+    tools/ci/t-git-index.sh, whose throwaway repository indexes exactly the
+    files present and commits nothing: its index is the tree to inspect.
+    """
+    try:
+        return git(root, "rev-parse", "--verify", "--quiet", "HEAD^{tree}").decode().strip()
+    except subprocess.CalledProcessError:
+        return git(root, "write-tree").decode().strip()
+
+
 def content_issues(data):
     try:
         data.decode("utf-8")
@@ -37,8 +50,9 @@ def audit(root, staged=False):
         records = git(root, "ls-files", "--stage", "-z").split(b"\0")
         manifest = git(root, "show", ":" + EXCEPTIONS)
     else:
-        records = git(root, "ls-tree", "-r", "-z", "HEAD").split(b"\0")
-        manifest = git(root, "show", "HEAD:" + EXCEPTIONS)
+        tree = committed_tree(root)
+        records = git(root, "ls-tree", "-r", "-z", tree).split(b"\0")
+        manifest = git(root, "show", tree + ":" + EXCEPTIONS)
     exceptions = json.loads(manifest)
     allowed = {}
     for entry in exceptions:

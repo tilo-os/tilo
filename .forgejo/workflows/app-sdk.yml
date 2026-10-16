@@ -3,8 +3,8 @@ name: CI / app SDK
 # One app source, three targets. These lanes prove that the SDK builds Tilo
 # apps for Linux and the web through `tilo-app`, that a generated app builds
 # outside this repository, that every web-capable app runs in headless
-# Chromium, and that web bundles only shrink. The macOS lane runs on the one
-# macOS runner in dev-apps-macos.yml.
+# Chromium, and that web bundles only shrink. The macOS lane is t's
+# sdk-macos check, on the Mac.
 on:
   # Pull requests and pushes share one path list. The lander requires this
   # workflow's checks only on a head it reported on.
@@ -201,10 +201,15 @@ jobs:
           cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
       - name: Calculator for Linux
         run: bash tools/ci/measure.sh "Calculator for Linux" -- target/debug/tilo-app build --target linux apps/calculator
-      # The generated app compiles its whole graph into a temporary target
-      # directory that the test removes. Run before the .tapp step, the two
-      # builds never occupy the runner's disk at the same time.
-      - name: A generated app builds outside the repository (native and wasm32)
+      # The external developer's journey: a generated app outside the
+      # repository passes `tilo-app check`, its audit fails on a control bound
+      # to nothing, it builds natively and for wasm32, packages as a signed
+      # Tilo OS .tapp, and `apply`/`publish` take it into a loopback
+      # registry's review queue without making it public. The app compiles
+      # its whole graph into a temporary target directory that the test
+      # removes. Run before the .tapp step, the two builds never occupy the
+      # runner's disk at the same time.
+      - name: A generated app goes from new to a release awaiting review
         run: |
           rustup target add wasm32-unknown-unknown
           bash tools/ci/measure.sh "generated app outside the repository" -- \
@@ -269,10 +274,13 @@ jobs:
         run: node --test crates/platform/*/web/*.test.mjs
       - name: Build tilo-app
         run: bash tools/ci/measure.sh "SDK web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
+      - name: Prepare the pinned shared MoQ module once
+        run: python3 tools/ci/prepare_sdk_moq.py prepare
       - name: Desktop bundle (dev profile)
         run: |
           bash tools/ci/measure.sh "SDK dev desktop bundle build" -- \
             target/debug/tilo-app build --target web --bundle desktop apps/calculator
+          python3 tools/ci/prepare_sdk_moq.py license target/tilo-app/web/calculator/bundle
       - name: Headless Chromium for Testing
         run: |
           # Chrome's shared-library dependencies; present on current builders.
@@ -287,6 +295,7 @@ jobs:
       - name: Compiled Chat browser disconnect and retry
         run: |
           target/debug/tilo-app build apps/chat --platform web
+          python3 tools/ci/prepare_sdk_moq.py license target/tilo-app/web/chat/bundle
           cargo run --locked -p tilo-agent-participant --example mounted-resource -- \
             target/tilo-app/web/chat/bundle --disconnect-retry
       - name: Compiled Chat browser call consent and lifecycle
@@ -381,6 +390,11 @@ jobs:
           fi
       - name: Build tilo-app
         run: bash tools/ci/measure.sh "SDK release web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
+      # The splitter's tests compile a fixture for wasm32, split it and run
+      # the pieces: that a split module's static data is written before its
+      # code runs, and only data no other module reaches moves.
+      - name: Module splitter tests
+        run: bash tools/ci/measure.sh "Web module splitter tests" -- cargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml
       - name: Release desktop bundle within its size budget
         run: |
           bash tools/ci/measure.sh "SDK release desktop bundle build" -- \

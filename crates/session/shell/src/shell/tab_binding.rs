@@ -194,7 +194,7 @@ fn bind_into_tab(tree: &mut WorkspaceTree, target: TabId, app_id: &str, surface_
                     surface_id,
                 };
                 // Front the tab, but move focus no further: stealing the strip because somebody else opened something is exactly what the room model rules out.
-                group.active_tab = target;
+                group.activate_tab(target);
                 let _ = strip_id;
                 return true;
             }
@@ -232,6 +232,34 @@ pub fn open_hosted_app(
     tree.seed_doc_from_cache();
     tree.queue_save();
     tab_id
+}
+
+/// Hold the place a launch will open in from the moment it is asked for: a
+/// tab at `placement` showing the opening card, which the app's window then
+/// binds into ([`Placement::IntoTab`]). A cold start takes seconds, so
+/// without it nothing on screen answers the activation until the window
+/// maps. A failed launch or a missed deadline turns the card into the
+/// retry card (`peer_windows::settle_local_restore`), and the card is never
+/// saved as opening (`persist::clear_transient_launch_notes`).
+pub fn hold_place_for_launch(
+    tree: &mut WorkspaceTree,
+    package_id: &str,
+    label: &str,
+    placement: Placement,
+) -> TabId {
+    let new_tab = Tab {
+        id: next_id(),
+        title: label.to_owned(),
+        tile: TileContent::LocalApp {
+            app_id: package_id.to_owned(),
+            label: label.to_owned(),
+            note: crate::shell::peer_windows::OPENING.to_owned(),
+        },
+    };
+    let tab = place_tab(tree, new_tab, placement);
+    crate::shell::launcher::set_pending_placement(package_id, Placement::IntoTab(tab));
+    mark_tree_changed(tree);
+    tab
 }
 
 /// Rehome an existing tab through the same exact destination grammar used by
@@ -510,6 +538,19 @@ fn tab_insert_index(group: &WindowGroup, placement: Placement) -> usize {
     }
 }
 
+/// A new window group holding only `tab`, which is active in it.
+fn lone_group(tab: Tab) -> WindowGroup {
+    let active_tab = tab.id;
+    WindowGroup {
+        id: next_id(),
+        tabs: vec![tab],
+        active_tab,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    }
+}
+
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
 /// Placement and tree decide where a window lands, not what's inside it, so both foreign and
 /// hosted-app opens route through here. Returns `new_tab`'s id even when it can't be spliced (no active workspace).
@@ -529,13 +570,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
 
     // No strips at all: synthesize one around the new tab. Mirrors `apply_workspace_drop`'s empty-strip path.
     if ws.strips.is_empty() {
-        let group = WindowGroup {
-            id: next_id(),
-            tabs: vec![new_tab],
-            active_tab: tab_id,
-            width: WindowWidth::Normal,
-            maximized: false,
-        };
+        let group = lone_group(new_tab);
         let group_id = group.id;
         let strip = Strip {
             id: StripId::from(next_id()),
@@ -598,20 +633,14 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
             // Behind the tab the person is reading: nothing moves.
             return tab_id;
         }
-        group.active_tab = tab_id;
+        group.activate_tab(tab_id);
         let group_id = group.id;
         tree.desktop.active_strip.insert(ws_id, strip_id);
         tree.desktop.set_active_group(strip_id, group_id);
         return tab_id;
     }
 
-    let group = WindowGroup {
-        id: next_id(),
-        tabs: vec![new_tab],
-        active_tab: tab_id,
-        width: WindowWidth::Normal,
-        maximized: false,
-    };
+    let group = lone_group(new_tab);
     let group_id = group.id;
     // Right of the group the placement named, falling back to the focused one when that group is gone, and to the end of the strip when nothing is focused either.
     let anchor = match placement {
@@ -808,7 +837,7 @@ pub fn relocate_foreign_toplevel(
                 if let Some((old_tab, old_group, was_alone)) = previous {
                     tab.id = old_tab;
                     if group.active_tab == tab_id {
-                        group.active_tab = old_tab;
+                        group.activate_tab(old_tab);
                     }
                     if was_alone && group.tabs.len() == 1 && group.id != old_group {
                         regrouped = Some((group.id, old_group));
@@ -844,6 +873,12 @@ pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: &s
                         TileContent::Foreign { surface_id: id, .. } if *id == surface_id
                     )
                 }) {
+                    // Terminals re-send their title continuously; an identical
+                    // one is not a change, and must not bump the tree revision
+                    // (a chrome rebuild and repaint per event).
+                    if tab.title == title {
+                        return true;
+                    }
                     title.clone_into(&mut tab.title);
                     true
                 } else {
@@ -924,7 +959,7 @@ pub fn activate_surface(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
     else {
         return false;
     };
-    group.active_tab = tab_id;
+    group.activate_tab(tab_id);
     tree.desktop.active = workspace_id;
     tree.desktop.active_strip.insert(workspace_id, strip_id);
     tree.desktop.set_active_group(strip_id, group_id);
@@ -958,20 +993,21 @@ pub fn close_tab_for_destroyed_surface(
     tree: &mut WorkspaceTree,
     destroyed_surface_id: u64,
 ) -> bool {
-    let tab_id = tree
-        .desktop
+    foreign_tab_for_surface(tree, destroyed_surface_id)
+        .is_some_and(|tab_id| remove_tab(tree, tab_id))
+}
+
+fn foreign_tab_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<TabId> {
+    tree.desktop
         .workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
         .flat_map(|strip| strip.window_groups.iter())
         .flat_map(|group| group.tabs.iter())
         .find_map(|tab| match &tab.tile {
-            TileContent::Foreign { surface_id, .. } if *surface_id == destroyed_surface_id => {
-                Some(tab.id)
-            }
+            TileContent::Foreign { surface_id: id, .. } if *id == surface_id => Some(tab.id),
             _ => None,
-        });
-    tab_id.is_some_and(|tab_id| remove_tab(tree, tab_id))
+        })
 }
 
 /// Remove an adopted client which never produced a frame after its launcher
@@ -1019,21 +1055,111 @@ pub fn close_tab_for_destroyed_surface_and_persist(
     tree: &mut WorkspaceTree,
     destroyed_surface_id: u64,
 ) -> bool {
-    let removed = close_tab_for_destroyed_surface(tree, destroyed_surface_id);
+    // The window really went away: the group returns to the tab that was in
+    // front before it, not to whatever sits at its index. (Re-adoption and
+    // dialog promotion also remove a provisional tab, but those keep the
+    // plain rule through [`close_tab_for_destroyed_surface`].)
+    let removed = foreign_tab_for_surface(tree, destroyed_surface_id)
+        .is_some_and(|tab_id| close_tab_back_to_previous(tree, tab_id));
     if removed {
         tree.queue_save();
     }
     removed
 }
 
+/// Which strip each workspace showed and which group each strip had in
+/// front, taken just before a new toplevel was adopted.
+///
+/// A toplevel is adopted as a tab, with focus, the moment it is created,
+/// before the client has said what it is. When it then turns out to be no
+/// window of the strip (a dialog, which becomes a sheet on its parent; a
+/// floating or presentation surface; the keyboard), or goes away before it
+/// ever showed a frame, its provisional tab is withdrawn. Plain removal hands
+/// focus to whatever group now sits at the withdrawn one's index, the one
+/// right of where the person was, and the strip pans to it although nothing
+/// the person did asked for that. This is what withdrawal restores instead.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FocusBefore {
+    active_strip: std::collections::HashMap<crate::shell::state::WorkspaceId, StripId>,
+    active_group: std::collections::HashMap<StripId, GroupId>,
+}
+
+impl FocusBefore {
+    pub fn of(tree: &WorkspaceTree) -> Self {
+        Self {
+            active_strip: tree.desktop.active_strip.clone(),
+            active_group: tree.desktop.active_group.clone(),
+        }
+    }
+}
+
+/// Withdraw the provisional tab of `surface_id` (see [`FocusBefore`]) and,
+/// if that tab still held its strip's focus, give focus back to the group
+/// and strip that had it before the adoption. A tab the toplevel was bound
+/// into an existing group returns that group to the tab in front before it.
+pub fn withdraw_provisional_tab(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    before: &FocusBefore,
+) -> bool {
+    let Some(tab_id) = foreign_tab_for_surface(tree, surface_id) else {
+        return false;
+    };
+    let held = tree.desktop.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip
+                .window_groups
+                .iter()
+                .find(|group| group.tabs.iter().any(|tab| tab.id == tab_id))
+                .filter(|group| tree.desktop.active_group_for(strip.id) == Some(group.id))
+                .map(|_| (workspace.id, strip.id))
+        })
+    });
+    if !close_tab_back_to_previous(tree, tab_id) {
+        return false;
+    }
+    let Some((workspace_id, strip_id)) = held else {
+        return true;
+    };
+    let exists = |tree: &WorkspaceTree, strip: StripId, group: Option<GroupId>| {
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| workspace.strips.iter().find(|s| s.id == strip))
+            .is_some_and(|s| group.is_none_or(|g| s.window_groups.iter().any(|w| w.id == g)))
+    };
+    if let Some(&group) = before.active_group.get(&strip_id)
+        && exists(tree, strip_id, Some(group))
+    {
+        tree.desktop.set_active_group(strip_id, group);
+    }
+    if tree.desktop.active_strip.get(&workspace_id) == Some(&strip_id)
+        && let Some(&strip) = before.active_strip.get(&workspace_id)
+        && exists(tree, strip, None)
+    {
+        tree.desktop.active_strip.insert(workspace_id, strip);
+    }
+    true
+}
+
 /// Remove `tab_id` from wherever it is in the tree, repairing its group's selection if it was in
 /// front. The undo for a placement whose window never came — a failed launch takes its
 /// placeholder away rather than leaving a dead card. [`close_tab_for_destroyed_surface`] is the same removal keyed on a surface.
+pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
+    remove_tab_choosing(tree, tab_id, false)
+}
+
+/// [`remove_tab`] for a window the person closed: the group returns to the tab that was in front before it.
+fn close_tab_back_to_previous(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
+    remove_tab_choosing(tree, tab_id, true)
+}
+
 #[allow(
     clippy::indexing_slicing,
     reason = "the locations are produced by a complete immutable traversal immediately above and the tree is not mutated until the indexed edits begin"
 )]
-pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
+fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous: bool) -> bool {
     let located = tree
         .desktop
         .workspaces
@@ -1085,7 +1211,12 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
         return false;
     }
 
-    let Some(removed) = tree.desktop.remove_tab(tab_id).map(|removed| removed.tab) else {
+    let removed = if back_to_previous {
+        tree.desktop.close_tab(tab_id)
+    } else {
+        tree.desktop.remove_tab(tab_id)
+    };
+    let Some(removed) = removed.map(|removed| removed.tab) else {
         return false;
     };
     tree.local_app_records.remove(&tab_id);
@@ -1564,6 +1695,7 @@ mod tests {
                         active_tab: 0,
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     };
                     let id = g.id;
                     tree.desktop.workspaces[0].strips[0].window_groups.push(g);
@@ -1801,7 +1933,7 @@ mod tests {
                 let (group_id, selected_tab, tab_ids_before) = {
                     let g = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
                     assert!(g.tabs.len() > 2, "fixture: a genuinely tabbed group");
-                    g.active_tab = g.tabs[selected_idx].id;
+                    g.activate_tab(g.tabs[selected_idx].id);
                     (
                         g.id,
                         g.active_tab,
@@ -1858,6 +1990,7 @@ mod tests {
                             active_tab: 0,
                             width: WindowWidth::Normal,
                             maximized: false,
+                            focus_history: Vec::new(),
                         });
                 }
                 let last_before = tree.desktop.workspaces[0].strips[0].window_groups[2].id;
@@ -2680,6 +2813,15 @@ mod tests {
                 assert!(rename_tab_for_title(&mut tree, 99, ""));
                 assert!(tab_of(&tree, 99).title.is_empty());
                 assert!(!rename_tab_for_title(&mut tree, 12345, "gone"));
+
+                // A title re-sent unchanged finds its tab but is no change:
+                // the tree revision (a chrome rebuild) stays where it was.
+                assert!(rename_tab_for_title(&mut tree, 99, "same"));
+                let revision = tree.desktop.external_revision;
+                assert!(rename_tab_for_title(&mut tree, 99, "same"));
+                assert_eq!(tree.desktop.external_revision, revision);
+                assert!(rename_tab_for_title(&mut tree, 99, "other"));
+                assert_ne!(tree.desktop.external_revision, revision);
             }
         }
 
@@ -2762,6 +2904,7 @@ mod tests {
                     package_id: "so.tilo.adoptfixture".into(),
                     display_name: "Adopt Fixture".into(),
                     localized_names: BTreeMap::default(),
+                    keywords: Vec::new(),
                     category: None,
                     version: "0.1.0".into(),
                     manifest_path: std::path::PathBuf::new(),

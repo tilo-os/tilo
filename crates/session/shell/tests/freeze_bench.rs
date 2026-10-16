@@ -41,6 +41,7 @@ fn placeholder_group(kind: ui::widget::AppKind, label: &str) -> WindowGroup {
         active_tab: tab_id,
         width: shell::shell::state::WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 

@@ -33,7 +33,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use crate::support::offscreen::OffscreenRenderer;
+use ui::offscreen::OffscreenRenderer;
 
 fn shot_dir() -> PathBuf {
     std::env::var_os("TILO_ONBOARDING_SHOT_DIR").map_or_else(

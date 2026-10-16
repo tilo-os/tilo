@@ -1,0 +1,36 @@
+[package]
+name = "tilo-staging-reclaim"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "USB-free install: returns the staging partitions to the Tilo root once the installed system has a real user session, resumable from any crash."
+
+[lib]
+name = "tilo_staging_reclaim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-staging-reclaim"
+path = "src/main.rs"
+
+# The loopback proof (os/tests/staging_reclaim_loop.sh) runs this against a
+# loop device and a fixture record: the paths and the loop allowance the
+# shipped binary never takes from anywhere.
+[[example]]
+name = "staging-reclaim-fixture"
+path = "examples/staging-reclaim-fixture.rs"
+
+[dependencies]
+# No-follow opens of the record and the record directory's fsync.
+rustix = { workspace = true, features = ["fs", "std"] }
+# The disk's exclusive lock, as the partitioning tools take it.
+tilo-advisory-lock = { path = "../advisory-lock" }
+serde_json.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

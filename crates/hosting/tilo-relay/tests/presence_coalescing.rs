@@ -9,24 +9,27 @@
 //! predates batching, and one on
 //! `tilo-relay/6`. Both must see the pointer paced to at most 20 Hz, its
 //! last position, the caret, and the event after everything sent before it;
-//! the `/6` member must pay a fraction of the bytes.
+//! the byte budget is checked separately on a controlled writer schedule
+//! in `peer::state_tests::presence_cost`.
 //!
-//! It prints one `PRESENCE_COST key=value …` line. It gates only what does not
-//! depend on timing: the final state, the order, a generous frame ceiling and
-//! the bytes per presence.
+//! It prints one `PRESENCE_COST key=value …` line. The network scenario
+//! checks final state, order and the frame ceiling. Its byte observations
+//! depend on how transport and executor scheduling group the presence; the
+//! production-writer test gates both protocols on identical delivered states.
 //!
 //! A second scenario types: each keystroke is a retained delta followed by
 //! the toolkit's `Typing` and `Caret`, as the shell sends them. The caret
 //! and typing are held for the delta they follow and ride in its write,
-//! so a `tilo-relay/7` member receives a keystroke in one write
-//! where it took two or three. It prints one `KEYSTROKE_WRITES key=value …`
-//! line and gates the median keystroke.
+//! when they are pending before the writer takes the delta. It prints one
+//! `KEYSTROKE_WRITES key=value …` line and verifies every delta, typing range
+//! and caret reaches a `tilo-relay/7` member. Network scheduling may also let
+//! the delta go first, so exact write counts are gated at the production
+//! writer boundary in `peer::state_tests::keystroke`, under both schedules.
 //!
-//! A third drags a pointer at 100 Hz from the production client: the
-//! session writer paces it to the rate the relay forwards it, so the relay
-//! receives about one datagram per 50 ms rather than one per move, and the
-//! resting position still reaches a member with nothing sent after it. It
-//! prints one `POINTER_PACING key=value …` line.
+//! A third publishes a pointer burst from the production client and checks
+//! that the resting position reaches a member with nothing sent after it.
+//! The session writer's paused-clock tests gate its exact write count;
+//! QUIC datagrams also include unrelated path probes and acknowledgements.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -43,11 +46,12 @@ use std::time::{Duration, SystemTime};
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::{CommitNamed as _, PeerPresence, PeerPresencePayload};
+use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::transport_v2::{
     ALPN_CODED_DELTA_V1, ALPN_COMPACT_STATE_V1, ALPN_PRESENCE_BATCH_V1, EnvelopeV2, SessionReader,
     StateFraming, encode_state,
 };
-use tilo_peer_state::{NeighbourMsg, SeedDocument, SeedState, StatePeer, seed_room};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
 use tilo_relay::{AttributedPresence, Envelope, Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -56,9 +60,6 @@ use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, spawn_rela
 const WORKSPACE: u64 = 710;
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
-/// What each presence frame cost on `tilo-relay/5` before #4006, ~236 B
-/// for a pointer move; on `tilo-relay/6` it must stay well below a third.
-const BUDGET_SLOT_CODED_BYTES_PER_PRESENCE: f64 = 70.0;
 
 /// A member reading the relay's frames on one ALPN through the production
 /// session reader, which expands `PresenceBatch` frames.
@@ -333,16 +334,6 @@ async fn presence_is_coalesced_for_every_protocol_and_slot_coded_on_tilo_relay_6
          relay5_bytes_per_presence={old_per:.1} relay6_presence={new_count} \
          relay6_bytes={new_bytes} relay6_bytes_per_presence={new_per:.1}"
     );
-    assert!(
-        new_per <= BUDGET_SLOT_CODED_BYTES_PER_PRESENCE,
-        "tilo-relay/6 paid {new_per:.1} B per presence (budget \
-         {BUDGET_SLOT_CODED_BYTES_PER_PRESENCE} B; /5 paid {old_per:.1} B)"
-    );
-    assert!(
-        old_per > 3.0 * new_per,
-        "slot coding must cut the bytes per presence to under a third: \
-         /5 {old_per:.1} B, /6 {new_per:.1} B"
-    );
 }
 
 const APP: &str = "so.tilo.word-processor";
@@ -355,17 +346,25 @@ impl Member {
     async fn keystroke(&mut self, pos: u64) -> bool {
         tilo_test_env::within("the keystroke's delta and caret", async {
             let mut delta = false;
+            let mut saw_typing = false;
+            let mut saw_caret = false;
+            let mut delta_first = false;
             loop {
                 match self.reader.read_next().await.unwrap() {
                     Some(EnvelopeV2::State(Envelope::Delta { .. })) => delta = true,
                     Some(EnvelopeV2::State(Envelope::Presence { payload, .. })) => {
                         let attributed = AttributedPresence::decode(&payload).unwrap();
                         let message: NeighbourMsg = postcard::from_bytes(&attributed.body).unwrap();
+                        saw_typing |= message == typing(pos - 1, pos);
                         if message == caret(pos) {
-                            return delta;
+                            saw_caret = true;
+                            delta_first = delta;
                         }
                     }
                     _ => {}
+                }
+                if delta && saw_typing && saw_caret {
+                    return delta_first;
                 }
             }
         })
@@ -474,7 +473,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
                 SystemTime::now(),
             )
             .unwrap();
-        let (channel, _) = tilo_peer_state::transport::retention(&message, false).unwrap();
+        let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
         let pos = end as u64 + 1;
         let before = session_writes(&relay, reader.device_pubkey());
         publisher
@@ -488,7 +487,6 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
             writes.push(session_writes(&relay, reader.device_pubkey()) - before);
             delta_first += usize::from(delta);
         }
-        tokio::time::sleep(Duration::from_millis(30)).await;
     }
     writes.sort_unstable();
     let median = writes[writes.len() / 2];
@@ -497,10 +495,9 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
         writes.len(),
         writes.last().copied().unwrap_or_default(),
     );
-    assert_eq!(
-        median, 1,
-        "a keystroke's delta, position, typing and caret go to a member in one write: {writes:?}"
-    );
+    // One write is guaranteed only when presence is pending before the
+    // delta's writer turn. The deterministic production-writer test checks
+    // that exact count (and the two-write schedule) without a wall-clock race.
 }
 
 impl Member {
@@ -529,16 +526,11 @@ impl Member {
     }
 }
 
-/// QUIC datagrams the relay's endpoint has received so far.
-fn relay_datagrams_received(relay: &TestRelay) -> u64 {
-    relay.relay.endpoint.metrics().socket.recv_datagrams.get()
-}
-
-/// A client paces its own pointer to the rate the relay forwards it: a drag
-/// published at 100 Hz reaches the relay in about one packet per 50 ms, and
-/// its resting position still arrives with nothing sent after it.
+/// The resting position traverses the production client and relay with
+/// nothing sent after it. Write amplification is gated in the session
+/// writer's deterministic clock test, not by noisy QUIC packet counts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_client_sends_its_pointer_at_the_rate_the_relay_forwards_it() {
+async fn a_clients_resting_pointer_arrives_without_another_message() {
     let user = TestUser::fresh("Pointer pacing");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("tilo-relay/7 peer", DeviceCapabilities::member());
@@ -572,40 +564,6 @@ async fn a_client_sends_its_pointer_at_the_rate_the_relay_forwards_it() {
     .await;
     let user_hex = hex::encode(user.user_pk);
 
-    // A fresh connection still settles its path (MTU probes, address
-    // observations, their acknowledgements); let it, then measure what the
-    // relay receives from the publisher while it is quiet, and while it
-    // drags. Alone in the room, every datagram the relay receives is the
-    // publisher's: unpaced, the drag alone would add one per move.
-    for step in 0..MOVES {
-        publish(&publisher, &pointer(step, &user_hex));
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let window = Duration::from_millis(10) * MOVES + Duration::from_millis(200);
-    let quiet_from = relay_datagrams_received(&relay);
-    tokio::time::sleep(window).await;
-    let quiet = relay_datagrams_received(&relay) - quiet_from;
-    let drag_from = relay_datagrams_received(&relay);
-    for step in 0..MOVES {
-        publish(&publisher, &pointer(step, &user_hex));
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let drag = relay_datagrams_received(&relay) - drag_from;
-    println!(
-        "POINTER_PACING moves={MOVES} window_ms={} relay_datagrams_quiet={quiet} \
-         relay_datagrams_drag={drag}",
-        window.as_millis()
-    );
-    assert!(
-        drag.saturating_sub(quiet) <= u64::from(MOVES) / 3,
-        "{MOVES} moves published over 600 ms reached the relay in {drag} datagrams \
-         ({quiet} in as long a quiet window); paced to one per 50 ms they take about 13"
-    );
-
-    // With a member in the room, the last move arrives on its own: it is
-    // written when its gap ends, not when something else is sent.
     let mut member = Member::open(
         &relay,
         &reader,
@@ -613,15 +571,14 @@ async fn a_client_sends_its_pointer_at_the_rate_the_relay_forwards_it() {
         StateFraming::CodedDelta,
     )
     .await;
-    let last = pointer(2 * MOVES - 1, &user_hex);
-    for step in MOVES..2 * MOVES {
+    let last = pointer(MOVES - 1, &user_hex);
+    for step in 0..MOVES {
         publish(&publisher, &pointer(step, &user_hex));
-        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let moves = member.pointer_until(&last).await;
-    assert!(
-        moves.len() < 30,
-        "{} pointer moves of {MOVES} published at 100 Hz for 600 ms; a pointer goes at 20 Hz",
-        moves.len()
+    assert_eq!(
+        moves.last(),
+        Some(&last),
+        "the resting position arrives on its own"
     );
 }

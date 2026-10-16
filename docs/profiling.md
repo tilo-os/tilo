@@ -60,6 +60,32 @@ frame, t_us, sync_us, build_layout_us, apply_layout_us, draw_us, handle_event_us
 `t_us` is a monotonic counter (microseconds since the profiler started), not a
 wall clock, so it is immune to clock steps.
 
+Input arrives between frames, so `handle_event_us` is the **sum** of every
+event since the previous frame — a pen drag at tablet rate banks many events
+into one frame, and that sum is not any one event's duration. The live app
+also records, per frame:
+
+- `input_events` — how many events the sum covers (a pen sample is not an
+  event of its own; it rides on the pointer event after it);
+- `input_event_max_us` — the costliest single event;
+- `input_dispatch_us` — the widget tree's `handle_event`, including the hit
+  tests widgets do while routing;
+- `input_hit_test_us` — the host's pointer hit tests after dispatch (cursor
+  shape, tooltip target);
+- `input_resources_us` — resource discovery before dispatch and invalidation
+  after it;
+- `input_publication_us` — presence, action-surface and metadata publication
+  and screen-reader announcements;
+- `input_commit_us` — document commits and undo boundaries;
+- `input_to_commit_us` — from the start of the oldest banked event to this
+  frame's CPU commit. It ends before the render worker submits, so it is not
+  input-to-photon latency; join it to presentation through `cpu_frame_id`
+  (`docs/native-presentation-feedback.md`).
+
+The phases are disjoint spans inside each event; what is left of
+`handle_event_us` is routing glue (focus, shortcuts, palette and navigation
+fallbacks). The headless harness reports only `handle_event_us`.
+
 Every committed frame also emits a `tracing` event under the **`tilo::profile`**
 target with the same fields, so an external tracer can consume the numbers with
 no file:

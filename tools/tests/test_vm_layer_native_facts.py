@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ SPEC.loader.exec_module(artifacts)
 
 class NativeFactsGuard(unittest.TestCase):
     def setUp(self):
-        scratch = ROOT / "target/native-layer-facts-tests"
+        scratch = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "native-layer-facts-tests"
         scratch.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=scratch)
         self.addCleanup(self.temp.cleanup)

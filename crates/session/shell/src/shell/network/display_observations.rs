@@ -28,7 +28,10 @@ struct Observation {
     outputs: Vec<DisplayOutputObservation>,
 }
 
-pub(super) fn save(path: &Path, fabric: &DeviceFabric, user: [u8; 32]) -> Result<(), String> {
+/// The sidecar's bytes for `fabric`: serialisation only, no file access, so a
+/// thread that must not wait for the disk can take them and hand [`write`] to
+/// one that may.
+pub(super) fn encode(fabric: &DeviceFabric, user: [u8; 32]) -> Result<Vec<u8>, String> {
     let observations = fabric
         .snapshots()
         .iter()
@@ -51,10 +54,15 @@ pub(super) fn save(path: &Path, fabric: &DeviceFabric, user: [u8; 32]) -> Result
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_STORE_BYTES {
         return Err("display observation cache is too large".into());
     }
+    Ok(bytes)
+}
+
+/// Replace the sidecar with `bytes` from [`encode`], synced.
+pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
         .map_err(|error| error.to_string())
 }
 

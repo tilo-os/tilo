@@ -22,6 +22,58 @@ pub enum FlatpakAction {
     Remove,
 }
 
+/// One installed package as the host lists it: its store row, and what its
+/// signed manifest says to show a person about it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedPackage {
+    pub package: InstalledPackage,
+    pub about: PackageAbout,
+}
+
+/// The manifest's `[package]` display metadata. It is installed and signed,
+/// so it describes the app whether or not any repository is reachable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackageAbout {
+    /// `[package].name`, or a name derived from the id when it is unset.
+    pub name: String,
+    /// `[package.names]`: the name in other languages, by BCP 47 tag.
+    pub names: std::collections::BTreeMap<String, String>,
+    /// `[package].category`, when declared.
+    pub category: Option<String>,
+}
+
+impl PackageAbout {
+    fn from_manifest(package: &tilo_app_package::manifest::Package) -> Self {
+        Self {
+            name: package
+                .name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| package_store::display_name_for_package_id(&package.id)),
+            names: package.names.clone(),
+            category: package
+                .category
+                .clone()
+                .filter(|category| !category.trim().is_empty()),
+        }
+    }
+
+    /// The name to show in `locale` (BCP 47): its exact tag, else its
+    /// language, else [`Self::name`].
+    #[must_use]
+    pub fn name_for(&self, locale: &str) -> &str {
+        let language = locale.split(['-', '_']).next().unwrap_or(locale);
+        [locale, language]
+            .into_iter()
+            .find_map(|wanted| {
+                self.names
+                    .iter()
+                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
+            })
+            .map_or(self.name.as_str(), |(_, name)| name.as_str())
+    }
+}
+
 /// Host Flatpak availability and machine-readable installation/remote rows.
 #[derive(Clone, Debug, Default)]
 pub struct FlatpakStatus {
@@ -186,7 +238,7 @@ impl BlockingClient {
     /// # Errors
     ///
     /// Returns an error when the service request or an installed manifest cannot be read.
-    pub fn list(&self) -> Result<Vec<InstalledPackage>, String> {
+    pub fn list(&self) -> Result<Vec<ListedPackage>, String> {
         self.complete(self.begin_list())
     }
 
@@ -298,6 +350,40 @@ impl BlockingClient {
     /// Returns why the configured repository cannot be verified or read.
     pub fn registry_catalogue(&self, registry: &str) -> Result<String, String> {
         self.complete(self.begin_registry_catalogue(registry))
+    }
+
+    /// Resolve a signed offer providing exactly this runtime, without
+    /// installation, as its JSON catalogue entry (`null` when none is offered).
+    /// The caller owns parsing, so this client stays free of the installer.
+    ///
+    /// # Errors
+    /// Returns a repository proof, transport or response error.
+    pub fn runtime_offer(&self, registry: &str, runtime: &str) -> Result<String, String> {
+        let mut request = self.client.runtime_offer_request();
+        request.get().set_registry(registry);
+        request.get().set_runtime(runtime);
+        let response = self.wait(request.send().promise)?;
+        let json = response
+            .get()
+            .map_err(|error| error.to_string())?
+            .get_offer()
+            .map_err(|error| error.to_string())?
+            .to_string()
+            .map_err(|error| error.to_string())?;
+        if json.len() > 256 * 1024 {
+            return Err("runtime offer exceeds the response limit".into());
+        }
+        Ok(json)
+    }
+
+    /// The verified metadata the host last accepted from an enabled
+    /// repository, without the network. Fails when there is none, or when it
+    /// no longer verifies (it expired, or a newer one was accepted since).
+    ///
+    /// # Errors
+    /// Returns why no verified catalogue is held for the repository.
+    pub fn last_verified_catalogue(&self, registry: &str) -> Result<String, String> {
+        self.complete(self.begin_last_verified_catalogue(registry))
     }
 
     /// Read cached app metadata from one configured Flatpak repository.

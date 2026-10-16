@@ -90,7 +90,7 @@ impl XkbComposeState {
             xkb_compose_feed_result::XKB_COMPOSE_FEED_IGNORED => ComposeStatus::Ignored,
             xkb_compose_feed_result::XKB_COMPOSE_FEED_ACCEPTED => {
                 ComposeStatus::Accepted(self.status())
-            },
+            }
         }
     }
 

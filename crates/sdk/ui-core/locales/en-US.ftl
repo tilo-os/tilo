@@ -179,6 +179,8 @@ history-selection-clear = Clear
 history-sync-finish-edit = Finish the current edit before receiving remote changes
 history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
 history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
+history-sync-offline = Working offline. Changes will sync when you're back.
+history-sync-remote-waiting = Remote updates will apply when the current edit finishes.
 history-sync-owner-closed = Document owner closed or changed. Reconnect before synchronizing its replacement.
 
 # File history in the History host.
@@ -273,10 +275,41 @@ block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Copied
 block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: write above · Tab / Shift+Tab: indent / outdent · Ctrl+Shift+C: copy code
 widget-breadcrumb = Path
+
+widget-filepicker-cancel = Cancel
+widget-filepicker-open = Open
+widget-filepicker-save = Save
+widget-filepicker-choose-folder = Choose folder
+widget-filepicker-replace = Replace
+widget-filepicker-replace-title = Replace “{ $name }”?
+widget-filepicker-replace-body = A file named “{ $name }” already exists here. Replacing it overwrites its contents.
+widget-filepicker-replace-question = A file named “{ $name }” already exists here. Replace it?
+widget-filepicker-replace-detail = Replacing it overwrites its contents.
+widget-filepicker-up = Up
+widget-filepicker-places = Places
+widget-filepicker-files = Files
+widget-filepicker-folders = Folders
+widget-filepicker-file-type = File type
+widget-filepicker-all-files = All files
+widget-filepicker-name-label = Name
+widget-filepicker-name-accessible = Filename
+widget-filepicker-name-placeholder = Filename…
+widget-filepicker-column-name = Name
+widget-filepicker-column-size = Size
+widget-filepicker-column-modified = Modified
+widget-filepicker-empty = This folder is empty
+widget-filepicker-place-home = Home
+widget-filepicker-place-documents = Documents
+widget-filepicker-place-downloads = Downloads
+widget-filepicker-place-pictures = Pictures
+widget-filepicker-place-music = Music
+widget-filepicker-place-videos = Videos
+
 widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
 widget-maximized-restore = Restore
+widget-maximized-fullscreen = Full screen
 tree-rename-field = Rename
 tree-move-up = Move up
 tree-move-down = Move down
@@ -391,6 +424,7 @@ palette-result-count = { $count ->
 palette-empty = Nothing to show
 palette-no-results = No results for “{ $query }”
 palette-no-results-hint = Try fewer words, or widen the scope
+palette-searching = Searching…
 
 # Calendar section headings in the workspace activity timeline.
 day-yesterday = Yesterday
@@ -400,6 +434,11 @@ history-day-this-week = This week
 history-day-earlier = Earlier
 
 save-status-saving = Saving…
+save-status-stalled = Couldn't save yet. Retrying…
+save-status-not-saved = Not saved
+save-status-not-saved-detail = Your changes are still here.
+save-status-not-saved-named = { $document } wasn't saved
+save-status-not-saved-notice = Your changes are still in { $app }.
 save-status-saved = Saved
 save-status-failed = Save failed
 save-status-retry = Try again
@@ -463,6 +502,13 @@ device-display-session-disconnected = The Tilo session disconnected.
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+
+terminal-service-control-unavailable = The shell connection is unavailable.
+terminal-service-protocol-unavailable = Update the shell service before opening a session in this window.
+terminal-service-invalid-session = The shell service returned an invalid session.
+terminal-service-missing-lease = The shell session did not provide its lifetime connection.
+terminal-service-missing-terminal = The shell session did not provide a terminal.
+terminal-service-invalid-lease = The shell session connection could not be validated.
 
 # Shown instead of an app's view while its record does not read as the app expects.
 framework-unreadable = This cannot be opened

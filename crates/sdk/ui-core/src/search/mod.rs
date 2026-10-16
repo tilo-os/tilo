@@ -65,6 +65,10 @@ pub use row::SearchRow;
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics.
 pub use tilo_search::fold as fold_search_text;
-pub use tilo_search::{ListIndex, MAX_FIELD_RANK, Matching, fold_char, locate};
+pub use tilo_search::{Frecency, ListIndex, MAX_FIELD_RANK, Matching, fold_char, initials, locate};
+/// Whether no search waits for the engine, and when to search again: where
+/// the engine's code is fetched on first use (the browser desktop), a
+/// search of a large index finds nothing until it is in.
+pub use tilo_search::{engine_generation, engine_ready};
 
 pub mod system;

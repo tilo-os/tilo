@@ -37,7 +37,8 @@ not alter compilation and does not belong in an upstream winit patch.
 `tools/verify-vendor-trees.py` applies exactly that normalization while
 comparing the histories: it excludes only the four named publication files,
 removes exactly one known `cargo-machete` block from the vendored manifest,
-and requires every remaining tracked path and byte to match. Any new local
+sets aside Tilo's own records (`TILO-FORK.md`, `PROVENANCE.md`), and requires
+every remaining tracked path and byte to match. Any new local
 delta fails verification instead of silently becoming part of the fork.
 
 ## Librespot build identity

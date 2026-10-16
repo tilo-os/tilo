@@ -13,6 +13,7 @@ use super::{
     Frame, FrameSlot, MediaElementInfo, PageFailure, PageReply, PageRequest, WebViewCommand,
     WebViewEngine, WebViewEvent,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Height of the darker "chrome" band painted at the top of every test
 /// page, in physical pixels.
@@ -275,16 +276,12 @@ impl TestEngine {
     /// holding the lock, rather than making every later call into the
     /// engine panic too.
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.lock_recover()
     }
 
     /// Same recovery as [`Self::lock_inner`], for the frame slot.
     fn lock_frames(&self) -> std::sync::MutexGuard<'_, Option<Frame>> {
-        self.frames
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.frames.lock_recover()
     }
 }
 
@@ -410,6 +407,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::SetBlockingScripts(_)
             | WebViewCommand::SetSiteExceptions(_)
             | WebViewCommand::RequestSiteStatus { .. }
+            | WebViewCommand::DevTools { .. }
             | WebViewCommand::Credentials(_)
             | WebViewCommand::SiteAction { .. }
             | WebViewCommand::StopLoading

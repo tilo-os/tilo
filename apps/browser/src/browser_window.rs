@@ -145,6 +145,11 @@ impl BrowserWindow {
         self.dirty = true;
     }
 
+    #[cfg(test)]
+    pub(crate) fn force_content_fullscreen(&mut self, active: bool) {
+        self.page.force_content_fullscreen(active);
+    }
+
     fn immersive(&self) -> bool {
         self.window_fullscreen_active && self.page.content_fullscreen()
     }

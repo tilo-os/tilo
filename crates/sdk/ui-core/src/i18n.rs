@@ -801,6 +801,14 @@ impl EmbeddedCatalog {
             .map(|(_, source)| *source)
     }
 
+    /// Every locale's Fluent source, by tag: for content that must be read in
+    /// every language at once, such as the words search matches whatever
+    /// language the desktop speaks.
+    #[must_use]
+    pub const fn sources(&self) -> &'static [(&'static str, &'static str)] {
+        self.catalogs
+    }
+
     /// A thread with no manager gets one selecting the user's locale from the
     /// environment (see [`I18nManager::install_system`]).
     #[must_use]

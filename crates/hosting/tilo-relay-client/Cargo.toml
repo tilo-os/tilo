@@ -14,6 +14,7 @@ homepage.workspace = true
 # signer seam and (with `iroh`) the certification dialer.
 [dependencies]
 tilo-relay-protocol = { version = "0.1.0", path = "../tilo-relay-protocol" }
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 iroh = { workspace = true, optional = true }
 iroh-base.workspace = true

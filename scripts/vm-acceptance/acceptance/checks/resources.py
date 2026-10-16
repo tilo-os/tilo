@@ -6,6 +6,7 @@ carries the renderer it was measured on, and so does every performance record
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import shlex
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from .. import core
 from ..core import check, expect
-from ..vm import wait_until
+from ..vm import VmError, first_json, wait_until
 
 AREA = "resources"
 
@@ -239,7 +240,8 @@ def runtime_idle(sample: dict, procs: list[dict], seconds: float, comm: str) -> 
 
 def painters(painted: list[dict]) -> dict[str, int]:
     """Painted ticks by what made them paint: the compositor's paint reasons and, when
-    client surfaces committed, the apps whose commits the frame carried. A trace from a
+    client surfaces committed, the apps whose commits the frame carried, and when it
+    animated, whose motion it was. A trace from a
     compositor that predates the columns counts them as unattributed."""
     out: dict[str, int] = {}
     for r in painted:
@@ -249,6 +251,8 @@ def painters(painted: list[dict]) -> dict[str, int]:
             label = str(r.get("paint_reasons") or "") or "no reason"
             if r.get("paint_clients"):
                 label += f" by {r['paint_clients']}"
+            if r.get("paint_animations"):
+                label += f" of {r['paint_animations']}"
         out[label] = out.get(label, 0) + 1
     return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
 
@@ -257,9 +261,30 @@ def describe_painters(by: dict[str, int]) -> str:
     return ", ".join(f"{label} {n}" for label, n in by.items())
 
 
-def measure(ctx, seconds: int, name: str | None = None) -> dict:
+def named_threads(sample: dict, names: tuple[str, ...], seconds: float) -> list[dict]:
+    """Every thread called one of `names` in any of the slot user's processes over the
+    window, summed per process and name: its CPU and context switches. A thread started
+    inside the window counts from zero."""
+    (a, b), hz = sample["threads"], sample["hz"]
+    procs = sample["procs"][1]
+    rows: dict[tuple[int, str], dict] = {}
+    for (pid, tid), (comm, ticks, cs) in b.items():
+        if comm not in names:
+            continue
+        _, t0, c0 = a.get((pid, tid), (comm, 0, 0))
+        r = rows.setdefault((pid, comm), {"pid": pid, "process": (procs.get(pid) or {}).get("comm"),
+                                          "thread": comm, "threads": 0, "cpu_pct": 0.0,
+                                          "ctxt_switches_per_s": 0.0})
+        r["threads"] += 1
+        r["cpu_pct"] = round(r["cpu_pct"] + (ticks - t0) / hz / seconds * 100, 2)
+        r["ctxt_switches_per_s"] = round(r["ctxt_switches_per_s"] + (cs - c0) / seconds, 2)
+    return sorted(rows.values(), key=lambda r: (r["thread"], -r["ctxt_switches_per_s"], r["pid"]))
+
+
+def measure(ctx, seconds: int, name: str | None = None, threads: tuple[str, ...] = ()) -> dict:
     """The idle window. With `name`, its frame trace is kept as `<name>-frames.csv`, so a
-    window that painted says which tick painted, why, and for which app."""
+    window that painted says which tick painted, why, and for which app. With `threads`,
+    `named_threads` of those names in every process of the slot user."""
     script = SAMPLE.replace("__SECS__", str(seconds)).replace("__UID__", str(ctx.vm.slot_uid()))
     mark = core.trace_mark(ctx)
     text = ctx.vm.root_exec(script, timeout=seconds + 90)
@@ -267,12 +292,14 @@ def measure(ctx, seconds: int, name: str | None = None) -> dict:
     if name:
         ctx.write(f"{name}-frames.csv", core.trace_csv(rows))
     painted = [r for r in rows if r.get("painted") == 1]
+    sample = _parse_sample(text)
     return {
         "seconds": seconds,
-        **summarize(_parse_sample(text), seconds),
+        **summarize(sample, seconds),
         "shell_loop_ticks_per_s": round(len(rows) / seconds, 2),
         "frames_painted": len(painted),
         "painted_by": painters(painted),
+        **({"named_threads": named_threads(sample, threads, seconds)} if threads else {}),
     }
 
 
@@ -620,21 +647,26 @@ def _record_idle(ctx, m: dict, ram_mib: int, variant: str = "") -> None:
         ctx.record("idle.frames", "count", [m["frames_painted"]], **window)
 
 
-def _open_several(ctx):
-    """Open the four apps; return the ones still open 8 s later.
+FOUR_APPS = ("so.tilo.terminal", "so.tilo.file-explorer", "so.tilo.settings", "so.tilo.notes")
+
+
+def _open_several(ctx, apps: tuple[str, ...] = FOUR_APPS, name: str = "R"):
+    """Open `apps` (R02's four) in the active workspace; return the ones still open 8 s later.
 
     An app whose window closed on its own in that time is recorded in
-    facts["apps_closed_after_open"], with what the session log and the user
-    journal said about it, rather than measured as if it were running."""
+    facts["apps_closed_after_open"], and one whose window never appeared in
+    facts["apps_failed_to_open"] with why, each with what the session log and the user
+    journal said about it (`<name>-apps-closed-after-open.log`), rather than measured as if
+    it were running."""
     ctx.reset()
-    shells = core.terminal_shells(ctx)
-    groups = {}
-    for app in ("so.tilo.terminal", "so.tilo.file-explorer", "so.tilo.settings", "so.tilo.notes"):
+    shells = core.terminal_shells(ctx) if "so.tilo.terminal" in apps else set()
+    groups, failed = {}, {}
+    for app in apps:
         try:
             group, _ = ctx.open_app(app)
             groups[app] = group["id"]
-        except core.CheckFailed:
-            pass
+        except core.CheckFailed as e:
+            failed[app] = str(e)[:300]
     time.sleep(8)
     # Terminal's shell runs once its guest is built, which on an account's first session
     # imports the environment's runtime first. Waiting for it keeps that
@@ -643,11 +675,11 @@ def _open_several(ctx):
         ctx.facts["terminal_shell_s"] = core.wait_new_terminal_shell(ctx, shells, core.TERMINAL_SHELL_S)
     st = ctx.state()
     closed = [app for app, gid in groups.items() if core.group_by_id(st, gid) is None]
-    if closed:
-        ctx.shot("R-apps-closed-after-open")
-        pattern = "|".join(a.replace(".", "\\.") for a in closed)
+    if closed or failed:
+        ctx.shot(f"{name}-apps-closed-after-open")
+        pattern = "|".join(a.replace(".", "\\.") for a in [*closed, *failed])
         # The compositor's own lines and the apps' ends, not their start-up chatter.
-        ctx.write("R-apps-closed-after-open.log", ctx.vm.exec(
+        ctx.write(f"{name}-apps-closed-after-open.log", ctx.vm.exec(
             "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
             f"| grep -avE 'tilo-sandbox-exec|MESA|service socket connected|action contract validation' "
             f"| grep -aE '^[^\\[]|{pattern}' | grep -aiE '{pattern}|exit|signal|panic|close|kill|fail|launch|surface' "
@@ -657,6 +689,7 @@ def _open_several(ctx):
             "| tail -n 60 | cut -c1-400; echo ---; coredumpctl --no-pager list 2>/dev/null | tail -n 10; true",
             check=False))
     ctx.facts["apps_closed_after_open"] = closed
+    ctx.facts["apps_failed_to_open"] = failed
     return [app for app in groups if app not in closed]
 
 
@@ -804,6 +837,15 @@ def idle_apps(ctx, res):
     opened = _open_several(ctx)
     res.metrics["opened"] = opened
     m = measure(ctx, ctx.config["idle_seconds"], "R02")
+    # What still asks for frames as the idle window ended, with geometry the
+    # trace's labels leave out, and each window's frame state (presented,
+    # last frame, size against its tile).
+    try:
+        motion = {"animating": (ctx.vm.state().get("chrome") or {}).get("animating"),
+                  "windows": ctx.vm.foreign_frames()}
+    except VmError as e:
+        motion = {"error": str(e)}
+    ctx.write("R02-motion.json", json.dumps(motion, indent=1))
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     # Seconds from opening Terminal to its shell running: the window opened after it.
     m["terminal_shell_s"] = ctx.facts.get("terminal_shell_s")
@@ -1074,7 +1116,79 @@ def boot(ctx, res):
         ctx.record(f"boot.{phase}_s", "s", [gate.get(f"{phase}_s")])
     problems = [] if gate["exit"] == 0 else [f"the boot gate failed: {said}"]
     problems += boot_attribution(ctx, res)
+    boot_kernel_log(ctx, res)
     expect(not problems, "; ".join(problems))
+
+
+# The kernel's own log of this boot, written whole, and the boots the persistent journal
+# holds. dmesg's ring buffer can have wrapped by the time R06 runs; journald keeps each
+# kernel message with the kernel's own timestamp, so it stands in when the early boot is gone.
+BOOT_KERNEL_LOG = r"""
+exec 2>&1
+[ -d /var/log/journal ] && echo "journal=persistent" || echo "journal=volatile"
+echo "== boots"; journalctl --list-boots --no-pager 2>/dev/null
+log="$(dmesg --color=never 2>/dev/null)"
+if ! printf '%s\n' "$log" | grep -q 'SLUB: HWalign'; then
+  log="$(journalctl -k -b -o json --no-pager 2>/dev/null | python3 -c '
+import json, sys
+for line in sys.stdin:
+    entry = json.loads(line)
+    stamp, message = entry.get("_SOURCE_MONOTONIC_TIMESTAMP"), entry.get("MESSAGE")
+    if stamp and isinstance(message, str):
+        print(f"[{int(stamp) / 1e6:12.6f}] {message}")
+')"
+fi
+echo "== dmesg"; printf '%s\n' "$log"
+echo "== end"
+"""
+KERNEL_LINE = re.compile(r"^\[\s*(\d+\.\d+)\]\s?(.*)$")
+BOOT_ID = re.compile(r"\b[0-9a-f]{32}\b")
+
+
+def parse_kernel_log(text: str) -> dict:
+    """From BOOT_KERNEL_LOG's output: the kernel's memory init (the silence that ends at
+    SLUB's first line, where the boot CPU hands all free RAM to the page allocator and,
+    with init_on_free, zeroes it first), the mem auto-init policy it reported, and whether
+    this was the first boot the persistent journal knows of."""
+    out: dict = {}
+    section = None
+    boots = 0
+    previous = None
+    for line in text.splitlines():
+        if line.startswith("== "):
+            section = line[3:].strip()
+            continue
+        if section == "boots":
+            boots += bool(BOOT_ID.search(line))
+        elif section == "dmesg" and (m := KERNEL_LINE.match(line)):
+            # A continuation line carries no stamp of its own and is no point in time.
+            stamp, message = float(m.group(1)), m.group(2)
+            if message.startswith("mem auto-init: stack:") and "mem_auto_init" not in out:
+                out["mem_auto_init"] = message.removeprefix("mem auto-init: ")
+            if message.startswith("SLUB: HWalign") and previous is not None and "kernel_meminit_s" not in out:
+                out["kernel_meminit_s"] = round(stamp - previous, 3)
+            previous = stamp
+    if "journal=persistent" in text.splitlines() and boots:
+        out["first_boot"] = boots == 1
+    return out
+
+
+def boot_kernel_log(ctx, res) -> None:
+    """Write this boot's kernel log as evidence and record the kernel's memory init and
+    whether the run measured a first boot (fresh host pages, first-boot units), which the
+    whole boot's numbers depend on."""
+    text = ctx.vm.root_exec(BOOT_KERNEL_LOG, timeout=120)
+    ctx.write("R06-dmesg.txt", text)
+    kernel = parse_kernel_log(text)
+    res.metrics.update(kernel)
+    # A log that lost its early boot records nothing; the KPI's budget entry then reports
+    # it missing rather than comparing a guess.
+    if "kernel_meminit_s" in kernel:
+        ctx.record("boot.kernel_meminit_s", "s", [kernel["kernel_meminit_s"]],
+                   what="kernel log silence ending at SLUB's first line: the boot CPU freeing all RAM")
+    if "first_boot" in kernel:
+        ctx.record("boot.first_boot", "count", [int(kernel["first_boot"])],
+                   what="1 when this boot is the only one in the persistent journal")
 
 
 # Where a passing boot's time went, written on every run (the gate names it only on a
@@ -1285,3 +1399,303 @@ def sign_in_to_desktop(ctx, res):
             problems.append(f"{label} sign-in took {steps['usable_s']} s to a usable desktop > {budget} s "
                             f"({steps})")
     expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
+
+
+# -- an idle shared workspace (R09) ------------------------------------------
+
+# A workspace is natively committed only when a relay of another device governs it: one
+# of the person's hosts, which may not own workspaces itself (a host that may is a node,
+# whose rooms are stewarded, not committed). The run makes one in the guest, as a person
+# enrolls a home server: the relay's own key, certified out of band by the slot identity's
+# root with the host capability and recorded as its home peer, then `invitation.issue`
+# on a fresh workspace, which shares it on that relay and enrolls this device into it.
+HOME_RELAY_DIR = "tilo-acceptance-home-relay"
+HOME_RELAY_UNIT = "tilo-acceptance-home-relay"
+HOME_RELAY_LABEL = "Acceptance home relay"
+SHARED_WORKSPACE = "Acceptance shared"
+# Two apps that read their records through the broker: their committed reads are what
+# the broker holds a wait for.
+SHARED_APPS = ("so.tilo.notes", "so.tilo.file-explorer")
+# The kernel truncates thread names to 15 bytes: the compositor's collaboration broker
+# (`tilo-collab-broker-capnp`) and each app's collaboration shovel (`ui-collab-shovel`).
+BROKER_THREAD = "tilo-collab-bro"
+SHOVEL_THREAD = "ui-collab-shove"
+
+# As the slot user, in a fresh owner-only directory of its runtime dir: the relay's
+# device key, printed as one JSON line with its relay's endpoint id.
+HOME_RELAY_KEY = r"""
+exec 2>&1
+set -eu
+d="${XDG_RUNTIME_DIR:?}/__DIR__"
+systemctl --user stop __UNIT__.service >/dev/null 2>&1 || true
+rm -rf "$d"
+mkdir -m 700 "$d"
+mkdir -m 700 "$d/identity" "$d/state" "$d/records"
+tilo-enroll device-key --identity-root "$d/identity"
+"""
+
+# The slot identity's root certifies the relay's key as a host and records it as a home
+# peer listening on loopback; the relay installs its certificate and starts as a transient
+# unit of the slot user's manager, ready once it has bound its endpoint. A slot without a
+# throwaway identity root is refused: this never enrolls a host into a real identity.
+HOME_RELAY_START = r"""
+exec 2>&1
+set -eu
+d="${XDG_RUNTIME_DIR:?}/__DIR__"
+root="${TILO_IDENTITY_ROOT:-}"
+[ -n "$root" ] || { echo "HOME-RELAY no-identity-root"; exit 0; }
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+tilo-enroll certify --identity-root "$root" --identity-dir "${XDG_CONFIG_HOME:-$HOME/.config}/tilo/identity" \
+  --device __DEVICE__ --label __LABEL__ --capability host --capability read-all \
+  --home-peer-service __SERVICE__ --home-peer-addr 127.0.0.1:__PORT__ --out "$d/host.cert"
+tilo-enroll install-cert --identity-root "$d/identity" --identity-dir "$d/records" --cert "$d/host.cert"
+cat > "$d/relay.toml" <<TOML
+identity_root = "$d/identity"
+state_root = "$d/state"
+full_replica_status = "$d/full-replica-status.json"
+home_peer_bundle = "$d/home-peer.toml"
+iroh_listen = "127.0.0.1:__PORT__"
+TOML
+systemd-run --user --quiet --collect --unit=__UNIT__ --service-type=notify -p TimeoutStartSec=60 \
+  /usr/bin/tilo-relay --config "$d/relay.toml" run
+echo "HOME-RELAY started"
+"""
+
+HOME_RELAY_STOP = r"""
+d="${XDG_RUNTIME_DIR:?}/__DIR__"
+journalctl --user -u __UNIT__ --no-pager -o short-monotonic 2>/dev/null | tail -n 200 | cut -c1-400
+systemctl --user stop __UNIT__.service >/dev/null 2>&1
+rm -rf "$d"
+true
+"""
+
+HOME_PEERS = '"${TILO_IDENTITY_ROOT:?}/peers/home-peers.json"'
+
+# What the compositor said about launches, authorship and the native owner while R09 ran:
+# an app that never opens in a committed workspace is refused on that path.
+SHARED_SESSION_LOG = (
+    "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
+    "| grep -aiE 'launch|authorship|native|membership|owner|custody|refus|identity|enroll|governor' "
+    "| tail -n 200 | cut -c1-500; true")
+
+
+def _guest(script: str, **values) -> str:
+    for key, value in {"DIR": HOME_RELAY_DIR, "UNIT": HOME_RELAY_UNIT, **values}.items():
+        script = script.replace(f"__{key}__", str(value))
+    return script
+
+
+def home_relay_port(uid: int) -> int:
+    """The loopback port the slot's relay listens on: one per slot user, so two slots of a
+    shared VM never contend, and below Linux's ephemeral range."""
+    return 24000 + uid % 8000
+
+
+def start_home_relay(ctx) -> dict:
+    """Make the slot identity's home relay and start it; return its device key, relay
+    endpoint id and port. Raises Unobservable when the guest cannot."""
+    out = ctx.vm.exec(_guest(HOME_RELAY_KEY), check=False)
+    try:
+        key = first_json(out)
+        device, service = key["device_public_key"], key["relay_service_node_id"]
+    except (VmError, KeyError, TypeError, ValueError) as e:
+        raise core.Unobservable(f"tilo-enroll device-key gave no relay key: {out.strip()[-300:]!r}") from e
+    port = home_relay_port(ctx.vm.slot_uid())
+    out = ctx.vm.exec(_guest(HOME_RELAY_START, DEVICE=device, SERVICE=service, PORT=port,
+                             LABEL=shlex.quote(HOME_RELAY_LABEL)), timeout=180, check=False)
+    ctx.write("R09-home-relay-setup.txt", out)
+    if "HOME-RELAY no-identity-root" in out:
+        raise core.Unobservable("the slot has no identity root of its own (TILO_IDENTITY_ROOT): "
+                                "R09 enrolls a host only into a throwaway identity")
+    if "--home-peer-service" in out and "unexpected argument" in out:
+        raise core.Unobservable("the image's tilo-enroll cannot record a home peer out of band "
+                                "(it predates `certify --home-peer-service`)")
+    if "HOME-RELAY started" not in out:
+        raise core.Unobservable(f"the home relay did not start: {out.strip()[-400:]!r}")
+    return {"device": device, "service": service, "port": port}
+
+
+def without_home_peer(text: str, device: str) -> str | None:
+    """A home-peer registry less `device`'s entry, or None when it has none (or the
+    registry is not one): nothing to write back."""
+    try:
+        peers = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(peers, list):
+        return None
+    kept = [p for p in peers if not (isinstance(p, dict) and p.get("device_node_id") == device)]
+    return None if len(kept) == len(peers) else json.dumps(kept, indent=2)
+
+
+def stop_home_relay(ctx, device: str | None) -> None:
+    """Stop the relay, keep its journal as evidence, and remove its home-peer entry so a
+    slot that runs the suite again does not keep dialling relays that are gone."""
+    ctx.write("R09-home-relay.log", ctx.vm.exec(_guest(HOME_RELAY_STOP), check=False))
+    if device is None:
+        return
+    text = ctx.vm.exec(f"cat {HOME_PEERS} 2>/dev/null; true", check=False)
+    rest = without_home_peer(text, device)
+    if rest is not None:
+        blob = base64.b64encode(rest.encode()).decode()
+        ctx.vm.exec(f"f={HOME_PEERS}; echo {blob} | base64 -d > \"$f.acc-tmp\" && "
+                    "chmod 644 \"$f.acc-tmp\" && mv -f \"$f.acc-tmp\" \"$f\"", check=False)
+
+
+def committed_workspace(state: dict, host_device: str) -> dict | None:
+    """The workspace whose room this device's native owner holds under `host_device`'s
+    governance, when that governor may not own workspaces: a room whose app records the
+    owner commits (shell `commits_native_documents`), not one whose channels a node
+    stewards. None while the enrollment is pending or the room is another's."""
+    tree = state["workspace_tree"]
+    rooms = (tree.get("native_authority") or {}).get("rooms") or {}
+    want = bytes.fromhex(host_device)
+    for w in tree["workspaces"]:
+        stored = rooms.get(str(w.get("room")))
+        governor = (stored or {}).get("governor") or {}
+        if bytes(governor.get("device_public_key") or []) != want:
+            continue
+        caps = governor.get("capabilities") or {}
+        if not (caps.get("can_own_workspaces") and caps.get("can_act_as_host") and not caps.get("foreign")):
+            return w
+    return None
+
+
+def describe_native_rooms(state: dict) -> str:
+    """The native owner's rooms and pending enrollments, for a failure message."""
+    authority = state["workspace_tree"].get("native_authority") or {}
+    rooms, pending = authority.get("rooms") or {}, authority.get("pending") or {}
+    governed = [f"{room} (governor {bytes((r.get('governor') or {}).get('device_public_key') or []).hex()[:12]})"
+                for room, r in rooms.items()]
+    return f"rooms: {', '.join(governed) or 'none'}; pending: {', '.join(pending) or 'none'}"
+
+
+def invoke_settled(ctx, provider: str, action: str, args: dict, timeout: float = 90):
+    """Invoke `action` and follow it until it settles; its output when it succeeded."""
+    reply = ctx.vm.control_json("actions", "invoke", provider, action, "--args-json", json.dumps(args),
+                                "--wait=30000", timeout=60)
+    deadline = time.monotonic() + timeout
+    while True:
+        receipt = (reply or {}).get("receipt") or {}
+        update = receipt.get("update") or {}
+        state = update.get("state")
+        if state == "succeeded":
+            return update.get("output")
+        if state in ("failed", "cancelled"):
+            raise core.CheckFailed(f"{action} {state}: {json.dumps(update)[:400]}")
+        job = receipt.get("broker_invocation_id")
+        if job is None or time.monotonic() > deadline:
+            raise core.CheckFailed(f"{action} did not settle within {timeout:.0f} s: {json.dumps(update)[:400]}")
+        reply = ctx.vm.control_json("actions", "status", str(job), "--wait=30000", timeout=60)
+
+
+def _select_workspace(ctx, wid) -> None:
+    if ctx.state()["workspace_tree"]["active"] != wid:
+        ctx.vm.invoke("actions", f"workspace.select.{wid}")
+        ctx.wait_state(lambda s: s["workspace_tree"]["active"] == wid, 8, f"workspace {wid} active")
+
+
+def share_new_workspace(ctx, host_device: str) -> dict:
+    """Create a workspace, make it active and invite into it, which shares it on the home
+    relay; return it once this device's enrollment into it is committed."""
+    before = {w["id"] for w in ctx.state()["workspace_tree"]["workspaces"]}
+    ctx.vm.invoke("actions", "workspace.create", {"name": SHARED_WORKSPACE})
+    st = ctx.wait_state(lambda s: [w for w in s["workspace_tree"]["workspaces"] if w["id"] not in before],
+                        8, "a new workspace")
+    _select_workspace(ctx, next(w for w in st["workspace_tree"]["workspaces"] if w["id"] not in before)["id"])
+    # Shared on the relay: nobody redeems the token, and it is never written down.
+    invoke_settled(ctx, "actions", "invitation.issue",
+                   {"role": "viewer", "expires_in_seconds": 3600, "confirm": True})
+    last = {}
+
+    def committed():
+        last["s"] = ctx.state()
+        return committed_workspace(last["s"], host_device)
+
+    shared = wait_until(committed, 60, 1.0)
+    if shared is None:
+        raise core.CheckFailed("the invited workspace was not committed under the home relay within "
+                               f"60 s ({describe_native_rooms(last['s'])})")
+    _select_workspace(ctx, shared["id"])
+    return shared
+
+
+def shared_idle(m: dict, budgets: dict) -> tuple[dict, list[str]]:
+    """The compositor's broker threads and the apps' shovels in an idle shared workspace,
+    against `idle_shared_{broker,shovel}_wakeups_per_s`. Unobservable without either: a
+    desktop with no broker or no app shovel did not hold the waits this measures."""
+    pid, rows = m["compositor_pid"], m.get("named_threads") or []
+    broker = [r for r in rows if r["pid"] == pid and r["thread"] == BROKER_THREAD]
+    shovels = [r for r in rows if r["pid"] != pid and r["thread"] == SHOVEL_THREAD]
+    if not broker:
+        raise core.Unobservable(f"the compositor ran no {BROKER_THREAD} thread in the shared workspace")
+    if not shovels:
+        raise core.Unobservable(f"no app ran a {SHOVEL_THREAD} thread in the shared workspace")
+    out = {"broker_wakeups_per_s": round(sum(r["ctxt_switches_per_s"] for r in broker), 2),
+           "broker_threads": sum(r["threads"] for r in broker),
+           "shovel_wakeups_per_s": round(sum(r["ctxt_switches_per_s"] for r in shovels), 2),
+           "shovels": sum(r["threads"] for r in shovels),
+           "shovel_processes": sorted({r["process"] or "?" for r in shovels})}
+    problems = []
+    if out["broker_wakeups_per_s"] > budgets["idle_shared_broker_wakeups_per_s"]:
+        problems.append(f"the compositor's collaboration broker woke {out['broker_wakeups_per_s']}/s > "
+                        f"{budgets['idle_shared_broker_wakeups_per_s']}/s in an idle shared workspace "
+                        "(a held read re-checked on a clock rather than on announcements)")
+    if out["shovel_wakeups_per_s"] > budgets["idle_shared_shovel_wakeups_per_s"]:
+        woke = ", ".join(f"{r['process']}[{r['pid']}] {r['ctxt_switches_per_s']}/s"
+                         for r in sorted(shovels, key=lambda r: -r["ctxt_switches_per_s"])[:4]
+                         if r["ctxt_switches_per_s"] > 0)
+        problems.append(f"the apps' collaboration shovels woke {out['shovel_wakeups_per_s']}/s > "
+                        f"{budgets['idle_shared_shovel_wakeups_per_s']}/s ({woke})")
+    return out, problems
+
+
+@check("R09", AREA, "Idle in a shared workspace: the broker and the apps' shovels sleep until told")
+def idle_shared(ctx, res):
+    """A natively committed workspace, made by the real enrollment, with Notes and Files
+    open and nothing edited: the broker holds each committed read's wait and re-checks it
+    only when an identity or membership input announces a change, and the apps'
+    collaboration shovels have nothing to carry."""
+    ctx.reset()
+    home = ctx.state()["workspace_tree"]["active"]
+    device = None
+    try:
+        relay = start_home_relay(ctx)
+        device = relay["device"]
+        res.metrics["home_relay"] = relay
+        shared = share_new_workspace(ctx, device)
+        res.metrics["workspace"] = {"id": shared["id"], "room": shared.get("room")}
+        opened = _open_several(ctx, SHARED_APPS, "R09")
+        res.metrics["opened"] = opened
+        here = next(w for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == shared["id"])
+        groups = [g for s in here["strips"] for g in s["window_groups"]]
+        failed = ctx.facts.get("apps_failed_to_open") or {}
+        if failed:
+            res.metrics["failed_to_open"] = failed
+            ctx.write("R09-session.log", ctx.vm.exec(SHARED_SESSION_LOG, check=False))
+        expect(len(opened) == len(SHARED_APPS) and len(groups) >= len(SHARED_APPS),
+               f"{len(opened)} of {len(SHARED_APPS)} apps stayed open in the shared workspace "
+               f"({opened}; {len(groups)} window groups there; never opened: {failed or 'none'})")
+        m = measure(ctx, ctx.config["idle_seconds"], "R09", threads=(BROKER_THREAD, SHOVEL_THREAD))
+        res.metrics.update(m, renderer=ctx.facts.get("renderer"))
+        ctx.write("R09-idle-shared.json", json.dumps(m, indent=1))
+        judged, problems = shared_idle(m, ctx.config["budgets"])
+        res.metrics["shared"] = judged
+        window = {"window_s": m["seconds"]}
+        ctx.record("idle.wakeups_per_s.shared_broker", "per_s", [judged["broker_wakeups_per_s"]],
+                   threads=judged["broker_threads"], **window)
+        ctx.record("idle.wakeups_per_s.shared_shovels", "per_s", [judged["shovel_wakeups_per_s"]],
+                   shovels=judged["shovels"], apps=",".join(opened), **window)
+        expect(not problems, "; ".join(problems))
+    finally:
+        _leave_shared(ctx, res, home, device)
+
+
+def _leave_shared(ctx, res, home, device: str | None) -> None:
+    """Close R09's windows, return to the workspace the run was in and stop the relay.
+    Every step runs whatever the one before did; what failed is kept in the metrics."""
+    for step in (ctx.reset, lambda: _select_workspace(ctx, home), lambda: stop_home_relay(ctx, device)):
+        try:
+            step()
+        except Exception as e:  # noqa: BLE001 - every cleanup step must run
+            res.metrics.setdefault("cleanup_errors", []).append(str(e)[:300])

@@ -11,8 +11,24 @@ tilo-vm vm upgrade --from sha:1a2b3c4  # or: a CI build of main, no OS build her
 tilo-vm vm rollback-image              # back to the image before, if the new one is bad
 ```
 
-No new disk and no new VM: slots, layers and in-VM build dirs live in `/var`,
-which bootc keeps across images. Sessions restart with the reboot.
+No new disk and no new VM: slots and in-VM build dirs live in `/var`, which
+bootc keeps across images. Sessions restart with the reboot.
+
+Layers do not carry over. Each is built against one image, and on another one
+it would run an old program against the new image's (an old shell against a
+new launcher, an old tilo-vmd against a new protocol). So the first boot of a
+different image, before `systemd-sysext` merges anything
+(`tilo-vm-reconcile-image.service`), puts every slot back on the image itself:
+generation 0, with the generations made for the old image deleted and their
+layers removed later in the boot. `vm upgrade` reports what was dropped, and
+`tilo-vm status` keeps saying it. Swap again what you still need: the swap
+builds it against the new image. A rollback to the previous image is an image
+change too, and starts from generation 0 as well.
+
+bootc fetches only the layers of the new image it does not hold yet, and needs
+room for those alone: what an earlier attempt downloaded before it was cut
+short is reused. When even that does not fit, the error says how much is
+needed and how much is free.
 
 ## Pick the fastest loop
 

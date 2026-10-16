@@ -28,6 +28,7 @@ pub const DRAG_START_THRESHOLD_PX: f64 = 4.0;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Weak};
 
+use tilo_lock::MutexRecover as _;
 use winit::window::Window;
 
 /// The window drags are started from. A `Weak` so the toolkit does not
@@ -40,10 +41,7 @@ static DRAG_WINDOW: Mutex<Option<Weak<Window>>> = Mutex::new(None);
 /// with no drag support, [`start_file_drag`] reports that it started
 /// nothing rather than pretending.
 pub fn set_drag_window(window: &std::sync::Arc<Window>) {
-    *DRAG_WINDOW
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        Some(std::sync::Arc::downgrade(window));
+    *DRAG_WINDOW.lock_recover() = Some(std::sync::Arc::downgrade(window));
 }
 
 /// The mime type a list of `file://` URIs travels as.
@@ -131,9 +129,7 @@ pub fn start_file_drag(paths: &[PathBuf]) -> bool {
 /// something that is not a file on disk.
 pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
     let window = {
-        let slot = DRAG_WINDOW
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slot = DRAG_WINDOW.lock_recover();
         slot.as_ref().and_then(Weak::upgrade)
     };
     let Some(window) = window else {

@@ -78,6 +78,7 @@ impl<A: 'static> ContinuityAction<A> {
             confirm,
         } = self;
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: provider_id.into(),
@@ -1085,6 +1086,7 @@ fn wake_search_result(
 ) -> SearchResult {
     let bridge = Rc::clone(bridge);
     SearchResult {
+        shortcut: None,
         kind: ResourceKind::Action,
         operation_kind: tilo_actions::OperationKind::Effect,
         provider_id: DEVICE_PROVIDER_ID.into(),
@@ -1399,6 +1401,7 @@ impl ContinueFromDeviceProvider {
     ) -> SearchResult {
         let expected = expected.clone();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::View,
             provider_id: CONTINUE_PROVIDER_ID.into(),
@@ -1916,6 +1919,7 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }
     }
 

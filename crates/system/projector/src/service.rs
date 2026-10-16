@@ -11,7 +11,7 @@ use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -25,6 +25,7 @@ use crate::error::ProjectorError;
 use crate::session::context::{EventSink, SessionContext, SessionControl};
 use crate::session::paths::SessionPaths;
 use crate::session::{self, Helpers, SESSION_READY_TIMEOUT, SESSION_STOP_TIMEOUT};
+use tilo_lock::MutexRecover as _;
 
 /// Discovery a client may ask for at most, so one request cannot hold its
 /// connection for an unbounded time.
@@ -39,7 +40,7 @@ struct Clients {
 
 impl Clients {
     fn lock(&self) -> MutexGuard<'_, Vec<(u64, mpsc::Sender<ProjectorEvent>)>> {
-        self.senders.lock().unwrap_or_else(PoisonError::into_inner)
+        self.senders.lock_recover()
     }
 
     fn join(
@@ -171,7 +172,7 @@ impl Service {
     }
 
     fn lock_session(&self) -> MutexGuard<'_, Option<Session>> {
-        self.session.lock().unwrap_or_else(PoisonError::into_inner)
+        self.session.lock_recover()
     }
 
     /// Starts a session to `device`, stopping the running one first. Its

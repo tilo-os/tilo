@@ -206,6 +206,9 @@ pub struct MailState {
     /// read-on-open action from being queued.
     pub inspection: Option<MessageId>,
     pub status: Option<String>,
+    /// The senders (lower-case addresses) whose remote images the person
+    /// allowed. Part of the person's Mail preferences, so it follows them.
+    pub remote_senders: std::collections::BTreeSet<String>,
 
     /// Remote avatar loader (Gravatar). No-op fetcher unless built `live`.
     pub images: ImageStore,
@@ -284,6 +287,7 @@ impl MailState {
             selected: None,
             bulk_selection: Vec::new(),
             bulk_selecting: false,
+            remote_senders: std::collections::BTreeSet::new(),
             inspection: None,
             status: None,
             images,

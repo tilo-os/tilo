@@ -131,6 +131,7 @@ impl Fixture {
                     tabs: vec![tab],
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
             }
             chrome.bump();
@@ -163,6 +164,7 @@ impl Fixture {
                     tabs: vec![tab],
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
             }
             chrome.bump();

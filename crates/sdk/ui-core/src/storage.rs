@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
+use tilo_lock::MutexRecover as _;
 
 pub use settings_store::ChangeOrigin;
 pub use tilo_files::{Dir, FsError};
@@ -183,22 +184,40 @@ impl SettingsDocument {
         }
     }
 
-    /// The whole document.
+    /// The whole document, with the changes still on their way to it
+    /// ([`flush_settings_writes`]).
     #[must_use]
     pub fn load(&self) -> Map<String, Value> {
-        match self {
+        let mut doc = match self {
             Self::Session => settings_store::load(),
             Self::File(path) => settings_store::load_at(path),
+        };
+        for change in lock_queue().pending.iter().filter(|c| c.document == *self) {
+            settings_store::merge_section(&mut doc, &change.name, change.values.clone());
         }
+        doc
     }
 
-    /// One section's keys.
+    /// One section's keys, with the changes still on their way to it.
     #[must_use]
     pub fn section(&self, name: &str) -> Map<String, Value> {
-        match self {
+        let mut section = match self {
             Self::Session => settings_store::load_section(name),
             Self::File(path) => settings_store::load_section_at(path, name),
+        };
+        for change in &lock_queue().pending {
+            if change.document == *self && change.name == name {
+                section.extend(change.values.clone());
+            }
         }
+        section
+    }
+
+    /// Whether this process writes the document's file itself: a file, or
+    /// the session's when the host installed no source of its own (the
+    /// Settings app, which the launcher hands the session document).
+    fn is_file(&self) -> bool {
+        matches!(self, Self::File(_)) || settings_store::installed_source().is_none()
     }
 
     /// Merge `values` into section `name`, keeping every other section and
@@ -224,12 +243,26 @@ impl SettingsDocument {
         values: Map<String, Value>,
         origin: Option<&settings_store::ChangeOrigin>,
     ) -> std::io::Result<()> {
-        let written = match (self, origin) {
-            (Self::Session, Some(origin)) => {
-                settings_store::update_section_by(name, values, origin)
+        let file = self.is_file();
+        let written = if file && crate::rt::is_ui_thread() {
+            defer(Change {
+                document: self.clone(),
+                name: name.to_owned(),
+                values,
+            });
+            Ok(())
+        } else {
+            if file {
+                // After what a UI thread changed before, in the order made.
+                store_pending();
             }
-            (Self::Session, None) => settings_store::update_section(name, values),
-            (Self::File(path), _) => settings_store::update_section_at(path, name, values),
+            match (self, origin) {
+                (Self::Session, Some(origin)) => {
+                    settings_store::update_section_by(name, values, origin)
+                }
+                (Self::Session, None) => settings_store::update_section(name, values),
+                (Self::File(path), _) => settings_store::update_section_at(path, name, values),
+            }
         };
         WRITES.fetch_add(1, Ordering::AcqRel);
         written
@@ -245,6 +278,153 @@ impl SettingsDocument {
             },
             writes: WRITES.load(Ordering::Acquire),
         }
+    }
+}
+
+/// A change to a settings file a UI thread made, not yet stored.
+#[derive(Clone)]
+struct Change {
+    document: SettingsDocument,
+    name: String,
+    values: Map<String, Value>,
+}
+
+/// The settings changes UI threads made, stored in order off them.
+///
+/// Storing a change takes the document's lock, rewrites the file and syncs
+/// it: on a busy disk that took hundreds of milliseconds, and as long as
+/// another writer held the lock, and the window waited for it on every
+/// toggle and every step of a slider. A UI thread's change is queued
+/// instead and shows at once to every reader in the process (reads apply
+/// the queue over the file). A background job stores the queue, oldest
+/// first: every queued change to a file under one lock and one atomic
+/// replace, each merged into the file as it is then. The last change to a
+/// key wins and what other processes stored meanwhile is kept. A writer on
+/// any other thread stores the queue first, so changes land in the order
+/// they were made.
+struct Queue {
+    pending: Vec<Change>,
+    /// A background job is to store the queue.
+    scheduled: bool,
+    /// A thread is writing the oldest changes.
+    writing: bool,
+    /// The window to wake when a change could not be stored, so it shows
+    /// the document as it is.
+    wake: Option<crate::WakeHandle>,
+}
+
+static QUEUE: std::sync::Mutex<Queue> = std::sync::Mutex::new(Queue {
+    pending: Vec::new(),
+    scheduled: false,
+    writing: false,
+    wake: None,
+});
+static STORED: std::sync::Condvar = std::sync::Condvar::new();
+
+fn lock_queue() -> std::sync::MutexGuard<'static, Queue> {
+    QUEUE.lock_recover()
+}
+
+fn wait(queue: std::sync::MutexGuard<'static, Queue>) -> std::sync::MutexGuard<'static, Queue> {
+    STORED
+        .wait(queue)
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn defer(change: Change) {
+    let mut queue = lock_queue();
+    queue.pending.push(change);
+    queue.wake = Some(crate::WakeHandle::new());
+    if std::mem::replace(&mut queue.scheduled, true) {
+        return;
+    }
+    drop(queue);
+    // A host with no background work stores it here rather than lose it.
+    if crate::background::Background::current()
+        .spawn("settings writes", store_queue)
+        .is_err()
+    {
+        store_queue();
+    }
+}
+
+/// The background job: store the queue until it is empty.
+fn store_queue() {
+    loop {
+        store_pending();
+        let mut queue = lock_queue();
+        // A change queued after the last batch found this job scheduled.
+        if queue.pending.is_empty() {
+            queue.scheduled = false;
+            STORED.notify_all();
+            return;
+        }
+    }
+}
+
+/// Store every queued change on this thread, oldest first, after the batch
+/// another thread may be writing.
+fn store_pending() {
+    let mut queue = lock_queue();
+    loop {
+        if queue.writing {
+            queue = wait(queue);
+            continue;
+        }
+        if queue.pending.is_empty() {
+            return;
+        }
+        queue.writing = true;
+        let batch = queue.pending.clone();
+        drop(queue);
+        debug_assert!(
+            !crate::rt::is_ui_thread(),
+            "a settings file was written on the UI thread"
+        );
+        let mut failed = false;
+        for (at, change) in batch.iter().enumerate() {
+            let document = &change.document;
+            if batch[..at].iter().any(|c| c.document == *document) {
+                continue;
+            }
+            let path = match document {
+                SettingsDocument::File(path) => Ok(path.clone()),
+                SettingsDocument::Session => settings_store::file_write_path(),
+            };
+            let stored = path.and_then(|path| {
+                settings_store::update_document_at(&path, |doc| {
+                    for c in batch.iter().filter(|c| c.document == *document) {
+                        settings_store::merge_section(doc, &c.name, c.values.clone());
+                    }
+                })
+            });
+            if let Err(error) = stored {
+                tracing::warn!(?document, %error, "settings changes not stored");
+                failed = true;
+            }
+        }
+        queue = lock_queue();
+        queue.pending.drain(..batch.len());
+        queue.writing = false;
+        WRITES.fetch_add(1, Ordering::AcqRel);
+        if failed && let Some(wake) = queue.wake.take() {
+            wake.wake();
+        }
+        STORED.notify_all();
+    }
+}
+
+/// Store every settings change a UI thread made before going on: off a UI
+/// thread here, on one by waiting for the background, which the native
+/// runner does before the process ends.
+pub fn flush_settings_writes() {
+    if !crate::rt::is_ui_thread() {
+        store_pending();
+        return;
+    }
+    let mut queue = lock_queue();
+    while queue.scheduled {
+        queue = wait(queue);
     }
 }
 

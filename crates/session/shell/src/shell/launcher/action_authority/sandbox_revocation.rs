@@ -48,10 +48,6 @@ impl Sandbox {
         })
     }
 
-    pub(super) fn authorized(&self, published: &Published) -> bool {
-        self.authorization_status(published).is_ok()
-    }
-
     pub(super) fn authorization_status(&self, published: &Published) -> Result<(), &'static str> {
         if self.capabilities.is_empty() {
             return Ok(());
@@ -259,7 +255,7 @@ mod tests {
             std::slice::from_ref(&grant),
         )
         .unwrap();
-        assert!(snapshot.authorized(&published));
+        assert!(snapshot.authorization_status(&published).is_ok());
         published.sandboxes.insert(revoked.0.id(), snapshot);
         unrelated.register(&mut published, room, "so.tilo.other", &[]);
         other_instance.register(
@@ -302,13 +298,14 @@ mod tests {
             "same app in another room is not interrupted"
         );
         assert!(
-            !Sandbox::capture(
+            Sandbox::capture(
                 unrelated.0.id(),
                 (room, "so.tilo.android".into(), "person".into()),
                 &[grant]
             )
             .unwrap()
-            .authorized(&published),
+            .authorization_status(&published)
+            .is_err(),
             "a pending stale launch must be refused before its gate opens"
         );
     }

@@ -22,9 +22,7 @@ struct NativeFixture {
 
 #[test]
 fn native_member_terminal_audit_uses_installed_governor_and_original_retry_receipt() {
-    use tilo_peer_state::owner_commit::{
-        CommitOperation, OwnerCommitRequest, OwnerCommitService as _,
-    };
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService as _};
     let fixture = fixture();
     let service = super::NativeOwnerCommitService::new(
         native_workspace_owner::test_tree_of(&fixture.owner),
@@ -83,6 +81,7 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
             .with_current(fixture.room, |view| {
                 let now = std::time::SystemTime::now();
                 view.peer()
+                    .workspace()
                     .check_workspace_administration(fixture.certificate.device_public_key, now)?;
                 let member = view
                     .peer()
@@ -431,9 +430,9 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
             .ok_or_else(|| "actual native effect receipt missing".into())
         })
         .unwrap();
-    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+    let request = tilo_owner_commit::OwnerCommitRequest {
         room: room.to_string(),
-        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+        operation: tilo_owner_commit::CommitOperation::EffectReceipt {
             invocation: effect.invocation.0,
             redacted: serde_json::to_vec(&effect).unwrap(),
         },
@@ -459,7 +458,12 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
                 .len(),
                 130
             );
-            assert!(view.peer().workspace_effect_history_root()?.is_some());
+            assert!(
+                view.peer()
+                    .workspace()
+                    .workspace_effect_history_root()?
+                    .is_some()
+            );
             Ok(())
         })
         .unwrap();

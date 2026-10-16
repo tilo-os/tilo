@@ -49,8 +49,10 @@ use crate::browsing_mode::BrowsingMode;
 use crate::downloads::{DownloadStatus, Downloads};
 use crate::history::History;
 use crate::library::Bookmarks;
+use crate::omnibox;
 use crate::resource::{Browser, bookmark_resource_id, browser};
 use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPresentation};
+use ui::lock::MutexRecover as _;
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
 
@@ -59,8 +61,6 @@ mod toolbar;
 
 const PIP_ID: &str = "browser.media-pip";
 const PIP_ELEMENT_REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
-/// How many address-bar suggestions to show.
-const SUGGESTION_LIMIT: usize = 8;
 /// e2e id of the address input (also used internally to detect whether
 /// the user is editing it).
 const URL_INPUT_ID: &str = "browser.url_input";
@@ -125,6 +125,17 @@ fn is_supported_web_url(value: &str) -> bool {
         .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
 }
 
+/// The page that searches `query` with the engine `template` (a URL that
+/// takes the query after it, or holds `{query}`).
+fn search_url(template: &str, query: &str) -> String {
+    let query: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+    if template.contains(SEARCH_QUERY_TOKEN) {
+        template.replace(SEARCH_QUERY_TOKEN, &query)
+    } else {
+        format!("{template}{query}")
+    }
+}
+
 /// Host-like text that users conventionally enter without a scheme. Bracketed
 /// IPv6 is deliberately included; unbracketed IPv6 is ambiguous with a URL
 /// scheme/port and is not a browser address syntax.
@@ -157,6 +168,11 @@ enum PipChoice {
     SelectArea,
 }
 
+/// The ids of the toolbar controls a panel opens beside.
+fn anchor_ids(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|id| (*id).to_owned()).collect()
+}
+
 /// The panel anchored to a control of the toolbar, so a dismissal can say
 /// which one closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,6 +181,7 @@ enum PanelKind {
     Site,
     Prompt,
     Pip,
+    Extension,
 }
 
 impl PipFeedback {
@@ -402,9 +419,9 @@ pub struct BrowserWidget {
     // User-facing browser state.
     settings: Settings,
     capabilities: crate::capabilities::Capabilities,
-    startup_extensions: Vec<std::path::PathBuf>,
-    extension_notice: Option<String>,
-    extension_feedback: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Extensions: the Web Store offer, toolbar actions, popups and the
+    /// Library manager.
+    extensions: crate::extension_controller::ExtensionController,
     settings_presentation: SettingsPresentation,
     /// History pausing is an in-memory, device-local session boundary. It is
     /// never serialized to the collaborative document or the profile.
@@ -451,6 +468,22 @@ pub struct BrowserWidget {
     /// Last address-bar text a suggestion query ran for, to avoid
     /// re-querying every frame.
     last_query: Option<String>,
+    /// Visited pages prepared for per-keystroke matching.
+    omni_index: omnibox::HistoryIndex,
+    /// The index must be rebuilt: the history changed since it was built.
+    omni_stale: bool,
+    /// Quiet-period and supersede bookkeeping for the engine's suggestions.
+    suggest_debounce: omnibox::Debounce,
+    /// Fetches of the engine's suggestions, answering into `remote`.
+    suggest_fetcher: omnibox::SuggestFetcher,
+    /// The engine's suggestions for the text being typed.
+    remote: Vec<String>,
+    /// The text last typed by the person (not the inline completion).
+    last_typed: String,
+    /// An inline completion shown in the address field: `(typed, full)`.
+    inline: Option<(String, String)>,
+    /// Select the completed suffix of the address field on the next sync.
+    select_completion: Option<(usize, usize)>,
     /// Debug/`--shots-overlay`: keep forced suggestions visible without a
     /// real focus + query, so the overlay can be rendered headlessly.
     force_suggestions: bool,
@@ -513,6 +546,14 @@ pub struct BrowserWidget {
     /// Set when live browsing has no running engine; the page area explains
     /// it instead of showing a blank page.
     engine_problem: Option<EngineProblem>,
+    /// The engine being fetched from the host, when it is missing.
+    engine_setup: Option<crate::engine_setup::EngineSetup>,
+    /// Whether the first use has already asked for the engine.
+    engine_setup_tried: bool,
+    /// What the page area last drew of the setup.
+    engine_setup_shown: Option<crate::engine_setup::Setup>,
+    /// Where the host is asked for the engine; a test supplies its own.
+    engine_installer: fn() -> Option<Box<dyn ui::webview::chromium::install::EngineInstaller>>,
 }
 
 impl BrowserWidget {
@@ -557,6 +598,11 @@ impl BrowserWidget {
     }
     pub(crate) fn content_fullscreen(&self) -> bool {
         self.content_fullscreen
+    }
+    #[cfg(test)]
+    pub(crate) fn force_content_fullscreen(&mut self, active: bool) {
+        self.content_fullscreen = active;
+        self.structure_dirty = true;
     }
     pub(crate) fn set_window_fullscreen_active(&mut self, active: bool) {
         if self.window_fullscreen_active != active {
@@ -666,6 +712,8 @@ impl BrowserWidget {
         if self.history_revision != Some(revision) {
             self.history_revision = Some(revision);
             self.history = crate::history::History::of(&record.get());
+            self.omni_stale = true;
+            self.last_query = None;
             self.search_index.invalidate();
             self.structure_dirty = true;
         }
@@ -743,13 +791,7 @@ impl BrowserWidget {
             forced_loading: false,
             settings,
             capabilities: crate::capabilities::Capabilities::default(),
-            startup_extensions: if persistent {
-                crate::extensions::approved_paths()
-            } else {
-                Vec::new()
-            },
-            extension_notice: None,
-            extension_feedback: std::sync::Arc::default(),
+            extensions: crate::extension_controller::ExtensionController::new(persistent),
             settings_presentation,
             history_paused: std::sync::Arc::default(),
             observed_history_paused: false,
@@ -779,6 +821,14 @@ impl BrowserWidget {
             library_filter: ui::LocalState::new(String::new()),
             structure_dirty: false,
             last_query: None,
+            omni_index: omnibox::HistoryIndex::default(),
+            omni_stale: true,
+            suggest_debounce: omnibox::Debounce::default(),
+            suggest_fetcher: omnibox::SuggestFetcher::default(),
+            remote: Vec::new(),
+            last_typed: String::new(),
+            inline: None,
+            select_completion: None,
             force_suggestions: false,
             content_rect: std::sync::Arc::new(std::sync::Mutex::new(None)),
             resource_navigation_invocation: None,
@@ -819,6 +869,10 @@ impl BrowserWidget {
             motion_reduced: false,
             pending_controls: std::collections::VecDeque::new(),
             engine_problem: None,
+            engine_setup: None,
+            engine_setup_tried: false,
+            engine_setup_shown: None,
+            engine_installer: ui::webview::chromium::install::host_installer,
         }
     }
 
@@ -925,7 +979,7 @@ impl BrowserWidget {
             Some("loading") => self.debug_show_loading(),
             Some("error") => self.debug_show_load_error(),
             Some("suggestions") => {
-                self.debug_force_suggestions(crate::history::sample_entries());
+                self.debug_force_suggestions(&crate::history::sample_entries());
                 self.suggestions.move_selection(1);
             }
             Some("library-history") => self.debug_show_library("history"),
@@ -945,8 +999,9 @@ impl BrowserWidget {
 
     /// Test hook: pin a suggestion list into view (bypasses focus/query)
     /// so the overlay can be rendered headlessly for inspection.
-    pub fn debug_force_suggestions(&mut self, items: Vec<crate::history::HistoryEntry>) {
-        self.suggestions.set_suggestions(items);
+    pub fn debug_force_suggestions(&mut self, items: &[crate::history::HistoryEntry]) {
+        self.suggestions
+            .set_suggestions(items.iter().map(omnibox::Row::history).collect());
         self.force_suggestions = true;
     }
 
@@ -1357,10 +1412,52 @@ impl BrowserWidget {
                 if self.engine_problem != Some(EngineProblem::NotInstalled) {
                     return Err("the browser engine is already installed".into());
                 }
-                ui::portal::open_uri_detached(ENGINE_INSTALL_URI);
+                // Under way: nothing to start. Failed: try again.
+                if self.engine_setup.as_ref().is_none_or(|setup| {
+                    matches!(setup.state(), crate::engine_setup::Setup::Failed(_))
+                }) && !self.begin_engine_setup()
+                {
+                    // No host to ask (outside Tilo): the Store is the way.
+                    ui::portal::open_uri_detached(ENGINE_INSTALL_URI);
+                }
             }
         }
         Ok(())
+    }
+
+    /// Ask the host for the engine and follow it. Whether there was a host
+    /// to ask.
+    fn begin_engine_setup(&mut self) -> bool {
+        self.engine_setup = (self.engine_installer)().map(|installer| {
+            crate::engine_setup::EngineSetup::start(
+                installer,
+                Some(self.initial_url.clone()).filter(|url| is_supported_web_url(url)),
+                ui::WakeHandle::new(),
+            )
+        });
+        self.engine_setup_shown = None;
+        self.structure_dirty = true;
+        self.engine_setup.is_some()
+    }
+
+    /// First use without the engine installs it: asked for once when the
+    /// window opens, followed each frame so the page area shows progress.
+    fn drive_engine_setup(&mut self) {
+        if self.engine_problem != Some(EngineProblem::NotInstalled) {
+            return;
+        }
+        if !self.engine_setup_tried {
+            self.engine_setup_tried = true;
+            self.begin_engine_setup();
+        }
+        let now = self
+            .engine_setup
+            .as_ref()
+            .map(crate::engine_setup::EngineSetup::state);
+        if now != self.engine_setup_shown {
+            self.engine_setup_shown = now;
+            self.structure_dirty = true;
+        }
     }
 
     fn page_loading(&self) -> bool {
@@ -1661,20 +1758,12 @@ impl BrowserWidget {
             return self.reject_navigation("Browser can open only http:// or https:// addresses.");
         }
 
-        let candidate = if !input.chars().any(char::is_whitespace)
-            && looks_like_bare_web_host(input)
-        {
-            format!("https://{input}")
-        } else {
-            let query: String = url::form_urlencoded::byte_serialize(input.as_bytes()).collect();
-            if self.settings.search_engine.contains(SEARCH_QUERY_TOKEN) {
-                self.settings
-                    .search_engine
-                    .replace(SEARCH_QUERY_TOKEN, &query)
+        let candidate =
+            if !input.chars().any(char::is_whitespace) && looks_like_bare_web_host(input) {
+                format!("https://{input}")
             } else {
-                format!("{}{query}", self.settings.search_engine)
-            }
-        };
+                search_url(&self.settings.search_engine, input)
+            };
         let Ok(parsed) = url::Url::parse(&candidate) else {
             return self.reject_navigation("That web address is malformed.");
         };
@@ -1730,6 +1819,7 @@ impl BrowserWidget {
                 // Dismissing a question is declining it.
                 PanelKind::Prompt => self.capabilities.decline_prompt(&self.engine),
                 PanelKind::Pip => self.pip_feedback = None,
+                PanelKind::Extension => self.extensions.dismiss(),
             }
             self.structure_dirty = true;
         }
@@ -2140,7 +2230,11 @@ impl BrowserWidget {
         } else if self.show_library {
             self.build_library_composition(theme, &notices)
         } else if let Some(problem) = self.engine_problem {
-            engine_problem_state(problem, self.unit_binding("browser.page", "install-engine"))
+            engine_problem_state(
+                problem,
+                self.unit_binding("browser.page", "install-engine"),
+                self.engine_setup_shown.as_ref(),
+            )
         } else if let Some(error) = &self.load_error {
             let recovery = EmptyState::error("Couldn’t open this page", error)
                 .with_icon(Icon::Wifi)
@@ -2313,6 +2407,13 @@ impl BrowserWidget {
                 event => event,
             };
             match event {
+                WebViewEvent::DevToolsResult {
+                    request_id,
+                    ok,
+                    body,
+                } => {
+                    self.structure_dirty |= self.extensions.on_result(request_id, ok, &body);
+                }
                 WebViewEvent::CredentialResult(reply) => {
                     let requests = self.credentials.apply(reply);
                     crate::credentials::Credentials::send(&self.engine, requests);
@@ -2761,8 +2862,21 @@ impl BrowserWidget {
         }
     }
 
-    /// Refresh the address-bar suggestion list from history while the
-    /// address input is focused; hide it otherwise.
+    /// Forget everything the omnibox derived from the text being typed.
+    fn reset_omnibox(&mut self) {
+        self.suggestions.clear();
+        self.suggest_debounce.cancel();
+        self.remote.clear();
+        self.last_query = None;
+        self.last_typed.clear();
+        self.inline = None;
+        self.select_completion = None;
+    }
+
+    /// Refresh the address-bar suggestions while the address input is being
+    /// edited; hide them otherwise. Runs every frame, does bounded work, and
+    /// never waits on the network: the engine's suggestions arrive later
+    /// through `suggest_fetcher`.
     fn update_suggestions(&mut self) {
         if self.force_suggestions {
             return; // headless overlay render — keep the pinned list
@@ -2772,31 +2886,132 @@ impl BrowserWidget {
         } else {
             self.address.with(Clone::clone)
         };
-        let query = text.trim();
+        // The bar echoing the completion we put there is not new typing.
+        let typed = match &self.inline {
+            Some((typed, full)) if *full == text => typed.clone(),
+            _ => {
+                self.inline = None;
+                text
+            }
+        };
+        let query = typed.trim();
         // Only suggest while the user is editing a *query* — not when the
         // bar merely shows the loaded page's URL, and not for an empty bar.
-        // (Echoing the current page back at the user is what made the old
-        // overlay pointless.)
         let editing = !query.is_empty() && query != self.current_uri.trim();
         if !editing {
-            if self.last_query.is_some() {
-                self.suggestions.clear();
-                self.last_query = None;
+            if self.last_query.is_some() || self.suggestions.is_visible() {
+                self.reset_omnibox();
             }
             return;
         }
-        if self.last_query.as_deref() == Some(query) {
-            return;
+        let query = query.to_owned();
+        let mut dirty = self.last_query.as_deref() != Some(query.as_str());
+        if dirty {
+            self.on_query_changed(&query);
         }
-        self.last_query = Some(query.to_string());
-        // Fuzzy history matches, minus the page we're already on.
-        let items: Vec<_> = self
-            .history
-            .suggest(query, SUGGESTION_LIMIT)
-            .into_iter()
-            .filter(|e| e.url != self.current_uri)
-            .collect();
-        self.suggestions.set_suggestions(items);
+        if let Some(answer) = self.suggest_fetcher.take()
+            && self.suggest_debounce.is_current(answer.generation)
+            && answer.query == query
+        {
+            self.remote = answer.suggestions;
+            dirty = true;
+        }
+        if let Some((generation, wanted)) = self
+            .suggest_debounce
+            .due(ui::time::now(), omnibox::DEBOUNCE)
+            && let Some(endpoint) = omnibox::suggest_endpoint(&self.settings.search_engine, &wanted)
+        {
+            self.suggest_fetcher.fetch(generation, wanted, endpoint);
+        }
+        if dirty || self.omni_stale {
+            self.rebuild_rows(&query);
+        }
+    }
+
+    /// The typed text changed: restart the quiet period for the engine's
+    /// suggestions and keep only the old ones that still fit.
+    fn on_query_changed(&mut self, query: &str) {
+        let lower = query.to_lowercase();
+        self.remote
+            .retain(|suggestion| suggestion.to_lowercase().starts_with(&lower));
+        if query.chars().count() >= 2 && !omnibox::looks_like_address(query) {
+            self.suggest_debounce.typed(query, ui::time::now());
+        } else {
+            self.suggest_debounce.cancel();
+            self.remote.clear();
+        }
+    }
+
+    /// Select the untyped tail of an inline completion, once the address
+    /// field holds the completed text.
+    fn select_inline_completion(&mut self) {
+        fn select(widget: &mut dyn Widget, state: &str) -> bool {
+            if widget.test_id() == Some(URL_INPUT_ID) {
+                ui::undo::set_state(widget, state);
+                return true;
+            }
+            widget
+                .children_mut()
+                .into_iter()
+                .any(|child| select(child, state))
+        }
+        let Some((end, start)) = self.select_completion.take() else {
+            return;
+        };
+        if let Some(c) = self.composed.element_mut() {
+            select(c, &format!("{end}:b:{start}"));
+        }
+    }
+
+    /// Match, merge and complete for `query`; set the dropdown's rows.
+    fn rebuild_rows(&mut self, query: &str) {
+        if self.omni_stale {
+            self.omni_index.rebuild(self.history.entries());
+            self.omni_stale = false;
+        }
+        let now = tilo_clock::unix_now();
+        let matches = self.omni_index.search(query, omnibox::MAX_ROWS, now);
+        let mut rows = omnibox::build_rows(
+            query,
+            &matches,
+            &self.remote,
+            &self.current_uri,
+            omnibox::MAX_ROWS,
+        );
+        // Complete inline only when the person is adding characters; after a
+        // deletion the text is theirs.
+        let growing = query.len() > self.last_typed.len() && query.starts_with(&self.last_typed);
+        if growing
+            && self.inline.is_none()
+            && let Some(full) = omnibox::inline_completion(query, matches.first())
+        {
+            self.select_completion = Some((full.len(), query.len()));
+            self.address.set(full.clone());
+            self.inline = Some((query.to_owned(), full));
+        }
+        if let Some((typed, full)) = &self.inline
+            && typed == query
+        {
+            omnibox::lead_with_address(&mut rows, full);
+        }
+        query.clone_into(&mut self.last_typed);
+        self.last_query = Some(query.to_owned());
+        self.suggestions.set_suggestions(rows);
+    }
+
+    /// Open a chosen dropdown row.
+    fn choose_row(&mut self, row: omnibox::Row) {
+        self.suggestions.clear();
+        self.last_query = None;
+        self.inline = None;
+        let destination = match row.kind {
+            omnibox::RowKind::Search | omnibox::RowKind::Suggestion => {
+                search_url(&self.settings.search_engine, &row.url)
+            }
+            omnibox::RowKind::Go | omnibox::RowKind::History => row.url,
+        };
+        self.address.set(destination.clone());
+        self.queue_navigate(destination);
     }
 
     /// Rect of the address `TextInput` in the composed tree, for anchoring
@@ -2813,7 +3028,7 @@ impl BrowserWidget {
         &self,
         width: f32,
         max_height: f32,
-    ) -> Option<(PanelKind, Box<dyn Widget>, Vec<&'static str>)> {
+    ) -> Option<(PanelKind, Box<dyn Widget>, Vec<String>)> {
         let width = width.max(1.0);
         if self.credentials.open {
             let opener = if self.credentials.addresses_open() {
@@ -2824,25 +3039,30 @@ impl BrowserWidget {
             return Some((
                 PanelKind::Credentials,
                 self.credentials.panel(width, max_height),
-                vec![opener, toolbar::OVERFLOW_ID, URL_INPUT_ID],
+                anchor_ids(&[opener, toolbar::OVERFLOW_ID, URL_INPUT_ID]),
             ));
         }
         if self.site.open {
             return Some((
                 PanelKind::Site,
                 self.site.panel(width, max_height),
-                vec!["browser.site.info", toolbar::OVERFLOW_ID, URL_INPUT_ID],
+                anchor_ids(&["browser.site.info", toolbar::OVERFLOW_ID, URL_INPUT_ID]),
             ));
+        }
+        if let Some((content, mut anchors)) = self.extensions.panel(width) {
+            anchors.push(toolbar::OVERFLOW_ID.to_owned());
+            anchors.push(URL_INPUT_ID.to_owned());
+            return Some((PanelKind::Extension, content, anchors));
         }
         if let Some(prompt) = self.capabilities.prompt(&self.engine) {
             let anchors = if self.capabilities.prompt_is_permission() {
-                vec!["browser.site.info", URL_INPUT_ID, toolbar::OVERFLOW_ID]
+                anchor_ids(&["browser.site.info", URL_INPUT_ID, toolbar::OVERFLOW_ID])
             } else {
-                vec![
+                anchor_ids(&[
                     "browser.download-status",
                     toolbar::OVERFLOW_ID,
                     URL_INPUT_ID,
-                ]
+                ])
             };
             return Some((PanelKind::Prompt, prompt, anchors));
         }
@@ -2885,7 +3105,7 @@ impl BrowserWidget {
         Some((
             PanelKind::Pip,
             content,
-            vec![toolbar::OVERFLOW_ID, URL_INPUT_ID],
+            anchor_ids(&[toolbar::OVERFLOW_ID, URL_INPUT_ID]),
         ))
     }
 
@@ -2906,7 +3126,7 @@ impl BrowserWidget {
         let (kind, content, anchors) = self.anchored_panel_parts(width, max_height)?;
         // A control of the toolbar row opens its panel below the whole row,
         // so the row stays uncovered.
-        let anchor = anchors.into_iter().find_map(|id| self.find_rect(id));
+        let anchor = anchors.iter().find_map(|id| self.find_rect(id));
         let anchor = anchor.map_or_else(
             || Rect::new(window.x0, toolbar_bottom, window.x1, toolbar_bottom),
             |control| {
@@ -3170,7 +3390,11 @@ impl BrowserWidget {
             && (modifiers.control_key() || modifiers.super_key())
             && !modifiers.alt_key()
             && matches!(&key.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("l"));
-        requested && !self.show_settings && !self.show_library && self.focus_address_input()
+        // F6 moves to the address bar on its own, as in every browser.
+        let f6 = key.state == ElementState::Pressed
+            && key.logical_key == WKey::Named(WNamedKey::F6)
+            && !modifiers.alt_key();
+        (requested || f6) && !self.show_settings && !self.show_library && self.focus_address_input()
     }
 
     /// Rect of the composed-tree widget with `test_id == id`, if present.
@@ -3201,10 +3425,7 @@ impl BrowserWidget {
                 ((r.y1 - full.y0) / full.height()) as f32,
             ]
         });
-        *self
-            .content_rect
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = frac;
+        *self.content_rect.lock_recover() = frac;
     }
 }
 
@@ -3220,7 +3441,7 @@ pub(crate) enum EngineProblem {
 
 /// Where the engine runtime is offered for install: its Store page, the
 /// same consented route every package takes.
-pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:app/so.tilo.browser-engine";
+pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:runtime/tilo-runtime/2026.10.10-chromium";
 
 /// Live browsing runs the Chromium engine runtime
 /// ([`ui::webview::chromium::runtime`]); there is no other engine and no
@@ -3335,7 +3556,11 @@ fn user_message(problem: EngineProblem) -> String {
 fn engine_problem_state(
     problem: EngineProblem,
     install: Option<ActionBinding<()>>,
+    setup: Option<&crate::engine_setup::Setup>,
 ) -> Box<dyn Widget> {
+    if let (EngineProblem::NotInstalled, Some(setup)) = (problem, setup) {
+        return engine_setup_state(setup, install);
+    }
     let state = match problem {
         EngineProblem::NotInstalled => {
             let state = EmptyState::new(ui::webview::chromium::runtime::NOT_INSTALLED_MESSAGE)
@@ -3359,6 +3584,73 @@ fn engine_problem_state(
             .with_fill_remaining_height()
             .push(Box::new(state)),
     )
+}
+
+/// The page area while the host fetches the engine: what is happening and
+/// how far along, in the toolkit's own empty state and progress bar.
+fn engine_setup_state(
+    setup: &crate::engine_setup::Setup,
+    retry: Option<ActionBinding<()>>,
+) -> Box<dyn Widget> {
+    use crate::engine_setup::Setup;
+    use ui::webview::chromium::install::InstallPhase;
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_gap(0.0)
+        .with_fill_remaining_height();
+    match setup {
+        Setup::Fetching {
+            phase,
+            received,
+            total,
+        } => {
+            let message = match (phase, total) {
+                (InstallPhase::Preparing, _) => "Preparing…".to_owned(),
+                (InstallPhase::Installing, _) => "Installing…".to_owned(),
+                (InstallPhase::Downloading, Some(total)) => format!(
+                    "Downloading, {} of {}",
+                    megabytes(*received),
+                    megabytes(*total)
+                ),
+                (InstallPhase::Downloading, None) => {
+                    format!("Downloading, {}", megabytes(*received))
+                }
+            };
+            column = column.push(Box::new(
+                EmptyState::new("Getting the browser engine")
+                    .with_icon(Icon::Download)
+                    .with_message(message)
+                    .busy(),
+            ));
+            let bar = setup.fraction().map_or_else(
+                ui::widget::ProgressBar::indeterminate,
+                ui::widget::ProgressBar::new,
+            );
+            column = column.push(Box::new(bar.with_label("Browser engine")));
+        }
+        Setup::Reopened => {
+            column = column.push(Box::new(
+                EmptyState::new("The browser engine is ready")
+                    .with_icon(Icon::Info)
+                    .with_message("Browser opened in a new window. You can close this one."),
+            ));
+        }
+        Setup::Failed(error) => {
+            let state = EmptyState::error("Couldn’t get the browser engine", error)
+                .with_icon(Icon::Download)
+                .with_action("Try again")
+                .with_action_id("browser.install-engine");
+            column = column.push(Box::new(match retry {
+                Some(binding) => state.on_action(binding),
+                None => state,
+            }));
+        }
+    }
+    Box::new(column)
+}
+
+fn megabytes(bytes: u64) -> String {
+    format!("{} MB", bytes.div_ceil(1_000_000))
 }
 
 fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
@@ -3510,14 +3802,14 @@ impl Widget for BrowserWidget {
         dyn ui::widget::controls::ActionControls
     );
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Browser's frame-level input routing remains ordered in one place."
-    )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.sync_frame(state, path);
         self.settle_replies();
     }
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3673,6 +3965,8 @@ impl Widget for BrowserWidget {
 
     fn needs_animation_frame(&self) -> bool {
         self.navigation_hold.waiting()
+            || self.suggest_debounce.is_pending()
+            || self.suggest_fetcher.in_flight()
             || self
                 .composed
                 .element()
@@ -3916,11 +4210,8 @@ impl Widget for BrowserWidget {
                     ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
             );
-            if let Some(entry) = self.suggestions.take_chosen() {
-                self.suggestions.clear();
-                self.last_query = None;
-                self.address.set(entry.url.clone());
-                self.queue_navigate(entry.url);
+            if let Some(row) = self.suggestions.take_chosen() {
+                self.choose_row(row);
                 *ctx.handled = true;
                 return;
             }
@@ -3930,11 +4221,28 @@ impl Widget for BrowserWidget {
             }
         }
 
+        // The first click into the address bar selects the whole address (a
+        // second click places the caret), as in every browser.
+        let click_into_address = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && !self.url_input_focused()
+            && self
+                .find_rect(URL_INPUT_ID)
+                .is_some_and(|rect| rect.contains(self.cursor));
+
         if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child_node) = children.first()
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+        }
+        if click_into_address && self.url_input_focused() {
+            self.focus_address_input();
         }
 
         // Enter in the focused address bar submits it (no suggestion picked).
@@ -3944,8 +4252,7 @@ impl Widget for BrowserWidget {
             && self.url_input_focused()
         {
             self.navigate_to_input();
-            self.suggestions.clear();
-            self.last_query = None;
+            self.reset_omnibox();
             *ctx.handled = true;
         }
     }
@@ -4010,14 +4317,11 @@ impl Widget for BrowserWidget {
             .suggestions
             .perform_accessibility_action(target, action)
         {
-            if let Some(entry) = self.suggestions.take_chosen() {
-                self.suggestions.clear();
-                self.last_query = None;
-                self.address.set(entry.url.clone());
-                // This queues Browser's existing typed `browser.page/navigate`
-                // action — AT-SPI does not get a parallel imperative navigation
-                // route.
-                self.queue_navigate(entry.url);
+            // This queues Browser's existing typed `browser.page/navigate`
+            // action — AT-SPI does not get a parallel imperative navigation
+            // route.
+            if let Some(row) = self.suggestions.take_chosen() {
+                self.choose_row(row);
             }
             return true;
         }
@@ -4602,15 +4906,7 @@ impl BrowserWidget {
             self.bootstrap_done = true;
         }
 
-        if let Some(message) = self
-            .extension_feedback
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
-        {
-            self.extension_notice = Some(message);
-            self.structure_dirty = true;
-        }
+        self.structure_dirty |= self.extensions.sync(&self.engine, &self.current_uri);
         self.structure_dirty |= self.daily.sync(&self.engine);
         let site_was_open = self.site.open;
         self.structure_dirty |= self.site.sync(&self.engine);
@@ -4628,6 +4924,7 @@ impl BrowserWidget {
         }
         self.tick_back_hold(ui::time::now());
         self.follow_history();
+        self.drive_engine_setup();
         self.apply_engine_events();
         self.apply_panel_events();
         self.structure_dirty |= self.run_pending_commands();
@@ -4639,6 +4936,7 @@ impl BrowserWidget {
         if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);
         }
+        self.select_inline_completion();
         self.poll_active_pip_element();
     }
 
@@ -6121,6 +6419,129 @@ mod tests {
         (state, root)
     }
 
+    /// What a scripted host answers, one look at a time, and the fresh
+    /// instances it was asked to start.
+    type Looks = std::collections::VecDeque<Result<InstallStatus, String>>;
+    type Relaunches = Arc<std::sync::Mutex<Vec<Option<String>>>>;
+    static HOST: std::sync::Mutex<Option<(Looks, Relaunches)>> = std::sync::Mutex::new(None);
+    use ui::webview::chromium::install::{EngineInstaller, InstallPhase, InstallStatus};
+
+    struct ScriptedHost(Looks, Relaunches);
+
+    impl EngineInstaller for ScriptedHost {
+        fn status(&mut self) -> Result<InstallStatus, String> {
+            self.0.pop_front().unwrap_or(Ok(InstallStatus::Installed))
+        }
+        fn relaunch(&mut self, uri: Option<&str>) -> Result<(), String> {
+            self.1.lock().unwrap().push(uri.map(str::to_owned));
+            Ok(())
+        }
+    }
+
+    fn scripted_host() -> Option<Box<dyn EngineInstaller>> {
+        let (looks, relaunches) = HOST.lock().unwrap().take()?;
+        Some(Box::new(ScriptedHost(looks, relaunches)))
+    }
+
+    fn script(looks: Looks) -> Relaunches {
+        let relaunches = Relaunches::default();
+        *HOST.lock().unwrap() = Some((looks, Arc::clone(&relaunches)));
+        relaunches
+    }
+
+    /// Frames until the setup shows `wanted`, or the test gives up.
+    fn until_setup(
+        widget: &mut BrowserWidget,
+        wanted: impl Fn(&crate::engine_setup::Setup) -> bool,
+    ) {
+        for _ in 0..400 {
+            let _ = synced(widget);
+            if widget.engine_setup_shown.as_ref().is_some_and(&wanted) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("setup stuck at {:?}", widget.engine_setup_shown);
+    }
+
+    /// First use without the engine: the Browser asks the host for it,
+    /// shows the progress, and reopens once it is installed. A failure
+    /// offers a retry that asks again. Nothing here is a message to read or
+    /// a command to run.
+    #[test]
+    fn a_missing_engine_is_installed_on_first_use_with_progress() {
+        use crate::engine_setup::Setup;
+        // One test owns the scripted host: statics are process-wide.
+        let relaunches = script(
+            [
+                Ok(InstallStatus::Installing {
+                    phase: InstallPhase::Preparing,
+                    received: 0,
+                    total: None,
+                }),
+                Ok(InstallStatus::Installing {
+                    phase: InstallPhase::Downloading,
+                    received: 40_000_000,
+                    total: Some(80_000_000),
+                }),
+                Ok(InstallStatus::Installed),
+            ]
+            .into(),
+        );
+        let mut w = BrowserWidget::with_engine(
+            unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled),
+            false,
+        );
+        w.engine_problem = Some(EngineProblem::NotInstalled);
+        w.engine_installer = scripted_host;
+        w.initial_url = "https://tilo.so/".into();
+
+        // The first frame starts the install without anyone pressing a button.
+        let _ = synced(&mut w);
+        assert!(w.engine_setup.is_some(), "first use asks the host");
+
+        until_setup(&mut w, |setup| {
+            matches!(
+                setup,
+                Setup::Fetching {
+                    phase: InstallPhase::Downloading,
+                    received: 40_000_000,
+                    ..
+                }
+            )
+        });
+        assert_eq!(w.engine_setup_shown.as_ref().unwrap().fraction(), Some(0.5));
+        // The page area is the toolkit's progress state.
+        layout_at(&mut w, 900.0, 600.0);
+
+        until_setup(&mut w, |setup| *setup == Setup::Reopened);
+        assert_eq!(
+            *relaunches.lock().unwrap(),
+            [Some("https://tilo.so/".to_owned())],
+            "a fresh Browser starts on the page being opened, with the engine mounted"
+        );
+        layout_at(&mut w, 900.0, 600.0);
+
+        // A failed install says so and the one button asks again.
+        let relaunches = script([Err("offline".to_owned())].into());
+        let mut w = BrowserWidget::with_engine(
+            unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled),
+            false,
+        );
+        w.engine_problem = Some(EngineProblem::NotInstalled);
+        w.engine_installer = scripted_host;
+        until_setup(
+            &mut w,
+            |setup| matches!(setup, Setup::Failed(message) if message == "offline"),
+        );
+        layout_at(&mut w, 900.0, 600.0);
+        let _retry = script([Ok(InstallStatus::Installed)].into());
+        w.perform_browser_operation(BrowserOperation::InstallEngine)
+            .expect("retrying is the page's install action");
+        until_setup(&mut w, |setup| *setup == Setup::Reopened);
+        assert!(relaunches.lock().unwrap().is_empty());
+    }
+
     /// Page actions, as an agent reaches them: published on `browser.page`,
     /// admitted through the resource operation lane, answered by the engine
     /// and reported through the invocation's terminal update.
@@ -6886,6 +7307,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn typing_in_the_address_bar_suggests_and_completes_visited_pages() {
+        let (_app, record) = person_history();
+        for (url, title, at) in [
+            ("https://www.youtube.com/watch?v=1", "Cats - YouTube", 10),
+            (
+                "https://blog.example.org/why-you-should",
+                "Why you should",
+                11,
+            ),
+        ] {
+            record
+                .invoke(&crate::history::BrowsingHistory::VISIT.with(
+                    crate::history::browsing_history::Visit {
+                        url: url.into(),
+                        title: title.into(),
+                        at,
+                    },
+                ))
+                .unwrap();
+        }
+        // A later window of the same person sees the same visits.
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+        w.attach_history(record);
+        let (doc, root) = synced(&mut w);
+        let mut tree = TaffyTree::new();
+        w.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::default(),
+        );
+        assert!(w.focus_address_input());
+        w.address.set("you".into());
+        w.sync(&doc, &root);
+        assert!(w.suggestions.is_visible(), "typing shows suggestions");
+        let rows = w.suggestions.items().to_vec();
+        assert_eq!(
+            rows[0].kind,
+            omnibox::RowKind::Go,
+            "Enter opens the bar's text"
+        );
+        assert_eq!(rows[0].url, "https://youtube.com");
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == omnibox::RowKind::History && row.title == "Cats - YouTube"),
+            "visited pages show with their titles: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.kind == omnibox::RowKind::Search),
+            "searching the typed words is always offered"
+        );
+        assert_eq!(
+            w.address.with(Clone::clone),
+            "youtube.com",
+            "the host is completed inline"
+        );
+        // The echo of the completion is not new typing.
+        w.sync(&doc, &root);
+        assert_eq!(w.address.with(Clone::clone), "youtube.com");
+        assert_eq!(w.suggestions.items().len(), rows.len());
+    }
+
     /// Address input focus, selection and draft preservation.
     #[test]
     #[allow(
@@ -7288,7 +7771,7 @@ mod tests {
         {
             let mut widget = BrowserWidget::new_headless();
             widget.attach_dispatcher(ui::framework::testing::dispatcher("so.tilo.browser"));
-            widget.debug_force_suggestions(vec![crate::history::HistoryEntry {
+            widget.debug_force_suggestions(&[crate::history::HistoryEntry {
                 url: "https://accessible.example/reading".into(),
                 title: "Accessible reading".into(),
                 last_visit: 1,

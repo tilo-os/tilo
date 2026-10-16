@@ -5,7 +5,11 @@
 use std::io::Write as _;
 use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, mpsc};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::reexports::client;
@@ -40,6 +44,12 @@ struct Server {
     serial: u32,
     hold_flush: bool,
     publications: Vec<u32>,
+    selection_gate: Option<SelectionGate>,
+}
+
+struct SelectionGate {
+    entered: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -265,6 +275,12 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Server {
         } = request
         {
             assert!(state.seats.iter().any(|seat| seat.surface.is_some()));
+            if let Some(gate) = &state.selection_gate {
+                gate.entered.store(true, Ordering::Release);
+                while !gate.release.load(Ordering::Acquire) {
+                    std::thread::park_timeout(Duration::from_millis(1));
+                }
+            }
             state.publications.push(serial);
         }
     }
@@ -662,6 +678,52 @@ fn production_deadline_closes_both_pipes_without_focus_or_selection_changes() {
     assert!(h.backend().rich_text().is_none());
     h.select(0, Some("after timeout"), false);
     h.assert_offer("after timeout");
+}
+
+#[test]
+fn image_copy_acknowledgement_follows_server_selection() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let gate = SelectionGate {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+    };
+    harness.operation(move |state, _| state.selection_gate = Some(gate));
+    harness.query(|state| assert!(state.selection_gate.is_some()));
+
+    let png = super::encode_png(1, 1, &[0xff, 0, 0x80, 0xff]).expect("small image");
+    let (reply, result) = mpsc::channel();
+    let deadline = tilo_clock::now()
+        .checked_add(tilo_clock::Duration::from_secs(5))
+        .expect("bounded publication");
+    assert!(
+        harness
+            .backend()
+            .send_publication(ClipboardCommand::SetImage(png, reply, deadline,))
+    );
+    harness.wait(
+        || entered.load(Ordering::Acquire),
+        "server receiving the image selection",
+    );
+    let early = result.try_recv();
+    release.store(true, Ordering::Release);
+    assert!(
+        matches!(early, Err(mpsc::TryRecvError::Empty)),
+        "copy acknowledged before the server processed its selection: {early:?}"
+    );
+    assert!(
+        result
+            .recv_timeout(harness.remaining())
+            .expect("image copy acknowledgement")
+    );
+    harness.wait(
+        || harness.query(|state| state.publications == [state.serial]),
+        "server-side image selection",
+    );
 }
 
 #[test]

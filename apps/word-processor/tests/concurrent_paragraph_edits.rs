@@ -5,7 +5,7 @@
 //! Fault testing found the regression in the product (offline B typing into
 //! the first paragraph of a fresh Writer document while A typed into the same
 //! paragraph): after the merge only one side's text survived. The cause was
-//! in the qdoc model, not the renderer: a new block carried no `text` object,
+//! in the tilo-doc model, not the renderer: a new block carried no `text` object,
 //! and the first splice on each replica created one lazily with
 //! `put_object(block, "text", Text)`. Two concurrent creations are a map-key
 //! conflict, so Automerge exposes only one winner and the loser's whole

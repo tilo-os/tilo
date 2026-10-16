@@ -1358,6 +1358,7 @@ mod tests {
                     active_tab: 11,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
             let mut active_strip = HashMap::new();
@@ -1422,6 +1423,7 @@ mod tests {
                     active_tab: 81,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
             let mut continuation_tabs = BTreeSet::new();

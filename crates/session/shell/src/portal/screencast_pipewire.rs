@@ -2,16 +2,17 @@
 //!
 //! [`ScreenCastStreamProvisioner`] is the surface the portal calls into to
 //! allocate a Pipewire node and return its id + properties to the
-//! frontend. Native production uses [`RealPipewireProvisioner`]; hosted and
-//! headless paths use [`UnavailableScreenCastProvisioner`] and advertise no
-//! source types rather than returning a synthetic node.
+//! frontend. Native production uses [`RealPipewireProvisioner`]; a session
+//! whose PipeWire connection fails, and headless contexts, use
+//! [`UnavailableScreenCastProvisioner`] and advertise no source types rather
+//! than returning a synthetic node.
 //! [`MockScreenCastProvisioner`] is test-only. `RealPipewireProvisioner` opens
 //! a connection to the system daemon, creates a video stream of the
 //! workspace's composed scene at the negotiated dimensions, and returns
 //! the node id, which the compositor's frame loop pushes buffers into.
 //!
 //! Pipewire is a C-library system dependency. Tilo's native image includes it;
-//! tests inject the mock and hosted mode remains explicitly unavailable.
+//! tests inject the mock, and a session without it reports capture unavailable.
 //!
 //! Frames come from the compositor's final composed scene, so local apps,
 //! peer surfaces, shell chrome, and overlays have the same spatial result as
@@ -34,6 +35,7 @@ use std::time::Duration;
 use zbus::zvariant::{OwnedValue, Value};
 
 use super::PortalCaller;
+use tilo_lock::MutexRecover as _;
 
 /// What the provisioner needs to spin up a stream.
 #[derive(Clone, Debug)]
@@ -734,10 +736,7 @@ impl ScreenCastStreamProvisioner for MockScreenCastProvisioner {
             s.push(req.clone());
         }
         let node_id = {
-            let mut n = self
-                .next_node
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut n = self.next_node.lock_recover();
             let id = *n;
             *n = n.wrapping_add(1);
             id

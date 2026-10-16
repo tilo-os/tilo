@@ -156,6 +156,29 @@ pub(crate) const SCENARIOS: &[&str] = &[
 /// Framework app: the Tube widget is the surface over [`Tube`].
 pub struct TubeShell;
 
+/// What the binary runs instead of opening a window.
+///
+/// `--probe-youtube-engine VALUE` (the value is ignored) runs the `YouTube`
+/// client's self-check without a network. It needs `runtime-engine`, the
+/// release build, where that code is in `libtilo_youtube_engine.so`; the
+/// check proves Tube loads that library and runs it.
+const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
+    option: "--probe-youtube-engine",
+    run: probe_youtube_engine,
+}];
+
+#[cfg(feature = "runtime-engine")]
+fn probe_youtube_engine(_: &str) -> Result<(), String> {
+    let report = tilo_youtube_engine::self_check()?;
+    println!("tube --probe-youtube-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_youtube_engine(_: &str) -> Result<(), String> {
+    Err("the YouTube engine library needs the `runtime-engine` feature".to_string())
+}
+
 impl ResourceApp for TubeShell {
     type Resource = Library;
     const ID: &'static str = "so.tilo.tube";
@@ -164,6 +187,10 @@ impl ResourceApp for TubeShell {
 
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
+    }
+
+    fn commands() -> &'static [ui::framework::Command] {
+        COMMANDS
     }
 
     /// The narrow scenario draws a phone-sized window, below the width at
@@ -243,6 +270,7 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
                 cx.storage().settings::<crate::sync::PairedDevices>(),
             );
         }
+        self.wake_with(cx.waker());
         self.attach_framework(cx.dispatcher(), history);
     }
 

@@ -103,7 +103,7 @@ use crate::worker::CompileWorker;
 
 /// Pixels-per-point the document is rasterised at. 2.0 keeps pages crisp on
 /// a `HiDPI` surface; preview zoom only scales the *display*, never the render
-/// resolution (matching the behaviour the welcome doc advertises).
+/// resolution.
 const PPP: f32 = 2.0;
 
 /// Which single pane the compact (narrow-window) layout is showing.
@@ -1849,7 +1849,7 @@ mod tests {
                 !view.compiling(),
                 "capture returned while the real source compilation was pending"
             );
-            assert!(view.editor.text().contains("Getting started with Typst"));
+            assert!(view.editor.text().contains("Smooth motion, by design"));
             assert_eq!(view.err_count, 0);
             view.preview.select_all();
             let compiled = view
@@ -1858,7 +1858,7 @@ mod tests {
                 .expect("the rendered page has real selectable glyphs");
             view.preview.clear_selection();
             assert!(
-                compiled.contains("Getting started with Typst"),
+                compiled.contains("Smooth motion, by design"),
                 "actual compiled text: {compiled}"
             );
         })

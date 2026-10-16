@@ -22,7 +22,7 @@ pub fn source(path: PathBuf, max_bytes: usize) -> AuthoritySource {
 #[cfg(feature = "native")]
 fn read_bounded(path: &std::path::Path, max_bytes: usize) -> Result<Option<Vec<u8>>, String> {
     tilo_files::native::bounded::read(path, max_bytes).map_err(|error| match error.kind() {
-        std::io::ErrorKind::InvalidData => "host action policy exceeds its byte bound".into(),
+        std::io::ErrorKind::FileTooLarge => "host action policy exceeds its byte bound".into(),
         std::io::ErrorKind::InvalidInput => "host action policy bound is invalid".into(),
         _ => "host action policy is unavailable".into(),
     })

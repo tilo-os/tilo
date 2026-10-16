@@ -742,6 +742,12 @@ impl Widget for OverviewPanel {
         }
     }
 
+    /// The panel fills its node and lays out its rows itself, open or
+    /// closed: there is never a size for the layout solver to measure.
+    fn layout_needs_measure(&self) -> bool {
+        false
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

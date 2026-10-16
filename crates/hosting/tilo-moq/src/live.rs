@@ -39,15 +39,13 @@ pub use crate::relay::{AuthorizationStatus, Denied, GOAWAY_GRACE};
 use crate::session_authority::{AuthorityDriver, Verdict};
 use std::collections::HashMap;
 use std::sync::{
-    Arc, Mutex, PoisonError, Weak,
+    Arc, Mutex, Weak,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
 /// Exact WebTransport path of the live relay on the host's QUIC endpoint.
 pub const LIVE_PATH: &str = "/moq/live";
-/// WebTransport subprotocol; identical to voice.
-pub const LIVE_PROTOCOL: &str = carrier::PROTOCOL;
 /// First namespace tuple component of every live track.
 pub const NAMESPACE_ROOT: &str = "tilo-live";
 /// Latest-value datagram track.
@@ -202,6 +200,7 @@ impl Bucket {
 }
 
 use crate::Task;
+use tilo_lock::MutexRecover as _;
 
 struct OpsEntry {
     producer: moq_net::track::Producer,
@@ -400,7 +399,7 @@ impl LiveRelay {
                 .fetch_add(1, Ordering::Relaxed);
             return false;
         };
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         state.host_active = Some(Instant::now());
         let name = format!("{OPS_PREFIX}{record}");
         let Some(entry) = state.ops.get_mut(&name) else {
@@ -467,7 +466,7 @@ impl LiveRelay {
         let Some(slot) = inner.slot(&path, true) else {
             return dropped();
         };
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         state.host_active = Some(Instant::now());
         let Some(entry) = state.ops.get_mut(&format!("{OPS_PREFIX}{record}")) else {
             return dropped();
@@ -500,8 +499,7 @@ impl LiveRelay {
             return false;
         };
         slot.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .ops
             .get(&format!("{OPS_PREFIX}{record}"))
             .is_some_and(|entry| entry.open.is_some())
@@ -520,7 +518,7 @@ impl LiveRelay {
         let Some(slot) = self.0.slot(&path, false) else {
             return;
         };
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         let Some(entry) = state.ops.get_mut(&format!("{OPS_PREFIX}{record}")) else {
             return;
         };
@@ -560,19 +558,14 @@ impl LiveRelay {
         };
         // Never create (or announce) a namespace a client currently owns.
         if let Some(slot) = inner.slot(&path, false)
-            && slot
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .client
-                .is_some()
+            && slot.state.lock_recover().client.is_some()
         {
             return dropped();
         }
         let Some(slot) = inner.slot(&path, true) else {
             return dropped();
         };
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         if state.client.is_some() {
             return dropped();
         }
@@ -604,11 +597,11 @@ impl LiveRelay {
     pub fn maintain(&self) {
         let now = Instant::now();
         let idle: Vec<String> = {
-            let slots = self.0.slots.lock().unwrap_or_else(PoisonError::into_inner);
+            let slots = self.0.slots.lock_recover();
             slots
                 .iter()
                 .filter(|(_, slot)| {
-                    let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    let state = slot.state.lock_recover();
                     state.client.is_none()
                         && state
                             .host_active
@@ -778,7 +771,7 @@ impl LiveRelay {
                     if let Some(inner) = relay.upgrade()
                         && let Some(slot) = inner.slot(&path, true)
                     {
-                        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+                        let mut state = slot.state.lock_recover();
                         state.host_active.get_or_insert_with(Instant::now);
                     }
                 });
@@ -803,7 +796,7 @@ impl LiveRelay {
 impl Inner {
     /// The namespace slot, created with its egress broadcast when `create`.
     fn slot(self: &Arc<Self>, path: &str, create: bool) -> Option<Arc<Slot>> {
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slots = self.slots.lock_recover();
         if let Some(slot) = slots.get(path) {
             return Some(slot.clone());
         }
@@ -847,23 +840,16 @@ impl Inner {
                 }
             })
         };
-        slot.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .handler = Some(handler);
+        slot.state.lock_recover().handler = Some(handler);
         slots.insert(path.to_owned(), slot.clone());
         drop(slots);
         Some(slot)
     }
 
     /// A subscriber asked for a track this namespace does not yet carry.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the guard must stay held across the dependent state updates below"
-    )]
     fn on_request(&self, slot: &Arc<Slot>, request: moq_net::track::Request) {
         let name = request.name().to_owned();
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         if ops_record(&name).is_none()
             || state.ops.len() >= MAX_EGRESS_OPS_TRACKS
             || state.broadcast.is_none()
@@ -893,12 +879,7 @@ impl Inner {
                     }
                 }
                 if let Some(slot) = weak.upgrade() {
-                    let removed = slot
-                        .state
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .ops
-                        .remove(&name);
+                    let removed = slot.state.lock_recover().ops.remove(&name);
                     if let Some(entry) = removed {
                         let OpsEntry {
                             producer,
@@ -934,7 +915,7 @@ impl Inner {
         };
         // A spawned watcher can run immediately on another worker. Publish
         // its ownership while holding the lock that its first check takes.
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         let watch = Task::spawn(watch_client(
             Arc::downgrade(self),
             Arc::downgrade(&slot),
@@ -953,7 +934,7 @@ impl Inner {
             return;
         };
         let (withdraw, client) = {
-            let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = slot.state.lock_recover();
             if state
                 .client
                 .as_ref()
@@ -980,11 +961,11 @@ impl Inner {
     /// Returns whether the removed namespace was recently host-fed.
     fn remove_slot(&self, path: &str, session: Option<u64>) -> bool {
         let slot = {
-            let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut slots = self.slots.lock_recover();
             let Some(slot) = slots.get(path) else {
                 return false;
             };
-            let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let state = slot.state.lock_recover();
             if let Some(session) = session {
                 if state
                     .client
@@ -1010,7 +991,7 @@ impl Inner {
         };
         let Some(slot) = slot else { return false };
         let (client, handler, ops, presence, broadcast, host_fed) = {
-            let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = slot.state.lock_recover();
             let host_fed = state
                 .host_active
                 .is_some_and(|at| at.elapsed() < HOST_SLOT_IDLE);
@@ -1048,8 +1029,7 @@ impl Inner {
     /// Whether `session` still owns the namespace in `slot`.
     fn owns(slot: &Slot, session: u64) -> bool {
         slot.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .client
             .as_ref()
             .is_some_and(|client| client.session == session)
@@ -1068,7 +1048,7 @@ impl Inner {
         let seq = valid
             .then(|| self.authority.presence_seq(&payload))
             .flatten();
-        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = slot.state.lock_recover();
         if state
             .client
             .as_ref()
@@ -1111,8 +1091,7 @@ impl Inner {
     /// The egress track currently serving `name`, if a subscriber asked for it.
     fn egress_ops(slot: &Slot, name: &str) -> Option<moq_net::track::Producer> {
         slot.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .ops
             .get(name)
             .map(|entry| entry.producer.clone())
@@ -1373,12 +1352,7 @@ async fn copy_group(
         };
         let admitted = frame.payload.len() <= MAX_STREAM_FRAME_BYTES
             && inner.authority.ops_valid(&record, &frame.payload)
-            && slot
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .ops_bucket
-                .take(Instant::now());
+            && slot.state.lock_recover().ops_bucket.take(Instant::now());
         if !admitted || out.write_frame(stamp(), frame.payload).is_err() {
             // An ordered group with a gap is useless: reset it so receivers know.
             inner.counters.ops_dropped.fetch_add(1, Ordering::Relaxed);

@@ -11,6 +11,7 @@ description = "How a room host talks to a connector's outside worker, and the ho
 test-worker = []
 
 [dependencies]
+tilo-files = { path = "../../platform/tilo-files" }
 base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,7 +19,9 @@ thiserror.workspace = true
 zeroize.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "rt", "sync", "time", "macros"] }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 workspace-hack = { version = "0.1" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 
 [dev-dependencies]
 blake3.workspace = true

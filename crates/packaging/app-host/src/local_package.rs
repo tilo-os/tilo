@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "service")]
 use tilo_app_package::BlobHash;
 #[cfg(feature = "service")]
-use tilo_app_package::trust::{RevocationList, TrustedAttestors};
+use tilo_app_package::trust::{RevocationList, TrustFile, TrustedAttestors};
 use tilo_app_package::{DiscardBlobs, Kind, Manifest, Verification};
 
 pub const MAX_LOCAL_BYTES: usize = 64 * 1024 * 1024;

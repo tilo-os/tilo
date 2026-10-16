@@ -1,0 +1,77 @@
+name: Security / tenant and agent isolation
+
+# The isolation lane for hosted rooms: one relay governing several tenants'
+# rooms, the agents delegated into them and the host's compute. It runs the
+# suites that prove one tenant's members and agents cannot read, write,
+# enumerate, administer or invoke anything in another tenant's room, that an
+# agent holds only what its delegation names and never governs or drives
+# compute, that a removed member or revoked device loses access at once, and
+# that compute job content reaches only the job's own requester and worker.
+#
+# Each suite also runs in the affected-package pull-request CI when its crate
+# changes. This lane runs them together every night and on demand, against
+# both relay builds that ship: the default one and the `agents` build the
+# room service image uses (room-service-image.yml). It starts its own relays
+# in process and never contacts a deployed host.
+on:
+  schedule:
+    - cron: "40 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: security-isolation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  builder:
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
+
+  isolation:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      # The decision every relay plane asks, the room authority, compute
+      # content routing and the host-operation table, as unit tests.
+      - name: Room access, room authority and compute content decisions
+        run: >-
+          bash scripts/ci-run.sh "relay isolation decisions" --
+          cargo test --locked -p tilo-relay --lib --
+          room_access rooms:: compute_content host_authority
+
+      - name: Cross-tenant rooms, admission, revocation and compute (default relay)
+        run: >-
+          bash scripts/ci-run.sh "relay isolation suites" --
+          cargo test --locked -p tilo-relay --test it --
+          tenant_isolation:: governed_rooms:: governed_workspace_access::
+          room_admission:: auth_reject:: federation_cross_user_reject::
+          cross_user_workspace_host:: compute_content:: remote_action_routing::
+
+      - name: Cross-tenant rooms, admission, revocation and compute (agents relay)
+        run: >-
+          bash scripts/ci-run.sh "relay isolation suites, agents build" --
+          cargo test --locked -p tilo-relay --features agents --test it --
+          tenant_isolation:: governed_rooms:: governed_workspace_access::
+          room_admission:: auth_reject:: compute_content:: persistent_room::
+
+      - name: Delegated agents in governed rooms and confined app workers
+        run: |
+          bash scripts/ci-run.sh "agent confinement" -- \
+            cargo test --locked -p tilo-agent-participant --test worker_isolation
+          bash scripts/ci-run.sh "governed agents" -- \
+            cargo test --locked -p tilo-agent-participant --test room_actions -- governed_agent::

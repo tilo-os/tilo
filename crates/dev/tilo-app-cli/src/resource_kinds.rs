@@ -272,6 +272,80 @@ mod tests {
         );
     }
 
+    /// The directories of the path crates `app_dir/Cargo.toml` lists as
+    /// normal dependencies, the SDK's own crates excepted.
+    fn direct_local_dependencies(app_dir: &Path) -> Vec<std::path::PathBuf> {
+        let manifest: toml::Table =
+            toml::from_str(&std::fs::read_to_string(app_dir.join("Cargo.toml")).unwrap()).unwrap();
+        let Some(dependencies) = manifest.get("dependencies").and_then(toml::Value::as_table)
+        else {
+            return Vec::new();
+        };
+        dependencies
+            .values()
+            .filter_map(|dependency| dependency.get("path")?.as_str())
+            .map(|path| app_dir.join(path).canonicalize().unwrap())
+            .filter(|dir| !dir.components().any(|part| part.as_os_str() == "sdk"))
+            .collect()
+    }
+
+    /// The image installs each app with the `[resources] kinds` of its
+    /// authored `tilo-app.toml`, and a governed room lets an app create only
+    /// records of a kind its signed manifest declares. A kind the app's code
+    /// holds but its manifest omits leaves the app unable to create its first
+    /// record there, so every kind declared in the app's sources, or in a
+    /// local crate it depends on directly such as a shared model, must be
+    /// listed. Kinds the SDK declares are the framework's, not the app's.
+    #[test]
+    fn every_app_manifest_declares_the_record_kinds_its_sources_hold() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap();
+        let mut apps: Vec<_> = std::fs::read_dir(root.join("apps"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|dir| dir.join("tilo-app.toml").is_file())
+            .collect();
+        apps.sort();
+        assert!(
+            apps.len() >= 40,
+            "expected the app fleet, found {}",
+            apps.len()
+        );
+        let mut dependency_kinds = std::collections::HashMap::new();
+        let mut missing = Vec::new();
+        for app in apps {
+            let manifest = tilo_app_package::Manifest::from_toml_str(
+                &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", app.display()));
+            let mut kinds = super::declared_in(&app).unwrap();
+            for dependency in direct_local_dependencies(&app) {
+                kinds.extend(
+                    dependency_kinds
+                        .entry(dependency.clone())
+                        .or_insert_with(|| super::declared_in(&dependency).unwrap())
+                        .iter()
+                        .cloned(),
+                );
+            }
+            for kind in kinds {
+                if !manifest.resources.kinds.contains(&kind) {
+                    missing.push(format!(
+                        "{}: {kind}",
+                        app.file_name().unwrap().to_string_lossy()
+                    ));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "kinds missing from `[resources] kinds` in apps/*/tilo-app.toml:\n{}",
+            missing.join("\n")
+        );
+    }
+
     #[test]
     fn music_production_resource_is_declared_for_packaging() {
         let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/music");

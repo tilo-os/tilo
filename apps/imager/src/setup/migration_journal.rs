@@ -1898,20 +1898,11 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap();
-            let deadline = tilo_test_env::hang_deadline();
-            loop {
-                if let Some(status) = child.try_wait().unwrap() {
-                    assert!(status.success());
-                    assert!(source.parent().unwrap().join("fifo-rejected").is_file());
-                    break;
-                }
-                if ui::time::now() >= deadline {
-                    child.kill().unwrap();
-                    child.wait().unwrap();
-                    panic!("resume blocked opening a swapped FIFO");
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            let status = bounded_command::wait_or_kill(&mut child, tilo_test_env::hang_bound())
+                .unwrap()
+                .expect("resume blocked opening a swapped FIFO");
+            assert!(status.success());
+            assert!(source.parent().unwrap().join("fifo-rejected").is_file());
         });
     }
     #[test]

@@ -13,6 +13,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use crate::auth::PeerRole;
 use crate::store::{CommitRecord, WorkspaceStore};
 use crate::transport::Envelope;
+use tilo_lock::MutexRecover as _;
 
 /// Membership set for a workspace on this relay. Populated by the
 /// admin (`bind-workspace`) via the workspace-directory CRDT and
@@ -31,15 +32,26 @@ impl Membership {
         self.devices.contains(device)
     }
 
-    /// Replace the membership with a new set. A different set wakes the
-    /// sessions admitted under the old one to re-check
-    /// ([`crate::authority_epoch`]).
+    /// Replace the membership with a new set. A set that leaves out a device
+    /// of the old one wakes the sessions admitted under it to re-check
+    /// ([`crate::authority_epoch`]). One that only adds devices narrows
+    /// nobody's access and wakes nobody: a public room admitting a crowd
+    /// re-audited every member's session for every newcomer.
     pub fn set(&mut self, devices: Vec<[u8; 32]>) {
         if self.devices != devices {
+            let narrowed = leaves_out(&self.devices, &devices);
             self.devices = devices;
-            crate::authority_epoch::bump();
+            if narrowed {
+                crate::authority_epoch::bump();
+            }
         }
     }
+}
+
+/// Whether `next` leaves out a device `previous` lists.
+fn leaves_out(previous: &[[u8; 32]], next: &[[u8; 32]]) -> bool {
+    let kept: std::collections::HashSet<&[u8; 32]> = next.iter().collect();
+    previous.iter().any(|device| !kept.contains(device))
 }
 
 /// One live subscription — the outbound envelope channel a
@@ -112,6 +124,10 @@ pub struct WorkspaceRuntime {
     /// `membership`; keeping this separate from `admitted_users` prevents an
     /// ungoverned sibling device under the same root from joining.
     pub governed_user_roots: HashSet<[u8; 32]>,
+    /// Who may watch this room read-only without being one of its members,
+    /// when its host lets visitors watch it. Read only through
+    /// [`crate::room_access::decide`].
+    pub(crate) spectators: Option<crate::room_access::Spectators>,
     pub(crate) checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
@@ -154,9 +170,37 @@ pub struct WorkspaceRuntime {
     last_seq: u64,
     /// Recently admitted commits, for de-duplicating resends.
     commits: CommitLedger,
-    /// Held by a `Commit` from its ledger check until it is admitted and
-    /// recorded, so two copies of one commit cannot both be admitted.
-    pub(crate) commit_gate: Arc<AsyncMutex<()>>,
+    /// Commits being admitted, by author and operation id, each held from
+    /// its ledger check until it is admitted and recorded
+    /// ([`Self::claim_commit`]): two copies of one commit cannot both be
+    /// admitted, while different commits are admitted side by side. One
+    /// gate for the whole room held every commit through the previous one's
+    /// durability and publication, so a busy room committed one change at a
+    /// time.
+    commit_claims: CommitClaims,
+    /// Held from a commit's [`Self::remember_commit`] until its ledger write
+    /// is done, so ledger writes reach the file in the order they were
+    /// remembered.
+    pub(crate) commit_ledger_lane: Arc<AsyncMutex<()>>,
+}
+
+/// The commits a room is admitting, by author and operation id, each with
+/// the lock its copies wait on.
+type CommitClaims = Arc<std::sync::Mutex<HashMap<([u8; 32], [u8; 16]), Arc<AsyncMutex<()>>>>>;
+
+/// A commit's claim on its author and operation id
+/// ([`WorkspaceRuntime::claim_commit`]), released when dropped.
+pub(crate) struct CommitClaim {
+    claims: CommitClaims,
+    key: ([u8; 32], [u8; 16]),
+    // Dropped after the entry is gone, waking the copies that waited on it.
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for CommitClaim {
+    fn drop(&mut self) {
+        self.claims.lock_recover().remove(&self.key);
+    }
 }
 
 /// Admitted commits a workspace remembers. A browser resends its whole
@@ -280,7 +324,36 @@ impl WorkspaceRuntime {
         pinned: bool,
         membership: Membership,
     ) -> Result<Self, crate::store::StoreError> {
-        Self::open_inner(state_root, workspace_id, pinned, membership, false)
+        Self::open_with_payloads(
+            state_root,
+            workspace_id,
+            pinned,
+            membership,
+            crate::payloads::neighbour(),
+        )
+    }
+
+    /// [`Self::open`], its store classifying retained co-edit bodies with
+    /// `payloads`, the adapter the host was started with.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::open`].
+    pub fn open_with_payloads(
+        state_root: &std::path::Path,
+        workspace_id: u64,
+        pinned: bool,
+        membership: Membership,
+        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
+    ) -> Result<Self, crate::store::StoreError> {
+        Self::open_inner(
+            state_root,
+            workspace_id,
+            pinned,
+            membership,
+            payloads,
+            false,
+        )
     }
 
     /// Open a pinned workspace only when its durable snapshot already exists.
@@ -291,8 +364,9 @@ impl WorkspaceRuntime {
         workspace_id: u64,
         pinned: bool,
         membership: Membership,
+        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
     ) -> Result<Self, crate::store::StoreError> {
-        Self::open_inner(state_root, workspace_id, pinned, membership, true)
+        Self::open_inner(state_root, workspace_id, pinned, membership, payloads, true)
     }
 
     fn open_inner(
@@ -300,9 +374,10 @@ impl WorkspaceRuntime {
         workspace_id: u64,
         pinned: bool,
         membership: Membership,
+        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
         require_snapshot: bool,
     ) -> Result<Self, crate::store::StoreError> {
-        let store = WorkspaceStore::open(state_root, workspace_id, pinned)?;
+        let store = WorkspaceStore::open_with_payloads(state_root, workspace_id, pinned, payloads)?;
         let governed_access_record = store.load_governed_access()?;
         let admission = if governed_access_record.is_some() {
             crate::room_access::AdmissionMode::Governed
@@ -353,6 +428,7 @@ impl WorkspaceRuntime {
             admission,
             admitted_users: HashSet::new(),
             governed_user_roots,
+            spectators: None,
             checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
@@ -370,7 +446,8 @@ impl WorkspaceRuntime {
             live_members: HashMap::new(),
             last_seq: 0,
             commits,
-            commit_gate: Arc::new(AsyncMutex::new(())),
+            commit_claims: Arc::default(),
+            commit_ledger_lane: Arc::new(AsyncMutex::new(())),
         })
     }
 
@@ -379,9 +456,38 @@ impl WorkspaceRuntime {
         self.commits.by_op.get(&(*author, *op)).copied()
     }
 
+    /// Claim `author`'s commit `op` for admission. Called under the room's
+    /// lock right after [`Self::admitted_commit`] found no record of it, so a
+    /// copy of the commit either sees the claim or, once the claim is
+    /// released after [`Self::remember_commit`], the record. A copy that
+    /// finds the claim gets its lock to wait on, and checks both again.
+    pub(crate) fn claim_commit(
+        &self,
+        author: [u8; 32],
+        op: [u8; 16],
+    ) -> Result<CommitClaim, Arc<AsyncMutex<()>>> {
+        let key = (author, op);
+        let mut claims = self.commit_claims.lock_recover();
+        if let Some(held) = claims.get(&key) {
+            return Err(held.clone());
+        }
+        let lock = Arc::new(AsyncMutex::new(()));
+        let Ok(held) = lock.clone().try_lock_owned() else {
+            // A lock no one else has seen is free.
+            return Err(lock);
+        };
+        claims.insert(key, lock);
+        drop(claims);
+        Ok(CommitClaim {
+            claims: self.commit_claims.clone(),
+            key,
+            _held: held,
+        })
+    }
+
     /// Remember an admitted commit. The returned write makes it durable, so
     /// a resend is recognised also after a host restart; run it off the
-    /// workspace lock and in admission order (see `commit_gate`).
+    /// workspace lock and in remembering order (see `commit_ledger_lane`).
     pub fn remember_commit(&mut self, record: CommitRecord) -> CommitLedgerWrite {
         self.commits.insert(record);
         self.commits.logged = self.commits.logged.saturating_add(1);
@@ -897,46 +1003,6 @@ impl WorkspaceRuntime {
         doc.save_after(&heads)
     }
 
-    /// Ingest a batch of Automerge changes obtained via anti-entropy
-    /// from an upstream peer relay: materialize them into the pinned
-    /// doc, and — if they advanced the doc — fan the batch out to local
-    /// device subscribers as a `Delta` so devices on THIS relay converge
-    /// even when echo-suppression prevented the change from arriving via
-    /// live fan-out (the middle hop of a relay chain). Returns `true`
-    /// when new changes were ingested.
-    ///
-    /// Fanned out with a zero sentinel author + `PeerRole::PeerRelay`
-    /// origin, so it reuses the same routing (offline members get
-    /// store-and-forward; other peer relays are not re-echoed) as any
-    /// federated delta — no new delivery path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if fanning the ingested batch back out to
-    /// local subscribers fails to persist (see [`Self::fanout_delta`]).
-    pub fn ingest_sync_changes(
-        &mut self,
-        workspace_id: u64,
-        changes: &[u8],
-        seq: u64,
-    ) -> Result<bool, crate::store::StoreError> {
-        if !self.materialize(changes) {
-            // Nothing new (empty, already-held, or non-Automerge bytes).
-            return Ok(false);
-        }
-        let env = Envelope::Delta {
-            workspace_id,
-            author_device_public_key: [0u8; 32],
-            authored_at_ns: seq,
-            delta: changes.to_vec(),
-            signature: [0u8; 64],
-        };
-        // fan-out re-materializes, but `changes` are now already present
-        // so that inner call is a no-op (no second snapshot write).
-        self.fanout_delta(&[0u8; 32], PeerRole::PeerRelay, &env, changes, seq)?;
-        Ok(true)
-    }
-
     /// Note that `author` sent a delta at `now`, before it is admitted: the
     /// caret and typing it sends next are held to go with it
     /// ([`Self::fanout_presence`]) until it is published.
@@ -965,7 +1031,7 @@ impl WorkspaceRuntime {
         author: &[u8; 32],
         from_role: PeerRole,
         envelope: &Envelope,
-        slot: Option<tilo_peer_state::PresenceSlot>,
+        slot: Option<neighbour_wire::PresenceSlot>,
     ) -> usize {
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
@@ -1059,6 +1125,17 @@ pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 mod tests {
     use super::*;
     use crate::transport::Envelope;
+
+    /// Only a membership that leaves a device out narrows anyone's access,
+    /// and so wakes the sessions admitted under it.
+    #[test]
+    fn only_a_membership_that_leaves_a_device_out_narrows() {
+        assert!(!leaves_out(&[[1; 32]], &[[1; 32], [2; 32]]));
+        assert!(!leaves_out(&[[1; 32], [2; 32]], &[[2; 32], [1; 32]]));
+        assert!(!leaves_out(&[], &[[3; 32]]));
+        assert!(leaves_out(&[[1; 32], [2; 32]], &[[2; 32], [3; 32]]));
+        assert!(leaves_out(&[[1; 32]], &[]));
+    }
 
     /// An auto-bound workspace is pinned, and every delta a session sends is
     /// a co-edit wrapper: routing one must not reach Automerge's parser,
@@ -1970,7 +2047,7 @@ mod tests {
         });
         let mailbox = Arc::new(PresenceMailbox::default());
         rt.route_presence(RECIPIENT, Arc::clone(&mailbox));
-        let caret = Some(tilo_peer_state::PresenceSlot {
+        let caret = Some(neighbour_wire::PresenceSlot {
             id: 1,
             motion: false,
         });
@@ -2022,5 +2099,31 @@ mod tests {
             1
         );
         assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
+    }
+
+    /// A commit's claim is its own: a copy of it waits for the claim and
+    /// then finds it recorded, while another commit is claimed at once.
+    #[tokio::test]
+    async fn a_commit_claim_holds_off_its_copies_only() {
+        const AUTHOR: [u8; 32] = [1; 32];
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = WorkspaceRuntime::open(tmp.path(), 9, false, Membership::default()).unwrap();
+        let claim = rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap();
+        let other = rt.claim_commit(AUTHOR, [2; 16]).ok().unwrap();
+        let elsewhere = rt.claim_commit([2; 32], [1; 16]).ok().unwrap();
+        let Err(copy) = rt.claim_commit(AUTHOR, [1; 16]) else {
+            panic!("a copy of a claimed commit was claimed again");
+        };
+        assert!(
+            copy.try_lock().is_err(),
+            "a copy must wait while the commit is admitted"
+        );
+        let waiting = tokio::spawn(async move { drop(copy.lock().await) });
+        drop(claim);
+        waiting.await.unwrap();
+        // Released: the copy (or a later resend) claims it again, now that
+        // the ledger is the one to answer it.
+        drop(rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap());
+        drop((other, elsewhere));
     }
 }

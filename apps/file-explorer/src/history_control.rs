@@ -36,7 +36,10 @@ pub fn resolve_conflict(
     if bytes.len() > fs_protocol::MAX_HISTORY_CONTROL_BYTES {
         return Err(t("files-conflict-request-too-large"));
     }
-    xattr::set(path, fs_protocol::HISTORY_CONTROL_XATTR, &bytes).map_err(|error| {
+    crate::framework_history::write_until_hydrated(crate::framework_history::HYDRATION_WAIT, || {
+        xattr::set(path, fs_protocol::HISTORY_CONTROL_XATTR, &bytes)
+    })
+    .map_err(|error| {
         t_args(
             "files-conflict-resolve-failed",
             &[arg("error", error.to_string())],

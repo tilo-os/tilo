@@ -76,7 +76,8 @@ impl Custody {
     pub fn label(self) -> &'static str {
         match self {
             Self::System => "System keyring",
-            Self::LocalFile => "Local encrypted storage",
+            // The vault is sealed, but its key sits unsealed beside it.
+            Self::LocalFile => "Key file on this device, no keyring",
             #[cfg(windows)]
             Self::WindowsDpapi => "Windows user protection (DPAPI)",
         }

@@ -51,15 +51,6 @@
 //! * [`backend`] — the side-effecting seam (disks, install, power) that
 //!   host tests replace with a recording fake.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod action_button;
 pub mod backend;
 pub mod control;

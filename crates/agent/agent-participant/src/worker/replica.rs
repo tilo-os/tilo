@@ -1,6 +1,6 @@
 //! A record held in a confined app worker, as the supervisor uses it.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
@@ -13,6 +13,7 @@ use ui::record::RecordId;
 use super::process::Process;
 use super::proto::{Mode, Reply, Request};
 use crate::apps::{AppCatalogue, AppError, ReplicaActor, Seed};
+use tilo_lock::MutexRecover as _;
 
 /// How often a worker that died is replaced, from what the supervisor holds
 /// of its record, before the record is given up on: a document that crashes
@@ -133,7 +134,7 @@ impl ConfinedReplica {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+        self.inner.lock_recover()
     }
 
     /// The app's id.

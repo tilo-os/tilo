@@ -4,10 +4,11 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 
 use crate::VPath;
+use tilo_lock::MutexRecover as _;
 
 /// What happened to a watched path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -44,20 +45,30 @@ struct InboxState {
 }
 
 impl Inbox {
+    /// Queue a change from a native watch's own thread, which holds no lock
+    /// the woken task could need.
+    #[cfg(all(
+        feature = "watch",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     pub(crate) fn push(&self, change: Change) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.queue.back() != Some(&change) {
-            state.queue.push_back(change);
-        }
-        let waker = state.waker.take();
-        drop(state);
-        if let Some(waker) = waker {
+        if let Some(waker) = self.queue(change) {
             waker.wake();
         }
     }
 
+    /// Queue `change` and hand back the waiting task's waker, for the caller
+    /// to wake once it holds no lock of its own.
+    fn queue(&self, change: Change) -> Option<Waker> {
+        let mut state = self.state.lock_recover();
+        if state.queue.back() != Some(&change) {
+            state.queue.push_back(change);
+        }
+        state.waker.take()
+    }
+
     fn pop(&self, waker: Option<&Waker>) -> Option<Change> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         let next = state.queue.pop_front();
         if next.is_none()
             && let Some(waker) = waker
@@ -141,7 +152,7 @@ impl Watchers {
     /// Report changes at or below `watched` (full keys), relative to `root`.
     pub(crate) fn register(&self, watched: &VPath, root: &VPath) -> Arc<Inbox> {
         let inbox = Arc::new(Inbox::default());
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut entries = self.entries.lock_recover();
         entries.retain(|entry| entry.inbox.strong_count() > 0);
         entries.push(Registration {
             watched: watched.as_str().to_owned(),
@@ -152,30 +163,52 @@ impl Watchers {
     }
 
     /// Tell every watch covering `key` (a full key) what happened to it.
-    pub(crate) fn notify(&self, key: &str, kind: ChangeKind) {
-        let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        let deliveries: Vec<(Arc<Inbox>, Change)> = entries
-            .iter()
-            .filter(|entry| covers(&entry.watched, key))
-            .filter_map(|entry| {
-                let inbox = entry.inbox.upgrade()?;
-                let path = relative(&entry.root, key)?;
-                Some((inbox, Change { path, kind }))
-            })
-            .collect();
-        drop(entries);
-        for (inbox, change) in deliveries {
-            inbox.push(change);
-        }
+    ///
+    /// Call it while still holding the lock the change was made under, and
+    /// wake the returned [`Wakes`] after releasing it. Queued outside that
+    /// lock, two threads' changes to one path could be queued in the other
+    /// order than they were made: a write's `Changed` after the removal that
+    /// followed it, for a file that is gone.
+    pub(crate) fn notify(&self, key: &str, kind: ChangeKind) -> Wakes {
+        let entries = self.entries.lock_recover();
+        Wakes(
+            entries
+                .iter()
+                .filter(|entry| covers(&entry.watched, key))
+                .filter_map(|entry| {
+                    let inbox = entry.inbox.upgrade()?;
+                    let path = relative(&entry.root, key)?;
+                    inbox.queue(Change { path, kind })
+                })
+                .collect(),
+        )
     }
 
     #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .all(|entry| entry.inbox.strong_count() == 0)
+    }
+}
+
+/// The tasks waiting on watches that [`Watchers::notify`] queued changes for.
+/// Woken only once the notifier's own locks are released, so a woken task
+/// that reads the tree straight away does not wait on them.
+#[must_use = "the watches' tasks wait until these are woken"]
+pub(crate) struct Wakes(Vec<Waker>);
+
+impl Wakes {
+    pub(crate) fn and(mut self, other: Self) -> Self {
+        self.0.extend(other.0);
+        self
+    }
+
+    pub(crate) fn wake(self) {
+        for waker in self.0 {
+            waker.wake();
+        }
     }
 }
 
@@ -211,10 +244,18 @@ mod tests {
     fn a_watch_sees_changes_below_it_relative_to_its_root() {
         let watchers = Watchers::default();
         let inbox = watchers.register(&p("app/data/notes"), &p("app/data"));
-        watchers.notify("app/data/notes/a.md", ChangeKind::Changed);
-        watchers.notify("app/data/notes", ChangeKind::Removed);
-        watchers.notify("app/data/notesx", ChangeKind::Changed);
-        watchers.notify("app/data/other", ChangeKind::Changed);
+        watchers
+            .notify("app/data/notes/a.md", ChangeKind::Changed)
+            .wake();
+        watchers
+            .notify("app/data/notes", ChangeKind::Removed)
+            .wake();
+        watchers
+            .notify("app/data/notesx", ChangeKind::Changed)
+            .wake();
+        watchers
+            .notify("app/data/other", ChangeKind::Changed)
+            .wake();
         assert_eq!(
             inbox.pop(None),
             Some(Change {
@@ -243,8 +284,8 @@ mod tests {
     fn repeated_changes_collapse_and_dropped_watches_unregister() {
         let watchers = Watchers::default();
         let inbox = watchers.register(&VPath::root(), &VPath::root());
-        watchers.notify("a", ChangeKind::Changed);
-        watchers.notify("a", ChangeKind::Changed);
+        watchers.notify("a", ChangeKind::Changed).wake();
+        watchers.notify("a", ChangeKind::Changed).wake();
         assert!(inbox.pop(None).is_some());
         assert!(inbox.pop(None).is_none());
         drop(inbox);

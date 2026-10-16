@@ -4,7 +4,6 @@
 //! It therefore neither commits an app's open transaction nor gives a
 //! historical renderer access to a live record, persistence, or dispatch.
 
-pub mod adapter;
 mod assets;
 pub mod capability;
 pub mod checked_files;
@@ -18,6 +17,7 @@ pub use owner::HistoryOwner;
 pub(crate) mod canvas;
 pub(crate) mod frame;
 pub(crate) mod frozen_root;
+pub use frozen_root::FrozenRootPreview;
 pub(crate) mod host;
 pub mod pending_controls;
 pub use preview::*;

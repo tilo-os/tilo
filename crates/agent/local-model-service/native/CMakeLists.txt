@@ -3,6 +3,10 @@ project(tilo_speech_cpu LANGUAGES C CXX)
 
 # An image built on a newer runner must still run on Tilo's CPU baseline.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+# ggml otherwise wraps every compile in whatever ccache or sccache is on PATH.
+# A shared sccache server may not see this build directory or the compiler,
+# so the first object fails to spawn. Cargo already decides on caching.
+set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(GGML_AVX512 OFF CACHE BOOL "" FORCE)

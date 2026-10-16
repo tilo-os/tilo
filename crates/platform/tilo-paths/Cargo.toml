@@ -13,8 +13,9 @@ description = "Per-user and per-app locations on Linux, macOS and the web: XDG b
 name = "tilo_paths"
 path = "src/lib.rs"
 
-# Deliberately std-only on Unix and the web: every app and service that
-# stores anything resolves one of these locations, so this stays a leaf.
+# Every app and service that stores anything resolves one of these locations,
+# so this stays a leaf: Unix needs only rustix, for the effective uid naming
+# logind's runtime directory, and the web nothing beyond std.
 # Windows asks the shell for its known folders, which follow redirection and
 # cannot be spoofed through the environment.
 [target.'cfg(windows)'.dependencies]
@@ -24,7 +25,12 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_Com", "Win32_UI_Sh
 workspace = true
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../tilo-lock" }
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
+
+[target.'cfg(unix)'.dependencies]
+# The effective uid naming logind's runtime directory.
+rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

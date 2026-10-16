@@ -292,12 +292,6 @@ fn set_status(shared: &Shared, healthy: bool, message: &str) {
     }
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
-
 /// The secret purposes a worker may ask for; `SecretStore::item` wants a
 /// `&'static str`, and a worker naming anything else gets nothing.
 fn secret_purpose(purpose: &str) -> Option<&'static str> {
@@ -330,16 +324,6 @@ pub fn metrics_text(queue_depth: u64, lag_seconds: f64, rate_limited_total: u64)
 }
 
 /// Replace `path` so a reader sees the old file or the new one, never half.
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(".tmp");
-    std::fs::write(&temp, bytes)?;
-    std::fs::rename(&temp, path)
-}
-
 async fn read_loop(shared: Arc<Shared>, mut reader: BufReader<ChildStdout>) {
     while let Ok(Some(message)) = read_frame_async::<_, FromWorker>(&mut reader).await {
         match message {
@@ -361,12 +345,13 @@ async fn read_loop(shared: Arc<Shared>, mut reader: BufReader<ChildStdout>) {
                 at_ms,
                 payload,
             } => {
-                let appended =
-                    shared
-                        .events
-                        .lock()
-                        .await
-                        .append(&source, &id, at_ms, now_ms(), payload);
+                let appended = shared.events.lock().await.append(
+                    &source,
+                    &id,
+                    at_ms,
+                    tilo_clock::unix_now_ms_i64(),
+                    payload,
+                );
                 if let Ok(Some(seq)) = appended {
                     shared.seq.send_replace(seq);
                 }
@@ -399,13 +384,11 @@ async fn read_loop(shared: Arc<Shared>, mut reader: BufReader<ChildStdout>) {
                 }
             }
             FromWorker::Checkpoint { state } => {
-                let path = shared.state_dir.join("checkpoint.json");
-                let temp = path.with_extension("json.tmp");
-                if serde_json::to_vec(&state)
-                    .ok()
-                    .is_some_and(|bytes| std::fs::write(&temp, bytes).is_ok())
-                {
-                    let _ = std::fs::rename(&temp, &path);
+                if let Ok(bytes) = serde_json::to_vec(&state) {
+                    let _ = tilo_files::native::atomic::write_creating_parent(
+                        &shared.state_dir.join("checkpoint.json"),
+                        &bytes,
+                    );
                 }
             }
             FromWorker::Status { healthy, message } => set_status(&shared, healthy, &message),
@@ -416,7 +399,8 @@ async fn read_loop(shared: Arc<Shared>, mut reader: BufReader<ChildStdout>) {
             } => {
                 if let Some(path) = &shared.metrics_file {
                     let text = metrics_text(queue_depth, lag_seconds, rate_limited_total);
-                    let _ = write_atomically(path, text.as_bytes());
+                    let _ =
+                        tilo_files::native::atomic::write_creating_parent(path, text.as_bytes());
                 }
             }
         }
@@ -431,7 +415,11 @@ mod tests {
     fn metrics_file_is_prometheus_text_replaced_whole() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("metrics.d").join("bridge.prom");
-        write_atomically(&path, metrics_text(3, 1.25, 7).as_bytes()).unwrap();
+        tilo_files::native::atomic::write_creating_parent(
+            &path,
+            metrics_text(3, 1.25, 7).as_bytes(),
+        )
+        .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let samples: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
         assert_eq!(
@@ -443,7 +431,11 @@ mod tests {
             ]
         );
         assert!(text.contains("# TYPE tilo_rooms_bridge_rate_limited_total counter"));
-        write_atomically(&path, metrics_text(0, f64::NAN, 7).as_bytes()).unwrap();
+        tilo_files::native::atomic::write_creating_parent(
+            &path,
+            metrics_text(0, f64::NAN, 7).as_bytes(),
+        )
+        .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("tilo_rooms_bridge_lag_seconds 0.000\n"));
         // The temporary file was renamed away.

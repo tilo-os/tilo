@@ -1,7 +1,3 @@
-#![allow(
-    clippy::doc_markdown,
-    reason = "PipeWire and wpctl are established product names"
-)]
 //! Audio pane — output volume + mute, microphone input level, device
 //! capabilities, diagnostics, and per-application routing.
 //!
@@ -42,7 +38,7 @@ use tracing::warn;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Widget};
+use ui::widget::{Button, Dropdown, Row, Slider, Widget};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
@@ -53,7 +49,8 @@ use crate::prefs::AudioPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    caption, card, error_caption, error_row, rows, setting_row, setting_row_described,
+    Item, SettingsSection, card, error_caption, error_row, note, row, rows, setting_row,
+    setting_row_described,
 };
 
 /// How often the pane re-reads the `PipeWire` graph while it is open, so a
@@ -1198,7 +1195,7 @@ impl AudioModel {
     }
 
     /// The way into Speakers: several of your devices as one set.
-    fn speakers_card(&self) -> crate::widgets::El {
+    fn speakers_card(&self) -> SettingsSection {
         let open_label = t("sound-speakers-open");
         let open = self.cx.bind_invocation(
             Button::new("sound.speakers", &open_label),
@@ -1208,11 +1205,11 @@ impl AudioModel {
         );
         crate::widgets::card(
             &t("sound-speakers-title"),
-            crate::widgets::setting_row_described(
+            rows(vec![setting_row_described(
                 &t("sound-speakers-row"),
                 &t("sound-speakers-desc"),
                 Box::new(open),
-            ),
+            )]),
         )
     }
 
@@ -1223,13 +1220,13 @@ impl AudioModel {
         clippy::too_many_lines,
         reason = "the output card's device, level, balance, mono and test rows"
     )]
-    fn build_output_card(&self) -> crate::widgets::El {
+    fn build_output_card(&self) -> SettingsSection {
         let mut output_rows = Vec::new();
         if let Some(error) = &self.devices_error {
-            output_rows.push(error_caption(&t_args(
+            output_rows.push(row(error_caption(&t_args(
                 "sound-devices-error",
                 &[("error", error.as_str().into())],
-            )));
+            ))));
         }
         if self.devices.sinks.len() >= 2 {
             let opts: Vec<String> = self.devices.sinks.iter().map(|d| d.name.clone()).collect();
@@ -1287,28 +1284,26 @@ impl AudioModel {
                 &LocalState::new(self.prefs.get().mono_output),
                 effect(AudioEffect::SET_MONO_OUTPUT),
             ));
-            output_rows.push(caption(&t("sound-mono-caption")));
+            output_rows.push(note(&t("sound-mono-caption")));
         }
         if self.runtime_caps.channel_test && stereo_sink.is_some() {
-            output_rows.push(Box::new(
-                Row::new()
-                    .push(Box::new(self.cx.bind_invocation(
-                        Button::new(
-                            "settings.audio.advanced",
-                            &if self.tests_shown {
-                                t("sound-test-hide")
-                            } else {
-                                t("sound-test-show")
-                            },
-                        ),
-                        AudioEffect::ShowSoundTests {
-                            show: !self.tests_shown,
+            output_rows.push(row(Box::new(Row::new().push(Box::new(
+                self.cx.bind_invocation(
+                    Button::new(
+                        "settings.audio.advanced",
+                        &if self.tests_shown {
+                            t("sound-test-hide")
+                        } else {
+                            t("sound-test-show")
                         },
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ));
+                    ),
+                    AudioEffect::ShowSoundTests {
+                        show: !self.tests_shown,
+                    },
+                ),
+            )))));
             if self.tests_shown {
-                output_rows.push(Box::new(
+                output_rows.push(row(Box::new(
                     Row::new()
                         .push(Box::new(self.cx.bind_invocation(
                             Button::new("settings.audio.test.left", &t("sound-test-left")),
@@ -1321,21 +1316,20 @@ impl AudioModel {
                             AudioEffect::TestSpeaker {
                                 channel: "right".into(),
                             },
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ));
-                output_rows.push(caption(&t("sound-test-caption")));
+                        ))),
+                )));
+                output_rows.push(note(&t("sound-test-caption")));
             }
         }
         if let Some(notice) = &self.runtime_notice {
-            output_rows.push(caption(notice));
+            output_rows.push(note(notice));
         }
         card(&t("sound-output"), rows(output_rows))
     }
 
     /// The "Input" card: an optional source picker, then the mic level and
     /// (when the runtime supports it) a bounded microphone meter test.
-    fn build_input_card(&self) -> crate::widgets::El {
+    fn build_input_card(&self) -> SettingsSection {
         let mut input_rows = Vec::new();
         if self.devices.sources.len() >= 2 {
             let opts: Vec<String> = self
@@ -1382,25 +1376,21 @@ impl AudioModel {
             } else {
                 t("sound-mic-idle")
             };
-            input_rows.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Text::new(&activity).with_role(ui::TextRole::Caption),
-                    ))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(self.cx.bind_invocation(
-                        Button::new(
-                            "settings.audio.mic_test",
-                            &if running {
-                                t("sound-mic-stop")
-                            } else {
-                                t("sound-mic-test")
-                            },
-                        ),
-                        AudioEffect::ToggleMicrophoneTest,
-                    ))),
+            input_rows.push(setting_row(
+                &activity,
+                Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        "settings.audio.mic_test",
+                        &if running {
+                            t("sound-mic-stop")
+                        } else {
+                            t("sound-mic-test")
+                        },
+                    ),
+                    AudioEffect::ToggleMicrophoneTest,
+                )),
             ));
-            input_rows.push(caption(&t("sound-mic-caption")));
+            input_rows.push(note(&t("sound-mic-caption")));
         }
         if self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty() {
             input_rows.push(
@@ -1412,7 +1402,7 @@ impl AudioModel {
                         effect(AudioEffect::SET_ECHO_CANCELLATION),
                     ),
             );
-            input_rows.push(caption(&t("sound-echo-caption")));
+            input_rows.push(note(&t("sound-echo-caption")));
         }
         card(&t("sound-input"), rows(input_rows))
     }
@@ -1420,7 +1410,7 @@ impl AudioModel {
     /// The "Device capabilities" card: per-hardware profile pickers (only for
     /// devices reporting more than one selectable profile) plus each sink's
     /// reported codec. `None` when there is nothing to show — no empty card.
-    fn build_hardware_card(&self) -> Option<crate::widgets::El> {
+    fn build_hardware_card(&self) -> Option<SettingsSection> {
         let mut hardware_rows = Vec::new();
         for hw in &self.graph.hardware {
             let selectable: Vec<_> = hw.profiles.iter().filter(|p| p.available).collect();
@@ -1471,15 +1461,15 @@ impl AudioModel {
         streams: &[AudioStream],
         devices: &[AudioDevice],
         empty_note: &str,
-    ) -> crate::widgets::El {
+    ) -> SettingsSection {
         if streams.is_empty() {
-            return card(title, rows(vec![caption(empty_note)]));
+            return card(title, rows(vec![note(empty_note)]));
         }
         // Picker options: every device label, plus a leading "follow default".
         let mut options = vec![follow_shown()];
         options.extend(devices.iter().map(|d| d.name.clone()));
 
-        let mut blocks: Vec<crate::widgets::El> = Vec::new();
+        let mut items: Vec<Item> = Vec::new();
         for s in streams {
             let id = s.id;
             let current = self.stream_target_label(s);
@@ -1507,9 +1497,9 @@ impl AudioModel {
                     &LocalState::new(s.muted.unwrap_or(false)),
                     effect(AudioEffect::SET_STREAM_MUTED).map(move |muted: bool| (id, muted)),
                 );
-            blocks.push(rows(vec![route_row, vol_row, mute_row]));
+            items.extend([route_row, vol_row, mute_row]);
         }
-        card(title, rows(blocks))
+        card(title, rows(items))
     }
 
     /// The picker label for a stream's *current* route: the device it is linked
@@ -1533,15 +1523,15 @@ impl AudioModel {
 
     /// The "System sounds" card: the master switch, then volume, theme and
     /// one switch per event while it is on.
-    fn build_system_sounds_card(&self) -> crate::widgets::El {
+    fn build_system_sounds_card(&self) -> SettingsSection {
         let sounds = &self.prefs.get().system_sounds;
         if !self.event_sounds_available {
             let reason = match super::installed_programs_unreadable() {
-                Some(error) => error_caption(&t_args(
+                Some(error) => row(error_caption(&t_args(
                     "settings-programs-error",
                     &[("error", error.into())],
-                )),
-                None => caption(&t("sound-system-missing")),
+                ))),
+                None => note(&t("sound-system-missing")),
             };
             return card(&t("sound-system"), rows(vec![reason]));
         }
@@ -1600,7 +1590,7 @@ impl AudioModel {
                     ),
             );
         }
-        sound_rows.push(caption(&t("sound-system-caption")));
+        sound_rows.push(note(&t("sound-system-caption")));
         card(&t("sound-system"), rows(sound_rows))
     }
 

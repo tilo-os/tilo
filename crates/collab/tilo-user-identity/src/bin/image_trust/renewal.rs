@@ -52,9 +52,8 @@ fn renew(request: &Request) -> Result<(), String> {
     let trust =
         open_readonly_without_symlinks(&request.trust).map_err(|error| error.to_string())?;
     let metadata = trust.metadata().map_err(|error| error.to_string())?;
-    // SAFETY: geteuid has no pointer arguments and cannot fail.
     if !metadata.is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o777 != 0o700
     {
         return Err("trust directory must be caller-owned mode 0700".into());

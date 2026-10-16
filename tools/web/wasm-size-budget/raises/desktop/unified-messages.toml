@@ -1,4 +1,0 @@
-bytes = 983040
-measured = 92265562
-run = 72368
-reason = "Register the new unified Messages application in the desktop browser bundle, including canonical Contacts route selection, private host messaging/history clients and semantic actions. SDK run 72368 measured the feature merged onto main 60f484b76c at 92265562 bytes, 56410 above the prior limit. Independent remote builds measured main at 91671919 and the reconciled feature at 92272605 bytes (600686 added, about 0.66%); path-dependent build differences are not claimed identical to CI. This receipt follows the standard 1% headroom rounded to 64 KiB. Native WhatsApp/Signal/SMS adapters remain outside the browser bundle."

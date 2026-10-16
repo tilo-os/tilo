@@ -30,5 +30,3 @@ pub const MAX_CHAIN_DEPTH: u8 = 4;
 /// Firings one installation may have waiting; the oldest beyond are
 /// dead-lettered as "fell behind".
 pub const MAX_QUEUED_FIRINGS: usize = 64;
-/// Time each step of a bot's run may take, outside steps included.
-pub const STEP_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);

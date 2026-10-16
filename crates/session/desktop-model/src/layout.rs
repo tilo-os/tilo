@@ -124,6 +124,46 @@ pub struct WindowGroup {
     /// un-maximized.
     #[serde(default)]
     pub maximized: bool,
+    /// The tabs that were in front before the current one, most recent last.
+    /// Like `active_tab` itself this is what this device is showing: never
+    /// replicated or persisted. Closing the front tab goes back to the most
+    /// recent of these that is still open. Written only by
+    /// [`WindowGroup::activate_tab`].
+    #[serde(skip)]
+    pub focus_history: Vec<TabId>,
+}
+
+impl WindowGroup {
+    /// Bring `tab` to the front, remembering the tab it replaces. The one
+    /// place a *selection* is recorded, whoever makes it (a click, a
+    /// keyboard shortcut, a protocol activation, a new window opening).
+    /// Does nothing if `tab` is already in front.
+    pub fn activate_tab(&mut self, tab: TabId) {
+        if self.active_tab == tab {
+            return;
+        }
+        let previous = self.active_tab;
+        if self.tabs.iter().any(|t| t.id == previous) {
+            self.focus_history.retain(|t| *t != previous);
+            self.focus_history.push(previous);
+        }
+        self.focus_history.retain(|t| *t != tab);
+        self.active_tab = tab;
+        // Only tabs still in the group can be returned to.
+        let tabs = &self.tabs;
+        self.focus_history
+            .retain(|t| tabs.iter().any(|x| x.id == *t));
+    }
+
+    /// The tab to show after `closed` goes away: the most recently shown one
+    /// that is still open, if any.
+    pub fn previously_active(&self, closed: TabId) -> Option<TabId> {
+        self.focus_history
+            .iter()
+            .rev()
+            .copied()
+            .find(|t| *t != closed && self.tabs.iter().any(|x| x.id == *t))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

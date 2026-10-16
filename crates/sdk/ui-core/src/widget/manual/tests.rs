@@ -795,3 +795,37 @@ fn nested_negative_overflow(horizontal: bool) {
         vello::kurbo::Size::new(100.0, 20.0)
     );
 }
+
+/// A retained resize re-solves the region against what its parent allocates
+/// now, so a region filling the window grows with it as well as shrinking.
+/// Its node holds the size the policy answered last time; that must not
+/// become the next solve's allocation.
+#[test]
+fn retained_resize_reallocates_a_filling_region_both_ways() {
+    let seen = Rc::new(Cell::new(0.0_f32));
+    let observed = seen.clone();
+    let region = Manual::new(move |ctx| {
+        let available = ctx.available();
+        observed.set(available.width);
+        ctx.place(0, Rect::new(0.0, 0.0, f64::from(available.width), 40.0))?;
+        Ok(Size {
+            width: available.width,
+            height: 40.0,
+        })
+    })
+    .child(Box::new(crate::widget::Container::new().with_no_padding()));
+    let mut harness = FrameHarness::new(crate::State::new(), Box::new(region), (400, 200));
+    for width in [600_u32, 300, 800] {
+        harness.resize((width, 200)).unwrap();
+        assert!(
+            !harness.last_relayout().rebuilt,
+            "a resize re-solves the retained tree"
+        );
+        let snapshot = harness.inspection();
+        #[allow(clippy::cast_precision_loss, reason = "small window widths")]
+        let expected = width as f32;
+        assert_eq!(seen.get(), expected, "the policy sees the new allocation");
+        assert_eq!(snapshot.root.rect[2], f64::from(expected));
+        assert_eq!(snapshot.root.children[0].rect[2], f64::from(expected));
+    }
+}

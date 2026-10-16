@@ -27,7 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 tilo-content = { path = "../../crates/system/content" }
-# Text boxes are qdoc rich text, edited and drawn by the SDK editor.
+# Text boxes are tilo-doc rich text, edited and drawn by the SDK editor.
 tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }

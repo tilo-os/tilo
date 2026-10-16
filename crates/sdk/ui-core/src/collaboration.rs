@@ -51,6 +51,9 @@ pub mod handoff;
 mod history;
 pub mod owner_view;
 pub mod participants;
+mod surface_publication;
+pub use runtime_collab::{SurfaceDelta, SurfaceTable};
+pub use surface_publication::SurfacePublication;
 pub mod record_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
@@ -304,10 +307,19 @@ pub enum CollabRequest {
         /// Page size cap; chrome UX bounds pages to ~50 ops.
         max: u16,
     },
-    /// Replace this application's complete exported resource/action surface.
+    /// Replace this application's complete exported resource/action surface,
+    /// whole. For small surfaces a caller builds directly; the toolkit's own
+    /// publication sends [`Self::PublishActionSurface`].
     PublishActions {
         app_id: String,
         actions: Vec<ExportedAction>,
+    },
+    /// Change this application's exported resource/action surface: the
+    /// delta from what the broker holds (or, when it resets, a whole new
+    /// surface). See [`SurfacePublication`].
+    PublishActionSurface {
+        app_id: String,
+        delta: SurfaceDelta,
     },
     /// App-owned CRDT state projected for same-identity continuation. The
     /// local broker authenticates the route and stores this only for shell
@@ -809,6 +821,14 @@ pub enum CollabEvent {
         request_id: u64,
         result: Result<runtime_collab::NearbyTransferReply, String>,
     },
+    /// What a Nearby Send snapshot would show this app may have changed: a
+    /// device came or went, an offer arrived, a transfer moved on. It names
+    /// nothing; the app asks for a fresh
+    /// [`NearbyTransferCommand::Snapshot`](runtime_collab::NearbyTransferCommand::Snapshot)
+    /// instead of asking on a timer. The first arrives once the route joins,
+    /// so it also starts the app's view. Only the certified Files route
+    /// receives these.
+    NearbyTransferChanged,
     Realtime(crate::realtime_continuity::RealtimeEvent),
 }
 
@@ -1117,6 +1137,10 @@ pub struct CollaborationManager {
     /// Whether the action directory was registered on the current primary
     /// route. A new `Hello` resets it.
     action_directory_published: bool,
+    /// Whether this document was meant to sync: the manager was given a
+    /// collaboration service to reach. Losing the service later keeps it
+    /// set; a manager that never had one is a local document.
+    sync_expected: bool,
 }
 
 impl CollaborationManager {
@@ -1139,6 +1163,7 @@ impl CollaborationManager {
             reported_state: None,
             identity: None,
             action_directory_published: false,
+            sync_expected: true,
         };
         manager.reported_state = Some(manager.state());
         manager
@@ -1266,6 +1291,7 @@ impl CollaborationManager {
             awaiting_primary: false,
             identity: None,
             action_directory_published: false,
+            sync_expected: false,
         }
     }
 
@@ -1303,6 +1329,15 @@ impl CollaborationManager {
                 TransportStatus::Ready | TransportStatus::Degraded(_) => CollaborationState::Ready,
             },
         }
+    }
+
+    /// Whether changes were meant to reach peers and currently do not: the
+    /// manager had a collaboration service and has lost it. A document that
+    /// never had one (local, outside any room) is not offline, and one still
+    /// connecting has not lost anything yet.
+    #[must_use]
+    pub fn sync_lost(&self) -> bool {
+        self.sync_expected && matches!(self.state(), CollaborationState::Offline(_))
     }
 
     /// The current state when it differs from the one this method last
@@ -1415,9 +1450,9 @@ impl CollaborationManager {
     }
 
     /// Fire-and-forget and non-blocking on every backend. Presence may be
-    /// shed under saturation; any other durable enqueue failure visibly
-    /// disconnects the manager, so callers never continue under the illusion
-    /// it was sent. Document mutations never disconnect: see
+    /// shed under saturation; any other durable command is accepted and
+    /// waits for the transport's queue to have room, so a burst is
+    /// backpressure, never a disconnect. Document mutations never disconnect: see
     /// [`Self::try_send`] for why one was not sent.
     ///
     /// While the manager is [`CollaborationState::Connecting`] only a
@@ -2133,6 +2168,18 @@ mod portable_transport_tests {
         });
         assert!(!manager.is_connected());
         assert!(manager.poll().is_empty());
+    }
+
+    #[test]
+    fn only_a_document_that_had_a_service_reports_sync_lost() {
+        assert!(!CollaborationManager::disabled().sync_lost());
+        let mut manager = CollaborationManager::with_peer_transport(ClosedPeer);
+        assert!(!manager.sync_lost());
+        manager.send(CollabRequest::Document {
+            mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
+            authorization: None,
+        });
+        assert!(manager.sync_lost());
     }
 }
 

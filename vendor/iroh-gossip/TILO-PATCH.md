@@ -1,9 +1,9 @@
-# Tilo patch: sweep a topic's message cache only while it holds messages
+# Tilo patches: stop topic timers that have no work
 
 crates.io `iroh-gossip` 0.101.0, verbatim (archive SHA-256
 `4e1dc4b05f73e7a1b9e83b531eb63c3fd671b0af3aeb13b59c546dd7ca747515`, upstream
-commit `2ce78afe09d89d41d123f28eac19bdc831609cc8`) but for the change below,
-marked `TILO PATCH` in `src/proto/plumtree.rs`, and its `[lib]` building an
+commit `2ce78afe09d89d41d123f28eac19bdc831609cc8`) but for the changes below,
+marked `TILO PATCH` in `src/proto/{plumtree,hyparview}.rs`, and its `[lib]` building an
 `rlib` only (last section). 0.101.0 is the newest
 release. Pinned by `crates/system/fs/tests/iroh_idle.rs`
 (`gossip_sweeps_a_topic_cache_only_while_it_holds_messages`) and the
@@ -24,6 +24,22 @@ still holds entries. A topic idle for `message_id_retention` (90 s by
 default) stops sweeping; the next message arms it once. Cadence and
 retention while messages flow are unchanged, and there is never more than
 one pending sweep per topic.
+
+## Membership shuffle only with active neighbors
+
+HyParView also armed `DoShuffle` on the first event and rearmed it forever,
+including after the last neighbor left. A shuffle without an active neighbor
+sends nothing, but its 60-second timer still wakes the runtime for every topic.
+The shell's 20-second rested-desktop measurement could miss that boundary or
+straddle it; draining Plumtree's caches does not stop membership timers.
+
+The shuffle is now armed only with an active neighbor. A pending timer may
+expire once after departure, then stops; a later join rearms it. A peer that
+returns before expiry reuses the pending timer. Live-neighbor shuffle cadence,
+passive-view recovery and wire messages are unchanged. The public protocol-state
+regression `gossip_stops_shuffling_after_its_last_peer_leaves_and_restarts_on_join`
+in `crates/system/fs/tests/iroh_idle.rs` verifies departure, both return timings,
+and continued shuffling with a live neighbor without wall-clock sleeps.
 
 ## Built as an rlib only (`Cargo.toml`)
 

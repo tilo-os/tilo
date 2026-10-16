@@ -59,7 +59,7 @@ fn spawn(path: PathBuf, gate: TransportGate) -> std::io::Result<tokio::task::Joi
             let Ok(credential) = stream.peer_cred() else {
                 continue;
             };
-            if credential.uid() != unsafe { libc::geteuid() } {
+            if credential.uid() != rustix::process::geteuid().as_raw() {
                 continue;
             }
             let mut command = [0_u8; 32];

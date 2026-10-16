@@ -57,9 +57,23 @@ same target-side authorization path.
 
 Hosts are chosen by configuration, not ranked: a relay serves the workspaces
 bound in its `relay.toml`, and a client reaches the home peers it registered.
-There is no placement function choosing among candidate servers yet; one should
-arrive together with a producer of live load and latency advertisements, not
-ahead of it.
+
+Compute workers are ranked. `tilo_relay_protocol::placement::place_compute_job`
+chooses among the workers advertising in a workspace: only those that pass the
+same eligibility rule admission enforces
+(`ServerAdvertisement::compute_ineligibility`), then operator priority, power
+(external, charging, unknown, battery), load as a fraction of capacity,
+advertised latency and finally the device key, so equal candidates always
+resolve alike. Every passed-over candidate carries its reason
+(`critical_battery`, `no_gpu`, `at_capacity`, …). The relay answers it as the
+action `compute.place` of provider `tilo.compute` on the workspace's
+`workspace.compute:<workspace id>` resource, to the relay owner's own devices
+acting as themselves (the principal the compute control stream admits) and to
+no agent, bot or other person; it logs each choice and its reason. The action
+only chooses: the requester still binds its job to that exact worker, and the
+relay re-admits it against the worker's live advertisement. Workers advertise
+no latency yet (the relay reports `0`), so ranking is by power and load until a
+live round-trip producer exists.
 
 The first workloads are workspace replication, content residency, inbound
 collaboration/chat relay and remote-control relay. Sandboxed compute uses a
@@ -68,9 +82,183 @@ signed-package launcher; the relay never accepts a command, host path,
 environment, or bearer secret from a requester. A worker advertises only after
 its package catalogue, launcher, private staging store and power policy pass
 health checks, and disconnect/health regression withdraws it immediately.
-Until workspace CAS hydration is connected to this protocol, the production
-owner explicitly rejects jobs with remote inputs and never reports an output
-digest that the requester cannot retrieve.
+
+### Job content
+
+A job names its inputs by blake3 digest and its result names its outputs the
+same way; the bytes never ride in the durable compute envelopes. Each digest
+moves on a stream of its own on the compute connection
+(`StreamOpen::ComputeContent`, `tilo_relay::compute_content`), and the relay
+decides from the job's durable record who may have it:
+
+- **Inputs.** The job's worker may ask for a digest the job lists, while the
+  job runs. The relay asks the job's requester, which answers from its own
+  workspace content (`ComputeClient::serve_inputs`). A worker therefore reads
+  exactly what the invoker itself can produce, never more: being a worker
+  grants no read of its own, and the requester re-checks that the digest
+  belongs to a job it submitted to that worker. The worker hydrates each
+  listed digest once into a private per-job directory, bounded by
+  `MAX_COMPUTE_INPUT_BYTES`, the job's memory limit and its lifetime; the
+  launcher stages those bytes read-only into the sandbox and the directory
+  is removed when the job ends. The package never receives a network or
+  blob credential, host path, environment or argv from the requester.
+- **Outputs.** Before reporting a completed job the worker stores every
+  output and writes an index of exactly those digests beside the job's
+  claim, so it never reports a digest the requester cannot fetch. Only the
+  job's requester may ask for them (`ComputeClient::retrieve_outputs`), and
+  only digests the job reported; the worker re-checks the claim's requester
+  and the index. Outputs stay retrievable for a day (`OUTPUT_RETENTION`).
+
+Every hop checks the bytes against the digest and its bound: the source
+before sending, the relay while forwarding, the asker on receipt. A refusal
+carries a stable code, so a job whose input its requester cannot produce
+fails promptly as `input_unavailable` (`input_integrity`, `input_too_large`
+and `input_timeout` likewise) rather than hanging. The requester has to be
+online while its job hydrates.
+
+An input the worker already holds does not travel. Before fetching one, the
+worker sends a fresh random challenge through the relay
+(`StreamOpen::ComputeContentProof`, under the same input rule), and the
+requester answers `blake3::keyed_hash(nonce, bytes)` over its own copy, plus
+a locator hint (for workspace content, the file version's manifest hash).
+The worker stages its own copy only when that copy hashes to the digest and
+reproduces the proof; otherwise it fetches as above. Possession is the
+requester's permission (it reads its content under its own access), so a
+job still runs only on bytes its invoker can produce: knowing a digest, or a
+worker happening to hold the bytes, grants nothing. The requester still reads
+its copy to prove it; the upload is what is saved. The worker's sources are
+`HeldContent`: its retained outputs (a job chained on an earlier output runs
+without the requester sending it back) and, where the worker keeps a replica
+of the workspace, that replica's file versions (`WorkspaceContent`). On an
+always-on device the replica is the home peer's (`fs replica`, the stores the
+home-peer bundle names): the relay daemon hands its worker each bundle
+workspace's cache directory for the relay workspaces it backs, and a job in
+one of those workspaces may run on the replica's file versions
+(`ReplicaContent`; a job in any other workspace never reaches it). The
+replica process keeps its stores open, so the worker reads a version's file
+beside it without opening the store, found by the requester's locator and
+used only when the bytes hash to the digest and match the proof; a partly
+hydrated or replaced file is fetched instead. Versions of 1 MiB or less are
+loose blobs inside the store's database, so the worker asks the replica for
+them: each workspace's replica serves its own store, read-only and
+owner-only, on `replica-content.sock` in that workspace's cache directory
+(`fs::replica_content`). It answers only versions wholly on the device,
+checked against their manifest and at most 1 MiB, a few reads at a time; the
+worker trusts the answer no further than for a file it read itself (digest
+and proof), and a replica that is not serving means those inputs are
+fetched, as before.
+`InputTransfer` reports fetched and held inputs separately; the
+`offloadable_action` and `compute_content` relay tests print both timings.
+On a shared CI runner (requester, relay and worker on one host), offloading
+the 12-photo thumbnail batch (129 MB) took 5.9–9.3 s with its inputs fetched
+from the requester (3.1–5.0 s of staging) and 3.3–5.3 s to a worker whose
+replica already held them (0.55–1.2 s of staging, no input bytes sent). A
+1 MiB input staged in 42–54 ms fetched against 17–34 ms proven; a 15 MiB one
+in 879 ms against 185 ms.
+
+Placement weighs only what a worker would receive. `compute.place` takes the
+job's inputs as `inputs: [{digest, bytes}]` (at most `MAX_COMPUTE_INPUTS`),
+which `Offloader` sends. The relay notes, per live job, which inputs the
+requester proved and which it forwarded; when the job completes, an input
+proven and never forwarded is one the worker held, and a forwarded one is
+not. It remembers up to `MAX_KNOWN_HOLDINGS` such digests per requester and
+worker, plus the share of the last completed job's inputs the worker held,
+which is what an input not seen yet is expected to be (a replica keeping the
+originals holds the next photo too); a reattaching worker starts unknown.
+Moving only the rest, plus the round trip, is weighed against the
+requester's own run, so a worker expected to receive nothing costs only the
+round trip: a home server holding a phone's photos takes the thumbnail batch
+however slow the uplink. None of this is the worker's word or grants anything: every job
+still proves possession or fetches, and a hint gone wrong (an evicted copy)
+costs one fetched run, which unlearns it.
+
+The opposite hint goes stale too: a worker seen fetching everything over a
+slow link would otherwise never be tried again, even once its replica holds
+the photos. Each job kept local on that estimate is credited with what it
+would have saved had the worker held its inputs (the local run less the round
+trip). Once `REPROBE_AFTER_MS` (10 minutes) has passed and that credit covers
+the worst case of trying (every byte moves), the next such job is placed on
+the worker anyway: `compute.place` answers it with `"reprobe": true`, the
+`reprobing_held_inputs` reason and the estimate it overrode. The job shows
+what the worker holds like any other. One that finds nothing held doubles the
+wait and the credit the next try needs, at most `MAX_REPROBE_BACKOFF` (6)
+times; one that finds anything held resets it. So a try costs at most what
+staying local already forwent, and a worker that still holds nothing is tried
+ever less often. On the thumbnail model (12 new 10.75 MB photos a minute, a
+507 ms local run, 30 ms away): at the 38 MB/s loopback rate a worker whose
+replica synced 45 minutes in is tried at minutes 11, 32 and 73 and takes
+every batch from then on; over the phone's 1 MB/s uplink the first try waits
+for 270 kept batches. A worker that never holds them is tried 20 times in a
+week at 38 MB/s (58 s of fetching against 80 minutes forgone) and 5 times
+over 1 MB/s (643 s against the same 80 minutes), ever further apart.
+
+### Offloadable actions
+
+An action whose contract declares `offload` (`tilo_actions::Offload`: a signed
+package, its catalogue entrypoint, GPU need and CPU, memory and output
+ceilings) is a pure content transform: files in, content out, the same bytes
+whichever device computes them. Invoking one goes through
+`tilo_relay::offload::Offloader::invoke`, the same path for a person, a script
+or an agent, after the action door admitted the invocation:
+
+- The inputs are workspace files, named by the manifest hash the invoker's own
+  view resolved. `WorkspaceContent` reads each from this device's content
+  store, checks it against its manifest and hashes the bytes; only digests it
+  bound this way are servable to a worker, so the fs's manifest addressing and
+  compute's byte digests meet without either being guessed from the other.
+- It asks the workspace's relay `compute.place` (`RelayPlacement`). When
+  another device is better placed it binds a job to that worker (no
+  arguments, the declared ceilings, the inputs by digest) on its long-lived
+  compute session, serves exactly those inputs, follows the result and fetches
+  the outputs back, storing each as a file version.
+- No better device, an unreachable relay, a package not installed here, or any
+  remote failure runs the same transform locally. An action that fails on its
+  own inputs fails identically either way.
+
+The output is the outputs as content resources, in order, identical wherever
+the action ran; where it ran and how long it took are reported beside it
+(`OffloadRun::ran_on`, `Offloader::wall_times`). Thumbnailing a batch of images
+(`thumbnail::batch`, entrypoint `thumbnail-batch` of `so.tilo.thumbnails`) is
+the first offloadable transform.
+
+An app declares one with `#[effect(content, kind = "read", offload(app = "…",
+entrypoint = "…", cpu_ms = N, memory_mb = N, output_mb = N))]`; its inputs are
+its content parameters (`#[param(content)]`, a list of content for
+`Vec<String>`), and its handler is the local run. Photos publishes
+`make-thumbnails` this way. The action door admits an invocation of it like any
+other, then asks the device's route (`HostServices::action_offload`,
+`tilo_actions::offload::ActionOffload`) where it runs:
+
+- `tilo_relay::offload::OffloadRoute` runs it through `Offloader::offload`
+  when every input is document media the invoking room reaches on this device
+  (`DocumentMedia::contains`), bound by its blob hash
+  (`WorkspaceContent::bind_blob`), and keeps the outputs as that room's media,
+  so the door answers with exactly the `tilo.content` addresses the app's
+  handler returns.
+- Otherwise — a room this device places no compute for, an input not here, no
+  better device, any remote failure — the door hands the app the invocation
+  and its own handler answers it; the route hears how long that took
+  (`ActionOffload::ran_here`, `Offloader::record_local`), which placement
+  weighs next time.
+
+Content named twice is one input on both paths, as a worker stages it.
+
+A session that owns its profile's content store — the standalone runtime
+(`tilo_runtime::standalone`) and the shell's compositor-free runtime host —
+hands its broker the route `tilo_runtime::offload::action_offload` builds. It
+is configured by the device's home-peer registry (`peers/home-peers.json`
+beside the collaboration identity, or `TILO_HOME_PEERS_PATH`): the person's
+registered relay that retains the session's room shard
+(`tilo_relay_protocol::room_workspace_id`, as every relay binding derives it)
+places its compute (`tilo_relay::offload::home_relay`). With no such relay, or
+with `TILO_ACTION_OFFLOAD=off`, there is no route and the door behaves exactly
+as before. With one, `DeviceOffload` returns the route at once and connects in
+the background — a relay session subscribed to the room's workspace for
+placement and a compute session pinned to the relay's device key, over the
+store the apps' blob socket serves — answering `RunHere` with why until it is
+up and for good if the relay refuses this device or does not answer within
+`START_TIMEOUT`. The desktop compositor's apps keep their media in the
+filesystem daemon's store, which this route does not reach yet.
 
 ## Integration seams
 
@@ -84,9 +272,10 @@ digest that the requester cannot retrieve.
   A workspace relay fans out to every member, so it is reported as the reason
   control is unavailable and never carries input. Relayed exact-target control
   is future work.
-- The requester names the compute worker. `admit_compute_job` checks that
-  worker's `ServerAdvertisement` (service, workspace, app, accelerator,
-  capacity, energy saver and `PowerAvailability::is_critically_constrained`).
+- A compute job names its worker, usually the one `compute.place` chose.
+  `admit_compute_job` checks that worker's `ServerAdvertisement` (service,
+  workspace, app, accelerator, capacity, energy saver and
+  `PowerAvailability::is_critically_constrained`) by the rule placement uses.
   The worker executes only verified tapp catalogue entrypoints, and retains
   exact requester/worker/workspace binding, bounded diagnostics, cancellation
   and monotonic result attribution.
@@ -205,6 +394,18 @@ authorization.
   until it answers, then reports back. Without such a device the action
   fails at once and names the subnet (`no awake device on 10.0.0.0/24`).
   Waking is device administration and needs no optional continuity switch.
+- **An app asking another of the person's devices.** `actions invoke --device`
+  is fire-and-forget; an app that needs the answer (Settings reading each
+  device's storage summary) invokes the host's `tilo.own-device` provider,
+  action `identity.device/invoke`, with `{device, app, resource, action, arguments}`.
+  The broker admits it only for the person at this device and, from an app,
+  only for that app's own actions; agents, bots, Shortcut steps and remote
+  callers are refused. The shell sends it only to a device that is enrolled,
+  authenticated to it under the person's own root, unexpired and unrevoked,
+  as an ordinary invocation of `application:<shared room>:<app>` under the
+  same invocation id, and follows it there by long-poll; the other device
+  decides it for the device its transport authenticated. Its outcome becomes
+  the local invocation's. No new frame exists for it.
 - **Notifications** project only the app-authorized redacted or full payload.
   Dismiss and action replies return to the exact originating device instead of
   turning a mirrored notification into ambient remote-control authority.

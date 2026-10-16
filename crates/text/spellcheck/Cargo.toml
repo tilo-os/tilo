@@ -12,6 +12,13 @@ homepage.workspace = true
 name = "spellcheck"
 path = "src/lib.rs"
 
+[features]
+# The dictionaries (the embedded English list, Hunspell) are not linked into
+# the checks: the program fetches their code the first time something checks
+# spelling and hands it over (`defer_dictionaries`, `install_dictionaries`).
+# The browser desktop uses this to keep them out of its start module.
+lazy-dictionaries = []
+
 [dependencies]
 tilo-paths.workspace = true
 # Hunspell dictionaries (.aff/.dic) checked in-process, and the legacy

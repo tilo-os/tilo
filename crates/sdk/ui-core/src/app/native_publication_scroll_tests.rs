@@ -253,6 +253,24 @@ fn bound_scroll_app(
         .instantiate(context, target, crate::application::RestoreInput::None)
         .unwrap();
     let binding = component.callback_binding();
+    // The new record's first write lands only after its writer's debounce.
+    // Until then the component reports it Saving and resamples that every
+    // `SAVING_RESAMPLE` of wall time through a full model sync, so a loaded
+    // runner whose wheel and frame straddle a resample sees a sync no scroll
+    // caused. Measure from the durable record a settled window shows.
+    binding
+        .records
+        .try_flush_record(&binding.checkout.id)
+        .unwrap();
+    binding
+        .records
+        .await_submitted(&binding.checkout.id)
+        .unwrap();
+    assert_eq!(
+        binding.records.save_status(&binding.checkout.id).unwrap(),
+        crate::record::RecordSaveStatus::Saved,
+        "the bound fixture starts from a durable record"
+    );
     let route = binding
         .broker_route()
         .expect("actual canonical record route");
@@ -398,7 +416,7 @@ impl ViewScrollFixture {
 fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry() {
     for view_only in [false, true] {
         let mut fixture = ViewScrollFixture::new(view_only, false);
-        let before_doc = crate::widget::settle_mark(&fixture.app.state.doc);
+        let before_doc = crate::doc::settle_mark(&fixture.app.state.doc);
         fixture.app.refresh_semantic_tree();
         let before_geometry = fixture
             .app
@@ -435,7 +453,7 @@ fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry(
             );
         }
         assert_eq!(
-            crate::widget::settle_mark(&fixture.app.state.doc),
+            crate::doc::settle_mark(&fixture.app.state.doc),
             before_doc,
             "view input leaves the canonical document unchanged"
         );
@@ -524,16 +542,30 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
             .expect("real bound owner");
         let before = binding
             .read_document(&fixture.app.state.doc, |doc, _| {
-                crate::widget::settle_mark(doc)
+                crate::doc::settle_mark(doc)
             })
             .unwrap();
         assert_eq!(before.1, 0, "bound fixture is committed");
         let syncs = fixture.syncs.get();
         let declarations = fixture.declarations.get();
         fixture.wheel();
+        // A loaded runner: a durability resample interval passes between the
+        // wheel and its frame. Only a record still being written resamples.
+        let component = &mut fixture
+            .app
+            .root_widget
+            .as_any_mut()
+            .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
+            .expect("a bound component")
+            .component;
+        component.age_record_save_sample();
+        assert_eq!(
+            component.sampled_record_save(),
+            Some(&crate::record::RecordSaveStatus::Saved)
+        );
         let after = binding
             .read_document(&fixture.app.state.doc, |doc, _| {
-                crate::widget::settle_mark(doc)
+                crate::doc::settle_mark(doc)
             })
             .unwrap();
         if edit {

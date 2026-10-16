@@ -173,9 +173,11 @@ mod tests {
         fn allowed_devices(
             &self,
             room: crate::shell::state::RoomId,
+            channel: collab_types::ChannelId,
+            route: Option<&collab_types::ChannelRoute>,
             now: u64,
         ) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
-            self.0.allowed_devices(room, now)
+            self.0.allowed_devices(room, channel, route, now)
         }
     }
 

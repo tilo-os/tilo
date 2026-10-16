@@ -24,6 +24,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["open-uri", "clipboard", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture"]
 
+[resources]
+kinds = ["chat.workspace", "tilo.moderation", "tilo.rich-text"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

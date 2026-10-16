@@ -77,6 +77,10 @@ pub struct FieldShape {
     /// What the field reads as while its key is absent, for a scalar field
     /// ([`absent_scalar`]): history names it as the value an edit replaced.
     pub absent: fn() -> Option<serde_json::Value>,
+    /// `#[model(resource)]`: the field holds a resource of its own type,
+    /// published beneath the resource of the record holding it
+    /// ([`NestedResource`](crate::child::NestedResource)).
+    pub resource: Option<crate::child::NestedResource>,
 }
 
 /// `value`, the JSON form of a value of `shape`, without the record fields
@@ -174,6 +178,7 @@ impl PartialEq for FieldShape {
             && self.readonly == other.readonly
             && self.label == other.label
             && self.quiet_remove == other.quiet_remove
+            && self.resource.map(|nested| nested.kind) == other.resource.map(|nested| nested.kind)
     }
 }
 

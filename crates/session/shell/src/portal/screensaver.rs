@@ -14,6 +14,7 @@ use tilo_power_mgmt::{InhibitRegistry, InhibitToken};
 use zbus::interface;
 
 use super::lifecycle::disconnected_peers;
+use tilo_lock::MutexRecover as _;
 
 /// Well-known name the service claims; freedesktop clients call it directly.
 pub const BUS_NAME: &str = "org.freedesktop.ScreenSaver";
@@ -56,10 +57,7 @@ impl ScreenSaverService {
         let token = self
             .registry
             .acquire_for(name, tilo_power_mgmt::inhibit::INHIBIT_IDLE);
-        let mut holds = self
-            .holds
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut holds = self.holds.lock_recover();
         // Cookie 0 reads as "failed" to some clients; never hand it out.
         let mut cookie = holds.next_cookie.wrapping_add(1).max(1);
         while holds.by_cookie.contains_key(&cookie) {
@@ -79,10 +77,7 @@ impl ScreenSaverService {
     /// Release `cookie` if `owner` is the caller that took it; another
     /// client cannot release a hold it does not own.
     pub fn uninhibit(&self, owner: &str, cookie: u32) -> bool {
-        let mut holds = self
-            .holds
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut holds = self.holds.lock_recover();
         if holds
             .by_cookie
             .get(&cookie)
@@ -97,10 +92,7 @@ impl ScreenSaverService {
 
     /// Release everything `owner` holds — it left the bus.
     pub fn release_owner(&self, owner: &str) -> usize {
-        let mut holds = self
-            .holds
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut holds = self.holds.lock_recover();
         let before = holds.by_cookie.len();
         holds.by_cookie.retain(|_, hold| hold.owner != owner);
         before.saturating_sub(holds.by_cookie.len())

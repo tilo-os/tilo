@@ -88,6 +88,8 @@ jobs:
       security_required: ${{ steps.plan.outputs.security_required }}
       suites_required: ${{ steps.plan.outputs.suites_required }}
       suites: ${{ steps.plan.outputs.suites }}
+      vendored_required: ${{ steps.plan.outputs.vendored_required }}
+      vendored_crates: ${{ steps.plan.outputs.vendored_crates }}
       pins_required: ${{ steps.plan.outputs.pins_required }}
       pins: ${{ steps.plan.outputs.pins }}
       android_required: ${{ steps.plan.outputs.android_required }}
@@ -229,12 +231,25 @@ jobs:
       # The live transport suites import the MoQ library, generated from the
       # @moq/net pinned in scripts/moq-browser/package-lock.json as the
       # browser runtime build does; it is never committed. ci-fast ships node
-      # without npm.
+      # without npm. A stalled registry fetch can fail npm ci after minutes of
+      # silence, so print its errors and retry a failed install from a clean
+      # tree.
       - name: Prepare pinned MoQ library for offline suites
         if: contains(needs.select.outputs.suites, 'live-fake-relay.test.mjs') || contains(needs.select.outputs.suites, 'live-transport.test.mjs')
         run: |
           dnf install -y --setopt=install_weak_deps=False npm
-          npm ci --prefix scripts/moq-browser --no-audit --no-fund --silent
+          for attempt in 1 2 3; do
+            if npm ci --prefix scripts/moq-browser --no-audit --no-fund --loglevel=error --fetch-timeout=60000; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::npm ci for scripts/moq-browser failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "::notice::npm ci for scripts/moq-browser failed; retrying ($attempt/3)"
+            rm -rf scripts/moq-browser/node_modules
+            sleep $((attempt * 5))
+          done
           node scripts/moq-browser/build.mjs
 
       - name: Run selected suites
@@ -303,65 +318,17 @@ jobs:
       - name: Check native architecture
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
 
-      # Older/explicitly selected builders may predate the audio fixture.
-      # The helper replaces only the conflicting audio daemon; other installed
-      # packages retain their pinned versions.
-      - name: Ensure isolated audio test dependency
-        run: bash tools/ensure-headless-audio.sh
-
-      # Pinned/older builders may predate native PDF capture coverage. Stage
-      # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
-      # Where the runner's kernel can enforce Landlock, the PDF helper's
-      # sandbox is also required rather than allowed to stand down.
-      - name: Ensure native PDF capture dependency
-        if: contains(matrix.test_packages, '-p pdf-viewer') || contains(matrix.test_packages, '-p tilo-pdf') || contains(matrix.test_packages, '-p tilo-thumbnail')
-        run: |
-          asset=$(bash tools/ci/install-pdfium.sh --asset-name)
-          ./os/dev/cache-github-assets.sh "$asset"
-          library=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /usr os/external-assets/github-assets.tsv)
-          printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
-          bash tools/ci/require-pdf-sandbox.sh
-
-      # Real browser voice coverage runs only with the peer package. Both
-      # participants use throwaway profiles and Chromium's fake microphone.
-      - name: Prepare governed browser voice fixture
-        if: contains(matrix.test_packages, '-p tilo-browser-peer') || contains(matrix.scoped_tests, '"tilo-browser-peer"')
-        run: |
-          dnf install -y --setopt=install_weak_deps=False chromium
-          printf 'CHROME=%s\n' "$(command -v chromium-browser || command -v chromium)" >> "$GITHUB_ENV"
-          npm ci --prefix scripts/moq-browser
-          node scripts/moq-browser/build.mjs
-
-      # Imager deliberately rejects cache/source directories on the container
-      # overlay that also backs the operating-system root. The checked-out
-      # workspace is a host-backed qualified filesystem, so keep its native
-      # syscall fixtures there while retaining the container's ordinary /tmp
-      # behavior for every other package.
-      - name: Prepare qualified imager test filesystem
-        if: contains(matrix.test_packages, '-p imager')
-        run: |
-          root="$GITHUB_WORKSPACE/target/ci/imager-test-fs"
-          mkdir -p "$root"
-          chmod 700 "$root"
-          case "$(stat -f -c %T "$root")" in
-            ext2/ext3|ext2/ext3/ext4|xfs|btrfs) ;;
-            *) echo "workspace does not provide qualified imager semantics" >&2; exit 1 ;;
-          esac
-          # Do not redirect HOME/TMPDIR/XDG_CACHE_HOME for the whole mixed
-          # package shard: those process-wide variables alter unrelated apps'
-          # persistence and git fixtures. Only the imager's native syscall
-          # tests consume this dedicated location.
-          printf 'TILO_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
-
-      # app-cli registry and app-host local trust integration tests execute the installer;
-      # it is deliberately not a Rust dependency, so an affected-only Cargo
-      # invocation does not otherwise produce that binary.
-      - name: Build installer used by app-cli and app-host integration tests
-        if: contains(matrix.test_packages, '-p app-cli') || contains(matrix.test_packages, '-p app-host')
-        run: >-
-          bash tools/ci/measure.sh "build tilo-install test fixture" --
-          bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
-          cargo build --locked -p install --bin tilo-install
+      # Everything the shard needs beyond the builder image (audio, the X11
+      # bridge, PDFium, Chromium, the imager filesystem, the installer
+      # fixture), prepared by the merged tree's script rather than by steps of
+      # this file: a pull request runs its own head's copy of this workflow,
+      # so a requirement added here as a step would never reach one branched
+      # before it, while main's tests would already demand it.
+      - name: Prepare the shard's test environment
+        env:
+          TEST_PACKAGES: ${{ matrix.test_packages }}
+          SCOPED_TESTS: ${{ matrix.scoped_tests }}
+        run: bash tools/ci/prepare-test-shard.sh
 
       # `--tests` builds the targets whose tests run: libraries, binaries and
       # integration tests. Examples are type-checked by Clippy and built by
@@ -702,20 +669,12 @@ jobs:
       - name: Ensure the Android NDK and Rust targets
         run: bash tools/ci/install-android-ndk.sh
 
-      # Clippy's missing_const_for_thread_local fires on the Android targets
-      # for thread-locals that already use `const { … }`, a false positive.
       - name: Clippy Android apps
         env:
           PACKAGES: ${{ needs.select.outputs.android_packages }}
         run: |
-          set -euo pipefail
-          for target in aarch64-linux-android x86_64-linux-android; do
-            # shellcheck disable=SC2086
-            bash tools/ci/measure.sh "clippy $target" -- \
-              bash scripts/ci-run.sh "Clippy (Android apps, $target)" -- \
-              cargo clippy --locked $PACKAGES --examples --features android --target "$target" \
-              -- -D warnings -A clippy::missing_const_for_thread_local
-          done
+          # shellcheck disable=SC2086
+          bash tools/ci/clippy-android.sh $PACKAGES
 
   # Browser crates (anything built on wasm-bindgen) and their cfg(wasm32)
   # code paths, which no native job compiles, type-checked; and the selected
@@ -756,22 +715,14 @@ jobs:
       - name: Ensure the wasm32 Rust target
         run: rustup target add wasm32-unknown-unknown
 
-      - name: Check browser crates for wasm32
-        if: needs.select.outputs.wasm_packages != ''
+      # The selected browser crates with their default features, then the
+      # browser's own builds as it builds them.
+      - name: Clippy browser crates and builds for wasm32
         env:
           PACKAGES: ${{ needs.select.outputs.wasm_packages }}
         run: |
-          set -euo pipefail
           # shellcheck disable=SC2086
-          bash tools/ci/measure.sh "check wasm32" -- \
-            bash scripts/ci-run.sh "Check (browser crates, wasm32)" -- \
-            cargo check --locked $PACKAGES --target wasm32-unknown-unknown
-
-      # The step above checks each crate with its default features. The
-      # browser builds the web core with `dylink` and its app collection, and
-      # the Cloud frontend with `cloud,static-apps`; check those as built.
-      - name: Check the browser's wasm32 builds
-        run: bash tools/ci/check-wasm.sh
+          bash tools/ci/check-wasm.sh $PACKAGES
 
       # `tilo-app build --platform web` for every selected web-capable
       # example, against one web core.
@@ -785,6 +736,42 @@ jobs:
           bash tools/ci/measure.sh "web examples" -- \
             bash scripts/ci-run.sh "tilo-app build --platform web (examples)" -- \
             bash tools/ci/build-web-examples.sh $WEB_EXAMPLES
+
+  # Vendored crates that carry Tilo patches are path dependencies outside the
+  # workspace: the jobs above build them but never run their own tests. Run
+  # them when their files change (VENDORED_TEST_CRATES in
+  # tools/ci/affected_packages.py); ci-nightly.yml runs every one.
+  vendored:
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.vendored_required == 'true' }}
+    needs: [builder, select, security]
+    runs-on: runner
+    timeout-minutes: 45
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Test the selected vendored crates
+        env:
+          CRATES: ${{ needs.select.outputs.vendored_crates }}
+        run: |
+          set -euo pipefail
+          test -n "$CRATES"
+          # shellcheck disable=SC2086
+          bash tools/ci/measure.sh "vendored crate tests" -- \
+            bash scripts/ci-run.sh "Vendored crate tests" -- \
+            bash tools/ci/test-vendored-crates.sh $CRATES
 
   pins:
     if: needs.select.outputs.pins_required == 'true'
@@ -924,7 +911,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins, tapps]
+    needs: [builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins, tapps]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -942,6 +929,8 @@ jobs:
           CHECK_REQUIRED: ${{ needs.select.outputs.check_required }}
           SUITES_RESULT: ${{ needs.suites.result }}
           SUITES_REQUIRED: ${{ needs.select.outputs.suites_required }}
+          VENDORED_RESULT: ${{ needs.vendored.result }}
+          VENDORED_REQUIRED: ${{ needs.select.outputs.vendored_required }}
           PINS_RESULT: ${{ needs.pins.result }}
           PINS_REQUIRED: ${{ needs.select.outputs.pins_required }}
           ANDROID_RESULT: ${{ needs.android.result }}
@@ -985,6 +974,14 @@ jobs:
               ;;
             *)
               echo '::error::Path-selected suites failed or applicability is invalid.'
+              exit 1
+              ;;
+          esac
+          case "$VENDORED_REQUIRED:$VENDORED_RESULT" in
+            true:success) ;;
+            false:skipped) ;;
+            *)
+              echo '::error::Vendored crate tests failed or applicability is invalid.'
               exit 1
               ;;
           esac

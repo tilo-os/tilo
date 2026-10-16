@@ -45,7 +45,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Filter args passed after `SOURCE DEST` to `xdg-dbus-proxy`.
 ///
@@ -396,22 +396,7 @@ impl DBusProxyGuard {
             unsafe {
                 libc::kill(i32::try_from(child.id()).unwrap_or(i32::MAX), libc::SIGTERM);
             }
-            let deadline = Instant::now()
-                .checked_add(Duration::from_millis(500))
-                .unwrap_or_else(Instant::now);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) | Err(_) => break,
-                    Ok(None) => {
-                        if Instant::now() >= deadline {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                }
-            }
+            let _ = bounded_command::wait_or_kill(&mut child, Duration::from_millis(500));
         }
         let _ = std::fs::remove_file(&self.socket_path);
     }
@@ -646,7 +631,9 @@ exit 1
             // /proc/<pid> disappears once the kernel reaps the exited process; poll
             // briefly to avoid a schedule race.
             let deadline = tilo_test_env::hang_deadline();
-            while PathBuf::from(format!("/proc/{pid}")).exists() && Instant::now() < deadline {
+            while PathBuf::from(format!("/proc/{pid}")).exists()
+                && std::time::Instant::now() < deadline
+            {
                 std::thread::sleep(Duration::from_millis(20));
             }
             assert!(

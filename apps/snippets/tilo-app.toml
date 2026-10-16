@@ -24,6 +24,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard"]
 
+[resources]
+kinds = ["snippets.library"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

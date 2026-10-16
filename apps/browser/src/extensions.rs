@@ -22,6 +22,7 @@ pub struct ExtensionInfo {
 
 #[derive(Debug)]
 pub enum ExtensionError {
+    Download(String),
     Archive(String),
     Manifest(String),
     Io(std::io::Error),
@@ -49,6 +50,7 @@ const MAX_EXTENSION_PERMISSION_BYTES: usize = 512;
 impl std::fmt::Display for ExtensionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Download(e) => write!(f, "download failed: {e}"),
             Self::Archive(e) => write!(f, "archive invalid: {e}"),
             Self::Manifest(e) => write!(f, "manifest invalid: {e}"),
             Self::Io(e) => write!(f, "io: {e}"),
@@ -81,18 +83,33 @@ pub fn extensions_dir() -> PathBuf {
 
 /// Unpack an extension archive into `root` and inventory it.
 ///
-/// # Errors
-///
-/// Returns [`ExtensionError::Archive`] if `archive` isn't a valid CRX/zip
-/// package, [`ExtensionError::Manifest`] if it has no valid `manifest.json`,
-/// or [`ExtensionError::Io`] if unpacking it under `root` fails.
-pub fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, ExtensionError> {
+/// A CRX package must carry a valid CRX3 signature; its extension identifier
+/// is the one its signing key names and its public key is written into the
+/// unpacked manifest as `key`, so the unpacked copy keeps that identifier.
+/// Plain zips (`.xpi`, `.zip`) are accepted as unsigned packages. With
+/// `expected_id`, a package signed for any other identifier is refused.
+fn install_package(
+    archive: &[u8],
+    root: &Path,
+    expected_id: Option<&str>,
+) -> Result<ExtensionInfo, ExtensionError> {
     if archive.len() > MAX_ARCHIVE_BYTES {
         return Err(ExtensionError::Archive(
             "extension package is too large".into(),
         ));
     }
-    let zip_bytes = strip_crx_header(archive)?;
+    let (zip_bytes, signed) = if crate::crx::is_crx(archive) {
+        let verified = crate::crx::verify(archive)
+            .map_err(|error| ExtensionError::Archive(error.to_string()))?;
+        if expected_id.is_some_and(|expected| expected != verified.id) {
+            return Err(ExtensionError::Archive(
+                "package is signed for a different extension".into(),
+            ));
+        }
+        (verified.archive, Some((verified.id, verified.public_key)))
+    } else {
+        (archive, None)
+    };
     let mut zip = BoundedArchive::from_bytes(zip_bytes, ARCHIVE_LIMITS).map_err(package_error)?;
     zip.check_declared_sizes().map_err(package_error)?;
 
@@ -109,17 +126,45 @@ pub fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, 
             error => ExtensionError::Manifest(error.to_string()),
         })?;
     let mut info = parse_manifest(&manifest_text)?;
+    let keyed_manifest = match &signed {
+        Some((id, key)) => {
+            info.id.clone_from(id);
+            Some(manifest_with_key(&manifest_text, key)?)
+        }
+        None => None,
+    };
 
     let dest = root.join(&info.id);
     if dest.exists() {
         std::fs::remove_dir_all(&dest)?;
     }
     std::fs::create_dir_all(&dest)?;
-    zip.archive_mut()
-        .extract(&dest)
+    // Bounded on the way to disk: the declared sizes checked above are the
+    // package's own claim, and a header that lies small must not fill the
+    // extensions directory through an unbounded inflate.
+    zip.extract_to(&dest)
         .map_err(|e| ExtensionError::Archive(e.to_string()))?;
+    if let Some(manifest) = keyed_manifest {
+        std::fs::write(dest.join("manifest.json"), manifest)?;
+    }
     info.path = dest;
     Ok(info)
+}
+
+/// The manifest with the package's public key as `key`: Chromium derives an
+/// unpacked extension's identifier from that key, and the Web Store strips it.
+fn manifest_with_key(manifest: &str, public_key: &[u8]) -> Result<String, ExtensionError> {
+    use base64::Engine;
+    let mut value: serde_json::Value =
+        serde_json::from_str(manifest).map_err(|e| ExtensionError::Manifest(e.to_string()))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| ExtensionError::Manifest("manifest is not an object".into()))?;
+    object.insert(
+        "key".into(),
+        serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(public_key)),
+    );
+    serde_json::to_string(&value).map_err(|e| ExtensionError::Manifest(e.to_string()))
 }
 
 /// All extensions currently unpacked under [`extensions_dir`].
@@ -147,6 +192,13 @@ fn list_in(root: &Path) -> Vec<ExtensionInfo> {
             let manifest = entry.path().join("manifest.json");
             let text = read_manifest(&manifest).ok()?;
             let mut info = parse_manifest(&text).ok()?;
+            // A package installed from a signed CRX lives under the
+            // identifier its key names, which is the identity Chromium shows.
+            if let Some(name) = entry.file_name().to_str()
+                && crate::crx::is_extension_id(name)
+            {
+                name.clone_into(&mut info.id);
+            }
             info.path = entry.path();
             Some(info)
         })
@@ -163,41 +215,6 @@ fn read_manifest(path: &Path) -> Result<String, ExtensionError> {
         ));
     }
     std::fs::read_to_string(path).map_err(ExtensionError::Io)
-}
-
-/// `.crx` files wrap the zip in a small header; `.xpi` files ARE zips.
-/// Returns the zip portion.
-fn strip_crx_header(bytes: &[u8]) -> Result<&[u8], ExtensionError> {
-    if !bytes.starts_with(b"Cr24") {
-        return Ok(bytes); // plain zip (.xpi or already-stripped .crx)
-    }
-    let word = |at: usize| -> Result<u32, ExtensionError> {
-        bytes
-            .get(at..at + 4)
-            .and_then(|s| <[u8; 4]>::try_from(s).ok())
-            .map(u32::from_le_bytes)
-            .ok_or_else(|| ExtensionError::Archive("truncated CRX header".into()))
-    };
-    let version = word(4)?;
-    let zip_start = match version {
-        2 => {
-            let pubkey_len = word(8)? as usize;
-            let sig_len = word(12)? as usize;
-            16 + pubkey_len + sig_len
-        }
-        3 => {
-            let header_len = word(8)? as usize;
-            12 + header_len
-        }
-        v => {
-            return Err(ExtensionError::Archive(format!(
-                "unsupported CRX version {v}"
-            )));
-        }
-    };
-    bytes
-        .get(zip_start..)
-        .ok_or_else(|| ExtensionError::Archive("CRX header exceeds file size".into()))
 }
 
 fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
@@ -322,6 +339,21 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Write};
 
+    /// Stage `archive` as a picked file and install it, as the browser does.
+    fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, ExtensionError> {
+        stage_file(archive.to_vec())?.install(root)
+    }
+
+    /// Stage `archive` as the Web Store item `expected_id` and install it, as
+    /// the browser does.
+    fn install_verified_crx(
+        archive: &[u8],
+        root: &Path,
+        expected_id: &str,
+    ) -> Result<ExtensionInfo, ExtensionError> {
+        stage_package(archive.to_vec(), expected_id)?.install(root)
+    }
+
     const MANIFEST: &str = r#"{
         "manifest_version": 2,
         "name": "Dark Reader",
@@ -359,20 +391,47 @@ mod tests {
             assert!(info.path.join("background.js").exists());
         }
 
-        // Phase `installs_crx3_by_stripping_header`.
+        // Phase `installs_signed_crx3_under_its_signed_identity_with_key`.
         {
-            let zip_data = fixture_zip();
-            let mut crx = Vec::new();
-            crx.extend_from_slice(b"Cr24");
-            crx.extend_from_slice(&3u32.to_le_bytes());
-            let header = [0xAAu8; 20]; // opaque protobuf header, length 20
-            crx.extend_from_slice(&(header.len() as u32).to_le_bytes());
-            crx.extend_from_slice(&header);
-            crx.extend_from_slice(&zip_data);
-
+            use crate::crx::fixtures::{Signer, crx};
+            let signer = Signer::new();
+            let package = crx(&signer, &[&signer], &fixture_zip());
             let root = tempfile::tempdir().unwrap();
-            let info = install_from_bytes(&crx, root.path()).unwrap();
+            let info = install_from_bytes(&package, root.path()).unwrap();
             assert_eq!(info.name, "Dark Reader");
+            assert_eq!(info.id, crate::crx::extension_id(&signer.spki));
+            assert_eq!(info.path, root.path().join(&info.id));
+            // The unpacked manifest carries the key, so Chromium derives the
+            // same identifier when it loads the directory.
+            let manifest: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(info.path.join("manifest.json")).unwrap(),
+            )
+            .unwrap();
+            let key = manifest["key"].as_str().unwrap();
+            let der =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key).unwrap();
+            assert_eq!(crate::crx::extension_id(&der), info.id);
+            assert_eq!(list_in(root.path())[0].id, info.id);
+
+            // A package signed for another extension is not the requested item.
+            assert!(install_verified_crx(&package, root.path(), &"a".repeat(32)).is_err());
+            assert!(install_verified_crx(&package, root.path(), &info.id).is_ok());
+
+            // An unsigned or tampered CRX never reaches the disk.
+            let mut tampered = package;
+            *tampered.last_mut().unwrap() ^= 1;
+            let empty = tempfile::tempdir().unwrap();
+            assert!(matches!(
+                install_from_bytes(&tampered, empty.path()),
+                Err(ExtensionError::Archive(_))
+            ));
+            let mut unsigned = b"Cr24".to_vec();
+            unsigned.extend(3u32.to_le_bytes());
+            unsigned.extend(20u32.to_le_bytes());
+            unsigned.extend([0xAAu8; 20]);
+            unsigned.extend(fixture_zip());
+            assert!(install_from_bytes(&unsigned, empty.path()).is_err());
+            assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 0);
         }
 
         // Phase `lists_installed_extensions`.
@@ -550,20 +609,93 @@ pub fn set_approved(extension: &ExtensionInfo, approved: bool) -> Result<(), Ext
     Ok(())
 }
 pub fn approved_paths() -> Vec<PathBuf> {
-    list_installed()
+    approved_in(&extensions_dir())
+}
+
+fn approved_in(root: &Path) -> Vec<PathBuf> {
+    list_in(root)
         .iter()
         .filter(|extension| is_approved(extension))
         .filter_map(|extension| extension.path.canonicalize().ok())
         .collect()
 }
+/// Remove an installed extension: its files, its approval and its pin.
+///
+/// # Errors
+/// Returns an error when the directory is not an installed extension of
+/// `root` or cannot be removed.
+pub fn uninstall(extension: &ExtensionInfo, root: &Path) -> Result<(), ExtensionError> {
+    let path = extension.path.canonicalize()?;
+    let root = root.canonicalize()?;
+    if path.parent() != Some(root.as_path()) {
+        return Err(ExtensionError::Manifest(
+            "Extension is not installed in the profile".into(),
+        ));
+    }
+    set_approved(extension, false)?;
+    set_pinned_in(&root, &extension.id, false)?;
+    std::fs::remove_dir_all(&path)?;
+    Ok(())
+}
+
+fn pinned_path(root: &Path) -> PathBuf {
+    root.join(".tilo-pinned.json")
+}
+
+fn pinned_in(root: &Path) -> Vec<String> {
+    std::fs::read_to_string(pinned_path(root))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Whether the person pinned this extension's button to the toolbar.
+pub fn is_pinned(id: &str) -> bool {
+    pinned_in(&extensions_dir())
+        .iter()
+        .any(|pinned| pinned == id)
+}
+
+fn set_pinned_in(root: &Path, id: &str, pinned: bool) -> Result<(), ExtensionError> {
+    let mut ids = pinned_in(root);
+    ids.retain(|existing| existing != id);
+    if pinned {
+        ids.push(id.to_owned());
+    }
+    let path = pinned_path(root);
+    if ids.is_empty() && !path.exists() {
+        return Ok(());
+    }
+    let text = serde_json::to_string(&ids).map_err(|e| ExtensionError::Manifest(e.to_string()))?;
+    std::fs::write(path, text)?;
+    Ok(())
+}
+
+/// Pin or unpin an extension's toolbar button.
+///
+/// # Errors
+/// Returns an error when the preference cannot be written.
+pub fn set_pinned(id: &str, pinned: bool) -> Result<(), ExtensionError> {
+    let root = extensions_dir();
+    std::fs::create_dir_all(&root)?;
+    set_pinned_in(&root, id, pinned)
+}
+
 /// Summarize permissions declared by an installed extension.
 ///
 /// # Errors
 /// Returns an error if the manifest cannot be read or parsed.
 pub fn permission_summary(extension: &ExtensionInfo) -> Result<String, ExtensionError> {
+    summarize_manifest(&read_manifest(&extension.path.join("manifest.json"))?)
+}
+
+/// The permission summary for manifest text, before anything is installed.
+///
+/// # Errors
+/// Returns an error if the manifest cannot be parsed.
+pub fn summarize_manifest(text: &str) -> Result<String, ExtensionError> {
     let value: serde_json::Value =
-        serde_json::from_str(&read_manifest(&extension.path.join("manifest.json"))?)
-            .map_err(|error| ExtensionError::Manifest(error.to_string()))?;
+        serde_json::from_str(text).map_err(|error| ExtensionError::Manifest(error.to_string()))?;
     let mut permissions = Vec::new();
     for key in [
         "permissions",
@@ -599,19 +731,105 @@ pub fn permission_summary(extension: &ExtensionInfo) -> Result<String, Extension
         permissions.join("; ")
     })
 }
-/// Chromium derives an unpacked extension identity from its key, or its absolute path.
-pub fn action_url(extension: &ExtensionInfo) -> Option<String> {
+
+/// A verified package, read but not yet installed: what the person is shown
+/// before they agree to add it.
+#[derive(Debug, Clone)]
+pub struct StagedPackage {
+    pub info: ExtensionInfo,
+    pub permissions: String,
+    pub bytes: std::sync::Arc<Vec<u8>>,
+    /// The identifier its CRX3 signature names; `None` for an unsigned zip.
+    pub signed_id: Option<String>,
+}
+
+impl StagedPackage {
+    /// Unpack the staged package under `root`.
+    ///
+    /// # Errors
+    /// Returns [`ExtensionError::Archive`] if the package fails verification,
+    /// [`ExtensionError::Manifest`] if its manifest is invalid, or
+    /// [`ExtensionError::Io`] if unpacking it under `root` fails.
+    pub fn install(&self, root: &Path) -> Result<ExtensionInfo, ExtensionError> {
+        install_package(&self.bytes, root, self.signed_id.as_deref())
+    }
+}
+
+/// Verify a package from a file (a CRX3 signed by its own key, or an
+/// unsigned zip) and read its manifest.
+///
+/// # Errors
+/// As [`stage_package`]; an unsigned zip needs only a valid manifest.
+pub fn stage_file(bytes: Vec<u8>) -> Result<StagedPackage, ExtensionError> {
+    if crate::crx::is_crx(&bytes) {
+        let id = crate::crx::verify(&bytes)
+            .map_err(|error| ExtensionError::Archive(error.to_string()))?
+            .id;
+        return stage_package(bytes, &id);
+    }
+    if bytes.len() > MAX_ARCHIVE_BYTES {
+        return Err(ExtensionError::Archive(
+            "extension package is too large".into(),
+        ));
+    }
+    let mut zip = BoundedArchive::from_bytes(&bytes, ARCHIVE_LIMITS).map_err(package_error)?;
+    zip.check_declared_sizes().map_err(package_error)?;
+    let manifest = zip
+        .read_text("manifest.json", MAX_MANIFEST_BYTES)
+        .map_err(|error| ExtensionError::Manifest(error.to_string()))?;
+    let info = parse_manifest(&manifest)?;
+    let permissions = summarize_manifest(&manifest)?;
+    Ok(StagedPackage {
+        info,
+        permissions,
+        bytes: std::sync::Arc::new(bytes),
+        signed_id: None,
+    })
+}
+
+/// Verify a Web Store package for `expected_id` and read its manifest without
+/// touching the disk.
+///
+/// # Errors
+/// Returns an error when the package is not a valid CRX3 signed for
+/// `expected_id`, or its manifest is missing or invalid.
+pub fn stage_package(bytes: Vec<u8>, expected_id: &str) -> Result<StagedPackage, ExtensionError> {
+    if bytes.len() > MAX_ARCHIVE_BYTES {
+        return Err(ExtensionError::Archive(
+            "extension package is too large".into(),
+        ));
+    }
+    let verified =
+        crate::crx::verify(&bytes).map_err(|error| ExtensionError::Archive(error.to_string()))?;
+    if verified.id != expected_id {
+        return Err(ExtensionError::Archive(
+            "package is signed for a different extension".into(),
+        ));
+    }
+    let mut zip =
+        BoundedArchive::from_bytes(verified.archive, ARCHIVE_LIMITS).map_err(package_error)?;
+    zip.check_declared_sizes().map_err(package_error)?;
+    let manifest = zip
+        .read_text("manifest.json", MAX_MANIFEST_BYTES)
+        .map_err(|error| ExtensionError::Manifest(error.to_string()))?;
+    let mut info = parse_manifest(&manifest)?;
+    info.id = verified.id;
+    let permissions = summarize_manifest(&manifest)?;
+    Ok(StagedPackage {
+        info,
+        permissions,
+        bytes: std::sync::Arc::new(bytes),
+        signed_id: Some(expected_id.to_owned()),
+    })
+}
+
+/// The identifier Chromium gives this extension when it loads its directory:
+/// derived from the manifest `key` when there is one, otherwise from the
+/// absolute path.
+pub fn chrome_id(extension: &ExtensionInfo) -> Option<String> {
     use base64::Engine;
-    use sha2::{Digest, Sha256};
     let manifest: serde_json::Value =
         serde_json::from_str(&read_manifest(&extension.path.join("manifest.json")).ok()?).ok()?;
-    let popup = manifest.get("action")?.get("default_popup")?.as_str()?;
-    if popup.starts_with('/')
-        || popup.split('/').any(|part| part == "..")
-        || popup.contains(['\\', ':', '#', '?'])
-    {
-        return None;
-    }
     let bytes = if let Some(key) = manifest.get("key").and_then(serde_json::Value::as_str) {
         base64::engine::general_purpose::STANDARD.decode(key).ok()?
     } else {
@@ -623,16 +841,135 @@ pub fn action_url(extension: &ExtensionInfo) -> Option<String> {
             .as_bytes()
             .to_vec()
     };
-    let hash = Sha256::digest(bytes);
-    let id: String = hash
-        .iter()
-        .take(16)
-        .flat_map(|byte| {
-            [
-                char::from(b'a' + (byte >> 4)),
-                char::from(b'a' + (byte & 15)),
-            ]
-        })
-        .collect();
-    Some(format!("chrome-extension://{id}/{popup}"))
+    Some(crate::crx::extension_id(&bytes))
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use crate::crx::fixtures::{Signer, crx};
+    use std::io::{Cursor, Write};
+
+    /// Stage `archive` as the Web Store item `expected_id` and install it, as
+    /// the browser does.
+    fn install_verified_crx(
+        archive: &[u8],
+        root: &Path,
+        expected_id: &str,
+    ) -> Result<ExtensionInfo, ExtensionError> {
+        stage_package(archive.to_vec(), expected_id)?.install(root)
+    }
+
+    fn fixture_zip_only() -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("manifest.json", opts).unwrap();
+            zip.write_all(br#"{"manifest_version":3,"name":"Plain","version":"1"}"#)
+                .unwrap();
+            zip.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    fn package(signer: &Signer) -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("manifest.json", opts).unwrap();
+            zip.write_all(
+                br#"{"manifest_version":3,"name":"Lite","version":"1.0","permissions":["storage"],"host_permissions":["<all_urls>"],"action":{"default_popup":"popup.html"}}"#,
+            )
+            .unwrap();
+            zip.start_file("popup.html", opts).unwrap();
+            zip.write_all(b"<title>popup</title>").unwrap();
+            zip.finish().unwrap();
+        }
+        crx(signer, &[signer], &buf.into_inner())
+    }
+
+    #[test]
+    fn install_enable_pin_disable_and_uninstall() {
+        let root = tempfile::tempdir().unwrap();
+        let signer = Signer::new();
+        let id = crate::crx::extension_id(&signer.spki);
+
+        // phase: staging_verifies_and_summarises_without_touching_the_disk
+        let staged = stage_package(package(&signer), &id).unwrap();
+        assert_eq!(staged.info.name, "Lite");
+        assert_eq!(staged.info.id, id);
+        assert!(staged.permissions.contains("host_permissions: <all_urls>"));
+        assert!(list_in(root.path()).is_empty());
+        assert!(stage_package(package(&signer), &"a".repeat(32)).is_err());
+        assert_eq!(
+            stage_file(package(&signer)).unwrap().signed_id,
+            Some(id.clone())
+        );
+        let unsigned = stage_file(fixture_zip_only()).unwrap();
+        assert_eq!(unsigned.signed_id, None);
+        assert!(stage_file(b"neither a crx nor a zip".to_vec()).is_err());
+        let installed = staged.install(root.path()).unwrap();
+        assert_eq!(installed.id, id);
+        std::fs::remove_dir_all(&installed.path).unwrap();
+
+        // phase: installed_extensions_start_disabled_and_unpinned
+        let info = install_verified_crx(&package(&signer), root.path(), &id).unwrap();
+        assert_eq!(info.id, id);
+        assert!(!is_approved(&info));
+        assert!(approved_in(root.path()).is_empty());
+        assert!(pinned_in(root.path()).is_empty());
+        assert!(
+            permission_summary(&info)
+                .unwrap()
+                .contains("host_permissions: <all_urls>")
+        );
+
+        // phase: enabling_loads_the_directory_and_pinning_is_independent
+        set_approved(&info, true).unwrap();
+        assert_eq!(
+            approved_in(root.path()),
+            vec![info.path.canonicalize().unwrap()]
+        );
+        set_pinned_in(root.path(), &id, true).unwrap();
+        assert_eq!(pinned_in(root.path()), vec![id.clone()]);
+        set_pinned_in(root.path(), &id, true).unwrap();
+        assert_eq!(pinned_in(root.path()).len(), 1);
+
+        // phase: disabling_keeps_files_and_pin
+        set_approved(&info, false).unwrap();
+        assert!(approved_in(root.path()).is_empty());
+        assert!(info.path.join("popup.html").exists());
+        assert_eq!(pinned_in(root.path()), vec![id.clone()]);
+
+        // phase: reinstall_after_update_requires_a_fresh_approval
+        set_approved(&info, true).unwrap();
+        let updated = install_verified_crx(&package(&signer), root.path(), &id).unwrap();
+        assert!(is_approved(&updated), "same package, same manifest digest");
+
+        // phase: uninstall_removes_files_approval_and_pin
+        uninstall(&updated, root.path()).unwrap();
+        assert!(!info.path.exists());
+        assert!(list_in(root.path()).is_empty());
+        assert!(pinned_in(root.path()).is_empty());
+        assert!(
+            std::fs::read_dir(root.path())
+                .unwrap()
+                .flatten()
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".tilo-approval-"))
+        );
+
+        // phase: uninstall_refuses_directories_outside_the_profile
+        let outside = tempfile::tempdir().unwrap();
+        let foreign = ExtensionInfo {
+            path: outside.path().to_owned(),
+            ..updated
+        };
+        assert!(uninstall(&foreign, root.path()).is_err());
+        assert!(outside.path().exists());
+    }
 }

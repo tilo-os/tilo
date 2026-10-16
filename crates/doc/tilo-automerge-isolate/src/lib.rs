@@ -18,6 +18,13 @@
 //!
 //! Only then does the caller make the identical call on its own document.
 //! Automerge is deterministic, so that call does what the worker's did.
+//! [`Isolate::load`] skips the part of that call whose result the worker
+//! already has:
+//! the worker rebuilds and hashes every change of a document chunk and checks
+//! them against the heads the chunk stores, then hands the caller those
+//! hashes, so the caller's load of the same bytes takes them rather than
+//! rebuilding and hashing every change again (about half of loading a large
+//! document). It builds the same document.
 //!
 //! Workers are long-lived and keep copies of the documents they have seen,
 //! keyed by state, so an incoming change costs the change, not a reload of

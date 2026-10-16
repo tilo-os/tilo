@@ -2,8 +2,7 @@
 //!
 //! Every user close (the tab `✕`, Super+W, the tab menu, `tab.close`, or
 //! closing a whole window group from the palette) records where the tab lived
-//! and what it showed. `tab.reopen` (Ctrl+Shift+T by default) and the
-//! close toast's Undo put it back at the same group and index.
+//! and what it showed. `tab.reopen` (Ctrl+Shift+T by default) puts it back at the same group and index.
 //!
 //! A live client window cannot be revived once asked to exit, so a foreign
 //! tile is kept in its durable relaunchable form: the tab comes back as the
@@ -20,7 +19,7 @@ use crate::shell::state::{
 
 /// How many closes each workspace remembers.
 pub const CLOSED_TABS_PER_WORKSPACE: usize = 25;
-/// How long the close toast offers Undo.
+/// How long a reversible workspace deletion offers Undo.
 pub const UNDO_WINDOW: Duration = Duration::from_secs(8);
 
 /// One tab's content and the local state keyed by its id.
@@ -36,7 +35,7 @@ pub struct ClosedTabContent {
 /// A close that can be undone: one tab, or a whole window group.
 #[derive(Clone, Debug)]
 pub struct ClosedTab {
-    /// Identifies this entry for its Undo toast.
+    /// Identifies this remembered close.
     pub serial: u64,
     pub workspace: WorkspaceId,
     pub strip: StripId,
@@ -53,7 +52,7 @@ pub struct ClosedTab {
 }
 
 impl ClosedTab {
-    /// The title the close toast names.
+    /// The active title of this remembered close.
     pub fn title(&self) -> &str {
         self.tabs
             .iter()
@@ -204,7 +203,7 @@ impl ClosedTabStack {
         self.entries.remove(newest)
     }
 
-    /// Take one exact close, for its Undo toast.
+    /// Take one exact remembered close.
     pub fn take(&mut self, serial: u64) -> Option<ClosedTab> {
         let index = self
             .entries
@@ -261,7 +260,7 @@ pub fn restore(tree: &mut WorkspaceTree, entry: ClosedTab) -> Option<TabId> {
                 .tabs
                 .insert(at.saturating_add(offset).min(group.tabs.len()), tab);
         }
-        group.active_tab = entry.active_tab;
+        group.activate_tab(entry.active_tab);
         (strip_id, group.id)
     } else {
         if workspace.strips.is_empty() {
@@ -286,6 +285,7 @@ pub fn restore(tree: &mut WorkspaceTree, entry: ClosedTab) -> Option<TabId> {
                 active_tab: entry.active_tab,
                 width: entry.group_width,
                 maximized: false,
+                focus_history: Vec::new(),
             },
         );
         (strip.id, entry.group)
@@ -331,6 +331,7 @@ mod tests {
             active_tab: 2,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }];
         tree
     }

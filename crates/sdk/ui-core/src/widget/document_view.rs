@@ -393,6 +393,11 @@ where
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         crate::search::capability::search_providers(self.child.as_ref())
     }
+    fn search_provider_descriptors(
+        &self,
+    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+        crate::search::capability::search_provider_descriptors(self.child.as_ref())
+    }
     fn activate_search_result(
         &mut self,
         action_id: &str,
@@ -412,11 +417,6 @@ impl<K> crate::resources::PublishesResources for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The host visits the admitted child after this boundary. A view
-        // owns no declarations of its own and must not publish them twice.
-        Vec::new()
-    }
     fn document_action_result(
         &self,
         doc: &AutoCommit,

@@ -167,8 +167,7 @@ fn read_private_key(path: &Path) -> Result<Zeroizing<String>, String> {
     // A privileged signer must not consume a key controlled by another local
     // account merely because root can bypass that account's mode-0600 read
     // restriction. Check ownership on the same open inode as the contents.
-    // SAFETY: geteuid takes no arguments and has no failure mode.
-    if metadata.uid() != unsafe { libc::geteuid() } {
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
         return Err(format!(
             "private key {} is not owned by the signing account",
             path.display()
@@ -242,8 +241,7 @@ fn durable_unlink_command(
             path.display()
         ));
     }
-    // SAFETY: geteuid takes no arguments and cannot fail.
-    if metadata.uid() != unsafe { libc::geteuid() } {
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
         return Err(format!(
             "durable unlink target is not owned by the caller: {}",
             path.display()

@@ -559,7 +559,11 @@ impl PersonalWorkspaces {
         let Ok(bytes) = postcard::to_allocvec(&stored) else {
             return;
         };
-        write_if_changed(&path, &bytes);
+        // Reconciled from the compositor's loop: the comparison and the
+        // write (whose fsyncs take seconds under I/O pressure) run on the
+        // state writer, which keeps only the newest pending copy.
+        crate::shell::durable_writer::global()
+            .submit(path.clone(), move || write_if_changed(&path, &bytes));
     }
 }
 

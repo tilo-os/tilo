@@ -25,7 +25,7 @@ impl GovernedRoom {
         let now = SystemTime::now();
         peer.check_document_read(device, app, record, now).ok()?;
         let standing = peer.permissions(device, now).ok()?.standing();
-        let sandbox = peer.governed_sandbox().ok()?;
+        let sandbox = peer.governance().governed_sandbox().ok()?;
         Some(ViewReadPolicy {
             room: self.room().to_owned(),
             standing,
@@ -40,11 +40,13 @@ impl GovernedRoom {
 /// live, acting, and allows `Personas`. Any other device, an uninstalled or
 /// moved-away row, or a bot installed to post as itself is refused.
 pub(crate) fn bot_shows_personas(peer: &StatePeer, installation: &str, now: SystemTime) -> bool {
-    peer.installation(installation, now).is_some_and(|bot| {
-        bot.acting
-            && bot.withdrawn_at_ns.is_none()
-            && bot.installation.appearance == tilo_peer_state::AppearancePolicy::Personas
-    })
+    peer.governance()
+        .installation(installation, now)
+        .is_some_and(|bot| {
+            bot.acting
+                && bot.withdrawn_at_ns.is_none()
+                && bot.installation.appearance == tilo_peer_state::AppearancePolicy::Personas
+        })
 }
 
 impl Rooms {
@@ -120,7 +122,7 @@ impl Rooms {
             None => None,
         };
         let primary_governor = (source.record.is_empty()
-            && room.peer().document(&source.app_id, "").is_some())
+            && room.peer().holds_document(&source.app_id, ""))
         .then_some(room.peer().authority().device_public_key);
         if keys.is_none() && primary_governor.is_none() {
             return Err(if room.stewardship.is_none() {
@@ -135,7 +137,7 @@ impl Rooms {
             .records
             .view_channel(
                 workspace,
-                tilo_peer_state::transport::app_document_channel(&source.app_id, &source.record),
+                neighbour_wire::app_document_channel(&source.app_id, &source.record),
                 MAX_VIEW_DOCUMENT_BYTES,
             )
             .await?;
@@ -171,7 +173,7 @@ fn replay_source(
     let mut bytes = 0usize;
     let mut found = false;
     for retained in retained {
-        let Ok(tilo_peer_state::NeighbourMsg::AppDocument {
+        let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             cluster_id,
             record_id,

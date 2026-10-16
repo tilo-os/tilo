@@ -52,6 +52,7 @@ fn tree_with_tabs(tabs: usize) -> (WorkspaceTree, StripId) {
             active_tab: TAB_A,
             width: StateWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     };
     let ws = Workspace {

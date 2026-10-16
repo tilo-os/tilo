@@ -12,12 +12,12 @@
 //! descendant), its title (renaming relabels the links to it), creating,
 //! deleting and copying notes with everything under them.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Id, Model, Refusal, Set, resource,
+    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, Refusal, Set, resource,
 };
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
@@ -44,7 +44,7 @@ pub struct Notebook {
     /// The pictures the notes show, by the BLAKE3 digest their bodies name
     /// them by. Only placing a picture writes one.
     #[model(readonly)]
-    pub images: BTreeMap<String, Bytes>,
+    pub images: Map<Bytes>,
 }
 
 /// One note.
@@ -65,8 +65,11 @@ pub struct Page {
     /// Body
     ///
     /// Read whole: a note is short, and search, links and copies read every
-    /// word of it.
+    /// word of it. Published as a rich-text resource of its own beneath the
+    /// note (`notes.notebook/pages/<page>/body`), whose block actions apply
+    /// as field edits of this field.
     #[model(whole)]
+    #[model(resource)]
     pub body: RichText,
     /// Tags
     pub tags: Set<Id>,
@@ -140,7 +143,8 @@ pub fn page_of(id: &Id) -> Option<PageId> {
     kind = "notes.notebook",
     label = "Notebook",
     search = crate::search::entries,
-    read_content = Notebook::read_note,
+    read_content_in_doc = Notebook::read_note,
+    answer = Notebook::created_page,
     effects = crate::effect::NotesEffect
 )]
 impl Notebook {
@@ -148,7 +152,7 @@ impl Notebook {
     ///
     /// A note titled `title`, after the notes already under `parent` (a
     /// top-level note when none).
-    #[action]
+    #[action(answers)]
     pub fn new_note(
         &mut self,
         cx: &mut ActionCx,
@@ -168,7 +172,7 @@ impl Notebook {
     /// New note inside
     ///
     /// A note titled `title`, after the notes already under this one.
-    #[action(item = pages)]
+    #[action(item = pages, answers)]
     pub fn new_child(
         &mut self,
         cx: &mut ActionCx,
@@ -452,6 +456,48 @@ impl Notebook {
         Ok(())
     }
 
+    /// Create note from Markdown
+    ///
+    /// A top-level note titled `title` whose body is the Markdown: headings,
+    /// bullets, `- [ ]` checklists, quotes, code, tables and `[[Note title]]`
+    /// links. A leading `# title` equal to the title is dropped. Answers the
+    /// note's id and resource.
+    #[action(answers)]
+    pub fn create_page(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The note's title")] title: String,
+        #[param("The note's body as Markdown")] markdown: Option<String>,
+    ) -> Result<(), Refusal> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(Refusal::new("give the note a title"));
+        }
+        let markdown =
+            crate::markdown::strip_matching_title_heading(&markdown.unwrap_or_default(), title);
+        check_markdown_import(&markdown).map_err(Refusal::new)?;
+        let id = Id::from(cx.uuid().to_string());
+        let page = Page::titled(title, None);
+        let new = page_of(&id);
+        let blocks = crate::MainPanel::seed_blocks(&markdown, |target| {
+            if target == page.title {
+                return new;
+            }
+            self.pages
+                .iter()
+                .find(|(_, candidate)| candidate.title == target)
+                .and_then(|(id, _)| page_of(id))
+        });
+        self.pages.push(
+            id,
+            Page {
+                body: written(&blocks),
+                ..page
+            },
+        );
+        Ok(())
+    }
+
     /// Import Markdown
     ///
     /// Add Markdown text as a new top-level note titled `title`, with the
@@ -661,10 +707,58 @@ impl Notebook {
         }
     }
 
+    /// What a note-creating action answers with: the id and resource address
+    /// of the note it made, so its caller can act on it without a second
+    /// read. A new note is a new entry of the note collection, keyed by its
+    /// id; edits only touch fields of notes that exist, and a new tag is an
+    /// entry of the tag collection, which is no note.
+    fn created_page(
+        doc: &tilo_resource::Doc,
+        action: &str,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        use tilo_resource::Resource as _;
+        let notebook = Notebook::read(doc).ok()?;
+        // A block action of a note's body answers the blocks it touched.
+        if tilo_document::block_actions::ANSWERING.contains(&action) {
+            return notebook.pages.iter().find_map(|(id, _)| {
+                let body = body_object(doc, page_of(id)?)?;
+                let answer =
+                    tilo_document::block_actions::action_result_under(doc, &body, action, changes)?;
+                answer
+                    .as_object()
+                    .is_some_and(|touched| !touched.is_empty())
+                    .then_some(answer)
+            });
+        }
+        changes.iter().find_map(|patch| {
+            let automerge::PatchAction::PutMap {
+                key,
+                value: (automerge::Value::Object(_), _),
+                ..
+            } = &patch.action
+            else {
+                return None;
+            };
+            let page = page_of(&Id::from(key.as_str()))?;
+            notebook.pages.contains(&page_id(page)).then(|| {
+                serde_json::json!({
+                    "page": page.to_string(),
+                    "resource": crate::actions::page_resource_id(page),
+                })
+            })
+        })
+    }
+
     /// One note, or the notebook, as a reader reads it: the notebook as its
     /// notes and tags; a note (by its id) as its title and blocks, each with
-    /// the id edits of its body name it by.
-    fn read_note(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+    /// the id edits of its body name it by; a note's body resource as those
+    /// blocks.
+    fn read_note(
+        &self,
+        doc: &tilo_resource::Doc,
+        item: Option<&Id>,
+    ) -> Result<serde_json::Value, String> {
         let note =
             |id: &Id| page_of(id).map_or_else(|| id.to_string(), crate::actions::page_resource_id);
         let Some(item) = item else {
@@ -681,43 +775,38 @@ impl Notebook {
                 })).collect::<Vec<_>>(),
             }));
         };
+        if let Some(page) = crate::actions::page_of_body_resource(item.as_str()) {
+            let body = body_object(doc, page).ok_or_else(|| {
+                format!("no note `{item}`; read the notebook for the notes it holds")
+            })?;
+            let mut read = tilo_document::block_actions::read_under(doc, &body, None)?;
+            if let Some(map) = read.as_object_mut() {
+                map.insert(
+                    "kind".into(),
+                    <RichText as tilo_resource::Resource>::KIND.into(),
+                );
+            }
+            return Ok(read);
+        }
         let id =
             crate::actions::page_of_resource(item.as_str()).map_or_else(|| item.clone(), page_id);
         let page = self
             .pages
             .get(&id)
             .ok_or_else(|| format!("no note `{item}`; read the notebook for the notes it holds"))?;
-        let blocks = page.blocks();
+        let body = page_of(&id)
+            .and_then(|page| body_object(doc, page))
+            .ok_or_else(|| format!("note `{item}` has no body"))?;
+        let read = tilo_document::block_actions::read_under(doc, &body, None)?;
         Ok(serde_json::json!({
             "kind": "notes.page",
             "item": note(&id),
             "title": page.title,
             "parent": page.parent.as_ref().map(note),
-            "text": blocks.iter().map(|block| block.text.as_str()).collect::<Vec<_>>().join("\n"),
-            "blocks": blocks.iter().map(|block| serde_json::json!({
-                "id": block.id,
-                "kind": block_kind(&block.kind),
-                "text": block.text,
-            })).collect::<Vec<_>>(),
+            "body": page_of(&id).map(crate::actions::body_resource_id),
+            "markdown": read.get("markdown"),
+            "blocks": read.get("blocks"),
         }))
-    }
-}
-
-/// A block's kind as a reader names it.
-fn block_kind(kind: &ui::widget::BlockKind) -> serde_json::Value {
-    use ui::widget::BlockKind;
-    match kind {
-        BlockKind::Paragraph => "paragraph".into(),
-        BlockKind::Quote => "quote".into(),
-        BlockKind::Heading(level) => serde_json::json!({ "heading": level }),
-        BlockKind::Bullet { indent } => serde_json::json!({ "bullet": indent }),
-        BlockKind::Numbered { indent } => serde_json::json!({ "numbered": indent }),
-        BlockKind::Checklist { indent, done } => {
-            serde_json::json!({ "checklist": indent, "done": done })
-        }
-        BlockKind::CodeBlock { lang } => serde_json::json!({ "code": lang }),
-        BlockKind::Table { .. } => "table".into(),
-        BlockKind::Divider => "divider".into(),
     }
 }
 
@@ -798,16 +887,15 @@ pub fn content() -> tilo_content::ContentStore {
     ui::tilo_resource::content::current().unwrap_or_else(tilo_content::ContentStore::memory)
 }
 
-/// The pictures of `notebook` whose bytes are readable now, by the `asset:`
+/// The pictures of a notebook's `images` whose bytes are readable now, by the `asset:`
 /// source their bodies name them by. A picture a collaborator added may
 /// still be on its way from their device; it is absent until it arrives.
 #[must_use]
 pub fn image_snapshot(
-    notebook: &Notebook,
+    images: &Map<Bytes>,
     read: impl Fn(&str) -> Option<Vec<u8>>,
 ) -> HashMap<String, Vec<u8>> {
-    notebook
-        .images
+    images
         .iter()
         .filter_map(|(digest, stored)| {
             let bytes = match stored.inline() {

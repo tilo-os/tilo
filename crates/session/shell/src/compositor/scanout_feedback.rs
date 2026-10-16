@@ -26,7 +26,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use smithay::backend::allocator::{Format, Fourcc};
+use smithay::backend::allocator::{Format, Fourcc, Modifier};
 use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
 use smithay::reexports::wayland_server::Resource as _;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -73,6 +73,47 @@ pub fn offer(
         surface: candidate.surface,
         plane: plane(output.id)?,
     })
+}
+
+/// The layouts the default feedback advertises, as `(preferred, fallback)`.
+///
+/// `fallback` is every `importable` format, which the CPU reads under the
+/// linear layout. `preferred` is the tiled or compressed layouts the
+/// presenting device was `probed` to sample, which are drawn from the import
+/// with no copy: only a pair the probe confirmed, of a format the importer
+/// composites, and never the linear layout the fallback already lists.
+pub fn default_formats(importable: &[Format], probed: &[Format]) -> (Vec<Format>, Vec<Format>) {
+    let preferred = probed
+        .iter()
+        .filter(|format| !matches!(format.modifier, Modifier::Linear | Modifier::Invalid))
+        .filter(|format| {
+            importable.contains(&Format {
+                code: format.code,
+                modifier: Modifier::Linear,
+            })
+        })
+        .copied()
+        .collect();
+    (preferred, importable.to_vec())
+}
+
+/// The default feedback for `main_device`: the probed layouts in a tranche
+/// the client prefers, then the linear fallback.
+///
+/// # Errors
+///
+/// The sealed format table could not be created.
+pub fn default_feedback(
+    main_device: libc::dev_t,
+    importable: &[Format],
+    probed: &[Format],
+) -> std::io::Result<(DmabufFeedback, Vec<Format>)> {
+    let (preferred, fallback) = default_formats(importable, probed);
+    let feedback = DmabufFeedbackBuilder::new(main_device, fallback.iter().copied())
+        .add_preference_tranche(main_device, None, preferred.iter().copied())
+        .build()?;
+    let all = preferred.into_iter().chain(fallback).collect();
+    Ok((feedback, all))
 }
 
 /// The formats a scanout tranche for `plane` lists: those the plane scans
@@ -157,6 +198,19 @@ impl ScanoutFeedback {
             default,
             built: None,
             offered: None,
+        }
+    }
+
+    /// Replace the default feedback and its formats, because the layouts the
+    /// compositor can import changed. A scanout feedback built from the old
+    /// formats is dropped, and the surface that had one is offered again
+    /// from the next frame's candidate.
+    pub fn replace_default(&mut self, formats: Vec<Format>, default: DmabufFeedback) {
+        self.formats = formats;
+        self.default = default;
+        self.built = None;
+        if let Some((surface, _)) = self.offered.take() {
+            send(&surface, &self.default);
         }
     }
 
@@ -286,6 +340,53 @@ mod tests {
             )],
         };
         assert!(scanout_tranche(&importable, &tiled_only).is_empty());
+    }
+
+    #[test]
+    fn only_layouts_the_probe_confirmed_are_advertised_beside_the_linear_fallback() {
+        let tiled = Modifier::from(0x0500_0000_0000_0001_u64);
+        let unprobed = Modifier::from(0x0500_0000_0000_0002_u64);
+        let importable = [
+            format(Fourcc::Argb8888, Modifier::Linear),
+            format(Fourcc::Xrgb8888, Modifier::Linear),
+            format(Fourcc::Abgr2101010, Modifier::Linear),
+        ];
+        let probed = [
+            format(Fourcc::Argb8888, tiled),
+            // Linear is the fallback tranche's, listed once.
+            format(Fourcc::Argb8888, Modifier::Linear),
+            // A format the importer does not composite is never advertised.
+            format(Fourcc::Nv12, tiled),
+        ];
+        let (preferred, fallback) = default_formats(&importable, &probed);
+        assert_eq!(preferred, vec![format(Fourcc::Argb8888, tiled)]);
+        assert_eq!(fallback, importable.to_vec());
+        assert!(
+            !preferred.contains(&format(Fourcc::Xrgb8888, tiled))
+                && !preferred.contains(&format(Fourcc::Argb8888, unprobed)),
+            "a layout the probe did not list is never advertised"
+        );
+        // Nothing probed (no GPU yet, or no modifier support) is the linear set.
+        let (preferred, fallback) = default_formats(&importable, &[]);
+        assert!(preferred.is_empty());
+        assert_eq!(fallback, importable.to_vec());
+    }
+
+    #[test]
+    fn the_default_feedback_builds_with_and_without_probed_layouts() {
+        let tiled = Modifier::from(0x0500_0000_0000_0001_u64);
+        let importable = [format(Fourcc::Argb8888, Modifier::Linear)];
+        let (_, all) =
+            default_feedback(1, &importable, &[format(Fourcc::Argb8888, tiled)]).expect("feedback");
+        assert_eq!(
+            all,
+            vec![
+                format(Fourcc::Argb8888, tiled),
+                format(Fourcc::Argb8888, Modifier::Linear)
+            ]
+        );
+        let (_, all) = default_feedback(1, &importable, &[]).expect("feedback");
+        assert_eq!(all, importable.to_vec());
     }
 
     #[test]

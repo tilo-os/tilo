@@ -43,6 +43,14 @@ cat >"$bin/install" <<'EOF'
 #!/bin/sh
 echo "install $*" >>"$SEAT_LOG"
 EOF
+# `runuser -u ACCOUNT -- CMD...`: record who the directories are made as,
+# then run the command.
+cat >"$bin/runuser" <<'EOF'
+#!/bin/sh
+echo "runuser $*" >>"$SEAT_LOG"
+shift 2; [ "$1" = -- ] && shift
+exec "$@"
+EOF
 cat >"$bin/systemctl" <<'EOF'
 #!/bin/sh
 echo "systemctl $*" >>"$SEAT_LOG"
@@ -72,6 +80,7 @@ chmod 755 "$bin/display"
 seat() {
   exec env SEAT_LOG="$work/seat.log" SEAT_STOP="$work/stop" DISPLAY_STATE="$work/display" \
     TILO_SEAT_GETENT="$bin/getent" TILO_SEAT_ID="$bin/id" TILO_SEAT_INSTALL="$bin/install" \
+    TILO_SEAT_RUNUSER="$bin/runuser" \
     TILO_SEAT_SYSTEMD_RUN="$bin/systemd-run" TILO_SEAT_SYSTEMCTL="$bin/systemctl" \
     TILO_DISPLAY_PRESENT="$bin/display" TILO_SEAT_POLL_SEC=0.1 \
     "$@" "$libexec/tilo-seat-session" you /usr/libexec/tilo-session
@@ -229,7 +238,9 @@ if grep -q 'is-active --quiet tilo-board-headless-session@you.service' "$work/he
 else
   bad 'a board boot was not judged by its session'
 fi
-health TILO_BOOT_HEALTH_BOARD_MARKER="$work/missing"
+# No greeter presents in this stand-in, so the desktop verdict is decided at
+# once (os/tests/boot_health_greeter.sh judges the greeter itself).
+health TILO_BOOT_HEALTH_BOARD_MARKER="$work/missing" TILO_BOOT_HEALTH_TIMEOUT=0
 if grep -q 'is-active --quiet greetd.service' "$work/health.log"; then
   ok 'a desktop is still judged by greetd'
 else

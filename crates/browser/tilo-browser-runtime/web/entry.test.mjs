@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {boot, initialRoute, readEntry} from './entry.mjs';
+import {boot, chosenRoute, initialRoute, readEntry} from './entry.mjs';
 import {UNAVAILABLE, openTarget, viewInvocation} from './open-target.mjs';
 
 const message = {kind: 'chat.message', id: 'chat.message:1'};
@@ -87,6 +87,15 @@ test('the entry is the page’s directory, with the home workspace the web host 
     {base: 'https://tilo.so/'});
 });
 
+test('the entry names the embedding site only when it is exactly an https origin', async () => {
+  const served = embedder => async () => ({ok: true, json: async () => ({embedder})});
+  const read = embedder => readEntry({mode: 'desktop', location: {href: 'https://app.example/'}, fetch: served(embedder)});
+  assert.deepEqual(await read('https://site.example'), {base: 'https://app.example/', embedder: 'https://site.example'});
+  for (const refused of ['http://site.example', 'https://site.example/', 'https://site.example/page', 'site.example', 7]) {
+    assert.deepEqual(await read(refused), {base: 'https://app.example/'}, String(refused));
+  }
+});
+
 test('the catalogue is never read before admission', async () => {
   const order = [];
   const target = {scope: {kind: 'room', host: 'https://h.example', room: 'r'}, app: 'so.tilo.chat', record: '', resource: message};
@@ -151,13 +160,241 @@ test('the home workspace opens through its host door under its listed name, and 
     get textContent() { return this.text; },
     set textContent(text) { shown.push(text); this.text = text; },
   };
-  const page = await boot({mode: 'desktop', window, status, deps});
+  const steps = [];
+  const page = await boot({mode: 'desktop', window, status, deps, onStep: step => steps.push(step)});
   assert.deepEqual(entered, [home]);
   // Progress while joining, then the loading note again, which the first drawn frame clears.
   assert.ok(shown.includes('Joining…'), shown.join(' | '));
   assert.equal(status.text, 'Loading…');
+  // The page hears it is joining through the door, then opening once admitted.
+  assert.deepEqual([...new Set(steps)], ['join', 'open']);
+  assert.equal(steps.at(-1), 'open');
   assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'room', host: 'https://rooms.example', room: 'ROOM'}}});
   assert.equal(replaced[0], 'https://rooms.example/open/#/@rooms.example/w/ROOM');
   assert.equal(mounts[0].workspaceName, 'Commons');
+  assert.equal(mounts[0].host, 'rooms.example');
   page.router.stop?.();
+});
+
+test('the entry offers only the web About links the host set', async () => {
+  const about = {notify: 'https://example.org/notify', source: '', community: 'javascript:alert(1)'};
+  const fetch = async () => ({ok: true, json: async () => ({about})});
+  assert.deepEqual(await readEntry({mode: 'desktop', location: {href: 'https://example.org/'}, fetch}),
+    {base: 'https://example.org/', about: {notify: 'https://example.org/notify'}});
+  const none = async () => ({ok: true, json: async () => ({about: {notify: '', source: 'not a url'}})});
+  assert.deepEqual(await readEntry({mode: 'desktop', location: {href: 'https://example.org/'}, fetch: none}),
+    {base: 'https://example.org/'});
+});
+
+test('the desktop gets the entry’s About links, no host pill on the person’s own desktop, and the tab its workspace name', async () => {
+  const about = {source: 'https://example.org/source'};
+  const runtime = {parseLink: () => JSON.stringify({mode: 'desktop', target: {scope: {kind: 'own'}}}), formatLink: () => ''};
+  const mounts = [];
+  const forwarded = [];
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://example.org/#/me', hash: '#/me'},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+    document: {title: 'Tilo'},
+  };
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: true, json: async () => ({about})}),
+    readAccounts: async () => [],
+    mountDesktop: async (element, options) => { mounts.push(options); return {navigation}; },
+  };
+  const page = await boot({mode: 'desktop', window, deps, diagnostics: {onStatus: status => forwarded.push(status)}});
+  assert.deepEqual(mounts[0].about, about);
+  assert.equal(mounts[0].host, undefined);
+  mounts[0].onStatus({frames: 1});
+  assert.equal(window.document.title, 'Tilo');
+  mounts[0].onStatus({workspaceName: 'Garden'});
+  assert.equal(window.document.title, 'Tilo · Garden');
+  mounts[0].onStatus({workspaceName: 'Kitchen'});
+  assert.equal(window.document.title, 'Tilo · Kitchen');
+  assert.equal(forwarded.length, 3);
+  page.router.stop?.();
+});
+
+test('a room mount keeps Invite alongside host, About, presence and title forwarding', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+  const about = {source: 'https://example.org/source'};
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  let mounted;
+  let invited = 0;
+  const peer = {room: 'ROOM', whenReady: async () => {}, mountDesktop: async (_element, options) => { mounted = options; return {navigation}; }};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}), document: {title: 'Tilo'},
+    location: {href: 'https://rooms.example/open/', hash: ''},
+    history: {replaceState() {}, pushState() {}}, addEventListener() {}, removeEventListener() {},
+  };
+  const statuses = [];
+  const page = await boot({mode: 'desktop', window, diagnostics: {onStatus: status => statuses.push(status)}, deps: {
+    loadRuntime: async () => ({formatLink: () => 'https://rooms.example/open/#/ROOM'}),
+    fetch: async () => ({ok: true, json: async () => ({home, about})}),
+    enterViaHost: async () => peer, onInvite: () => { invited += 1; },
+  }});
+  mounted.onInvite();
+  assert.equal(invited, 1);
+  assert.equal(mounted.host, 'rooms.example');
+  assert.deepEqual(mounted.about, about);
+  assert.equal(mounted.presenceUrl, 'https://rooms.example/presence');
+  mounted.onStatus({workspaceName: 'Commons'});
+  assert.equal(window.document.title, 'Tilo · Commons');
+  assert.deepEqual(statuses, [{workspaceName: 'Commons'}]);
+  page.router.stop();
+});
+
+test('a bare entry under a home workspace asks the host’s door while the runtime still loads', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+  const order = [];
+  let loaded;
+  const runtime = {
+    parseLink: () => { throw new Error('a home entry needs no grammar to be admitted'); },
+    formatLink: () => 'https://rooms.example/open/#/@rooms.example/w/ROOM',
+  };
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const peer = {room: 'ROOM', whenReady: async () => {}, mountDesktop: async () => { order.push('mount'); return {navigation}; }};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://rooms.example/open/', hash: ''},
+    history: {state: null, replaceState: () => order.push('canonical'), pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: () => new Promise(resolve => { loaded = () => { order.push('runtime'); resolve(runtime); }; }),
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    enterViaHost: async () => {
+      order.push('door');
+      // The door's own wait for the runtime, before its first certificate.
+      loaded();
+      return peer;
+    },
+  };
+  const page = await boot({mode: 'desktop', window, deps});
+  // The router then keeps the address canonical as it goes.
+  assert.deepEqual(order.slice(0, 4), ['door', 'runtime', 'canonical', 'mount']);
+  page.router.stop?.();
+});
+
+test('any other link waits for the runtime’s grammar before admission', async () => {
+  const order = [];
+  const runtime = {
+    parseLink: () => { order.push('parse'); return JSON.stringify({mode: 'desktop', target: {scope: {kind: 'own'}}}); },
+    formatLink: () => 'https://tilo.so/#/me',
+  };
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://tilo.so/#/me', hash: '#/me'},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const deps = {
+    loadRuntime: async () => { order.push('runtime'); return runtime; },
+    fetch: async () => ({ok: false}),
+    mountDesktop: async () => { order.push('mount'); return {navigation}; },
+  };
+  const page = await boot({mode: 'desktop', window, deps});
+  assert.deepEqual(order, ['runtime', 'parse', 'mount']);
+  page.router.stop?.();
+});
+
+test('the home workspace’s app in front is fetched beside the runtime, before admission', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/', app: 'so.tilo.chat'};
+  const order = [];
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://rooms.example/open/', hash: ''},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: () => new Promise(() => {}),
+    prefetchApplication: app => order.push(`prefetch ${app}`),
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    enterViaHost: async () => {
+      order.push('door');
+      throw new Error('closed');
+    },
+  };
+  await assert.rejects(boot({mode: 'desktop', window, deps}), /closed/);
+  assert.deepEqual(order, ['prefetch so.tilo.chat', 'door']);
+});
+
+test('only a bare desktop entry under a home reopens the workspace the person last chose', () => {
+  const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+  const chosen = {origin: 'https://acme.example', room: 'A'};
+  const bare = {hash: '', href: 'https://tilo.example/'};
+  assert.deepEqual(chosenRoute({location: bare, mode: 'desktop', home, chosen}),
+    {mode: 'desktop', target: {scope: {kind: 'room', host: 'https://acme.example', room: 'A'}}});
+  assert.equal(chosenRoute({location: {hash: '#/@rooms.example/w/X', href: 'https://tilo.example/#/@rooms.example/w/X'}, mode: 'desktop', home, chosen}), null);
+  assert.equal(chosenRoute({location: bare, mode: 'app', home, chosen}), null);
+  assert.equal(chosenRoute({location: bare, mode: 'desktop', home: null, chosen}), null);
+  assert.equal(chosenRoute({location: bare, mode: 'desktop', home, chosen: null}), null);
+});
+
+function roomPage({href, hash, parse}) {
+  const listeners = {};
+  const calls = {reloads: 0, dispatched: [], scopes: []};
+  const navigation = {
+    getSnapshot: () => ({generation: 'g', active: null, entries: []}),
+    subscribe: () => () => {},
+    dispatch: async command => { calls.dispatched.push(command); },
+  };
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href, hash, reload: () => { calls.reloads += 1; }},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener: (type, listener) => { listeners[type] = listener; },
+    removeEventListener() {},
+  };
+  const runtime = {parseLink: url => JSON.stringify(parse(url)), formatLink: () => window.location.href};
+  return {window, listeners, calls, runtime, navigation};
+}
+
+test('a returning person’s bare entry opens the chosen room through their membership, not the home’s door', async () => {
+  const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+  const page = roomPage({href: 'https://tilo.example/', hash: '', parse: () => { throw new Error('a chosen room needs no parse'); }});
+  const connected = [];
+  const peer = {room: 'A', whenReady: async () => {}, mountDesktop: async (element, options) => { options.onNavigation?.(page.navigation); return {navigation: page.navigation}; }};
+  const deps = {
+    loadRuntime: async () => page.runtime,
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    chosenWorkspace: () => ({origin: 'https://acme.example', room: 'A'}),
+    onScope: seen => page.calls.scopes.push(seen),
+    readAccounts: async origin => [{userPublicKey: 'ab', origin}],
+    connectMember: async options => { connected.push(options); return peer; },
+    enterViaHost: async () => { throw new Error('the home’s door is not asked'); },
+  };
+  const shown = await boot({mode: 'desktop', window: page.window, deps});
+  assert.deepEqual(connected.map(({origin, room}) => [origin, room]), [['https://acme.example', 'A']]);
+  assert.deepEqual(page.calls.scopes, [{scope: {kind: 'room', host: 'https://acme.example', room: 'A'}, entry: {base: 'https://tilo.example/', home}}]);
+  assert.deepEqual(shown.router.route.target.scope, {kind: 'room', host: 'https://acme.example', room: 'A'});
+  shown.router.stop();
+});
+
+test('Back or Forward to another room loads it anew, never inside the room in front', async () => {
+  const scopes = {
+    '#/@acme.example/w/A': {kind: 'room', host: 'https://acme.example', room: 'A'},
+    '#/@globex.example/w/G': {kind: 'room', host: 'https://globex.example', room: 'G'},
+  };
+  const page = roomPage({href: 'https://tilo.example/#/@acme.example/w/A', hash: '#/@acme.example/w/A',
+    parse: url => ({mode: 'desktop', target: {scope: scopes[new URL(url).hash]}})});
+  const peer = {room: 'A', whenReady: async () => {}, mountDesktop: async (element, options) => { options.onNavigation?.(page.navigation); return {navigation: page.navigation}; }};
+  const deps = {
+    loadRuntime: async () => page.runtime, fetch: async () => ({ok: false}),
+    readAccounts: async () => [{userPublicKey: 'ab'}], connectMember: async () => peer,
+  };
+  const shown = await boot({mode: 'desktop', window: page.window, deps});
+  // The same room: shown in this desktop, no reload.
+  await page.listeners.popstate();
+  assert.equal(page.calls.reloads, 0);
+  page.window.location.href = 'https://tilo.example/#/@globex.example/w/G';
+  await page.listeners.popstate();
+  assert.equal(page.calls.reloads, 1);
+  assert.deepEqual(page.calls.dispatched, []);
+  shown.router.stop();
 });

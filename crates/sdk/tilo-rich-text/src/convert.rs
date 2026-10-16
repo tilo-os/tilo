@@ -1,6 +1,6 @@
 //! Between the document's paragraphs and the editor's blocks.
 //!
-//! qdoc names paragraph kinds and inline marks the way its codecs do
+//! tilo-doc names paragraph kinds and inline marks the way its codecs do
 //! (`heading` with a `level`, `list_item` with `ordered`/`checked`, `strong`,
 //! `em`), and counts offsets in characters. The block editor has its own
 //! kinds and marks and counts bytes. Everything the editor shows passes
@@ -89,7 +89,7 @@ pub(crate) const TABLE_SOURCE: &str = "table_source";
 /// the page's id, which the document's link validation accepts.
 pub(crate) const PAGE_LINK_PREFIX: &str = "#page-";
 
-/// The editor mark a qdoc mark shows as, when it has one.
+/// The editor mark a tilo-doc mark shows as, when it has one.
 fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
     match (name, value) {
         (_, MarkValue::Bool(false)) => None,
@@ -110,7 +110,7 @@ fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
     }
 }
 
-/// The qdoc mark an editor mark is stored as: its name and value, for an
+/// The tilo-doc mark an editor mark is stored as: its name and value, for an
 /// edit that sets it ([`RichTextAction::SetMark`](tilo_document::RichTextAction::SetMark)).
 pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
     match mark {

@@ -86,7 +86,7 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
         daemon::Mode::AdmissionDaemon { owner_uid } => {
             daemon::serve_admission::<S>(&args.profile, owner_uid)
         }
-        daemon::Mode::Connect => daemon::connect(&args.profile),
+        daemon::Mode::Connect => daemon::connect(&args.profile, args.standalone),
         daemon::Mode::Join { invitation } => daemon::join(&args.profile, &invitation),
         daemon::Mode::RunApp {
             app_id,

@@ -163,10 +163,8 @@ fn validate_open_file_metadata(
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        if metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o077 != 0
-        {
+        use std::os::unix::fs::MetadataExt;
+        if !tilo_files::native::private::private_to_me(metadata) {
             return Err(ClockConfigurationError::InsecurePermissions);
         }
         if expected

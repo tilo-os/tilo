@@ -14,7 +14,24 @@ DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
-OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan"}
+OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude"}
+# Fedora firmware RPMs a board layer may remove (`firmware_exclude`), each with
+# the /usr/lib/firmware subtrees it owns. Closed on purpose: a board can only
+# drop vendor firmware known to be separable, and never one whose subtree its
+# own `system_firmware` or `firmware` names. Generic images exclude nothing.
+FIRMWARE_PACKAGE_TREES = {
+    "nvidia-gpu-firmware": ("nvidia",),
+    "amd-gpu-firmware": ("amdgpu", "radeon"),
+    "intel-gpu-firmware": ("i915", "xe"),
+    "intel-audio-firmware": ("intel/avs", "intel/sof", "intel/sof-ipc4", "intel/sof-tplg"),
+    "intel-npu-firmware": ("intel/vpu",),
+    "amd-ucode-firmware": ("amd-ucode",),
+    "mt7xxx-firmware": ("mediatek",),
+    "brcmfmac-firmware": ("brcm", "cypress"),
+    "nxpwireless-firmware": ("nxp",),
+    "tiwilink-firmware": ("ti-connectivity",),
+}
+INTERNAL_KEYBOARD_FIELDS = {"name", "bus", "vendor", "product", "devicetree_compatible"}
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
 DEFAULT_TARGET_IMGREF = "registry.tilo.so/tilo/tilo:latest"
@@ -159,6 +176,10 @@ def trusted_path(root, relative, *, regular):
     return current
 
 
+# tilo-board-successor reads the installed profile with a compiled copy of
+# read_profile, development_origin, validate_target_imgref and trusted_path
+# (crates/system/board-successor/src/profile.rs). Change what they accept in
+# both places; crates/system/board-successor/tests/profile.rs pins the copy.
 def read_profile(root):
     candidate = root / PROFILE_PATH
     if not candidate.exists() and not candidate.is_symlink():
@@ -261,6 +282,18 @@ def validate_definition(data):
                for destination in destinations):
             raise ValueError("system firmware must not overlap local firmware destinations")
         system_paths.add(path)
+    excluded = data.get("firmware_exclude", [])
+    if not isinstance(excluded, list) or len(excluded) > len(FIRMWARE_PACKAGE_TREES):
+        raise ValueError("hardware definition firmware_exclude must be a bounded package list")
+    if len(set(map(str, excluded))) != len(excluded):
+        raise ValueError("hardware definition firmware_exclude packages must be unique")
+    needed = [*system_paths, *destinations]
+    for package in excluded:
+        if not isinstance(package, str) or package not in FIRMWARE_PACKAGE_TREES:
+            raise ValueError("hardware definition firmware_exclude names a package that may not be removed")
+        for tree in FIRMWARE_PACKAGE_TREES[package]:
+            if any(path == tree or path.startswith(tree + "/") or tree.startswith(path + "/") for path in needed):
+                raise ValueError(f"firmware_exclude {package} would remove firmware the definition names")
     boot_modules = data.get("boot_modules", [])
     if not isinstance(boot_modules, list) or len(boot_modules) > 64:
         raise ValueError("hardware definition boot modules must be a bounded name list")
@@ -279,6 +312,7 @@ def validate_definition(data):
                 or data["id"] != "lenovo-83ed" or data["architecture"] != "aarch64"
                 or data["devicetree"] != "qcom/x1e80100-lenovo-yoga-slim7x.dtb"):
             raise ValueError("Wi-Fi wake policy requires the Lenovo 83ED definition and disabled WoWLAN")
+    validate_internal_keyboards(data)
     kernel_args = data.get("kernel_args", [])
     if not isinstance(kernel_args, list) or len(kernel_args) > 16:
         raise ValueError("hardware definition kernel arguments must be a bounded list")
@@ -290,6 +324,44 @@ def validate_definition(data):
     if len(set(kernel_args)) != len(kernel_args):
         raise ValueError("hardware definition kernel arguments must be unique")
     return data
+
+
+def validate_internal_keyboards(data):
+    """Built-in keyboards libinput must be told are internal.
+
+    libinput pairs a touchpad with a keyboard for disable-while-typing only
+    when it tags that keyboard internal, which its own quirks do for PS/2
+    keyboards alone. Each entry becomes one libinput quirk section, so every
+    value is checked against what a quirks file can carry verbatim: no glob
+    characters, no line breaks, nothing that widens the match.
+    """
+    keyboards = data.get("internal_keyboards", [])
+    if not isinstance(keyboards, list) or len(keyboards) > 8:
+        raise ValueError("hardware definition internal keyboards must be a bounded list")
+    if keyboards and data["devicetree"] is None:
+        # The device-tree compatible confines the quirk to this board; a
+        # firmware-described board would need a DMI match instead.
+        raise ValueError("hardware definition internal keyboards require a device-tree board")
+    seen = set()
+    for keyboard in keyboards:
+        if not isinstance(keyboard, dict) or set(keyboard) != INTERNAL_KEYBOARD_FIELDS:
+            raise ValueError("hardware definition internal keyboard has missing or unknown fields")
+        if not all(isinstance(value, str) for value in keyboard.values()):
+            raise ValueError("hardware definition internal keyboard fields must be strings")
+        if keyboard["bus"] not in ("i2c", "spi"):
+            # USB and Bluetooth keyboards are external to libinput, PS/2
+            # ones already internal: only these two buses need the quirk.
+            raise ValueError("hardware definition internal keyboard bus must be i2c or spi")
+        if not all(re.fullmatch(r"[0-9A-F]{4}", keyboard[field]) for field in ("vendor", "product")):
+            raise ValueError("hardware definition internal keyboard ids must be four uppercase hex digits")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 :._()-]{0,79}", keyboard["name"]):
+            raise ValueError("hardware definition internal keyboard name is invalid")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*", keyboard["devicetree_compatible"]):
+            raise ValueError("hardware definition internal keyboard device-tree compatible is invalid")
+        identity = (keyboard["bus"], keyboard["vendor"], keyboard["product"])
+        if identity in seen:
+            raise ValueError("hardware definition internal keyboards must be unique")
+        seen.add(identity)
 
 
 def read_definition(path):

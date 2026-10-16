@@ -89,12 +89,188 @@ pub(super) const LONE_IDLE: Duration = Duration::from_secs(20);
 /// `memory.max` 2832 times) preempted the same two `tilo-net-rt` workers
 /// 1.35 times a second on top of the 0.95 times they blocked, and failed the
 /// gate at 2.30/s with nothing in the session changed.
+#[cfg(target_os = "linux")]
 pub(super) const LONE_WAKEUP_BUDGET: f64 = 0.25;
 /// Most CPU a lone idle desktop's threads may use, in percent of one core:
 /// 100 ms over [`LONE_IDLE`]. The wakeup count leaves out preemptions, so
 /// this is what still catches a thread that spins without blocking. Measured
 /// 0.0 % (under one 10 ms tick in the window).
 pub(super) const LONE_CPU_BUDGET: f64 = 0.5;
+
+/// Set once the test runs inside a network namespace of its own. The
+/// private-network rerun serves only the Linux lone-desktop test below.
+#[cfg(target_os = "linux")]
+const PRIVATE_NETWORK: &str = "TILO_IDLE_PRIVATE_NETWORK";
+
+/// `program` run by `unshare` in a user and network namespace of its own.
+#[cfg(target_os = "linux")]
+fn unshare(program: &str, args: &[&str]) -> std::process::Command {
+    let mut command = std::process::Command::new("unshare");
+    command
+        .args(["--user", "--map-root-user", "--net", "--"])
+        .arg(program)
+        .args(args);
+    command
+}
+
+/// Run `test` again with only a loopback interface, and report that it did.
+///
+/// A wakeup budget measures what Tilo does while idle, and a host's network
+/// is not Tilo. The kernel tells every netlink subscriber, which is how
+/// iroh's network monitor learns of changes, about each address refresh on
+/// the host: a router that advertises its prefix every 3 s on a wifi
+/// network wakes the monitor 0.3 times a second by itself (0.70 to 0.75/s
+/// measured on the Yoga against 0.40 to 0.45/s with nothing else on the
+/// link). So the gate runs in a user and network namespace whose only link
+/// is loopback, which is also all the test uses.
+///
+/// Returns `true` when the child ran and passed (the caller is done) and
+/// `false` when the caller is the child, or when the machine does not allow
+/// user namespaces, in which case it measures the host network as it is.
+#[cfg(target_os = "linux")]
+fn in_private_network(test: &str) -> bool {
+    if std::env::var_os(PRIVATE_NETWORK).is_some() {
+        bring_loopback_up();
+        return false;
+    }
+    if !unshare("true", &[]).status().is_ok_and(|s| s.success()) {
+        eprintln!("no user namespaces here: measuring on the host's network");
+        return false;
+    }
+    let exe = std::env::current_exe().expect("this test binary's path");
+    let name = test_name(test);
+    let status = unshare(
+        exe.to_str().expect("a UTF-8 path"),
+        &["--exact", &name, "--nocapture", "--test-threads=1"],
+    )
+    .env(PRIVATE_NETWORK, "1")
+    .status()
+    .expect("start the test in a private network");
+    assert!(status.success(), "{name} failed in its private network");
+    true
+}
+
+/// libtest's name of `test`, a function of this module: its path without
+/// the crate's name.
+#[cfg(target_os = "linux")]
+fn test_name(test: &str) -> String {
+    let module = module_path!();
+    let (_, in_crate) = module.split_once("::").unwrap_or(("", module));
+    format!("{in_crate}::{test}")
+}
+
+/// Bring the namespace's `lo` up (a new network namespace starts with it
+/// down), which the endpoint's loopback address needs.
+#[cfg(target_os = "linux")]
+fn bring_loopback_up() {
+    // SAFETY: a plain datagram socket; its descriptor is closed below.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    assert!(
+        fd >= 0,
+        "open a socket: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: an all-zero ifreq is a valid value.
+    let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (slot, byte) in request.ifr_name.iter_mut().zip(b"lo\0") {
+        *slot = libc::c_char::try_from(*byte).unwrap_or(0);
+    }
+    // SAFETY: SIOCGIFFLAGS fills the flags of the one ifreq it is given.
+    let got = unsafe { libc::ioctl(fd, libc::SIOCGIFFLAGS as _, &raw mut request) };
+    assert_eq!(
+        got,
+        0,
+        "read lo's flags: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: SIOCGIFFLAGS filled the flags member of the union.
+    unsafe {
+        request.ifr_ifru.ifru_flags |=
+            libc::c_short::try_from(libc::IFF_UP).expect("IFF_UP fits the flags member");
+    }
+    // SAFETY: SIOCSIFFLAGS reads the one initialised ifreq it is given.
+    let set = unsafe { libc::ioctl(fd, libc::SIOCSIFFLAGS as _, &raw const request) };
+    assert_eq!(set, 0, "bring lo up: {}", std::io::Error::last_os_error());
+    // SAFETY: `fd` is ours and unused after this.
+    unsafe { libc::close(fd) };
+}
+
+/// What a router advertising its prefix every few seconds does to a host:
+/// refreshes the lifetimes of an address it already has, which the kernel
+/// announces (`RTM_NEWADDR`) to every netlink subscriber. Replaces `fd00::1`
+/// on loopback with new lifetimes at each [`Self::refresh`]. Needs the
+/// private network namespace's root, and speaks Linux's rtnetlink.
+#[cfg(target_os = "linux")]
+struct AddressRefresher {
+    socket: libc::c_int,
+    sent: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl AddressRefresher {
+    fn new() -> Self {
+        // SAFETY: a plain netlink socket, closed on drop.
+        let socket = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, libc::NETLINK_ROUTE) };
+        assert!(
+            socket >= 0,
+            "open a netlink socket: {}",
+            std::io::Error::last_os_error()
+        );
+        Self { socket, sent: 0 }
+    }
+
+    fn refresh(&mut self) {
+        const RTM_NEWADDR: u16 = 20;
+        const FLAGS: u16 = 0x1 | 0x4 | 0x100 | 0x400; // REQUEST | ACK | REPLACE | CREATE
+        self.sent = self.sent.saturating_add(1);
+        let lifetime = 100_000_u32.saturating_sub(self.sent);
+        let address: [u8; 16] = std::net::Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1).octets();
+        let mut message = Vec::with_capacity(84);
+        message.extend_from_slice(&84_u32.to_ne_bytes()); // length
+        message.extend_from_slice(&RTM_NEWADDR.to_ne_bytes());
+        message.extend_from_slice(&FLAGS.to_ne_bytes());
+        message.extend_from_slice(&self.sent.to_ne_bytes()); // sequence
+        message.extend_from_slice(&0_u32.to_ne_bytes()); // port
+        message.extend_from_slice(&[
+            u8::try_from(libc::AF_INET6).expect("AF_INET6 fits the family byte"),
+            128,
+            0,
+            0,
+        ]); // ifaddrmsg
+        message.extend_from_slice(&1_u32.to_ne_bytes()); // lo
+        for kind in [2_u16, 1] {
+            // IFA_LOCAL, IFA_ADDRESS
+            message.extend_from_slice(&20_u16.to_ne_bytes());
+            message.extend_from_slice(&kind.to_ne_bytes());
+            message.extend_from_slice(&address);
+        }
+        message.extend_from_slice(&20_u16.to_ne_bytes()); // IFA_CACHEINFO
+        message.extend_from_slice(&6_u16.to_ne_bytes());
+        for value in [lifetime, lifetime, 0, 0] {
+            message.extend_from_slice(&value.to_ne_bytes());
+        }
+        let mut reply = [0_u8; 256];
+        // SAFETY: sends `message` to the kernel and reads its acknowledgement
+        // into `reply`, both alive for the calls.
+        let answered = unsafe {
+            libc::send(self.socket, message.as_ptr().cast(), message.len(), 0);
+            libc::recv(self.socket, reply.as_mut_ptr().cast(), reply.len(), 0)
+        };
+        assert!(
+            answered > 0,
+            "the kernel answered: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for AddressRefresher {
+    fn drop(&mut self) {
+        // SAFETY: the socket is ours and unused after this.
+        unsafe { libc::close(self.socket) };
+    }
+}
 
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
@@ -444,9 +620,22 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
 /// compositor parked, so not even a frame tick reaches the network. Its
 /// relays wait the way an installed desktop's do: nobody could
 /// dial it, so it neither probes them nor holds a home relay open.
+///
+/// Linux only: its router simulation speaks rtnetlink and names its thread
+/// by `gettid`.
+#[cfg(target_os = "linux")]
 #[test]
 #[serial_test::serial]
 fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
+    if in_private_network("a_lone_idle_desktop_keeps_its_network_runtime_asleep") {
+        return;
+    }
+    // The address exists before the desktop does, as a router's does.
+    let refresher = std::env::var_os(PRIVATE_NETWORK).map(|_| {
+        let mut refresher = AddressRefresher::new();
+        refresher.refresh();
+        refresher
+    });
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[44; 32]);
@@ -478,12 +667,40 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
     }
     std::thread::sleep(LONE_SETTLE);
 
+    // In the private network, a router refreshes an address's lifetimes
+    // five times a second, far oftener than a real one: the desktop must
+    // sleep through it. That thread is the simulation's, not the session's.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refresher = refresher.map(|mut refresher| {
+        let (tid_tx, tid_rx) = std::sync::mpsc::channel();
+        let stop = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            // SAFETY: gettid has no arguments and cannot fail.
+            let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+            tid_tx.send(u32::try_from(tid).unwrap_or(0)).unwrap();
+            while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                refresher.refresh();
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            refresher.sent
+        });
+        (tid_rx.recv().unwrap(), thread)
+    });
+    let driver = refresher.as_ref().map(|(tid, _)| *tid);
+    std::thread::sleep(Duration::from_millis(500));
+
     // Nothing drives this desktop, so every thread of the process counts.
-    let before = session_threads(None);
+    let before = session_threads(driver);
     let started = Instant::now();
     std::thread::sleep(LONE_IDLE);
     let measured = started.elapsed();
-    let wakeups = tilo_test_env::idle::Wakeups::between(before, session_threads(None), measured);
+    let wakeups = tilo_test_env::idle::Wakeups::between(before, session_threads(driver), measured);
+    stop.store(true, std::sync::atomic::Ordering::Release);
+    if let Some((_, thread)) = refresher {
+        let refreshes = thread.join().unwrap();
+        eprintln!("{refreshes} address lifetime refreshes during the run");
+        assert!(refreshes >= 50, "the router simulation ran: {refreshes}");
+    }
     eprintln!("a lone idle desktop's threads, {wakeups}");
     eprintln!(
         "a lone idle desktop's threads blocked {:.2} times a second",

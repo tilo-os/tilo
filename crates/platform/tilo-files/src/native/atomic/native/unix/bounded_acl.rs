@@ -174,7 +174,7 @@ pub(crate) fn validate(file: &File) -> io::Result<()> {
 
 pub(crate) fn validate_private(file: &File, metadata: &std::fs::Metadata) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
-    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
+    if !crate::native::private::private_to_me(&metadata) {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     validate(file)
@@ -216,7 +216,7 @@ fn empty(file: &File) -> io::Result<()> {
 pub(crate) fn normalize_fresh_empty(file: &File) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
-    if !metadata.is_dir() || metadata.uid() != rustix::process::geteuid().as_raw() {
+    if !metadata.is_dir() || !crate::native::private::owned_by_me(&metadata) {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let mut caps = [0u8; CAP_BYTES];

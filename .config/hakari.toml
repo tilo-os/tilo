@@ -40,6 +40,12 @@ platforms = [
 # macOS) compiles the unified set for its Linux or macOS host as well.
 
 [traversal-excludes]
+# frame-link's demo draws text with cosmic-text but without the toolkit, so it
+# reaches cosmic-text's skrifa 0.40 / read-fonts 0.37 with fewer features than
+# the toolkit's graph (where tilo-pdf turns on their defaults). Counting it
+# would put both font crates into the hack, and so into every managed member's
+# build; a development demo is not worth that. It builds its own graph.
+workspace-members = ["frame-link"]
 # Every managed member builds every crate listed in the hack, so none may need
 # a system library: server containers (tilo-relay, registry-server) and cross
 # builds have no desktop development packages. Media stays optional
@@ -51,6 +57,12 @@ third-party = [
     { name = "wayland-backend", path = "vendor/wayland-backend" },
     { name = "wayland-client" },
     { name = "wayland-sys" },
+    # Their `client` feature reaches wayland-client and wayland-sys, so in the
+    # hack's unconditional section they put the Linux client library into
+    # every Windows build of the imager.
+    { name = "wayland-protocols" },
+    { name = "wayland-protocols-misc" },
+    { name = "wayland-protocols-wlr" },
     { name = "gstreamer" },
     { name = "gstreamer-app" },
     { name = "gstreamer-base" },
@@ -94,6 +106,7 @@ workspace-members = [
     "tilo-automation",
     "tilo-automerge",
     "tilo-clock",
+    "tilo-lock",
     "tilo-content",
     "tilo-desktop-model",
     "wire-frame",

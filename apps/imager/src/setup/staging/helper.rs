@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use super::bundle::BundleFacts;
 use super::efi;
 use super::fat::{self, Range};
-use super::handoff::{self, Handoff};
+use super::handoff;
 use super::plan::{Basis, Plan};
 use super::platform::{Disk, NewPartition, Partition, Platform};
 use super::record::{
@@ -681,7 +681,7 @@ impl Engine<'_> {
         // The unprivileged Windows probe cannot read EFI variables, so its
         // basis carries no boot fields; there the helper's own live reads
         // (`firmware_preconditions`, `original_firmware`) are the authority.
-        let boot_fields_probed = plan.basis.host_os() == "linux";
+        let boot_fields_probed = plan.basis.host_os() == super::plan::HostOs::Linux;
         if cf.uefi != ef.uefi
             || cf.secure_boot != ef.secure_boot
             || (boot_fields_probed
@@ -1367,7 +1367,7 @@ impl Engine<'_> {
     fn handoff_bytes(&mut self, number: u16, len: u64) -> Result<Vec<u8>, Refusal> {
         let (_, esp) = self.require_staged(Which::Esp)?;
         let (_, root) = self.require_staged(Which::Root)?;
-        Handoff::for_plan(
+        handoff::for_plan(
             &self.request.operation_id,
             self.plan(),
             &esp.guid,
@@ -2054,8 +2054,7 @@ pub fn maybe_run_staging_helper(args: &[String]) -> Result<Option<i32>, String> 
         ));
     };
     #[cfg(unix)]
-    // SAFETY: geteuid has no preconditions.
-    if unsafe { libc::geteuid() } != 0 {
+    if tilo_process::effective_uid() != 0 {
         return Err("the staging helper must run as root".into());
     }
     let bytes = read_request(Path::new(request_path))?;

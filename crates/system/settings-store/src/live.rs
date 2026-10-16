@@ -27,6 +27,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 
 use crate::{Listener, SectionDigest, SettingsSource, SettingsStamp};
+use tilo_lock::MutexRecover as _;
 
 /// How often the document's stamp is compared by a follower that has no
 /// notification to wait for: a settings file whose watch could not start.
@@ -197,10 +198,7 @@ impl LiveSettings {
                 "refresh thread unavailable, settings stay as read at start: {error}"
             ));
         }
-        *inner
-            .notified
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(notified);
+        *inner.notified.lock_recover() = Some(notified);
         Self(inner)
     }
 
@@ -211,8 +209,7 @@ impl LiveSettings {
     pub fn degraded(&self) -> Option<String> {
         self.0
             .notified
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .as_ref()
             .and_then(|notified| notified.degraded.clone())
     }
@@ -227,13 +224,7 @@ impl LiveSettings {
     /// The current document and its generation.
     #[must_use]
     pub fn snapshot(&self) -> Arc<Snapshot> {
-        Arc::clone(
-            &self
-                .0
-                .current
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
+        Arc::clone(&self.0.current.lock_recover())
     }
 
     /// One top-level section of the current document.
@@ -246,11 +237,7 @@ impl LiveSettings {
     /// return the snapshot current then.
     #[must_use]
     pub fn wait_for_change(&self, seen: u64, timeout: Duration) -> Arc<Snapshot> {
-        let current = self
-            .0
-            .current
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let current = self.0.current.lock_recover();
         Arc::clone(
             &self
                 .0
@@ -266,11 +253,7 @@ impl LiveSettings {
     /// until the document changes, which then costs no wakeups at all.
     #[must_use]
     pub fn wait_for_next(&self, seen: u64) -> Arc<Snapshot> {
-        let current = self
-            .0
-            .current
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let current = self.0.current.lock_recover();
         Arc::clone(
             &self
                 .0
@@ -342,7 +325,7 @@ fn follow(
 /// Make `document` current unless it equals the current one. Returns whether
 /// a new generation was published.
 fn publish(inner: &Inner, document: Map<String, Value>) -> bool {
-    let mut current = inner.current.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut current = inner.current.lock_recover();
     if current.document == document {
         return false;
     }
@@ -530,6 +513,46 @@ mod tests {
             BTreeSet::from(["input".to_string()])
         );
         assert!(follower.changed_sections(&live).is_empty());
+    }
+
+    /// The compositor's chain for a hand edit of settings.json: the
+    /// session takes the copy in (the host's watch, or the view's own poll of
+    /// the copy), the live document and the host view both carry it, and the keyboard
+    /// settings read after the change type the new layout.
+    #[test]
+    fn a_hand_edited_keyboard_layout_reaches_the_live_document_and_its_readers() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::SessionPaths::beside(dir.path().join("settings.json"));
+        let session = Arc::new(crate::SessionSettings::open(paths.clone()).unwrap());
+        // No copy watch in this test: the view polls the copy itself, as a
+        // host that could not watch it does.
+        let view = session
+            .host_view_polling_copy(std::time::Duration::from_millis(50))
+            .unwrap();
+        let live = LiveSettings::start_from(Arc::clone(&view), || {});
+        let mut follower = SectionFollower::new(&live);
+
+        let mut input = Map::new();
+        input.insert("keyboard_layout".into(), serde_json::json!("de"));
+        input.insert("keyboard_layouts".into(), serde_json::json!(["de"]));
+        crate::update_section_at(&paths.copy, "input", input).unwrap();
+        let snapshot = live.wait_for_change(0, tilo_test_env::hang_bound());
+
+        assert_eq!(
+            follower.changed_sections(&live),
+            BTreeSet::from(["input".to_string()])
+        );
+        let section = |document: &Map<String, Value>| match document.get("input") {
+            Some(Value::Object(section)) => section.clone(),
+            _ => Map::new(),
+        };
+        for document in [snapshot.document.clone(), view.load()] {
+            let config = crate::hardware::RichInputConfig::from_section(&section(&document));
+            let effective =
+                crate::keyboard_sources::effective(&config, crate::keyboard_sources::ALL);
+            assert_eq!(effective.keyboard_layouts, ["de"]);
+            assert_eq!(effective.keyboard_layout, "de");
+        }
     }
 
     #[test]

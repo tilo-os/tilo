@@ -27,7 +27,7 @@ use ui::theme::Theme;
 use vello::Scene;
 use vello::peniko::Color;
 
-use crate::support::offscreen::OffscreenRenderer;
+use ui::offscreen::OffscreenRenderer;
 
 const W: u32 = 1600;
 const H: u32 = 900;

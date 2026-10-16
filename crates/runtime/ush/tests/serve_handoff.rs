@@ -277,8 +277,10 @@ pub fn guest_unavailable() -> Option<String> {
         .path()
         .join(PackageId::from_bytes(RUNTIME).to_hex())
         .join("usr");
-    // SAFETY: `geteuid`/`getegid` cannot fail.
-    let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+    let (uid, gid) = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
     let probe = std::process::Command::new(bwrap)
         .arg("--unshare-user")
         .args(["--uid", &uid.to_string(), "--gid", &gid.to_string()])
@@ -530,8 +532,7 @@ fn run_handoff() {
         seen.contains("USR_READ_ONLY"),
         "/usr must be read-only in the guest:\n{seen}"
     );
-    // SAFETY: `geteuid` cannot fail.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     assert!(
         seen.contains(&format!("UID_{uid}_")),
         "the guest must run as the real uid {uid}:\n{seen}"

@@ -648,17 +648,6 @@ mod managed_service_tests {
         }
     }
 
-    struct RefusedOwner;
-
-    impl ServiceProcessOwner for RefusedOwner {
-        fn before_spawn(&self) -> std::io::Result<()> {
-            Err(std::io::Error::other("refused launch reached the owner"))
-        }
-        fn supervise(&self, mut child: std::process::Child) -> std::io::Result<ExitStatus> {
-            child.wait()
-        }
-    }
-
     #[test]
     fn owned_service_refuses_policy_relaxation_before_touching_installation() {
         let strict = RunOptions {
@@ -692,12 +681,7 @@ mod managed_service_tests {
         opts.allow_unsigned_runtime = true;
         variants.push(opts);
         for opts in variants {
-            let result = run_owned_service(
-                Path::new("/missing/owned-service.toml"),
-                Path::new("/missing/payload"),
-                &opts,
-                &RefusedOwner,
-            );
+            let result = validate_owned_service_options(&opts);
             assert!(
                 matches!(result, Err(RunError::InvalidServiceLaunch(message))
                 if message == "owned service requires signed, confined, identity-free launch")
@@ -706,7 +690,7 @@ mod managed_service_tests {
     }
 
     #[test]
-    fn owned_service_requires_original_installation_before_owner_callback() {
+    fn owned_service_requires_original_installation() {
         let opts = RunOptions {
             mode: LaunchMode::Service {
                 passthrough_argv: vec![],
@@ -717,11 +701,12 @@ mod managed_service_tests {
             app_id: None,
             ..RunOptions::default()
         };
-        let result = run_owned_service(
+        validate_owned_service_options(&opts).unwrap();
+        let result = verified_original_manifest(
             Path::new("/missing/owned-service.toml"),
             Path::new("/missing/payload"),
             &opts,
-            &RefusedOwner,
+            "not-an-installed-package",
         );
         assert!(
             matches!(result, Err(RunError::InvalidServiceLaunch(message))
@@ -948,14 +933,16 @@ fn start_identity_broker(
     path: &Path,
     store: Option<&Path>,
 ) -> Result<(UnixStream, UnixStream, std::thread::JoinHandle<()>), RunError> {
-    // A launch only reads the identity store. A store record must already be
-    // in the form provisioning leaves it; one that is not fails the launch
-    // and names the step that secures it. An explicit debug record outside
-    // the store loads as written.
-    let identity = if store.is_some_and(|store| path.parent() == Some(store)) {
-        runtime_identity::load_for_launch(path)
+    // A launch only reads the identity store, and only a record's public
+    // fields: the broker answers metadata and refuses every signature, so it
+    // never needs the person's key and never asks the secret provider for it.
+    // A store record must still be in the form provisioning leaves it; one
+    // that is not fails the launch and names the step that secures it. An
+    // explicit debug record outside the store is read as written.
+    let metadata = if store.is_some_and(|store| path.parent() == Some(store)) {
+        runtime_identity::load_metadata_for_launch(path)
     } else {
-        runtime_identity::load_from_path(path.to_path_buf())
+        runtime_identity::load_metadata_from_path(path)
     }
     .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
     let (host, app) =
@@ -966,7 +953,7 @@ fn start_identity_broker(
     let thread = std::thread::Builder::new()
         .name("tilo-identity-broker".into())
         .spawn(move || {
-            if let Err(error) = runtime_identity::broker::serve(host, identity) {
+            if let Err(error) = runtime_identity::broker::serve_metadata(host, &metadata) {
                 tracing::debug!(%error, "identity broker connection ended");
             }
         })
@@ -1112,30 +1099,37 @@ fn splice_runtime_mounts(
     opts: &RunOptions,
     resolved_runtime_present: bool,
 ) -> Result<Vec<String>, RunError> {
+    let optional = resolve_optional_runtimes(manifest, opts);
+    splice_runtime_mounts_with(argv, opts, resolved_runtime_present, &optional)
+}
+
+/// [`splice_runtime_mounts`] for optional runtimes already resolved.
+fn splice_runtime_mounts_with(
+    argv: &mut Vec<String>,
+    opts: &RunOptions,
+    resolved_runtime_present: bool,
+    optional: &[(PathBuf, String)],
+) -> Result<Vec<String>, RunError> {
     let mut paths = splice_minimal_libs(argv, opts, resolved_runtime_present)?;
-    paths.extend(splice_optional_runtimes(argv, manifest, opts)?);
+    paths.extend(splice_resolved_optional_runtimes(argv, optional)?);
     Ok(paths)
 }
 
-/// Mount every installed, verified bundle the manifest lists in
-/// `[package].optional-runtimes` read-only at its runtime mount, before the
-/// trailing entrypoint token. A missing bundle is skipped and one that fails
-/// verification is refused, so the app sees either as not installed and
-/// offers to install it. Returns the sandbox paths Landlock must let it read.
-fn splice_optional_runtimes(
-    argv: &mut Vec<String>,
+/// Every installed, verified bundle the manifest lists in
+/// `[package].optional-runtimes`, with its version. A missing bundle is
+/// skipped and one that fails verification is refused, so the app sees either
+/// as not installed and offers to install it.
+///
+/// Verifying a per-user bundle reads the whole payload, so the launch runs
+/// this beside the rest of host preparation rather than after it.
+fn resolve_optional_runtimes(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
-) -> Result<Vec<String>, RunError> {
-    let mut mounts = Vec::new();
+) -> Vec<(PathBuf, String)> {
+    let mut found = Vec::new();
     for raw in &manifest.optional_runtimes {
         match find_runtime_bundle(raw, opts) {
-            Ok((Some((root, version)), _)) => {
-                let entry = pop_entry(argv)?;
-                let mount = crate::sandbox::push_optional_runtime(argv, &root, &version);
-                argv.push(entry);
-                mounts.push(mount.display().to_string());
-            }
+            Ok((Some(bundle), _)) => found.push(bundle),
             Ok((None, searched)) => tracing::info!(
                 runtime = %raw,
                 searched = ?searched,
@@ -1148,7 +1142,33 @@ fn splice_optional_runtimes(
             ),
         }
     }
+    found
+}
+
+/// Mount each of `bundles` (from [`resolve_optional_runtimes`]) read-only at
+/// its runtime mount, before the trailing entrypoint token. Returns the
+/// sandbox paths Landlock must let the app read.
+fn splice_resolved_optional_runtimes(
+    argv: &mut Vec<String>,
+    bundles: &[(PathBuf, String)],
+) -> Result<Vec<String>, RunError> {
+    let mut mounts = Vec::new();
+    for (root, version) in bundles {
+        let entry = pop_entry(argv)?;
+        let mount = crate::sandbox::push_optional_runtime(argv, root, version);
+        argv.push(entry);
+        mounts.push(mount.display().to_string());
+    }
     Ok(mounts)
+}
+
+/// [`resolve_optional_runtimes`] then [`splice_resolved_optional_runtimes`].
+fn splice_optional_runtimes(
+    argv: &mut Vec<String>,
+    manifest: &crate::manifest::ManifestView,
+    opts: &RunOptions,
+) -> Result<Vec<String>, RunError> {
+    splice_resolved_optional_runtimes(argv, &resolve_optional_runtimes(manifest, opts))
 }
 
 /// Verify the bundle at `path` against the signature policy. Unless
@@ -1310,7 +1330,7 @@ mod system_bundle_tree_policy_tests {
 
     #[test]
     fn immutable_system_bundle_accepts_a_root_owned_symlinked_prefix() {
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return;
         }
         // The policy walks every ancestor, so the fixture has to live below
@@ -1640,6 +1660,28 @@ pub(crate) fn verified_launch_installation(
     payload_root: &Path,
     expected: &str,
 ) -> Result<ManifestView, RunError> {
+    // Re-read on every launch, as `tilo-install run` does: a publisher
+    // revoked after install must not keep launching from the shell. An
+    // unreadable list refuses rather than reading as "nothing revoked".
+    use tilo_app_package::TrustFile as _;
+    let revoked = match tilo_app_package::default_revoked_keys_path() {
+        Some(path) => tilo_app_package::RevocationList::load(&path).map_err(|error| {
+            RunError::InvalidServiceLaunch(format!(
+                "the publisher revocation list is unreadable ({error})"
+            ))
+        })?,
+        None => tilo_app_package::RevocationList::default(),
+    };
+    verified_launch_installation_against(installed, manifest_path, payload_root, expected, &revoked)
+}
+
+pub(crate) fn verified_launch_installation_against(
+    installed: &package_store::InstalledPackage,
+    manifest_path: &Path,
+    payload_root: &Path,
+    expected: &str,
+    revoked: &tilo_app_package::RevocationList,
+) -> Result<ManifestView, RunError> {
     let refusal =
         || RunError::InvalidServiceLaunch("original signed package launch changed".into());
     if installed.package_id_hex != expected
@@ -1659,6 +1701,12 @@ pub(crate) fn verified_launch_installation(
         expected,
     )
     .map_err(|_| refusal())?;
+    if let Some(entry) = revoked.find(&record.root.publisher_identity) {
+        return Err(RunError::InvalidServiceLaunch(format!(
+            "the package's publisher key is revoked ({})",
+            entry.reason
+        )));
+    }
     let manifest: ManifestView =
         toml::from_str(std::str::from_utf8(&record.manifest_bytes).map_err(|_| refusal())?)
             .map_err(|_| refusal())?;
@@ -2409,7 +2457,10 @@ fn sandbox_account(uid: u32, gid: u32) -> String {
 
 /// Give bwrap a private, read-only account file. No host `/etc/passwd` bind.
 fn stage_sandbox_account(argv: &mut Vec<String>) -> Result<OwnedFd, RunError> {
-    let account = sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() });
+    let account = sandbox_account(
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
     let data = stage_seccomp_blob(account.as_bytes())?;
     // Keep the source above the fixed child slots: earlier dup2 calls must
     // not overwrite it before the account descriptor is handed to bwrap.
@@ -2443,7 +2494,10 @@ mod sandbox_account_tests {
         let account = stage_sandbox_account(&mut Vec::new()).expect("account");
         let expected = format!(
             "serviceclone3baseline{}",
-            sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+            sandbox_account(
+                rustix::process::geteuid().as_raw(),
+                rustix::process::getegid().as_raw()
+            )
         );
         let source = service.as_raw_fd();
         let mut pairs = vec![(ACCOUNT_CHILD_FD, 17)];
@@ -2482,7 +2536,10 @@ mod sandbox_account_tests {
             .expect("account bytes");
         assert_eq!(
             contents,
-            sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+            sandbox_account(
+                rustix::process::geteuid().as_raw(),
+                rustix::process::getegid().as_raw()
+            )
         );
         assert_eq!(
             argv,
@@ -2972,63 +3029,6 @@ pub fn run_with(
     run_with_context(manifest, payload_root, opts, None, None)
 }
 
-/// Host-owned service lifetime, using the normal signed-package sandbox pipeline.
-///
-/// The owner receives only the actual child created after all launch policy
-/// checks. A child exit is not a proof that every provider writer is quiescent;
-/// callers must establish that separately before checkpointing crypto state.
-///
-/// # Errors
-/// Returns a policy error for non-service launches, unsigned installation
-/// selection, identity brokering or relaxed sandbox/runtime verification, and
-/// the normal launch error if package validation or sandbox setup fails.
-pub fn run_owned_service(
-    manifest_path: &Path,
-    payload_root: &Path,
-    opts: &RunOptions,
-    owner: &dyn ServiceProcessOwner,
-) -> Result<ExitStatus, RunError> {
-    validate_owned_service_options(opts)?;
-    let expected = opts.expected_package_hash.as_deref().ok_or_else(|| {
-        RunError::InvalidServiceLaunch("owned service requires original signed installation".into())
-    })?;
-    let manifest = verified_original_manifest(manifest_path, payload_root, opts, expected)?;
-    let observer = ServiceOwnerObserver(owner);
-    run_with_context(&manifest, payload_root, opts, None, Some(&observer))
-}
-
-/// Native host callbacks for one service process. Implementations must retain
-/// ownership of the child until it is reaped, including on cancellation/error.
-/// Credentials, enrollment and account readiness remain the host's responsibility.
-pub trait ServiceProcessOwner {
-    /// Recheck the original authority immediately before spawning.
-    ///
-    /// # Errors
-    /// Return an error if the original launch authority has retired.
-    fn before_spawn(&self) -> std::io::Result<()>;
-    /// Own and reap the actual sandbox process in its own process group.
-    /// This runs on the launch worker; the group is not a writer-quiescence proof.
-    ///
-    /// # Errors
-    /// Return errors encountered supervising or waiting for the child.
-    fn supervise(&self, child: std::process::Child) -> std::io::Result<ExitStatus>;
-}
-
-struct ServiceOwnerObserver<'a>(&'a dyn ServiceProcessOwner);
-
-impl crate::managed::EnrolledProcessObserver for ServiceOwnerObserver<'_> {
-    fn owns_process_group(&self) -> bool {
-        true
-    }
-    fn before_spawn(&self) -> std::io::Result<()> {
-        self.0.before_spawn()
-    }
-    fn child_created(&self) {}
-    fn supervise(&self, child: std::process::Child) -> std::io::Result<ExitStatus> {
-        self.0.supervise(child)
-    }
-}
-
 pub(crate) fn validate_owned_service_options(opts: &RunOptions) -> Result<(), RunError> {
     if !matches!(opts.mode, LaunchMode::Service { .. })
         || opts.expected_package_hash.is_none()
@@ -3179,11 +3179,19 @@ pub(crate) fn run_with_context(
     // join, and dropping the guards stops the proxies before any sandbox
     // exists.
     let (portals, graphical) = (&manifest.sandbox.portals, opts.wayland_socket.is_some());
-    let ((dbus_plan, _dbus_guards), host) = std::thread::scope(|scope| {
+    let ((dbus_plan, _dbus_guards), host, optional_runtimes) = std::thread::scope(|scope| {
         let dbus = spawn_beside(scope, "launch-dbus", move || {
             let bind = resolve_dbus_bind(portals, graphical);
             tilo_startup_metrics::handoff_mark("dbus-proxies-ready");
             bind
+        })?;
+        // Verifying an optional runtime reads its whole payload (a browser
+        // engine is hundreds of MB); nothing else here needs the answer
+        // before the sandbox argv is built.
+        let optional = spawn_beside(scope, "launch-optional-runtimes", move || {
+            let bundles = resolve_optional_runtimes(manifest, opts);
+            tilo_startup_metrics::handoff_mark("optional-runtimes-verified");
+            bundles
         })?;
         let host = prepare_launch_host(
             manifest,
@@ -3191,7 +3199,7 @@ pub(crate) fn run_with_context(
             opts,
             enrolled.as_ref().map(|(services, _)| &**services),
         );
-        Ok::<_, RunError>((join_beside(dbus), host))
+        Ok::<_, RunError>((join_beside(dbus), host, join_beside(optional)))
     })?;
     tilo_startup_metrics::handoff_mark("dbus-joined");
     let LaunchHost {
@@ -3320,7 +3328,12 @@ pub(crate) fn run_with_context(
         )?;
     }
     splice_game_ntsync(&mut argv, latency_sensitive)?;
-    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
+    let ro_paths = splice_runtime_mounts_with(
+        &mut argv,
+        opts,
+        resolved_runtime.is_some(),
+        &optional_runtimes,
+    )?;
     splice_workspace_id_bind(&mut argv, opts)?;
     if enrolled.is_none() {
         splice_tool_context(&mut argv)?;
@@ -3740,15 +3753,7 @@ fn spawn_and_capture_bounded(
             None
         };
         if let Some(reason) = reason {
-            let pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
-            // SAFETY: the child created its own process group before exec;
-            // a negative pid addresses only that exact group.
-            let process_group = pid.saturating_neg();
-            let killed = unsafe { libc::kill(process_group, libc::SIGKILL) } == 0;
-            if !killed {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
+            bounded_command::terminate_tree(&mut child, Duration::ZERO);
             break reason;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -4353,8 +4358,7 @@ exec sleep infinity
 /// Current process UID via libc, avoiding a `users`/`nix` dependency.
 /// Falls back to 1000 if the syscall somehow fails.
 fn current_uid() -> u32 {
-    // SAFETY: getuid always succeeds and returns a uid_t.
-    unsafe { libc::getuid() }
+    rustix::process::getuid().as_raw()
 }
 
 #[cfg(test)]
@@ -4676,6 +4680,95 @@ mod identity_resolution_tests {
         }
     }
 
+    /// Ask the app end of a launch's broker for metadata and to sign, over
+    /// the broker's pinned frames: an operation or status byte, a big-endian
+    /// `u32` length, then the payload.
+    fn ask_broker(app: &mut UnixStream, op: u8, payload: &[u8]) -> (u8, Vec<u8>) {
+        use std::io::{Read, Write};
+
+        app.write_all(&[op]).unwrap();
+        app.write_all(&u32::try_from(payload.len()).unwrap().to_be_bytes())
+            .unwrap();
+        app.write_all(payload).unwrap();
+        let mut head = [0_u8; 5];
+        app.read_exact(&mut head).unwrap();
+        let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]);
+        let mut reply = vec![0_u8; usize::try_from(len).unwrap()];
+        app.read_exact(&mut reply).unwrap();
+        (head[0], reply)
+    }
+
+    #[test]
+    fn a_launch_never_reads_the_identity_secret() {
+        // Each secured record launches, and hands the app the same public
+        // fields its full load reports, after its secret is deleted from the
+        // provider: a launch that touched the provider would fail.
+        for (name, primary) in [("local", local_record()), ("threshold", threshold_record())] {
+            let root = tempfile::tempdir().unwrap();
+            let store = root.path().join("identity");
+            let path = runtime_identity::import_identity_with_provider(
+                &store,
+                "primary",
+                &primary,
+                &runtime_identity::BrokerFileProvider::new(&store),
+            )
+            .unwrap();
+            runtime_identity::set_active_identity(&store, "primary").unwrap();
+            let full = runtime_identity::load_from_path(path.clone()).unwrap();
+            let expected = serde_json::json!({
+                "display_name": full.display_name(),
+                "avatar_color": full.avatar_color(),
+                "group_public_key": full.group_public_key(),
+                "threshold": full.threshold(),
+                "total_shares": full.total_shares(),
+                "share_index": full.share_index(),
+                "single_device": full.is_single_device(),
+            });
+            drop(full);
+
+            let secrets: Vec<_> = std::fs::read_dir(store.join("secrets"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(secrets.len(), 1, "{name}: one secret file");
+            for secret in &secrets {
+                std::fs::remove_file(secret).unwrap();
+            }
+            assert!(
+                runtime_identity::load_from_path(path.clone()).is_err(),
+                "{name}: the secret is gone from its provider"
+            );
+
+            let opts = RunOptions {
+                identity: IdentitySource::Store(store.clone()),
+                ..RunOptions::default()
+            };
+            let resolved = resolve_identity_host_path(&opts).expect("an active record");
+            let (mut app, control, thread) =
+                start_identity_broker(&resolved, identity_store(&opts.identity).as_deref())
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+
+            let (status, metadata) = ask_broker(&mut app, 1, &[]);
+            assert_eq!(status, 0, "{name}");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&metadata).unwrap(),
+                expected,
+                "{name}: the app's metadata is the record's public fields"
+            );
+            let (status, refusal) = ask_broker(&mut app, 2, b"sign this");
+            assert_eq!(status, 1, "{name}: the broker never signs");
+            assert_eq!(
+                refusal,
+                b"the root signing key is never brokered to an application; \
+                  request signatures through the identity service",
+                "{name}"
+            );
+            drop(app);
+            drop(control);
+            thread.join().unwrap();
+        }
+    }
+
     // The user's store is located through the environment; these pin that
     // resolution itself.
 
@@ -4704,11 +4797,16 @@ mod identity_resolution_tests {
                 Some(ident)
             );
         }
-        // Phase `the_user_store_resolves_nothing_without_a_home`.
+        // Phase `the_user_store_falls_back_to_the_account_home_without_an_environment`.
+        // Only the location is asserted: the account's own store is the
+        // developer's real one, and resolving its active identity would read it.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("XDG_CONFIG_HOME").remove("HOME");
-            assert_eq!(resolve_identity_host_path(&RunOptions::default()), None);
+            assert_eq!(
+                identity_store(&IdentitySource::UserStore),
+                std::env::home_dir().map(|home| home.join(".config/tilo/identity"))
+            );
         }
     }
 }
@@ -4907,7 +5005,11 @@ mod managed_spawn_policy_tests {
         supervised: AtomicUsize,
         own_group: AtomicBool,
     }
-    impl ServiceProcessOwner for NativeOwner {
+    impl crate::managed::EnrolledProcessObserver for NativeOwner {
+        fn owns_process_group(&self) -> bool {
+            true
+        }
+        fn child_created(&self) {}
         fn before_spawn(&self) -> std::io::Result<()> {
             self.checked.fetch_add(1, AtomicOrdering::SeqCst);
             if self.allowed {
@@ -4936,7 +5038,6 @@ mod managed_spawn_policy_tests {
                 supervised: AtomicUsize::new(0),
                 own_group: AtomicBool::new(false),
             };
-            let observer = ServiceOwnerObserver(&owner);
             let result = spawn_and_wait(
                 vec![],
                 vec![],
@@ -4955,7 +5056,7 @@ mod managed_spawn_policy_tests {
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,
-                Some((&observer, None)),
+                Some((&owner, None)),
             );
             assert_eq!(owner.checked.load(AtomicOrdering::SeqCst), 1);
             assert_eq!(

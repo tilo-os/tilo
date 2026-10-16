@@ -14,17 +14,18 @@ use std::time::{Duration, Instant, SystemTime};
 use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::HttpsLink;
 use tilo_moq::client::{
     CapturedOpus, Client, ClientAuthority, Connection, ConnectionScope, Status,
 };
 use tilo_moq::relay::Direction;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::RelayClient;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::daemon::Relay;
-use tilo_relay::rooms::{RoomAdminClient, RoomCommand, RoomReply};
+use tilo_relay::rooms::{IssueInvitationRequest, IssuedInvitation};
 use tilo_relay::web::WebHandle;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay_protocol::Envelope;
@@ -126,36 +127,52 @@ pub fn granted(envelope: Envelope) -> Option<VoiceGrant> {
     }
 }
 
-/// Enter `room` as `admin`'s device.
-pub async fn enter(admin: &RoomAdminClient, address: iroh::EndpointAddr, room: &str) {
-    assert!(matches!(
-        admin
-            .send(address, RoomCommand::Enter { room: room.into() })
-            .await
-            .unwrap(),
-        RoomReply::Entered { .. }
-    ));
+/// Admit `device`, one of the relay's own person's, to `room` as its
+/// owner's.
+pub async fn enter(relay: &Relay, device: &DeviceCert, room: &str) {
+    relay.rooms().unwrap().enter(room, device).await.unwrap();
 }
 
-/// Invite `person` to `room` as an editor and redeem the invitation with
-/// their device `page`.
+/// An Editor's invitation to `room` for `person` only, which the relay
+/// issues for the room's owner `issuer`.
+pub async fn issue(
+    relay: &Relay,
+    issuer: &DeviceCert,
+    room: &str,
+    person: &SigningKey,
+) -> IssuedInvitation {
+    let person = person.verifying_key().to_bytes();
+    relay
+        .rooms()
+        .unwrap()
+        .issue(
+            room,
+            issuer,
+            IssueInvitationRequest {
+                request_id: person,
+                role: MemberRole::Editor,
+                recipient_user_public_key: Some(person),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns()
+                    .checked_add(600_000_000_000)
+                    .unwrap(),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap()
+}
+
+/// Invite `person` to `room` as an editor, for the room's owner `issuer`,
+/// and redeem the invitation with their device `page`.
 pub async fn invite(
-    admin: &RoomAdminClient,
-    address: iroh::EndpointAddr,
+    relay: &Relay,
+    issuer: &DeviceCert,
     room: &str,
     person: &SigningKey,
     page: &Device,
 ) {
-    let invitation = admin
-        .invite(
-            address,
-            room,
-            MemberRole::Editor,
-            Some(person.verifying_key().to_bytes()),
-            Duration::from_secs(600),
-        )
-        .await
-        .unwrap();
+    let invitation = issue(relay, issuer, room, person).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -183,7 +200,6 @@ pub struct GovernedCall {
     pub laptop: Device,
     pub relay: Relay,
     pub web: WebHandle,
-    pub admin: RoomAdminClient,
     pub room: String,
     pub workspace_id: u64,
     /// Alice's laptop's session with the room.
@@ -304,9 +320,9 @@ pub async fn create_voice_channel(
             SystemTime::now(),
         )
         .unwrap();
-    let (channel, kind) = tilo_peer_state::transport::retention(&message, false).unwrap();
+    let (channel, kind) = neighbour_wire::retention(&message, false).unwrap();
     let body = postcard::to_stdvec(&message).unwrap();
-    if kind == tilo_peer_state::transport::Retention::Checkpoint {
+    if kind == neighbour_wire::Retention::Checkpoint {
         session.publish_checkpoint(channel, body)
     } else {
         session.publish_retained_delta(channel, body)
@@ -325,9 +341,8 @@ impl GovernedCall {
         let state = tempfile::tempdir().unwrap();
         let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
         let address = relay.node_addr();
-        let admin = RoomAdminClient::new(endpoint(&laptop.key).await, laptop.cert.clone());
-        let room = admin.create(address.clone(), "Standup").await.unwrap();
-        enter(&admin, address.clone(), &room.room).await;
+        let room = relay.rooms().unwrap().create("Standup").await.unwrap();
+        enter(&relay, &laptop.cert, &room.room).await;
 
         // Alice's chat gets a voice channel; the room's governor learns it.
         let (owner, channel) =
@@ -360,7 +375,6 @@ impl GovernedCall {
             laptop,
             relay,
             web,
-            admin,
             room: room.room,
             workspace_id: room.workspace_id,
             owner,
@@ -375,14 +389,7 @@ impl GovernedCall {
     pub async fn invite(&self, label: &str) -> (SigningKey, Device) {
         let person = SigningKey::generate(&mut UnwrapErr(SysRng));
         let page = enrol(&person, label, DeviceCapabilities::member());
-        invite(
-            &self.admin,
-            self.relay.node_addr(),
-            &self.room,
-            &person,
-            &page,
-        )
-        .await;
+        invite(&self.relay, &self.laptop.cert, &self.room, &person, &page).await;
         (person, page)
     }
 

@@ -15,6 +15,7 @@ name = "tilo-desktop-scan"
 path = "src/bin/tilo-desktop-scan.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 thiserror = { workspace = true }
 url.workspace = true
 tilo-paths.workspace = true

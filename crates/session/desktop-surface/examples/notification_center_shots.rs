@@ -7,6 +7,7 @@ use tilo_desktop_surface::notifications::{
     CenterLayout, HistoryActivation, Notification, NotificationCenter, NotificationHost,
     NotificationLog, NotificationSeverity,
 };
+use tilo_desktop_surface::{HostAction, HostActionSource};
 use ui::offscreen::OffscreenRenderer;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -15,12 +16,17 @@ use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;
 use winit::keyboard::{Key, NamedKey};
 
+const HEIGHT: u32 = 640;
+
 #[derive(Default)]
 struct Fixture(RefCell<NotificationLog>);
 
 impl NotificationHost for Fixture {
     fn log(&self) -> Ref<'_, NotificationLog> {
         self.0.borrow()
+    }
+    fn actions_for(&self, notice: &Notification) -> Vec<(String, String)> {
+        notice.actions.clone()
     }
     fn dismiss(&self, id: u64) {
         self.dismiss_history(id);
@@ -60,6 +66,66 @@ fn capture_themes() -> Vec<(&'static str, Theme)> {
     ]
 }
 
+/// The browser host's ask to keep the person's identity, as it posts it:
+/// sourced to Identity, with its choices.
+fn ask() -> Notification {
+    let keep = HostAction {
+        id: "keep-identity".into(),
+        title: "Keep with passkey".into(),
+        subtitle: None,
+        source: Some(HostActionSource::Identity),
+    };
+    let mut ask = keep.notice(
+        "Keep this identity?",
+        "A passkey brings you back as yourself on any browser.",
+    );
+    ask.actions.insert(0, ("not-now".into(), "Not now".into()));
+    ask
+}
+
+/// What a centre legitimately holds: things the person did not do
+/// themselves, retained oldest first, as they arrived.
+fn fixture() -> Fixture {
+    let host = Fixture::default();
+    for notice in [
+        Notification::new(
+            "Backup couldn't finish",
+            "The backup disk was disconnected halfway through. Reconnect it and the next backup picks up where this one stopped.",
+        )
+        .with_app_name("Backups")
+        .with_severity(NotificationSeverity::Error),
+        ask(),
+        Notification::new("Lena", "Pushed the new floor plan, take a look when you can")
+            .with_app_name("Chat"),
+        Notification::new(
+            "Ada mentioned you in Launch notes",
+            "“Can you check the pricing table before we send this out tomorrow morning?”",
+        )
+        .with_app_name("Notes"),
+    ] {
+        host.0.borrow_mut().retain(notice);
+    }
+    host
+}
+
+/// Focus the dialog control drawn at `rect`, as an assistive technology
+/// would by its path.
+fn focus_at(
+    center: &mut NotificationCenter,
+    host: &dyn tilo_desktop_surface::notifications::NotificationHost,
+    layout: &CenterLayout,
+    rect: Rect,
+) {
+    let dialog = center.accessibility(host, layout, ui::time::now());
+    if let Some(index) = dialog
+        .children
+        .iter()
+        .position(|node| node.bounds.map(ui::a11y::AccessBounds::to_rect) == Some(rect))
+    {
+        center.focus_accessibility_path(host, layout, &[index]);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::i18n::I18nManager::init("en-US");
     let out = std::env::args().nth(1).map_or_else(
@@ -68,22 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     std::fs::create_dir_all(&out)?;
     for (name, theme) in capture_themes() {
-        let host = Fixture::default();
-        host.0.borrow_mut().retain(
-            Notification::new(
-                "Couldn't open Notes",
-                "The app stopped before opening. Try again.",
-            )
-            .with_app_name("Applications")
-            .with_severity(NotificationSeverity::Error),
-        );
-        host.0.borrow_mut().retain(
-            Notification::new(
-                "Document synchronized",
-                "All changes are available on this device.",
-            )
-            .with_app_name("Files"),
-        );
+        let host = fixture();
         let width = if name.starts_with("narrow-") {
             352
         } else if name == "large-text" {
@@ -91,36 +142,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             400
         };
-        let panel = Rect::new(16.0, 16.0, f64::from(width) - 16.0, 544.0);
-        let layout = CenterLayout::new(
-            panel,
-            CenterLayout::metrics(&theme, &mut TextRenderer::new()),
+        let metrics = CenterLayout::metrics(&theme, &mut TextRenderer::new());
+        // As tall as the rows ask within the room, like every host sizes it.
+        let height = NotificationCenter::new().fitted_height(
+            &host,
+            &metrics,
+            f64::from(width) - 32.0,
+            f64::from(HEIGHT) - 32.0,
         );
+        let panel = Rect::new(16.0, 16.0, f64::from(width) - 16.0, 16.0 + height);
+        let layout = CenterLayout::new(panel, metrics);
         let mut center = NotificationCenter::new();
         for state in [
+            "rest",
+            "hover",
             "clear-focused",
             "back-focused",
             "dismiss-focused",
+            "older-focused",
             "undo-focused",
             "restored",
         ] {
+            let mut cursor = None;
             match state {
+                "rest" => {}
+                "hover" => cursor = Some(layout.row(0).center()),
                 "clear-focused" => {
-                    center.focus_accessibility_path(&host, &[1]);
+                    center.focus_accessibility_path(&host, &layout, &[1]);
                 }
                 "back-focused" => {
-                    let dialog = center.accessibility(&host, &layout, ui::time::now());
-                    center.focus_accessibility_path(
-                        &host,
-                        &[dialog.children.len().saturating_sub(1)],
-                    );
+                    focus_at(&mut center, &host, &layout, layout.back());
+                }
+                "older-focused" => {
+                    focus_at(&mut center, &host, &layout, layout.pager().1);
                 }
                 "dismiss-focused" => {
-                    center.focus_accessibility_path(&host, &[0, 0, 0]);
+                    center.focus_accessibility_path(&host, &layout, &[0, 0, 0]);
                 }
                 "undo-focused" => {
                     center.click(&host, &layout, layout.clear().center());
-                    center.focus_accessibility_path(&host, &[2]);
+                    center.focus_accessibility_path(&host, &layout, &[2]);
                 }
                 _ => {
                     center.key(&host, &layout, &Key::Named(NamedKey::Enter));
@@ -141,10 +202,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
                 &theme,
-                None,
+                cursor,
             );
             let path = out.join(format!("{name}-{state}.png"));
-            OffscreenRenderer::new(width, 560).render_png(
+            OffscreenRenderer::new(width, HEIGHT).render_png(
                 &scene,
                 theme.tokens.colors.surfaces.base,
                 &path,

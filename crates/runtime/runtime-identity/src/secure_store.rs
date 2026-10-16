@@ -15,7 +15,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use tilo_secrets::{PutOptions, SecretError, SecretStore};
@@ -227,7 +227,7 @@ impl BrokerFileProvider {
                 "identity secrets directory must be a real directory",
             ));
         }
-        if meta.uid() != unsafe { libc::geteuid() } {
+        if !tilo_files::native::private::owned_by_me(&meta) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity secrets directory is not owned by the current user",
@@ -281,10 +281,7 @@ impl SecretProvider for BrokerFileProvider {
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)?;
         let meta = file.metadata()?;
-        if !meta.file_type().is_file()
-            || meta.uid() != unsafe { libc::geteuid() }
-            || meta.permissions().mode() & 0o077 != 0
-        {
+        if !meta.file_type().is_file() || !tilo_files::native::private::private_to_me(&meta) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity key fallback must be a private regular file",
@@ -308,8 +305,7 @@ impl SecretProvider for BrokerFileProvider {
         let meta = fs::symlink_metadata(&path)?;
         if !meta.file_type().is_file()
             || meta.file_type().is_symlink()
-            || meta.uid() != unsafe { libc::geteuid() }
-            || meta.permissions().mode() & 0o077 != 0
+            || !tilo_files::native::private::private_to_me(&meta)
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,

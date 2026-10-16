@@ -77,6 +77,8 @@ pub enum DisplayOrigin {
 
 mod action_directory;
 pub use action_directory::*;
+mod surface_delta;
+pub use surface_delta::*;
 pub mod audio_output;
 pub mod committed_document;
 #[cfg(feature = "client")]
@@ -535,15 +537,9 @@ impl NetworkWakeStatus {
     }
 }
 
-fn valid_uuid(value: &str) -> bool {
-    value.len() == 36
-        && value.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
+/// A hyphenated UUID, the only 36-character form `uuid` parses.
+pub(crate) fn valid_uuid(value: &str) -> bool {
+    value.len() == 36 && uuid::Uuid::try_parse(value).is_ok()
 }
 
 /// A short-lived shell capability naming one picker target. It
@@ -1131,6 +1127,25 @@ impl ChannelHandle {
         Ok(reply.get()?.get_change())
     }
 
+    /// Wait until what a Nearby Send snapshot would show this connection
+    /// may have changed since `after` (0 at first, then what the previous
+    /// call returned), and return the value to wait from next. The answer
+    /// names nothing: the caller asks for a fresh snapshot through
+    /// [`Self::nearby_transfer_command`]. The call stays pending, without
+    /// traffic, while nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when this route may not use Nearby Send,
+    /// the host has none (an older broker answers unimplemented), or the
+    /// broker is unavailable.
+    pub async fn nearby_transfer_changed(&self, after: u64) -> Result<u64, NotAvailable> {
+        let mut request = self.inner.nearby_transfer_changed_request();
+        request.get().set_after(after);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_change())
+    }
+
     /// This application's live activity: what it shows outside its windows
     /// and the controls pressed on it. The broker binds the capability to
     /// this channel's certified app.
@@ -1429,6 +1444,28 @@ impl ChannelHandle {
                 write_exported_action(list.reborrow().get(idx), a)?;
             }
         }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// [`Self::publish_actions`] as a delta against what this connection
+    /// has already published: each distinct catalogue entry crosses once and
+    /// each resource's action as only its own fields. The broker expands it
+    /// into the same surface, so readers cannot tell the two apart.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call, or if the broker refuses the delta (it does not
+    /// apply to what the broker holds); the caller then sends a delta with
+    /// `reset` set.
+    pub async fn publish_action_surface(
+        &self,
+        app_id: &str,
+        delta: &SurfaceDelta,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_action_surface_request();
+        write_surface_delta(req.get(), app_id, delta)?;
         req.send().promise.await?;
         Ok(())
     }

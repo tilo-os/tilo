@@ -451,6 +451,201 @@ pub fn parser_program() -> Result<BpfProgram, SeccompError> {
     deny_list_program(rules)
 }
 
+/// Which filter a CI job runs under (`tilo-sandbox`'s `job` module).
+///
+/// A job runs a whole toolchain — compilers, linkers, test binaries, build
+/// scripts — so its filter is a deny-list of what builds never need and
+/// kernel exploits usually start with, not the application baseline:
+/// `ptrace` stays allowed (debuggers and crash handlers in tests), and so do
+/// writable-executable mappings (JITs in test suites).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CiProfile {
+    /// Every job's: [`CI_DENIES`], and no new namespace of any kind.
+    #[default]
+    Standard,
+    /// For jobs that genuinely run rootful containers, loop devices or VMs,
+    /// and only on nodes that run nothing else: [`CI_DENIES`] minus the
+    /// namespace and mount calls ([`CI_PRIVILEGED_ALLOWS`]).
+    Privileged,
+    /// For tests that start sandboxes of their own (bubblewrap, `unshare`):
+    /// [`CI_DENIES`] minus the mount calls, and new namespaces of every
+    /// kind. In a nested user namespace a job holds capabilities over its
+    /// own network namespace, so the netlink families of the kernel's
+    /// largest network attack surface stay refused: netfilter (nftables)
+    /// and XFRM ([`CI_NESTED_NETLINK_DENIES`]). `NETLINK_ROUTE` stays, as
+    /// bubblewrap brings up `lo` with it. `setns` stays refused.
+    Nested,
+}
+
+/// Syscalls every CI job is refused with `EPERM`.
+///
+/// - `bpf`, `perf_event_open`, `userfaultfd`: the verifier, perf and fault
+///   timing are the usual first step of a kernel exploit.
+/// - the keyrings: a recurring source of use-after-free bugs no build needs.
+/// - `io_uring`: the largest recent source of kernel CVEs.
+/// - the mount family and `setns`: a job's filesystem and namespaces are final.
+/// - kexec and modules: replacing or extending the kernel.
+/// - `quotactl`: a job's disk quota is set from outside it.
+/// - file handles: `open_by_handle_at` bypasses the mount tree.
+#[cfg(target_os = "linux")]
+pub const CI_DENIES: &[libc::c_long] = &[
+    libc::SYS_bpf,
+    libc::SYS_perf_event_open,
+    libc::SYS_userfaultfd,
+    libc::SYS_keyctl,
+    libc::SYS_add_key,
+    libc::SYS_request_key,
+    libc::SYS_io_uring_setup,
+    libc::SYS_io_uring_enter,
+    libc::SYS_io_uring_register,
+    libc::SYS_mount,
+    libc::SYS_umount2,
+    libc::SYS_pivot_root,
+    libc::SYS_fsopen,
+    libc::SYS_fsconfig,
+    libc::SYS_fsmount,
+    libc::SYS_fspick,
+    libc::SYS_move_mount,
+    libc::SYS_mount_setattr,
+    libc::SYS_open_tree,
+    libc::SYS_setns,
+    libc::SYS_kexec_load,
+    libc::SYS_kexec_file_load,
+    libc::SYS_init_module,
+    libc::SYS_finit_module,
+    libc::SYS_delete_module,
+    libc::SYS_quotactl,
+    libc::SYS_quotactl_fd,
+    libc::SYS_open_by_handle_at,
+    libc::SYS_name_to_handle_at,
+];
+
+/// What [`CiProfile::Privileged`] takes out of [`CI_DENIES`]: rootful
+/// containers mount, pivot and join namespaces.
+#[cfg(target_os = "linux")]
+pub const CI_PRIVILEGED_ALLOWS: &[libc::c_long] = &[
+    libc::SYS_mount,
+    libc::SYS_umount2,
+    libc::SYS_pivot_root,
+    libc::SYS_fsopen,
+    libc::SYS_fsconfig,
+    libc::SYS_fsmount,
+    libc::SYS_fspick,
+    libc::SYS_move_mount,
+    libc::SYS_mount_setattr,
+    libc::SYS_open_tree,
+    libc::SYS_setns,
+];
+
+/// What [`CiProfile::Nested`] takes out of [`CI_DENIES`]: a nested sandbox
+/// builds its root with mounts, inside a mount namespace it owns.
+#[cfg(target_os = "linux")]
+pub const CI_NESTED_ALLOWS: &[libc::c_long] = &[
+    libc::SYS_mount,
+    libc::SYS_umount2,
+    libc::SYS_pivot_root,
+    libc::SYS_fsopen,
+    libc::SYS_fsconfig,
+    libc::SYS_fsmount,
+    libc::SYS_fspick,
+    libc::SYS_move_mount,
+    libc::SYS_mount_setattr,
+    libc::SYS_open_tree,
+];
+
+/// Netlink protocols a [`CiProfile::Nested`] job may not open a socket of:
+/// netfilter (nftables, the CVE-2024-1086 class) and XFRM (IP security
+/// associations).
+#[cfg(target_os = "linux")]
+pub const CI_NESTED_NETLINK_DENIES: &[u64] =
+    &[libc::NETLINK_NETFILTER as u64, libc::NETLINK_XFRM as u64];
+
+/// `personality(2)` personas a CI job may still select: the query
+/// (`0xffffffff`) and plain `PER_LINUX`. Everything else —
+/// `ADDR_NO_RANDOMIZE`, `READ_IMPLIES_EXEC` — weakens exploit mitigations.
+#[cfg(target_os = "linux")]
+const CI_PERSONALITIES: &[u64] = &[0, 0xffff_ffff];
+
+/// The CI deny-list for `profile` as a rule map (see [`ci_program`]).
+///
+/// # Errors
+///
+/// Returns [`SeccompError::Compile`] if seccompiler rejects a condition.
+#[cfg(target_os = "linux")]
+pub fn ci_rules(profile: CiProfile) -> Result<BTreeMap<i64, Vec<SeccompRule>>, SeccompError> {
+    let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
+    for nr in CI_DENIES {
+        if profile == CiProfile::Privileged && CI_PRIVILEGED_ALLOWS.contains(nr) {
+            continue;
+        }
+        if profile == CiProfile::Nested && CI_NESTED_ALLOWS.contains(nr) {
+            continue;
+        }
+        rules.insert(*nr, Vec::new());
+    }
+    // One rule whose conditions are ANDed: refused unless the persona is one
+    // of the harmless ones.
+    let persona = CI_PERSONALITIES
+        .iter()
+        .map(|p| SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Ne, *p))
+        .collect::<Result<Vec<_>, BackendError>>()?;
+    rules.insert(libc::SYS_personality, vec![SeccompRule::new(persona)?]);
+    if profile == CiProfile::Nested {
+        // socket(AF_NETLINK, *, protocol): one rule per protocol, each the
+        // AND of the family and the protocol.
+        let netlink = CI_NESTED_NETLINK_DENIES
+            .iter()
+            .map(|protocol| {
+                SeccompRule::new(vec![
+                    SeccompCondition::new(
+                        0,
+                        SeccompCmpArgLen::Dword,
+                        SeccompCmpOp::Eq,
+                        libc::AF_NETLINK as u64,
+                    )?,
+                    SeccompCondition::new(2, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, *protocol)?,
+                ])
+            })
+            .collect::<Result<Vec<_>, BackendError>>()?;
+        rules.insert(libc::SYS_socket, netlink);
+    }
+    if profile == CiProfile::Standard {
+        // No new namespace: in a fresh user namespace a job would hold every
+        // capability over a fresh network namespace, which is how the
+        // nf_tables exploits (CVE-2024-1086 and its kin) start. One rule per
+        // flag, because rules for one syscall are ORed.
+        let namespaces = || {
+            CLONE_NAMESPACE_FLAGS
+                .iter()
+                .map(|flag| {
+                    SeccompRule::new(vec![SeccompCondition::new(
+                        0,
+                        SeccompCmpArgLen::Qword,
+                        SeccompCmpOp::MaskedEq(*flag),
+                        *flag,
+                    )?])
+                })
+                .collect::<Result<Vec<_>, BackendError>>()
+        };
+        rules.insert(libc::SYS_clone, namespaces()?);
+        rules.insert(libc::SYS_unshare, namespaces()?);
+    }
+    Ok(rules)
+}
+
+/// The CI filter for `profile`, ready to install. Pair it with
+/// [`clone3_compat_program`]: seccomp cannot read `clone3`'s flags, so
+/// `clone3` answers `ENOSYS` and glibc falls back to `clone`, whose flags
+/// this filter checks.
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] if the rules or their compilation fail.
+#[cfg(target_os = "linux")]
+pub fn ci_program(profile: CiProfile) -> Result<BpfProgram, SeccompError> {
+    deny_list_program(ci_rules(profile)?)
+}
+
 /// Install `program` on every thread of the calling process. Sets
 /// `no_new_privs` first, as the kernel requires for an unprivileged filter.
 /// Irreversible.
@@ -654,7 +849,6 @@ pub mod testing {
             for flag in super::WEB_ENGINE_SANDBOX_NAMESPACES {
                 #[allow(
                     clippy::cast_possible_truncation,
-                    clippy::cast_possible_wrap,
                     reason = "namespace flags are 32-bit clone flags"
                 )]
                 let flags = (*flag | libc::CLONE_UNTRACED as u64) as libc::c_int;
@@ -897,6 +1091,149 @@ mod tests {
                 "10 = a socket was created, 11 = exec was allowed, 12 = the filter would not install"
             );
         }
+    }
+
+    /// Runs `probe` in a forked child under the CI filter for `profile`;
+    /// returns its exit status (12 = the filter would not install).
+    #[cfg(target_os = "linux")]
+    fn under_ci(profile: CiProfile, probe: fn() -> i32) -> i32 {
+        let program = ci_program(profile).expect("compile filter");
+        // SAFETY: the child installs a filter, makes raw syscalls with inert
+        // arguments and exits without returning into the test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let code = if seccompiler::apply_filter(&program).is_err() {
+                12
+            } else {
+                probe()
+            };
+            // SAFETY: `_exit` does not unwind.
+            unsafe { libc::_exit(code) };
+        }
+        let mut status = 0;
+        // SAFETY: waiting on our own child.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(libc::WIFEXITED(status), "status {status:#x}");
+        libc::WEXITSTATUS(status)
+    }
+
+    /// The errno a raw syscall left, or 0 if it succeeded.
+    #[cfg(target_os = "linux")]
+    fn errno_of(result: libc::c_long) -> i32 {
+        if result == -1 {
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn ci_profile_refuses_exploit_primitives_and_keeps_what_builds_use() {
+        let standard = under_ci(CiProfile::Standard, || {
+            // SAFETY (all calls below): invalid or inert arguments; the
+            // filter answers before the kernel would act.
+            for nr in [
+                libc::SYS_bpf,
+                libc::SYS_io_uring_setup,
+                libc::SYS_keyctl,
+                libc::SYS_userfaultfd,
+                libc::SYS_setns,
+                libc::SYS_open_by_handle_at,
+            ] {
+                if errno_of(unsafe { libc::syscall(nr, -1_i64, 0_i64, 0_i64) }) != libc::EPERM {
+                    return 10;
+                }
+            }
+            // A namespace flag plus one `unshare` rejects, so an unfiltered
+            // kernel would answer EINVAL, not EPERM.
+            let flags = i64::from(libc::CLONE_NEWUSER | libc::CLONE_UNTRACED);
+            if errno_of(unsafe { libc::syscall(libc::SYS_unshare, flags) }) != libc::EPERM {
+                return 11;
+            }
+            if errno_of(unsafe { libc::syscall(libc::SYS_personality, 0x0040_0000_i64) })
+                != libc::EPERM
+            {
+                return 13;
+            }
+            if errno_of(unsafe { libc::syscall(libc::SYS_personality, 0xffff_ffff_i64) }) != 0 {
+                return 14;
+            }
+            // ptrace reaches the kernel: no such process, not refused.
+            let peek = unsafe { libc::syscall(libc::SYS_ptrace, libc::PTRACE_PEEKDATA, -1_i64) };
+            if errno_of(peek) == libc::EPERM {
+                return 15;
+            }
+            0
+        });
+        assert_eq!(
+            standard, 0,
+            "10 = an exploit primitive was allowed, 11 = a namespace was allowed, \
+             13/14 = personality got the wrong answer, 15 = ptrace was refused"
+        );
+
+        // Inside a sandbox that already refuses setns (a CI job), the call
+        // never reaches the kernel whatever this filter says.
+        // SAFETY: an invalid descriptor; the kernel answers EBADF.
+        let setns_reaches_kernel =
+            errno_of(unsafe { libc::syscall(libc::SYS_setns, -1_i64, 0_i64) }) == libc::EBADF;
+        let privileged = under_ci(CiProfile::Privileged, || {
+            // SAFETY: an invalid descriptor; the kernel answers EBADF.
+            let setns = errno_of(unsafe { libc::syscall(libc::SYS_setns, -1_i64, 0_i64) });
+            if setns != libc::EBADF && setns != libc::EPERM {
+                return 20;
+            }
+            // SAFETY: as above, the filter answers first.
+            if errno_of(unsafe { libc::syscall(libc::SYS_bpf, -1_i64, 0_i64, 0_i64) })
+                != libc::EPERM
+            {
+                return 21;
+            }
+            0
+        });
+        assert_eq!(
+            privileged, 0,
+            "20 = setns got neither EBADF nor EPERM, 21 = bpf was allowed"
+        );
+        if setns_reaches_kernel {
+            let reaches = under_ci(CiProfile::Privileged, || {
+                // SAFETY: an invalid descriptor; the kernel answers EBADF.
+                i32::from(
+                    errno_of(unsafe { libc::syscall(libc::SYS_setns, -1_i64, 0_i64) })
+                        != libc::EBADF,
+                )
+            });
+            assert_eq!(reaches, 0, "setns did not reach the kernel");
+        }
+
+        let nested = under_ci(CiProfile::Nested, || {
+            // SAFETY: socket calls whose descriptors are closed at once.
+            unsafe {
+                let route = libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, libc::NETLINK_ROUTE);
+                if route < 0 {
+                    return 30;
+                }
+                libc::close(route);
+                for protocol in [libc::NETLINK_NETFILTER, libc::NETLINK_XFRM] {
+                    let s = libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, protocol);
+                    if errno_of(libc::c_long::from(s)) != libc::EPERM {
+                        return 31;
+                    }
+                }
+                if errno_of(libc::syscall(libc::SYS_bpf, -1_i64, 0_i64, 0_i64)) != libc::EPERM
+                    || errno_of(libc::syscall(libc::SYS_setns, -1_i64, 0_i64)) != libc::EPERM
+                {
+                    return 33;
+                }
+            }
+            0
+        });
+        assert_eq!(
+            nested, 0,
+            "30 = NETLINK_ROUTE was refused, 31 = netfilter or XFRM netlink was allowed, \
+             33 = bpf or setns was allowed"
+        );
     }
 
     #[test]

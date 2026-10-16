@@ -11,7 +11,7 @@ arch=('x86_64' 'aarch64')
 # The release contract intentionally publishes only the runtime and devel
 # packages, so make that output deterministic across builder images.
 # Cargo controls Rust LTO. makepkg's separate LTO option injects GCC -flto
-# into CFLAGS/CXXFLAGS, which cc-rs also applies to ring and OpenH264.
+# into CFLAGS/CXXFLAGS, which cc-rs also applies to C sources such as ring's.
 # rust-lld cannot consume those GCC LTO archives at the final Rust link.
 # Keep native dependencies as ELF objects; Cargo's release LTO stays enabled.
 # `!strip` keeps the symbol table the release profile leaves in, so a crash

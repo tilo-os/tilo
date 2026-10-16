@@ -13,10 +13,14 @@ class FeedbackScopeTests(unittest.TestCase):
             self.assertRegex(workflow, r'python3 tools/ci/compiler_inputs\.py --output target/ci/compiler-inputs\.json --\s+check --locked --all-targets \$\{\{ matrix\.packages \}\}')
             self.assertIn('cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}', workflow)
             self.assertIn("if: matrix.test_packages != ''", workflow)
-            self.assertIn("if: contains(matrix.test_packages, '-p app-cli')", workflow)
+            # The merged tree's shard preparation builds the installer fixture
+            # app-cli's tests execute (test_ci_test_shard_environment.py).
+            self.assertIn('run: bash tools/ci/prepare-test-shard.sh', workflow)
+            prepare = (ROOT / 'tools/ci/prepare-test-shard.sh').read_text(encoding='utf-8')
+            self.assertIn('if tests app-cli app-host; then', prepare)
             # A shard's affected apps pass the nightly's native certification.
             self.assertIn('certify --workspace ${{ matrix.test_packages }}', workflow)
-            self.assertIn('needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins, tapps]', workflow)
+            self.assertIn('needs: [builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins, tapps]', workflow)
             self.assertIn('test "$BUILDER_RESULT" = success', workflow)
             self.assertIn('*:true:success)', workflow)
             self.assertIn('pull_request:false:skipped)', workflow)

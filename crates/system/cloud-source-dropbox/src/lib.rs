@@ -36,7 +36,7 @@
 
 use std::io::{self, Read};
 use std::ops::Range;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use cloud_source::{
@@ -58,6 +58,7 @@ pub use api::Endpoints;
 
 use api::{Api, Failure};
 use metadata::{Entry, Kind, Paths, is_within, parent_path};
+use tilo_lock::MutexRecover as _;
 
 /// Default bytes per upload-session chunk: a multiple of the 4 MiB hash
 /// block, so a resumed session can keep verifying the whole file.
@@ -116,10 +117,6 @@ pub struct DropboxSource {
     api: Api,
     paths: Arc<Mutex<Paths>>,
     backoff_until: Arc<Mutex<Option<Instant>>>,
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A Dropbox id (`id:…`); anything else cannot name an item.
@@ -188,7 +185,7 @@ impl DropboxSource {
     }
 
     fn paths(&self) -> MutexGuard<'_, Paths> {
-        lock(&self.paths)
+        self.paths.lock_recover()
     }
 
     /// The API `path` argument for an item.
@@ -415,6 +412,13 @@ impl DropboxSource {
                 }
             })?;
         let entry = Entry::parse(&downloaded.result).ok_or(Error::InvalidResponse("metadata"))?;
+        if !entry
+            .path_lower
+            .as_deref()
+            .is_some_and(|path| self.within_root(path))
+        {
+            return Err(Error::NotFound);
+        }
         if let Some(id) = expect_id
             && entry.id.as_deref() != Some(id.as_str())
         {
@@ -551,7 +555,7 @@ impl CloudSource for DropboxSource {
     }
 
     fn list(&self, folder: &ItemId) -> Result<Vec<Item>> {
-        let path = self.api_path(folder)?;
+        let path = self.folder_path(folder)?;
         let mut value = self
             .api
             .rpc("files/list_folder", &self.list_arg(&path, false))
@@ -609,7 +613,7 @@ impl CloudSource for DropboxSource {
     }
 
     fn wait(&self, cursor: Option<&Cursor>, timeout: Duration) -> Result<Wait> {
-        let backing_off = *lock(&self.backoff_until);
+        let backing_off = *self.backoff_until.lock_recover();
         if let Some(until) = backing_off {
             let now = Instant::now();
             if now < until {
@@ -641,7 +645,7 @@ impl CloudSource for DropboxSource {
             .get("backoff")
             .and_then(Value::as_u64)
             .map(Duration::from_secs);
-        *lock(&self.backoff_until) = backoff.and_then(|b| Instant::now().checked_add(b));
+        *self.backoff_until.lock_recover() = backoff.and_then(|b| Instant::now().checked_add(b));
         let changed = value
             .get("changes")
             .and_then(Value::as_bool)
@@ -689,8 +693,14 @@ impl CloudSource for DropboxSource {
                     Some(expected) if !is_rev(&expected) => {
                         return Err(Error::Conflict { current: None });
                     }
-                    Some(expected) => upload::Commit::update(id.0, expected.0),
-                    None => upload::Commit::overwrite(id.0),
+                    Some(expected) => {
+                        self.entry(&id)?;
+                        upload::Commit::update(id.0, expected.0)
+                    }
+                    None => {
+                        self.entry(&id)?;
+                        upload::Commit::overwrite(id.0)
+                    }
                 }
             }
             UploadTarget::Create { parent, name } => {
@@ -828,7 +838,16 @@ impl CloudSource for DropboxSource {
                     failure.into_error()
                 }
             })?;
-        Ok(Self::entries(&value)
+        let entries = Self::entries(&value);
+        if entries.iter().any(|entry| {
+            !entry
+                .path_lower
+                .as_deref()
+                .is_some_and(|path| self.within_root(path))
+        }) {
+            return Err(Error::NotFound);
+        }
+        Ok(entries
             .into_iter()
             .filter_map(|entry| {
                 Some(RevisionInfo {
@@ -888,6 +907,7 @@ impl CloudSource for DropboxSource {
         if !is_dropbox_id(id) {
             return Err(Error::NotFound);
         }
+        self.entry(id)?;
         let url = |value: &Value| value.get("url").and_then(Value::as_str).map(str::to_owned);
         match self.api.rpc(
             "sharing/create_shared_link_with_settings",

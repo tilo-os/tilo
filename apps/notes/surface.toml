@@ -8,11 +8,11 @@ fields = [
   { path = "pages", type = "Collection<Page>", stored = "collection" },
   { path = "pages.*.title", type = "String", label = true, readonly = true },
   { path = "pages.*.parent", type = "Option<Id>", readonly = true },
-  { path = "pages.*.body", type = "RichText", ops = "sha256:50b5e5015161641c" },
+  { path = "pages.*.body", type = "RichText", ops = "sha256:1ce89d3350d639da" },
   { path = "pages.*.tags", type = "Set<Id>" },
   { path = "tags", type = "Collection<Tag>", stored = "collection" },
   { path = "tags.*.name", type = "Atom", label = true },
-  { path = "images", type = "BTreeMap<String, Bytes>", readonly = true },
+  { path = "images", type = "Map<Bytes>", readonly = true },
 ]
 
 [[resources.verbs]]
@@ -128,6 +128,14 @@ params = [
   { name = "page", required = true, schema = { type = "string" } },
   { name = "bytes", required = true, schema = { type = "array", items = { type = "integer", maximum = 255, minimum = 0 } } },
   { name = "alt", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "create-page"
+kind = "undoable"
+params = [
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "markdown", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]

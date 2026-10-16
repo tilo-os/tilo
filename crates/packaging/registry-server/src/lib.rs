@@ -17,15 +17,6 @@
 //! protect the round-trip of GETs and to authenticate the base
 //! URL clients pin.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::net::SocketAddr;
 
 use hyper::server::conn::http1;
@@ -38,6 +29,7 @@ pub mod allowlist;
 pub mod applications;
 pub mod bot_review;
 pub mod bundle_review;
+mod catalogue;
 pub mod moderation;
 pub mod moderation_api;
 pub mod serve;

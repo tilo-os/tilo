@@ -20,6 +20,7 @@ use std::time::Duration;
 use crate::shell::i18n::{t, t_args};
 
 use os_actions::{LinkKind, LinkStatus, VolumeState};
+use tilo_lock::MutexRecover as _;
 use tilo_nm::{NetworkState, NmState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 use ui::floating_surface::HostNetworkStatus;
@@ -309,11 +310,7 @@ impl StatusBridge {
     }
 
     fn wait_for_frame_request(&self) {
-        let mut guard = self
-            .frame_interest
-            .lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.frame_interest.lock.lock_recover();
         while !self.frame_interest.requested.swap(false, Ordering::AcqRel) {
             guard = self
                 .frame_interest

@@ -119,7 +119,7 @@ impl Document {
 
     /// # Errors
     /// Returns [`DocError`] if `bytes` is not a valid automerge document, or if it does not
-    /// carry a qdoc schema `open` recognises.
+    /// carry a tilo-doc schema `open` recognises.
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         Self::from_automerge(doc)
@@ -129,7 +129,7 @@ impl Document {
     /// from peers, which are decoded in `tilo_automerge_isolate` rather than here.
     ///
     /// # Errors
-    /// Returns [`DocError`] if `doc` does not carry a qdoc schema `open` recognises.
+    /// Returns [`DocError`] if `doc` does not carry a tilo-doc schema `open` recognises.
     pub fn from_automerge(doc: AutoCommit) -> Result<Self, DocError> {
         Self::from_automerge_under(doc, &ROOT)
     }
@@ -138,7 +138,7 @@ impl Document {
     /// under `root`, the map of a field of a larger record.
     ///
     /// # Errors
-    /// Returns [`DocError`] if `root` does not hold a qdoc schema `open` recognises.
+    /// Returns [`DocError`] if `root` does not hold a tilo-doc schema `open` recognises.
     pub fn from_automerge_under(
         doc: AutoCommit,
         root: &automerge::ObjId,
@@ -687,8 +687,9 @@ impl Document {
         let candidate_doc = AutoCommit::load(&merged).expect("merge: reload");
         let candidate_containers = crate::model::open(&candidate_doc, &ROOT).expect("merge: open");
         let mut candidate_ids =
-            crate::model::try_seeded_id_gen(&candidate_doc, &candidate_containers)
-                .expect("merged qdoc exhausted its id namespace; refusing to reuse an identifier");
+            crate::model::try_seeded_id_gen(&candidate_doc, &candidate_containers).expect(
+                "merged tilo-doc exhausted its id namespace; refusing to reuse an identifier",
+            );
         candidate_ids.allow_commits();
         self.doc = candidate_doc;
         self.c = candidate_containers;

@@ -289,8 +289,6 @@ pub struct MailApp {
     menu_target: Option<MenuTarget>,
     /// A row menu to open once the list has been laid out (a capture).
     pending_menu: Option<MessageId>,
-    /// Open the sidebar drawer once the window has its size (a capture).
-    pending_drawer: bool,
     /// An explicit destructive confirmation for the selection toolbar. This
     /// is local presentation state; the actual purge remains one canonical
     /// verb of the mailbox, only after the person confirms.
@@ -516,7 +514,6 @@ impl MailApp {
             menu: ContextMenu::new(),
             menu_target: None,
             pending_menu: None,
-            pending_drawer: false,
             bulk_purge_confirmation: None,
             search: SearchOpener::new(),
             setup: None,
@@ -580,6 +577,8 @@ impl MailApp {
                 self.open_setup_edit(Some(active));
             }
             "setup_add" => self.stage_setup_add(),
+            "setup_blank" => self.open_setup_edit(None),
+            "setup_discovering" => self.stage_setup_discovering(),
             "setup_oauth" => {
                 self.open_setup_edit(None);
                 self.set_setup_input(0, "Grace Hopper");
@@ -628,14 +627,35 @@ impl MailApp {
     }
 
     /// A blank "Add account" sheet with an email typed and its servers
-    /// filled in, focus on a server field so its focus ring shows.
+    /// filled in, focus on the password field so its focus ring shows.
     fn stage_setup_add(&mut self) {
         self.open_setup_edit(None);
         self.set_setup_input(0, "Alex Morgan");
         self.set_setup_input(1, "grace@fastmail.com");
+        self.set_setup_input(3, "correct horse battery");
         // The built-in provider table only: a capture opens no socket.
         self.maybe_autofill_live_typing();
-        self.setup.as_mut().map(|sheet| sheet.focus_field(4));
+        self.setup.as_mut().map(|sheet| sheet.focus_field(3));
+    }
+
+    /// An address of a domain the built-in table does not know, its servers
+    /// being looked up.
+    fn stage_setup_discovering(&mut self) {
+        self.open_setup_edit(None);
+        self.set_setup_input(1, "grace@hopper-labs.example");
+        self.set_setup_input(3, "correct horse battery");
+        // The sender stays open for the capture's life: a closed one would
+        // end the lookup with no result.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::mem::forget(sender);
+        let config = self.read_setup_config();
+        self.setup_discovery = Some(PendingSetupDiscovery {
+            config,
+            editing: None,
+            receiver,
+            cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        self.set_provider_status(crate::setup_sheet::ProviderStatus::Finding);
     }
 
     /// The bundled HTML newsletter open in the reader (it is starred, so the
@@ -756,13 +776,6 @@ impl MailApp {
     /// out-of-order result must not update a different operation's UI state.
     fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
         self.pending_engine_requests.get(&request_id) == Some(&kind)
-    }
-
-    /// Open the sidebar drawer once the window has its size (narrow drawer
-    /// shot).
-    pub fn prime_drawer_shot(&mut self) {
-        self.pending_drawer = true;
-        self.dirty = true;
     }
 
     // ---- window shell -----------------------------------------------------
@@ -1628,6 +1641,7 @@ impl MailApp {
             self.setup_discovery = None;
         }
         if !email.contains('@') {
+            self.set_provider_status(crate::setup_sheet::ProviderStatus::Idle);
             return;
         }
         let domain = email
@@ -1663,6 +1677,7 @@ impl MailApp {
         // domains it doesn't cover, and only on the focus-leave/save pass.
         if let Some(ac) = crate::autoconfig::builtin_autoconfig(&domain) {
             ac.apply_to(&mut cfg);
+            self.set_provider_status(found_status(&domain, &ac));
         } else if network {
             self.start_setup_discovery();
             return;
@@ -1730,7 +1745,14 @@ impl MailApp {
             receiver,
             cancellation,
         });
+        self.set_provider_status(crate::setup_sheet::ProviderStatus::Finding);
         self.dirty = true;
+    }
+
+    fn set_provider_status(&self, status: crate::setup_sheet::ProviderStatus) {
+        if let Some(fields) = self.setup_fields() {
+            fields.set_provider_status(status);
+        }
     }
 
     fn drain_setup_discovery(&mut self) {
@@ -1742,10 +1764,8 @@ impl MailApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
                 self.setup_discovery = None;
-                self.set_setup_error(Some(
-                    "Provider discovery ended without a result; enter server details manually"
-                        .into(),
-                ));
+                self.set_provider_status(crate::setup_sheet::ProviderStatus::Idle);
+                self.set_setup_error(Some("Couldn’t find the mail servers".into()));
                 self.dirty = true;
                 return;
             }
@@ -1763,8 +1783,14 @@ impl MailApp {
         }
         let mut discovered = pending.config.clone();
         if let Some(result) = result {
+            let domain = current
+                .email
+                .split_once('@')
+                .map_or("", |(_, domain)| domain);
+            self.set_provider_status(found_status(domain, &result));
             result.apply_to(&mut discovered);
         } else {
+            self.set_provider_status(crate::setup_sheet::ProviderStatus::Idle);
             discovered.autofill_from_email();
         }
         // Preserve manual edits made while discovery was in flight. Each
@@ -1867,9 +1893,7 @@ impl MailApp {
             return;
         }
         if self.setup_editing != pending.editing || self.read_setup_config() != pending.config {
-            self.set_setup_error(Some(
-                "Account settings changed; verify them again before saving".into(),
-            ));
+            self.set_setup_error(Some("Settings changed".into()));
             self.dirty = true;
             return;
         }
@@ -2624,6 +2648,8 @@ impl MailApp {
         for account in &mut self.shared.borrow_mut().accounts.accounts {
             account.collapsed = preferences.collapsed_accounts.contains(&account.id);
         }
+        self.shared.borrow_mut().remote_senders =
+            preferences.remote_content_senders.iter().cloned().collect();
         self.followed_preferences = preferences;
         self.dirty = true;
     }
@@ -2640,6 +2666,13 @@ impl MailApp {
                 .iter()
                 .filter(|account| account.collapsed)
                 .map(|account| account.id.clone())
+                .collect(),
+            remote_content_senders: self
+                .shared
+                .borrow()
+                .remote_senders
+                .iter()
+                .cloned()
                 .collect(),
         }
     }
@@ -2939,6 +2972,20 @@ fn avatar_fetcher() -> ui::Fetcher {
     noop_avatar_fetcher()
 }
 
+/// What the sheet shows for a provider found for `domain`: its name (the
+/// provider's own, else the domain) and the incoming server.
+fn found_status(
+    domain: &str,
+    found: &crate::autoconfig::Autoconfig,
+) -> crate::setup_sheet::ProviderStatus {
+    let name = crate::autoconfig::known_provider_for_domain(domain)
+        .map(crate::autoconfig::KnownProvider::name)
+        .map(str::to_owned)
+        .or_else(|| found.display_name.clone())
+        .unwrap_or_else(|| domain.to_owned());
+    crate::setup_sheet::ProviderStatus::Found { name }
+}
+
 /// Mozilla autoconfig discovery for a typed email. Real HTTP under
 /// `--features live`; `None` offline (the caller falls back to the heuristic).
 #[cfg(feature = "live")]
@@ -3169,10 +3216,6 @@ impl MailApp {
         true
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the list node mirrors the complete visible list and contextual selection toolbar in one accessibility subtree"
-    )]
     fn overview_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -3493,10 +3536,6 @@ impl Widget for MailApp {
                 // Rest the shell for this width before the first frame.
                 self.nav.snap();
                 self.first_layout = false;
-                if std::mem::take(&mut self.pending_drawer) {
-                    self.nav.open_sidebar();
-                    self.nav.snap();
-                }
                 self.nav.apply_layout(taffy, nav_node, inner);
             }
             self.publish_shell_flags();
@@ -3986,8 +4025,7 @@ impl MailApp {
                 if !self.shared.borrow_mut().preview_message(id) {
                     return Err("message is no longer loaded".into());
                 }
-                self.shared.borrow_mut().status =
-                    Some("Previewing without changing this message’s read state".into());
+                self.shared.borrow_mut().status = Some("Preview".into());
                 self.process_intents();
                 Ok(done)
             }
@@ -4134,8 +4172,7 @@ impl MailApp {
                     self.shared.borrow_mut().save_draft(doc, &draft);
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
-                    self.shared.borrow_mut().status =
-                        Some("Invitation prepared — review it before sending".into());
+                    self.shared.borrow_mut().status = Some("Invitation drafted".into());
                 }
             }
             self.dirty = true;
@@ -4782,8 +4819,7 @@ impl MailApp {
                 if let Some(id) = selected
                     && self.shared.borrow_mut().preview_message(id)
                 {
-                    self.shared.borrow_mut().status =
-                        Some("Previewing without changing this message’s read state".into());
+                    self.shared.borrow_mut().status = Some("Preview".into());
                     self.process_intents();
                     *handled = true;
                 }
@@ -4923,6 +4959,90 @@ mod tests {
     use super::*;
     use crate::resource::TestMail;
     use automerge::ReadDoc;
+
+    #[cfg(feature = "live")]
+    #[test]
+    fn already_open_mail_adopts_settings_google_consent_on_sync() {
+        use account_custody::{ClientTable, OAuthIssuer};
+        use settings::accounts::{AccountKind, AccountRoot};
+        use settings::panes::accounts::{AccountViewCommand, AccountsPane, BrowserOpener};
+        use test_http::{Reply, Responder};
+        use tilo_oauth::fake::{FakeAuthorizationServer, browse};
+
+        struct Browser;
+        impl BrowserOpener for Browser {
+            fn open(&self, url: &str) -> ui::portal::LaunchChannel {
+                let url = url.to_string();
+                std::thread::spawn(move || browse(&url).unwrap());
+                let (sender, receiver) = std::sync::mpsc::channel();
+                sender.send(ui::portal::LaunchOutcome::Opened).unwrap();
+                receiver
+            }
+        }
+
+        let mut host =
+            ui::framework::testing::TestApp::<settings::resource::SettingsShell>::new().unwrap();
+        let record = host.person::<PersonAccounts>().unwrap();
+        // No mail engine or remote avatars; the account projection and vault
+        // are confined to this window's private temporary profile.
+        let mut mail = MailApp::new_first_run();
+        let root =
+            AccountRoot::at(mail.accounts_persist_root().unwrap()).with_person(record.clone());
+        mail.follow_person_accounts(record.clone());
+        let doc = TestMail::doc();
+        mail.sync(&doc, &automerge::ROOT);
+        assert!(mail.shared.borrow().accounts.is_empty());
+        assert!(mail.is_first_run());
+        assert!(mail.engine.is_none());
+
+        let oauth = FakeAuthorizationServer::start();
+        let registration = ClientTable::defaults()
+            .client_registration(OAuthIssuer::Google)
+            .unwrap();
+        oauth.require_client_secret(registration.secret().unwrap());
+        let gmail = Responder::start(vec![
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(r#"{"emailAddress":"ada@example.org"}"#),
+        ]);
+        let custody = root
+            .custodian()
+            .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider())
+            .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()));
+        let mut pane = AccountsPane::in_root(root.clone())
+            .with_custodian(custody)
+            .with_browser_opener(std::sync::Arc::new(Browser));
+        pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
+        pane.command(AccountViewCommand::SubmitGoogleMail);
+        assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+        assert!(
+            !pane.sign_in_open(),
+            "{:?}",
+            pane.sign_in_message_for_test()
+        );
+        assert_eq!(gmail.next_request().target, "/profile");
+        let published = AccountStore::load_in(root.explicit().unwrap());
+        assert_eq!(published.accounts.len(), 1);
+        assert_eq!(record.get().store().len(), 2);
+        assert!(mail.shared.borrow().accounts.is_empty());
+
+        // The same already-open widget observes Settings' shared-record edit
+        // through the production sync path, without reopening or re-following.
+        mail.sync(&doc, &automerge::ROOT);
+        let shown = mail.shared.borrow();
+        assert_eq!(shown.accounts.accounts.len(), 1);
+        let account = shown.accounts.active_account().unwrap();
+        assert_eq!(account.id, published.accounts[0].id);
+        assert_eq!(account.config.email, "ada@example.org");
+        assert_eq!(account.config.imap_host, "imap.gmail.com");
+        assert_eq!(account.config.smtp_host, "smtp.gmail.com");
+        assert_eq!(account.config.smtp_port, 587);
+        assert_eq!(account.config.auth, accounts::email::AuthMethod::OAuth);
+        assert!(account.config.password.is_empty());
+        drop(shown);
+        assert!(!mail.is_first_run());
+        assert!(mail.engine.is_none());
+    }
 
     fn cursor_at(p: Point) -> WindowEvent {
         ui::synthetic_input::cursor_moved(p.x, p.y)
@@ -5269,7 +5389,8 @@ mod tests {
         // layout still settles (it panics in `layout_for_test` otherwise).
         {
             let (mut app, _doc) = app();
-            app.prime_drawer_shot();
+            app.nav.open_sidebar();
+            app.nav.snap();
             app.layout_for_test(560.0, 860.0);
             assert!(app.shared.borrow().narrow);
         }
@@ -7073,13 +7194,23 @@ mod tests {
         for (scale, viewport) in [(1.0_f32, (1100, 780)), (2.0, (1100, 560))] {
             let mut harness = setup_harness(None, viewport, text_scaled(scale));
             assert_eq!(
-                tab_names(&mut harness, 11),
+                tab_names(&mut harness, 3),
+                ["Email", "Password", "Advanced"],
+                "Tab walks what a person gives at {scale}×, the rest hidden"
+            );
+            harness
+                .root_mut::<MailApp>()
+                .setup_fields()
+                .expect("the sheet is open")
+                .set_advanced(true);
+            harness.relayout();
+            let names = tab_names(&mut harness, 10);
+            assert_eq!(
+                &names[1..],
                 [
-                    "Email",
                     "Name",
                     "Username",
                     "Sign in with",
-                    "Password",
                     "IMAP server",
                     "IMAP port",
                     "IMAP TLS",
@@ -7087,7 +7218,7 @@ mod tests {
                     "SMTP port",
                     "SMTP TLS",
                 ],
-                "Tab walks the fields in reading order at {scale}×"
+                "the rest follows the Advanced switch at {scale}×: {names:?}"
             );
         }
 
@@ -7113,7 +7244,13 @@ mod tests {
         {
             let mut harness = setup_harness(None, (1100, 780), Theme::dark());
             assert_eq!(harness.root::<MailApp>().setup_value(5), "993");
-            let names = tab_names(&mut harness, 8);
+            harness
+                .root_mut::<MailApp>()
+                .setup_fields()
+                .expect("the sheet is open")
+                .set_advanced(true);
+            harness.relayout();
+            let names = tab_names(&mut harness, 9);
             assert_eq!(names.last().map(String::as_str), Some("IMAP TLS"));
             harness
                 .perform_named("mail.setup:imap-tls", &ui::a11y::Action::Activate)
@@ -7385,7 +7522,7 @@ mod tests {
                 app.setup_error()
                     .as_deref()
                     .unwrap()
-                    .contains("settings changed")
+                    .contains("Settings changed")
             );
             assert_eq!(app.shared.borrow().accounts.accounts[0].config, original);
             assert!(app.setup_validation.is_none());

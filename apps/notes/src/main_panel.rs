@@ -379,6 +379,8 @@ pub struct MainPanel {
     /// as boxed Elements — wrapping in Scrollable would require
     /// significant ownership churn for what amounts to "clip + shift".
     scroll_y: f64,
+    /// When the block drag last scrolled the page, for its speed.
+    drag_scroll_tick: Option<ui::time::Instant>,
     scroll_content_height: f64,
     bottom_inset: f64,
     scroll_track: Rect,
@@ -449,6 +451,7 @@ impl MainPanel {
             title_overhang: None,
             drawn_title_overhang: None,
             scroll_y: 0.0,
+            drag_scroll_tick: None,
             scroll_content_height: 0.0,
             bottom_inset: 0.0,
             scroll_track: Rect::ZERO,
@@ -545,7 +548,8 @@ impl MainPanel {
         // Binding the page already open again (its record re-read, a reveal)
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
-        let caret = (self.page_id == Some(page))
+        let same_page = self.page_id == Some(page);
+        let caret = same_page
             .then(|| {
                 let editor = self.editor.editor();
                 let block = editor.blocks().get(editor.focused_index()?)?;
@@ -576,7 +580,14 @@ impl MainPanel {
         self.empty_action_focused = false;
         self.set_title_value(title);
         self.body.clear();
-        self.scroll_y = 0.0;
+        // Another page starts at its top; the same page, bound again after an
+        // edit (a paste, an import), stays where the person is reading, and
+        // layout clamps the offset to the new extent.
+        if same_page {
+            self.scroll_layout_dirty = true;
+        } else {
+            self.scroll_y = 0.0;
+        }
         self.dirty = true;
         Ok(())
     }
@@ -588,6 +599,10 @@ impl MainPanel {
     ) -> Result<Self, String> {
         let mut panel = Self::new();
         panel.notebook.clone_from(&self.notebook);
+        // The notes' dates come from the document's whole history: the new
+        // panel goes on from where this one read it rather than reading
+        // every change again.
+        panel.date_index.clone_from(&self.date_index);
         if let Some(actions) = self.header.actions() {
             panel.header.attach(actions);
         }
@@ -629,6 +644,20 @@ impl MainPanel {
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.local_author.clone_from(&author);
         self.editor.editor_mut().set_local_author(author);
+    }
+
+    /// Give an explicitly opened note its body focus without discarding a
+    /// pending title edit or moving the existing caret.
+    pub(crate) fn focus_note_body(&mut self) {
+        if self.title_label.is_editing() {
+            self.title_label.commit();
+            if let EditOutcome::Committed(title) = self.title_label.take_outcome() {
+                self.pending_rename = Some(title);
+            }
+        }
+        self.editor.set_focus(true);
+        self.scroll_focused = false;
+        self.dirty = true;
     }
 
     /// Route the window-level Find command into the shared structured editor,
@@ -1027,6 +1056,36 @@ impl MainPanel {
         self.metrics.gutter + self.title_height()
     }
 
+    /// Whether a block drag is in flight and needs a frame to keep scrolling.
+    pub fn block_drag_scrolling(&self) -> bool {
+        self.editor.editor().block_drag_active()
+    }
+
+    /// Scroll the page while a dragged block's pointer rests near the edge
+    /// of what is visible, so a target below the fold can be reached.
+    /// Returns whether the page moved.
+    pub fn autoscroll_block_drag(&mut self) -> bool {
+        let now = ui::time::now();
+        if !self.editor.editor().block_drag_active() {
+            self.drag_scroll_tick = None;
+            return false;
+        }
+        let elapsed = self
+            .drag_scroll_tick
+            .replace(now)
+            .map_or(std::time::Duration::ZERO, |last| {
+                now.saturating_duration_since(last)
+            });
+        let viewport = self.scroll_viewport();
+        let delta = self.editor.editor_mut().tick_block_drag(viewport, elapsed);
+        if delta == 0.0 {
+            return false;
+        }
+        let before = self.scroll_y;
+        self.set_scroll_offset(before + delta);
+        (self.scroll_y - before).abs() > f64::EPSILON
+    }
+
     fn scroll_viewport(&self) -> Rect {
         Rect::new(
             self.rect.x0,
@@ -1216,6 +1275,12 @@ impl MainPanel {
         self.scroll_y
     }
 
+    /// Test hook: the dates the header shows for the open note.
+    #[doc(hidden)]
+    pub fn dates_for_test(&self) -> crate::metadata::NoteDates {
+        self.dates
+    }
+
     /// Test hook: the laid-out title band, for click targeting through the
     /// real event path.
     #[doc(hidden)]
@@ -1310,7 +1375,7 @@ impl Widget for MainPanel {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
-        self.date_index.sync(state);
+        ui::tilo_resource::profiling::measure("note_dates", || self.date_index.sync(state));
         let dates = self
             .page_id
             .map(|page| self.date_index.get(page))
@@ -1492,6 +1557,13 @@ impl Widget for MainPanel {
             self.tag_layout_dirty = true;
             self.dirty = true;
         }
+        // An image preview takes at most a share of what the page shows at
+        // once; a new window height measures the images again.
+        let visible = self.scroll_viewport().height();
+        if self.editor.editor_mut().set_viewport_height(Some(visible)) {
+            self.tag_layout_dirty = true;
+            self.dirty = true;
+        }
         // Lay the editor out at the unshifted origin first so we can
         // compute its natural content extent, then shift by -scroll_y
         // for the second pass. Cheaper than measuring twice through
@@ -1540,7 +1612,7 @@ impl Widget for MainPanel {
                     .any(|b| b.line.get_rect().height() > 0.0);
             if measured {
                 if self.follow_caret
-                    && let Some(caret) = self.editor.ime_cursor_rect()
+                    && let Some(caret) = self.editor.editor().document_caret_rect()
                 {
                     let viewport_top = self.rect.y0 + self.scroll_top_inset();
                     let viewport_bottom = viewport_top + viewport_h;
@@ -1587,6 +1659,8 @@ impl Widget for MainPanel {
             // for a scrolled view.
             let shifted_origin = Point::new(self.rect.x0, self.rect.y0 - self.scroll_y);
             self.editor.apply_layout(taffy, n, shifted_origin);
+            // A drag at the edge scrolled the blocks under the pointer.
+            self.editor.editor_mut().retarget_block_drag();
             let viewport = self.scroll_viewport();
             self.editor
                 .editor_mut()

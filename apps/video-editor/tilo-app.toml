@@ -1,8 +1,11 @@
 # Video Editor — Tilo application manifest.
 #
-# Export muxing goes through GStreamer (feature `gst`) and decode
-# through openh264 (feature `decode`); both plugin trees live under
-# `/usr/lib64`, which the system read profile covers. No network.
+# Preview decode (feature `decode`) and export encode and muxing
+# (feature `gst`) both go through the system's GStreamer, whose plugin
+# trees live under `/usr/lib64`, which the system read profile covers.
+# Tilo bundles no H.264 codec: encoders are picked from the machine's
+# GStreamer registry, hardware first, and Cisco's `openh264enc` is there
+# only where the owner installed the media-codecs extension. No network.
 #
 # Beyond the system read profile it needs, as a consented capability:
 # read on the directories the user sources clips from —
@@ -28,6 +31,9 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 optional = ["files.open", "files.save", "files.paths", "app-files", "threads", "media.decode"]
+
+[resources]
+kinds = ["video-editor.project"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

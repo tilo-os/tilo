@@ -25,7 +25,7 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
@@ -85,6 +85,9 @@ pub(super) enum ImagePreview {
     Present {
         dimensions: Option<(u32, u32)>,
         editing: bool,
+        /// The tallest the preview may be, in logical pixels: a share of the
+        /// host's visible height, so a tall picture never fills the editor.
+        max_height: Option<u32>,
     },
 }
 
@@ -139,6 +142,10 @@ pub struct RichTextLine {
     /// Paint-only semantic colours (for example fenced-code syntax). These
     /// never enter Automerge or the Markdown mark model.
     transient_colors: Vec<TransientColorSpan>,
+    /// What the owner derived `transient_colors` from, if it said: an owner
+    /// that derives them (a code run's syntax) compares this rather than
+    /// deriving them again. Any other change of the colours forgets it.
+    transient_key: Option<u64>,
     /// Formatting-only edits must notify the owning document just like typing.
     dirty: RichTextDirty,
     /// Cached theme colours used by unwrapped attributed single-line shaping.
@@ -181,6 +188,7 @@ impl RichTextLine {
             image_source_height: 0.0,
             marks: Vec::new(),
             transient_colors: Vec::new(),
+            transient_key: None,
             dirty: RichTextDirty::default(),
             accent_rgb: None,
             syntax: None,
@@ -475,6 +483,12 @@ impl RichTextLine {
         &self.marks
     }
 
+    /// What the line's accessibility node is built from besides its text:
+    /// [`TextInput::accessibility_state`].
+    pub(crate) fn accessibility_state(&self) -> crate::widget::text_input::TextAccessibilityState {
+        self.inner.accessibility_state()
+    }
+
     pub fn set_marks(&mut self, mut marks: Vec<MarkSpan>) {
         marks.sort_by_key(|s| s.range.start);
         self.dirty.styled_layout |= self.marks != marks;
@@ -482,6 +496,24 @@ impl RichTextLine {
     }
 
     pub fn set_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
+        self.transient_key = None;
+        self.replace_transient_colors(colors);
+    }
+
+    /// [`Self::set_transient_colors`], remembering `key` as what they were
+    /// derived from; [`Self::transient_colors_key`] returns it until the
+    /// colours are set again.
+    pub fn set_keyed_transient_colors(&mut self, key: u64, colors: Vec<TransientColorSpan>) {
+        self.transient_key = Some(key);
+        self.replace_transient_colors(colors);
+    }
+
+    /// The key the current transient colours were set with, if any.
+    pub fn transient_colors_key(&self) -> Option<u64> {
+        self.transient_key
+    }
+
+    fn replace_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
         if self.transient_colors == colors {
             return;
         }
@@ -995,6 +1027,7 @@ impl Widget for RichTextLine {
         if let ImagePreview::Present {
             dimensions,
             editing,
+            max_height,
         } = self.image_preview
         {
             let width = known
@@ -1013,18 +1046,20 @@ impl Widget for RichTextLine {
             } else {
                 0.0
             };
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "bounded image pixel dimensions are converted to the f32 layout coordinate space"
-            )]
             // The image stands on the editor's content edge, inside the
-            // line's text inset on both sides, at its native aspect.
+            // line's text inset on both sides, at its native aspect, and
+            // never taller than its share of the visible height: a capped
+            // picture is painted narrower, its aspect kept.
             let pad = self.text_inset(&self.measurement_theme) as f32;
             let image_width = (width - 2.0 * pad).max(1.0);
-            let preview_height = dimensions.map_or(
-                220.0 * self.measurement_theme.text_scale,
-                |(image_w, image_h)| image_width * image_h.max(1) as f32 / image_w.max(1) as f32,
-            );
+            let preview_height = dimensions
+                .map_or(
+                    220.0 * self.measurement_theme.text_scale,
+                    |(image_w, image_h)| {
+                        image_width * image_h.max(1) as f32 / image_w.max(1) as f32
+                    },
+                )
+                .min(max_height.map_or(f32::INFINITY, |max| crate::num::f32_of_u32(max.max(1))));
             return Size {
                 width,
                 height: self.image_source_height
@@ -1241,6 +1276,10 @@ impl Widget for RichTextLine {
         Widget::accessibility(&self.inner)
     }
 
+    fn accessibility_hidden(&self) -> bool {
+        Widget::accessibility_hidden(&self.inner)
+    }
+
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -1308,13 +1347,6 @@ pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     let removed = o_rest.saturating_sub(suffix);
     let inserted = n_rest.saturating_sub(suffix);
     (prefix, inserted, removed)
-}
-
-/// Pulled out as a free function so the chip-sizing math is
-/// unit-testable independent of the full draw path.
-pub fn chip_mono_width(text_renderer: &mut TextRenderer, slice: &str, size: f32) -> f64 {
-    let (w, _) = text_renderer.measure_styled(slice, size, None, TextWeight::Regular, false, true);
-    f64::from(w)
 }
 
 /// Used by `MainPanel::handle_event` to route clicks on link spans to
@@ -1464,25 +1496,6 @@ mod tests {
                 line.byte_for_pixel_x(&large, x),
                 target,
                 "pointer inverse lands on the scaled shaped caret stop"
-            );
-        }
-
-        // Case `chip_mono_width_uses_monospace_face_not_sans`.
-        {
-            // Also checks the mono advance differs from sans — without that, a
-            // face mismatch couldn't be detected at all.
-            let mut tr = crate::text_render::TextRenderer::new();
-            let mono = super::chip_mono_width(&mut tr, "inline code", 16.0);
-            let (sans_w, _) =
-                tr.measure_styled("inline code", 16.0, None, TextWeight::Regular, false, false);
-            assert!(
-                mono > 0.0,
-                "mono width must be non-zero for non-empty input"
-            );
-            assert!(
-                (mono - f64::from(sans_w)).abs() > 0.5,
-                "mono and sans widths must differ for this string (got mono={mono}, sans={sans_w}) — \
-             otherwise the chip-width-mismatch bug is undetectable",
             );
         }
     }

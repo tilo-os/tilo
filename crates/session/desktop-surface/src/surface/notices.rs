@@ -21,8 +21,9 @@ use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::notifications::{
     CenterLayout, CenterMetrics, CenterOutcome, HistoryActivation, Notification,
-    NotificationCenter, NotificationHost, NotificationLog, NotificationStack,
+    NotificationCenter, NotificationHost, NotificationLog, NotificationSeverity, NotificationStack,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Width of the centre panel, and its inset from the surface's edges.
 const PANEL_WIDTH: f64 = 360.0;
@@ -121,6 +122,32 @@ impl NotificationHost for NoticeState {
     fn changed(&self) {
         self.touch();
     }
+    /// An ask the host posted shows its choices as buttons: "Not now" and
+    /// the action itself. An application's notification shows the action
+    /// it named ("Try again"); one without opens on a click.
+    fn actions_for(&self, notification: &Notification) -> Vec<(String, String)> {
+        if super::search::is_host_offer(notification) {
+            // Painted secondary first, so the answer ends the row.
+            notification.actions.iter().rev().cloned().collect()
+        } else {
+            notification.actions.clone()
+        }
+    }
+    fn invoke_action(&self, id: u64, key: &str) {
+        if key == crate::notifications::NOT_NOW_ACTION {
+            // Put off, not refused: the ask waits in the centre.
+            self.retire_active(id);
+            return;
+        }
+        if let Some(notification) = self.retire_active(id) {
+            self.outcomes
+                .borrow_mut()
+                .push(NotificationOutcome::Activated {
+                    notification: Box::new(notification),
+                    action: Some(key.to_owned()),
+                });
+        }
+    }
 }
 
 /// A desktop's notifications: the live banners and the retained history
@@ -153,6 +180,27 @@ impl DesktopNotifications {
             self.log.touch();
         }
         taken
+    }
+
+    /// Withdraw every ask for host action `id`, live or retained: the
+    /// host no longer offers it (it was done, perhaps from search).
+    pub fn withdraw_host_action(&self, id: &str) -> bool {
+        let mut log = self.log.log.borrow_mut();
+        let asks: Vec<u64> = log
+            .active()
+            .iter()
+            .chain(log.history())
+            .filter(|notification| super::search::offers(notification, id))
+            .map(|notification| notification.id)
+            .collect();
+        for ask in &asks {
+            let _ = log.take_active(*ask).is_some() || log.take_history(*ask).is_some();
+        }
+        drop(log);
+        if !asks.is_empty() {
+            self.log.touch();
+        }
+        !asks.is_empty()
     }
 
     /// Retire banners whose dwell ran out and forget a lapsed Clear all.
@@ -293,10 +341,7 @@ impl AppNotifier {
     }
 
     fn push(&self, request: AppRequest) {
-        self.queue
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((request, 0));
+        self.queue.lock_recover().push((request, 0));
         (self.wake)();
     }
 }
@@ -359,12 +404,7 @@ impl AppInbox {
         notifications: &DesktopNotifications,
         app_of: AppOf<'_>,
     ) -> bool {
-        let requests = std::mem::take(
-            &mut *self
-                .queue
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let requests = std::mem::take(&mut *self.queue.lock_recover());
         let mut changed = false;
         let mut passed = Vec::new();
         for (request, passes) in requests {
@@ -393,9 +433,17 @@ impl AppInbox {
                         shown.app_name = Some(name);
                         shown.source_workspace = workspace;
                     }
+                    shown.severity = match notification.severity {
+                        ui::notify::Severity::Info => NotificationSeverity::Info,
+                        ui::notify::Severity::Warning => NotificationSeverity::Warning,
+                        ui::notify::Severity::Error => NotificationSeverity::Error,
+                    };
                     if let Some(uri) = notification.activation {
-                        shown.actions =
-                            vec![("default".into(), crate::i18n::t("notification-action-open"))];
+                        // A click opens it; an activation the app named
+                        // ("Try again") is a button too.
+                        if let Some(label) = notification.action {
+                            shown.actions = vec![("default".into(), label)];
+                        }
                         self.activations.insert(shown.id, uri);
                     }
                     self.shown.insert(key, notifications.post(shown));
@@ -409,10 +457,7 @@ impl AppInbox {
             }
         }
         if !passed.is_empty() {
-            self.queue
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend(passed);
+            self.queue.lock_recover().extend(passed);
         }
         changed
     }
@@ -487,13 +532,18 @@ impl NotificationLayer {
         let r = self.rect;
         let width = PANEL_WIDTH.min(r.width() - 2.0 * PANEL_INSET).max(0.0);
         let y0 = r.y0 + PANEL_INSET;
-        let wanted =
-            center.preferred_height_for_width(&self.notifications.log(), self.type_lines, width);
-        let height = wanted.min(r.y1 - PANEL_INSET - y0).max(0.0);
+        let height = center
+            .fitted_height(
+                self.notifications.host(),
+                &self.type_lines,
+                width,
+                r.y1 - PANEL_INSET - y0,
+            )
+            .max(0.0);
         let x1 = r.x1 - PANEL_INSET;
         Some(CenterLayout::new(
             Rect::new(x1 - width, y0, x1, y0 + height),
-            self.type_lines,
+            &self.type_lines,
         ))
     }
 
@@ -722,10 +772,13 @@ impl Widget for NotificationLayer {
             return false;
         };
         let notifications = self.notifications.clone();
+        let Some(layout) = self.layout() else {
+            return false;
+        };
         let Some(center) = self.center.as_mut() else {
             return false;
         };
-        let focused = center.focus_accessibility_path(notifications.host(), dialog);
+        let focused = center.focus_accessibility_path(notifications.host(), &layout, dialog);
         self.dirty |= focused;
         focused
     }
@@ -940,7 +993,8 @@ mod tests {
             notifier
                 .show(
                     &ui::notify::Notification::new("alarm", "Alarm", "07:00")
-                        .with_activation("tilo-clocks:alarm/1"),
+                        .with_activation("tilo-clocks:alarm/1")
+                        .with_action("Stop"),
                 )
                 .unwrap();
         }
@@ -952,6 +1006,10 @@ mod tests {
         );
         let alarm = notifications.log().active()[1].clone();
         assert_eq!(alarm.default_action_key().as_deref(), Some("default"));
+        assert_eq!(
+            alarm.actions[0].1, "Stop",
+            "the button says what choosing it does"
+        );
         assert_eq!(
             inbox.take_activation(alarm.id).as_deref(),
             Some("tilo-clocks:alarm/1")
@@ -1030,12 +1088,15 @@ mod tests {
     #[test]
     fn portable_notification_reader_returns_to_history_before_closing() {
         use ui::winit::keyboard::NamedKey;
-        let (mut layer, notifications) = layer_with(1);
-        let id = notifications.log().active()[0].id;
+        let (mut layer, notifications) = layer_with(0);
+        // Nothing to open and no app to go to: the row opens the reader.
+        let id = notifications.post(Notification::new(
+            "Backup couldn't finish",
+            "Reconnect the disk and the next backup picks up where this one stopped.",
+        ));
         notifications.host().dismiss(id);
         notifications.take_outcomes();
         layer.set_center_open(true);
-        assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
         assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
         assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
         assert!(layer.center.as_ref().unwrap().is_reading());
@@ -1056,5 +1117,82 @@ mod tests {
         assert!(!layer.center_open());
         assert!(notifications.take_outcomes().is_empty());
         assert!(layer.open_app.is_none());
+    }
+
+    fn ask() -> Notification {
+        crate::HostAction {
+            id: "keep-identity".into(),
+            title: "Keep with passkey".into(),
+            subtitle: None,
+            source: None,
+        }
+        .notice(
+            "Keep this identity?",
+            "A passkey brings you back on any browser.",
+        )
+    }
+
+    #[test]
+    fn an_ask_shows_not_now_then_its_answer() {
+        let notifications = DesktopNotifications::default();
+        notifications.post(ask());
+        let notice = notifications.log().active()[0].clone();
+        let keys: Vec<String> = notifications
+            .host()
+            .actions_for(&notice)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(keys, ["not-now", "host:keep-identity"]);
+        assert_eq!(
+            notice.default_action_key().as_deref(),
+            Some("host:keep-identity")
+        );
+        // An application's notification still opens on a click.
+        let plain = Notification::new("Tea", "Ready");
+        assert!(notifications.host().actions_for(&plain).is_empty());
+    }
+
+    #[test]
+    fn not_now_keeps_the_ask_in_the_centre_without_answering_it() {
+        let notifications = DesktopNotifications::default();
+        let id = notifications.post(ask());
+        notifications.host().invoke_action(id, "not-now");
+        assert!(notifications.take_outcomes().is_empty());
+        assert_eq!(notifications.counts(), (0, 1));
+        // Chosen later from the centre, it is the action itself.
+        let activation = notifications.host().activate_history(id);
+        assert!(matches!(activation, HistoryActivation::Invoked));
+        assert!(matches!(
+            &notifications.take_outcomes()[..],
+            [NotificationOutcome::Activated { action: Some(action), .. }]
+                if action == "host:keep-identity"
+        ));
+    }
+
+    #[test]
+    fn answering_an_ask_hands_its_action_to_the_host() {
+        let notifications = DesktopNotifications::default();
+        let id = notifications.post(ask());
+        notifications.host().invoke_action(id, "host:keep-identity");
+        assert!(matches!(
+            &notifications.take_outcomes()[..],
+            [NotificationOutcome::Activated { action: Some(action), .. }]
+                if action == "host:keep-identity"
+        ));
+    }
+
+    #[test]
+    fn an_ask_for_an_action_no_longer_offered_is_withdrawn_everywhere() {
+        let notifications = DesktopNotifications::default();
+        notifications.post(ask());
+        let put_off = notifications.post(ask());
+        notifications.host().invoke_action(put_off, "not-now");
+        let other = notifications.post(Notification::new("Tea", "Ready"));
+        assert_eq!(notifications.counts(), (2, 1));
+        assert!(notifications.withdraw_host_action("keep-identity"));
+        assert_eq!(notifications.counts(), (1, 0));
+        assert_eq!(notifications.log().active()[0].id, other);
+        assert!(!notifications.withdraw_host_action("keep-identity"));
     }
 }

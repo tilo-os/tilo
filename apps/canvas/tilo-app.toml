@@ -20,6 +20,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard", "app-files", "files.open", "files.paths", "files.save"]
 
+[resources]
+kinds = ["canvas.artwork"]
+
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

@@ -172,20 +172,28 @@ pub trait WindowExtWayland {
 impl WindowExtWayland for Window {
     fn set_ime_multiline(&self, multiline: bool) {
         match &self.window {
-            #[cfg(x11_platform)] crate::platform_impl::Window::X(_) => (),
-            #[cfg(wayland_platform)] crate::platform_impl::Window::Wayland(window) => window.set_ime_multiline(multiline),
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => (),
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.set_ime_multiline(multiline),
         }
     }
     fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool {
         match &self.window {
-            #[cfg(x11_platform)] crate::platform_impl::Window::X(_) => false,
-            #[cfg(wayland_platform)] crate::platform_impl::Window::Wayland(window) => window.private_text_input(snapshot),
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => false,
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.private_text_input(snapshot),
         }
     }
     fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
         match &self.window {
-            #[cfg(x11_platform)] crate::platform_impl::Window::X(_) => (),
-            #[cfg(wayland_platform)] crate::platform_impl::Window::Wayland(window) => window.acknowledge_private_text_input(serial, outcome),
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => (),
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => {
+                window.acknowledge_private_text_input(serial, outcome)
+            }
         }
     }
 
@@ -269,8 +277,10 @@ pub trait WindowAttributesExtWayland {
 impl WindowAttributesExtWayland for WindowAttributes {
     #[inline]
     fn with_name(mut self, general: impl Into<String>, instance: impl Into<String>) -> Self {
-        self.platform_specific.name =
-            Some(crate::platform_impl::ApplicationName::new(general.into(), instance.into()));
+        self.platform_specific.name = Some(crate::platform_impl::ApplicationName::new(
+            general.into(),
+            instance.into(),
+        ));
         self
     }
 }

@@ -34,3 +34,6 @@ path = "src/main.rs"
 [[bin]]
 name = "tilo-ntfs-image-test"
 path = "src/bin/image_test.rs"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

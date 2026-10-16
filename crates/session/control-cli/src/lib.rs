@@ -19,18 +19,9 @@ use std::path::PathBuf;
 /// in.
 pub const TEST_CONTROL_ENV: &str = "TILO_TEST_CONTROL";
 
-/// Directory under `$XDG_RUNTIME_DIR` shared with the other per-session
-/// endpoints the compositor publishes.
-pub const TEST_CONTROL_RUNTIME_SUBDIR: &str = "tilo-session";
-
-/// File name of the default test-control socket inside
-/// [`TEST_CONTROL_RUNTIME_SUBDIR`].
+/// File name of the default test-control socket inside the session
+/// directory ([`tilo_paths::login::session_dir`]).
 pub const TEST_CONTROL_SOCKET_FILE: &str = "test-control.sock";
-
-/// File name of the device admin's control socket inside
-/// [`TEST_CONTROL_RUNTIME_SUBDIR`]. Unlike the test-control socket it needs no
-/// environment variable and no development build.
-pub const ADMIN_CONTROL_SOCKET_FILE: &str = "admin-control.sock";
 
 /// `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`, or `None` when the
 /// runtime directory is unset or not absolute.
@@ -40,16 +31,15 @@ pub fn default_socket_path(runtime_dir: Option<OsString>) -> Option<PathBuf> {
 }
 
 /// `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock`, or `None` when the
-/// runtime directory is unset or not absolute.
+/// runtime directory is unset or not absolute. Unlike the test-control socket
+/// it needs no environment variable and no development build.
 #[must_use]
 pub fn admin_socket_path(runtime_dir: Option<OsString>) -> Option<PathBuf> {
-    in_session_dir(runtime_dir, ADMIN_CONTROL_SOCKET_FILE)
+    in_session_dir(runtime_dir, tilo_paths::login::ADMIN_CONTROL_SOCKET_FILE)
 }
 
 fn in_session_dir(runtime_dir: Option<OsString>, file: &str) -> Option<PathBuf> {
-    let dir = PathBuf::from(runtime_dir?);
-    dir.is_absolute()
-        .then(|| dir.join(TEST_CONTROL_RUNTIME_SUBDIR).join(file))
+    Some(tilo_paths::login::session_dir(runtime_dir)?.join(file))
 }
 
 #[cfg(test)]

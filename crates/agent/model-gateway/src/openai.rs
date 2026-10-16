@@ -10,7 +10,6 @@
 //! answers failures as `{"error": "...", "code": "..."}`.
 
 use std::fmt;
-use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -108,14 +107,14 @@ pub fn idempotency_key(parts: &[&[u8]]) -> String {
     // RFC 9562 version 8 (custom) with the RFC variant.
     bytes[6] = (bytes[6] & 0x0f) | 0x80;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let mut key = String::with_capacity(36);
-    for (at, byte) in bytes.iter().enumerate() {
-        if matches!(at, 4 | 6 | 8 | 10) {
-            key.push('-');
-        }
-        let _ = write!(key, "{byte:02x}");
-    }
-    key
+    format!(
+        "{}-{}-{}-{}-{}",
+        hex::encode(&bytes[0..4]),
+        hex::encode(&bytes[4..6]),
+        hex::encode(&bytes[6..8]),
+        hex::encode(&bytes[8..10]),
+        hex::encode(&bytes[10..16])
+    )
 }
 
 /// The key for turn `turn` of one planning run seeded by `run`, asking with
@@ -223,11 +222,20 @@ pub fn read_turn(response: &Value) -> Result<Turn, String> {
             name: name.to_owned(),
             input: serde_json::from_str(arguments).unwrap_or_else(|_| json!({})),
         });
-        echoed.push(json!({
+        let mut replay = json!({
             "id": id,
             "type": "function",
             "function": { "name": name, "arguments": arguments },
-        }));
+        });
+        // Gemini on Vertex AI signs each call and refuses a next turn
+        // whose replayed call lacks its `thought_signature`.
+        if let (Some(extra), Some(object)) = (
+            call.get("extra_content").filter(|extra| extra.is_object()),
+            replay.as_object_mut(),
+        ) {
+            object.insert("extra_content".into(), extra.clone());
+        }
+        echoed.push(replay);
     }
     let mut replay = if echoed.is_empty() {
         json!({ "role": "assistant", "content": text.clone().unwrap_or_default() })
@@ -503,6 +511,20 @@ mod tests {
             json!({"role": "assistant", "content": null, "tool_calls": [
                 {"id": "c1", "type": "function", "function": {"name": "plan", "arguments": "{\"why\":\"x\"}"}}]})
         );
+    }
+
+    /// Vertex AI's Gemini signs each call; the signature is replayed with
+    /// it, or the next turn is refused.
+    #[test]
+    fn a_signed_tool_call_is_echoed_with_its_signature() {
+        let signature = json!({"google": {"thought_signature": "c2ln"}});
+        let turn = read_turn(&json!({"choices": [{"message": {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1", "type": "function", "extra_content": signature,
+                "function": {"name": "plan", "arguments": "{}"}}]
+        }}]}))
+        .unwrap();
+        assert_eq!(turn.message["tool_calls"][0]["extra_content"], signature);
     }
 
     #[test]

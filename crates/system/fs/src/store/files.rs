@@ -130,6 +130,7 @@ impl ContentStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_lock::MutexRecover as _;
 
     #[tokio::test]
     async fn files_round_trip_through_a_reopenable_store_without_clobbering_exports() {
@@ -194,10 +195,7 @@ mod tests {
 
     /// Open deferred groups, and whether one still owes a database sync.
     fn owed_sync(store: &ContentStore) -> (usize, bool) {
-        *store
-            .deferred
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *store.deferred.lock_recover()
     }
 
     #[tokio::test]

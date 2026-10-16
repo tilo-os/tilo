@@ -259,8 +259,6 @@ pub fn stamp_saver(json: &str, saver: &str) -> Result<String, String> {
     serde_json::to_string(&shortcut).map_err(|error| error.to_string())
 }
 
-/// Failure code of every definite desktop command refusal.
-pub const REJECTED_CODE: &str = "desktop_command_rejected";
 /// `kind` of a desktop command receipt value.
 pub const RECEIPT_KIND: &str = "desktop.command";
 
@@ -572,6 +570,7 @@ fn place(
                 tabs: vec![tab],
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         }),
         TabPlacement::InGroup {
@@ -603,6 +602,7 @@ fn place(
                     tabs: vec![tab],
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
             );
         }

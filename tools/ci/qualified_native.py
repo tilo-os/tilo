@@ -15,7 +15,7 @@ INPUTS = (
     ".config/nextest-filters.toml", "tools/ci/nextest_filters.py", "tools/ci/clippy-check.sh",
     "tools/ci/compiler_inputs.py", "tools/ci/measure.sh", "tools/ci/process_progress.py",
     "tools/ci/cgroup_memory.py", "scripts/ci-run.sh", "tools/ensure-headless-audio.sh",
-    "os/dev/assert-native-arch.sh", "tools/font-catalog.py",
+    "tools/ci/prepare-test-shard.sh", "os/dev/assert-native-arch.sh", "tools/font-catalog.py",
     ".forgejo/actions/prepare-rust-build/action.yml",
     ".forgejo/actions/restore-cargo-downloads/action.yml",
     ".forgejo/actions/merge-main/action.yml",

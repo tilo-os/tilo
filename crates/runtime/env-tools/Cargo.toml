@@ -16,6 +16,8 @@ name = "tilo-env-tools"
 path = "src/main.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../../system/bounded-command" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
@@ -36,6 +38,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 workspace-hack = { version = "0.1" }
 xattr = "1.6.1"
+tilo-paths.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -46,3 +49,6 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

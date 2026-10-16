@@ -47,8 +47,8 @@ use channel_crypto::{
     Access, ChannelContentKeys, ChannelMember, ChannelSteward, MemberEvent, VaultKey,
 };
 use collab_types::{
-    ArtifactId, ChannelId, ContentRetention, Ed25519PublicKey, EncryptionMetadata,
-    MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceFrameV1, SignedOp,
+    ChannelId, ChannelRoute, Ed25519PublicKey, EncryptionMetadata, MlsAccessRequestV1,
+    MlsGovernanceAckV1, MlsGovernanceFrameV1, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
@@ -92,10 +92,13 @@ pub enum InboundChannelGovernance {
         room: RoomId,
         frame: Box<collab_types::MlsGovernanceFrameV1>,
     },
-    /// A device asking a channel's steward for membership.
+    /// A device asking a channel's steward for membership, with the route
+    /// of the channel's record when the device sent it
+    /// ([`NeighbourMsg::MlsRoutedAccessRequest`]).
     AccessRequest {
         room: RoomId,
         request: Box<collab_types::MlsAccessRequestV1>,
+        route: Option<Box<ChannelRoute>>,
     },
     /// A device's cumulative acknowledgement of a channel's frames.
     Ack {
@@ -113,8 +116,22 @@ impl InboundChannelGovernance {
                 RoomId::parse(&room).map(|room| Self::Frame { room, frame })
             }
             NeighbourMsg::MlsAccessRequest { room, request, .. } => {
-                RoomId::parse(&room).map(|room| Self::AccessRequest { room, request })
+                RoomId::parse(&room).map(|room| Self::AccessRequest {
+                    room,
+                    request,
+                    route: None,
+                })
             }
+            NeighbourMsg::MlsRoutedAccessRequest {
+                room,
+                request,
+                route,
+                ..
+            } => RoomId::parse(&room).map(|room| Self::AccessRequest {
+                room,
+                request,
+                route: Some(route),
+            }),
             NeighbourMsg::MlsGovernanceAck { room, ack, .. } => {
                 RoomId::parse(&room).map(|room| Self::Ack { room, ack })
             }
@@ -139,9 +156,26 @@ pub trait ChannelDirectory: Send {
     /// The device key of `room`'s governor, when this device does not govern
     /// it and knows who does.
     fn steward_of(&self, room: RoomId) -> Option<Ed25519PublicKey>;
-    /// Every device that may read `room`'s channels at wall-clock `now`
-    /// (seconds since the Unix epoch).
-    fn allowed_devices(&self, room: RoomId, now: u64) -> BTreeSet<Ed25519PublicKey>;
+    /// Every device that may read `channel`, one of `room`'s channels, at
+    /// wall-clock `now` (seconds since the Unix epoch). A channel is one
+    /// record's, so a Read Deny on that record, on its app or on any pattern
+    /// covering it takes its person's devices out of this channel and no
+    /// other: the steward then never hands them the record's key, and a
+    /// device already holding it is removed in a new epoch.
+    ///
+    /// `route` is the channel's record when the steward knows it: proven
+    /// against the channel ([`ChannelRoute::proves`]), from a device's routed
+    /// request or this device's own endpoint. Without it the directory names
+    /// the record only from grants naming it, and must withhold the channel
+    /// from every device a Deny over a pattern of records could keep out of
+    /// it ([`collab_types::pattern_read_witnesses`]).
+    fn allowed_devices(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        route: Option<&ChannelRoute>,
+        now: u64,
+    ) -> BTreeSet<Ed25519PublicKey>;
     /// The [`tilo_identity_host::policy_change`] epoch (or a test's own) when
     /// every write to what [`Self::allowed_devices`] reads is announced and
     /// its expiries can be timed: stewards then re-check on announcements and
@@ -197,6 +231,9 @@ impl Backoff {
 struct StewardEntry {
     room: RoomId,
     steward: ChannelSteward,
+    /// The channel's record, once proven to this steward; kept beside the
+    /// group so a restart decides with it from the first reconcile.
+    route: Option<ChannelRoute>,
     requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
     redelivery: HashMap<Ed25519PublicKey, Backoff>,
     dirty: bool,
@@ -235,6 +272,9 @@ impl Unopened {
 struct MemberEntry {
     room: RoomId,
     member: ChannelMember,
+    /// The channel's record, as this device's endpoint named it: sent beside
+    /// every access request so the steward can decide Read on the record.
+    route: Option<ChannelRoute>,
     request: Option<MlsAccessRequestV1>,
     retry: Backoff,
     ack_due: bool,
@@ -398,6 +438,46 @@ impl ChannelEncryption {
                 }
                 ChannelAccess::Removed
             }
+        }
+    }
+
+    /// [`Self::access`] for the channel of `route`'s record in `room`,
+    /// remembering the route: a steward then decides Read on the record
+    /// itself, and a member sends the route with its access request.
+    pub fn access_record(
+        &mut self,
+        room: RoomId,
+        route: &ChannelRoute,
+        now: Instant,
+    ) -> (ChannelId, ChannelAccess) {
+        let channel = route.channel(&room.to_string());
+        let access = self.access(room, channel, now);
+        self.learn_route(room, channel, route);
+        (channel, access)
+    }
+
+    /// Keep `route`, proven to be `channel`'s in `room`, with the steward or
+    /// member state of the channel, durably. A steward that learns it
+    /// re-checks the channel's readers.
+    fn learn_route(&mut self, room: RoomId, channel: ChannelId, route: &ChannelRoute) {
+        if !route.proves(&room.to_string(), channel) {
+            return;
+        }
+        let state_root = &self.config.root;
+        if let Some(entry) = self.stewards.get_mut(&channel)
+            && entry.room == room
+            && entry.route.is_none()
+        {
+            entry.route = Some(route.clone());
+            entry.dirty = true;
+            save_route(&route_path(state_root, room, "steward", channel), route);
+        }
+        if let Some(entry) = self.members.get_mut(&channel)
+            && entry.room == room
+            && entry.route.is_none()
+        {
+            entry.route = Some(route.clone());
+            save_route(&route_path(state_root, room, "member", channel), route);
         }
     }
 
@@ -617,8 +697,12 @@ impl ChannelEncryption {
             InboundChannelGovernance::Frame { room, frame } => {
                 self.receive_frame(room, *frame, now);
             }
-            InboundChannelGovernance::AccessRequest { room, request } => {
-                self.receive_request(room, *request, wall);
+            InboundChannelGovernance::AccessRequest {
+                room,
+                request,
+                route,
+            } => {
+                self.receive_request(room, *request, route.as_deref(), wall);
             }
             InboundChannelGovernance::Ack { room, ack } => self.receive_ack(room, &ack, now),
         }
@@ -665,17 +749,28 @@ impl ChannelEncryption {
         }
     }
 
-    fn receive_request(&mut self, room: RoomId, request: MlsAccessRequestV1, wall: u64) {
+    fn receive_request(
+        &mut self,
+        room: RoomId,
+        request: MlsAccessRequestV1,
+        route: Option<&ChannelRoute>,
+        wall: u64,
+    ) {
         if !self.directory.governs(room) || request.verify().is_err() {
             return;
         }
         let channel = request.channel;
+        // A route that is not the channel's is a forgery: the request goes
+        // with it, rather than being decided as if it named no record.
+        if route.is_some_and(|route| !route.proves(&room.to_string(), channel)) {
+            return;
+        }
         if !self.stewards.contains_key(&channel) {
             // Only a device the policy allows can make this device create a
             // group, so outsiders cannot make it mint unbounded state.
             if !self
                 .directory
-                .allowed_devices(room, wall)
+                .allowed_devices(room, channel, route, wall)
                 .contains(&request.device)
             {
                 return;
@@ -684,6 +779,9 @@ impl ChannelEncryption {
                 tracing::warn!(%error, %room, "channel group could not be created");
                 return;
             }
+        }
+        if let Some(route) = route {
+            self.learn_route(room, channel, route);
         }
         let Some(entry) = self.stewards.get_mut(&channel) else {
             return;
@@ -726,10 +824,16 @@ impl ChannelEncryption {
     }
 
     fn reconcile(&mut self, channel: ChannelId, now: Instant, wall: u64) {
-        let Some(room) = self.stewards.get(&channel).map(|entry| entry.room) else {
+        let Some((room, route)) = self
+            .stewards
+            .get(&channel)
+            .map(|entry| (entry.room, entry.route.clone()))
+        else {
             return;
         };
-        let mut allowed = self.directory.allowed_devices(room, wall);
+        let mut allowed = self
+            .directory
+            .allowed_devices(room, channel, route.as_ref(), wall);
         allowed.insert(self.device());
         let Some(entry) = self.stewards.get_mut(&channel) else {
             return;
@@ -868,6 +972,17 @@ impl ChannelEncryption {
             return;
         };
         entry.retry.fired(now, REQUEST_LONGEST);
+        // The plain request for a steward that predates routes; the routed
+        // one lets a current steward decide Read on the record.
+        if let Some(route) = entry.route.clone() {
+            self.delivery = self.delivery.wrapping_add(1);
+            let _ = transport.publish(NeighbourMsg::MlsRoutedAccessRequest {
+                room: entry.room.to_string(),
+                request: Box::new(request.clone()),
+                route: Box::new(route),
+                delivery: self.delivery,
+            });
+        }
         self.delivery = self.delivery.wrapping_add(1);
         let _ = transport.publish(NeighbourMsg::MlsAccessRequest {
             room: entry.room.to_string(),
@@ -886,12 +1001,18 @@ impl ChannelEncryption {
             &self.config.vault,
         )?;
         let requests = load_requests(&requests_path(&self.config.root, room, channel));
+        let route = load_route(
+            &route_path(&self.config.root, room, "steward", channel),
+            room,
+            channel,
+        );
         let gate = steward.journal().gate();
         self.stewards.insert(
             channel,
             StewardEntry {
                 room,
                 steward,
+                route,
                 requests,
                 redelivery: HashMap::new(),
                 dirty: true,
@@ -918,12 +1039,18 @@ impl ChannelEncryption {
         create_private_dir(&dir)?;
         let member =
             ChannelMember::open(&dir, channel, self.device(), steward, &self.config.vault)?;
+        let route = load_route(
+            &route_path(&self.config.root, room, "member", channel),
+            room,
+            channel,
+        );
         let gate = member.journal().gate();
         self.members.insert(
             channel,
             MemberEntry {
                 room,
                 member,
+                route,
                 request: None,
                 retry: Backoff::now(now, REQUEST_FIRST),
                 ack_due: false,
@@ -1008,34 +1135,20 @@ impl ChannelKeyAccess {
         (access, generation)
     }
 
-    /// Seal an ephemeral frame only with a key this device already holds for
-    /// this exact room and channel. Observation never requests channel access,
-    /// creates a group or rejoins a removed member. The caller must already
-    /// have validated the publisher's current room admission and record route.
-    ///
-    /// # Errors
-    ///
-    /// Refuses missing, waiting or removed channels, a mismatched room, an
-    /// unavailable service, or a sealing failure.
-    pub fn seal_existing_live(
-        &self,
-        room: RoomId,
-        channel: ChannelId,
-        artifact: ArtifactId,
-        plaintext: &[u8],
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        let service = self
-            .inner
-            .lock()
-            .map_err(|_| "channel service unavailable")?;
-        let keys = service
-            .existing_keys(room, channel)
-            .ok_or("no current key for the admitted record")?;
-        let sealed = keys
-            .seal_content(artifact, ContentRetention::Delta, plaintext)
-            .map_err(|error| error.to_string());
+    /// See [`ChannelEncryption::access_record`]; also returns the service's
+    /// generation, as [`Self::access`] does.
+    pub fn access_record(&self, room: RoomId, route: &ChannelRoute) -> (ChannelAccess, u64) {
+        let Ok(mut service) = self.inner.lock() else {
+            return (ChannelAccess::Unavailable, 0);
+        };
+        let (_, access) = service.access_record(room, route, Instant::now());
+        let generation = service.generation();
+        let queued = std::mem::take(&mut service.queued);
         drop(service);
-        sealed
+        if queued && let Some(wake) = &self.wake {
+            wake();
+        }
+        (access, generation)
     }
 
     /// Open `envelope`, a new sealed write to one of `room`'s channels, for
@@ -1078,28 +1191,6 @@ impl ChannelKeyAccess {
         drop(service);
         keys.open_content(envelope.artifact, &metadata, &ciphertext)
             .map(|plaintext| plaintext.to_vec())
-            .map_err(|error| error.to_string())
-    }
-
-    /// Seal `plaintext`, a record's merged snapshot, for `artifact` on
-    /// `channel` under the channel's current epoch as a checkpoint: the
-    /// ciphertext of a sealed compaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when this device holds no current key for the
-    /// channel or sealing fails.
-    pub fn seal_current_checkpoint(
-        &self,
-        room: RoomId,
-        channel: ChannelId,
-        artifact: ArtifactId,
-        plaintext: &[u8],
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        let (ChannelAccess::Ready(keys), _) = self.access(room, channel) else {
-            return Err("this device holds no key for the record's channel".into());
-        };
-        keys.seal_content(artifact, ContentRetention::Checkpoint, plaintext)
             .map_err(|error| error.to_string())
     }
 
@@ -1313,12 +1404,12 @@ impl tilo_identity_host::broker::ChannelKeySource for ChannelKeyProvider {
     fn access(
         &self,
         room: RoomId,
-        channel: ChannelId,
+        route: &ChannelRoute,
         known_generation: u64,
     ) -> Option<Result<tilo_identity_host::broker::ChannelKeys, String>> {
         use runtime_identity::wire::ChannelAccess as Wire;
         let channels = self.get()?;
-        let (access, generation) = channels.access(room, channel);
+        let (access, generation) = channels.access_record(room, route);
         Some(match access {
             ChannelAccess::Ready(keys) if generation != known_generation => keys
                 .to_bytes()
@@ -1337,6 +1428,35 @@ fn requests_path(state_root: &Path, room: RoomId, channel: ChannelId) -> PathBuf
         .join(room.to_string())
         .join("steward")
         .join(format!("{}.requests", channel.0))
+}
+
+/// Where the route of `channel`'s record is kept beside its `role`
+/// (`steward` or `member`) state.
+fn route_path(state_root: &Path, room: RoomId, role: &str, channel: ChannelId) -> PathBuf {
+    state_root
+        .join(room.to_string())
+        .join(role)
+        .join(format!("{}.route", channel.0))
+}
+
+/// The route kept at `path`, only if it is still `channel`'s in `room`: a
+/// route proves itself, so a damaged or swapped file names no record rather
+/// than a wrong one, and the channel is then decided as one whose record is
+/// unknown, which withholds more, never less.
+fn load_route(path: &Path, room: RoomId, channel: ChannelId) -> Option<ChannelRoute> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| postcard::from_bytes::<ChannelRoute>(&bytes).ok())
+        .filter(|route| route.proves(&room.to_string(), channel))
+}
+
+fn save_route(path: &Path, route: &ChannelRoute) {
+    let saved = postcard::to_allocvec(route)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| tilo_files::native::atomic::write_private(path, &bytes));
+    if let Err(error) = saved {
+        tracing::warn!(%error, "channel route could not be saved");
+    }
 }
 
 fn load_requests(path: &Path) -> BTreeMap<Ed25519PublicKey, MlsAccessRequestV1> {
@@ -1432,7 +1552,18 @@ pub mod testing {
                     InboundChannelGovernance::Frame { room, frame }
                 }
                 NeighbourMsg::MlsAccessRequest { request, .. } => {
-                    InboundChannelGovernance::AccessRequest { room, request }
+                    InboundChannelGovernance::AccessRequest {
+                        room,
+                        request,
+                        route: None,
+                    }
+                }
+                NeighbourMsg::MlsRoutedAccessRequest { request, route, .. } => {
+                    InboundChannelGovernance::AccessRequest {
+                        room,
+                        request,
+                        route: Some(route),
+                    }
                 }
                 NeighbourMsg::MlsGovernanceAck { ack, .. } => {
                     InboundChannelGovernance::Ack { room, ack }
@@ -1461,6 +1592,13 @@ pub mod testing {
         /// How the directory announces changes; `None` announces none, and
         /// stewards keep their one-second re-check.
         pub announces: Arc<Mutex<Option<Announcements>>>,
+        /// Devices kept out of one channel alone: a Read Deny on its record.
+        pub withheld: Arc<Mutex<HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>>>,
+        /// Devices kept out of every record of an app: a Read Deny on the
+        /// app. A channel whose route the steward does not know may be any
+        /// app's, so they are kept out of it too, as a production directory
+        /// keeps out whoever may not read a pattern's witness.
+        pub withheld_apps: Arc<Mutex<HashMap<String, BTreeSet<Ed25519PublicKey>>>>,
     }
 
     /// The epoch a test [`Directory`] reports as its
@@ -1486,7 +1624,13 @@ pub mod testing {
         fn steward_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
             (!self.governs).then_some(self.steward)
         }
-        fn allowed_devices(&self, _: RoomId, now: u64) -> BTreeSet<Ed25519PublicKey> {
+        fn allowed_devices(
+            &self,
+            _: RoomId,
+            channel: ChannelId,
+            route: Option<&ChannelRoute>,
+            now: u64,
+        ) -> BTreeSet<Ed25519PublicKey> {
             let mut allowed = self.policy.allowed.lock().unwrap().clone();
             allowed.extend(
                 self.policy
@@ -1497,6 +1641,14 @@ pub mod testing {
                     .filter(|(_, until)| now < **until)
                     .map(|(device, _)| *device),
             );
+            if let Some(withheld) = self.policy.withheld.lock().unwrap().get(&channel) {
+                allowed.retain(|device| !withheld.contains(device));
+            }
+            for (app, withheld) in self.policy.withheld_apps.lock().unwrap().iter() {
+                if route.is_none_or(|route| &route.app == app) {
+                    allowed.retain(|device| !withheld.contains(device));
+                }
+            }
             allowed
         }
         fn policy_epoch(&self) -> Option<u64> {
@@ -1531,6 +1683,7 @@ pub mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+    use collab_types::{ArtifactId, ContentRetention};
     use std::sync::atomic::Ordering;
 
     struct Device {
@@ -1646,22 +1799,6 @@ mod tests {
         assert!(member.service.existing_keys(room_id, channel).is_none());
         assert_eq!(member.service.generation(), generation);
         assert!(!member.service.members.get(&channel).unwrap().rejoin);
-        let access = ChannelKeyAccess::new(member.service);
-        assert!(
-            access
-                .seal_existing_live(room_id, channel, ArtifactId::new(), b"semantic event")
-                .is_err()
-        );
-        assert!(
-            !access
-                .inner
-                .lock()
-                .unwrap()
-                .members
-                .get(&channel)
-                .unwrap()
-                .rejoin
-        );
     }
 
     #[test]
@@ -1725,42 +1862,6 @@ mod tests {
     }
 
     #[test]
-    fn live_sealing_requires_an_existing_key_for_the_exact_room() {
-        let room = Arc::new(Room::default());
-        let room_id = RoomId::new();
-        let channel = ChannelId::new();
-        let dir = tempfile::tempdir().unwrap();
-        let owner = device(&room, room_id, 0, (1, 1), &Policy::default(), dir.path());
-        let access = ChannelKeyAccess::new(owner.service);
-        let artifact = ArtifactId::new();
-        assert!(
-            access
-                .seal_existing_live(room_id, channel, artifact, b"event")
-                .is_err()
-        );
-        assert!(access.inner.lock().unwrap().stewards.is_empty());
-        let (ChannelAccess::Ready(keys), _) = access.access(room_id, channel) else {
-            panic!("explicit fixture admission must provide keys");
-        };
-        let generation = access.generation();
-        let (metadata, sealed) = access
-            .seal_existing_live(room_id, channel, artifact, b"event")
-            .unwrap();
-        assert_eq!(
-            keys.open_current_content(artifact, &metadata, &sealed)
-                .unwrap()
-                .as_slice(),
-            b"event"
-        );
-        assert_eq!(access.generation(), generation);
-        assert!(
-            access
-                .seal_existing_live(RoomId::new(), channel, artifact, b"event")
-                .is_err()
-        );
-    }
-
-    #[test]
     fn a_new_channel_is_encrypted_from_creation_and_follows_the_policy() {
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
@@ -1803,6 +1904,210 @@ mod tests {
             laptop.service.access(room_id, channel, now),
             ChannelAccess::Removed
         ));
+    }
+
+    /// A Read Deny on one record takes the denied device out of that
+    /// record's channel alone: the steward removes it in a new epoch there,
+    /// the room's other channels keep their epoch and the device keeps their
+    /// keys, and a request of the denied device never makes the steward
+    /// create a group for the denied record.
+    #[test]
+    fn a_device_withheld_from_one_channel_loses_only_that_channels_key() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let (payroll, notes, budget) = (ChannelId::new(), ChannelId::new(), ChannelId::new());
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(2));
+        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let mut laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
+        for channel in [payroll, notes] {
+            owner.service.access(room_id, channel, now);
+            laptop.service.access(room_id, channel, now);
+        }
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        let notes_epoch = ready_epoch(&owner.service.access(room_id, notes, now));
+        let payroll_epoch = ready_epoch(&owner.service.access(room_id, payroll, now));
+        assert!(ready_epoch(&laptop.service.access(room_id, payroll, now)).is_some());
+        assert_eq!(
+            ready_epoch(&laptop.service.access(room_id, notes, now)),
+            notes_epoch
+        );
+
+        policy
+            .withheld
+            .lock()
+            .unwrap()
+            .extend([payroll, budget].map(|channel| (channel, BTreeSet::from([public(2)]))));
+        run(&mut [&mut owner, &mut laptop], &mut now, 3);
+        assert!(matches!(
+            laptop.service.access(room_id, payroll, now),
+            ChannelAccess::Removed
+        ));
+        let rotated = ready_epoch(&owner.service.access(room_id, payroll, now));
+        assert!(rotated > payroll_epoch, "the denied record's key rotates");
+        assert_eq!(
+            ready_epoch(&owner.service.access(room_id, notes, now)),
+            notes_epoch,
+            "another record's channel keeps its epoch"
+        );
+        assert_eq!(
+            ready_epoch(&laptop.service.access(room_id, notes, now)),
+            notes_epoch
+        );
+        // Asking again for the denied record, or first for another denied
+        // one, admits nothing and creates no group at the steward.
+        laptop.service.access(room_id, budget, now);
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        for channel in [payroll, budget] {
+            assert!(ready_epoch(&laptop.service.access(room_id, channel, now)).is_none());
+        }
+        assert!(!owner.service.stewards.contains_key(&budget));
+        assert!(
+            !owner.service.stewards[&payroll]
+                .steward
+                .members()
+                .contains(&public(2))
+        );
+
+        // Lifting the Deny admits the device again when it asks.
+        policy.withheld.lock().unwrap().clear();
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        assert_eq!(
+            ready_epoch(&laptop.service.access(room_id, payroll, now)),
+            ready_epoch(&owner.service.access(room_id, payroll, now))
+        );
+    }
+
+    /// A Read Deny on an app takes the denied device out of every channel
+    /// of that app whose route the steward knows (from its own endpoint or
+    /// from the device's routed request) in a new epoch of each, and out of
+    /// no other app's channel. A record of the app first asked for after the
+    /// Deny, and a channel asked for without a route, admit nothing and
+    /// create no group. A route that is not its channel's is refused. The
+    /// steward keeps the routes: opened again, it still withholds the app's
+    /// channels and admits the device to nothing of it.
+    #[test]
+    fn a_read_deny_on_an_app_withholds_every_routed_channel_of_it() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let room_name = room_id.to_string();
+        let routes = [
+            ChannelRoute::new("finance", "payroll"),
+            ChannelRoute::new("finance", "q3"),
+            ChannelRoute::new("notes", "draft"),
+        ];
+        let [payroll, q3, draft] = routes.clone().map(|route| route.channel(&room_name));
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(2));
+        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let mut laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
+        // The owner's own endpoint opens payroll; q3 and draft the steward
+        // learns from the laptop's routed requests alone.
+        owner.service.access_record(room_id, &routes[0], now);
+        for route in &routes {
+            laptop.service.access_record(room_id, route, now);
+        }
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        let epoch = |device: &mut Device, channel, now| {
+            ready_epoch(&device.service.access(room_id, channel, now))
+        };
+        let before: Vec<Option<u64>> = [payroll, q3, draft]
+            .into_iter()
+            .map(|channel| epoch(&mut owner, channel, now))
+            .collect();
+        for channel in [payroll, q3, draft] {
+            assert!(epoch(&mut laptop, channel, now).is_some());
+            assert!(owner.service.stewards[&channel].route.is_some());
+        }
+
+        policy
+            .withheld_apps
+            .lock()
+            .unwrap()
+            .insert("finance".into(), BTreeSet::from([public(2)]));
+        run(&mut [&mut owner, &mut laptop], &mut now, 3);
+        for (index, channel) in [payroll, q3].into_iter().enumerate() {
+            assert!(matches!(
+                laptop.service.access(room_id, channel, now),
+                ChannelAccess::Removed
+            ));
+            assert!(
+                epoch(&mut owner, channel, now) > before[index],
+                "the denied app's key rotates"
+            );
+        }
+        assert_eq!(epoch(&mut owner, draft, now), before[2]);
+        assert_eq!(epoch(&mut laptop, draft, now), before[2]);
+
+        // A new finance record, a channel asked for with no route, and one
+        // whose route is a forgery admit nothing and create no group.
+        let budget = ChannelRoute::new("finance", "budget");
+        laptop.service.access_record(room_id, &budget, now);
+        let unrouted = ChannelRoute::new("notes", "plan").channel(&room_name);
+        laptop.service.access(room_id, unrouted, now);
+        let forged = ChannelRoute::new("notes", "forged").channel(&room_name);
+        let request = member_request(&laptop_dir.path().join("forged"), forged, 2, 1);
+        owner
+            .service
+            .receive_request(room_id, request, Some(&routes[2]), 0);
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        for channel in [budget.channel(&room_name), unrouted, forged] {
+            assert!(!owner.service.stewards.contains_key(&channel));
+            assert!(epoch(&mut laptop, channel, now).is_none());
+        }
+
+        // Opened again, the steward still knows every route and admits the
+        // device to nothing of the app, however often it asks.
+        drop(owner);
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        for channel in [payroll, q3, draft] {
+            assert!(owner.service.stewards[&channel].route.is_some());
+        }
+        for route in &routes {
+            laptop.service.access_record(room_id, route, now);
+        }
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        for channel in [payroll, q3] {
+            assert!(epoch(&mut laptop, channel, now).is_none());
+            assert!(
+                !owner.service.stewards[&channel]
+                    .steward
+                    .members()
+                    .contains(&public(2))
+            );
+        }
+        assert!(epoch(&mut laptop, draft, now).is_some());
+
+        // Lifting the Deny admits the device again when it asks.
+        policy.withheld_apps.lock().unwrap().clear();
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        for channel in [payroll, q3] {
+            assert_eq!(
+                epoch(&mut laptop, channel, now),
+                epoch(&mut owner, channel, now)
+            );
+        }
+    }
+
+    /// The access request device `seed` makes for `channel` of steward
+    /// `steward`, with its member state under `dir`.
+    fn member_request(dir: &Path, channel: ChannelId, seed: u8, steward: u8) -> MlsAccessRequestV1 {
+        std::fs::create_dir_all(dir).unwrap();
+        ChannelMember::open(
+            dir,
+            channel,
+            public(seed),
+            public(steward),
+            &VaultKey::new([2; 32]),
+        )
+        .unwrap()
+        .access_request(&key(seed), 1, &VaultKey::new([2; 32]))
+        .unwrap()
+        .unwrap()
     }
 
     /// Run every device's protocol for `seconds` of simulated time the way
@@ -2410,7 +2715,7 @@ mod tests {
     /// checkpoint that opens as a new write; a new write still opens only
     /// under the current epoch.
     #[test]
-    fn a_key_holder_opens_history_and_seals_a_current_checkpoint() {
+    fn a_key_holder_opens_history_and_a_current_checkpoint() {
         use collab_types::OpKind;
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
@@ -2445,8 +2750,8 @@ mod tests {
             keys.open_history_write(room_id, &old).unwrap(),
             b"before the rotation"
         );
-        let sealed = keys
-            .seal_current_checkpoint(room_id, channel, artifact, b"merged record")
+        let sealed = current
+            .seal_content(artifact, ContentRetention::Checkpoint, b"merged record")
             .unwrap();
         assert_eq!(sealed.0.epoch, current.epoch());
         assert_eq!(sealed.0.retention(), Some(ContentRetention::Checkpoint));
@@ -2644,7 +2949,13 @@ mod tests {
         fn steward_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
             *self.steward.lock().unwrap()
         }
-        fn allowed_devices(&self, _: RoomId, _: u64) -> BTreeSet<Ed25519PublicKey> {
+        fn allowed_devices(
+            &self,
+            _: RoomId,
+            _: ChannelId,
+            _: Option<&ChannelRoute>,
+            _: u64,
+        ) -> BTreeSet<Ed25519PublicKey> {
             BTreeSet::new()
         }
         fn policy_epoch(&self) -> Option<u64> {

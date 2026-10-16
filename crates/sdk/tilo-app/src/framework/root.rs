@@ -84,7 +84,7 @@ pub(crate) struct ResourceRoot {
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's and its surfaces' search entries, indexed.
-    search: std::cell::RefCell<Option<SearchCache>>,
+    search: std::cell::RefCell<SearchCache>,
     /// The document-owned tree at one live and translation revision, shared
     /// with the last one wherever the change left it as it was. Surface
     /// bindings, local rows and effect availability are decorated afresh
@@ -158,6 +158,10 @@ fn open_spec() -> tilo_actions::ActionSpec {
     .with_description("Open the app at one item: the anchor of a search hit.")
 }
 
+/// The label of the item view the framework gives an item resource that
+/// presents no view of its own.
+const ITEM_VIEW_LABEL: &str = "Item";
+
 /// `open` on one item resource: show that item, as its search hit would.
 fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
     let encoded = tilo_actions::EncodedAction::encode_operation(
@@ -191,19 +195,19 @@ fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut tilo_actions::Resou
             .iter()
             .any(|existing| existing.id == "open")
     {
-        let spec = item_open_spec(resource.id.as_str());
-        let view_label = if resource.label.trim().is_empty() {
-            spec.label.clone()
-        } else {
-            resource.label.clone()
-        };
-        resource.actions.push(spec);
+        resource.actions.push(item_open_spec(resource.id.as_str()));
         // The opener is also a presentation binding, not just a verb in the
         // catalogue. Keep an app's explicit views; otherwise advertise the
-        // item view that this exact bound opener actually shows.
+        // item view that this exact bound opener actually shows. The view
+        // names what it shows, the item, and not which item: the item's own
+        // label is the resource's, published once with it. Every item's
+        // `open` is then one catalogue entry however many items there are,
+        // where a copy of the item's label made each item's `open`, and its
+        // whole action template, an entry of its own.
         if resource.views.is_empty() {
             resource.views.push(
-                tilo_actions::ResourceViewSpec::new("item", view_label, "open").with_primary(true),
+                tilo_actions::ResourceViewSpec::new("item", ITEM_VIEW_LABEL, "open")
+                    .with_primary(true),
             );
         }
     }
@@ -439,7 +443,7 @@ impl ResourceRoot {
             unreadable: None,
             swapped: false,
             presentation: Vec::new(),
-            search: std::cell::RefCell::new(None),
+            search: std::cell::RefCell::default(),
             publication_tree: std::cell::RefCell::new(None),
             item_children: std::cell::RefCell::new(None),
             published_children: std::cell::RefCell::new(None),
@@ -521,9 +525,11 @@ impl ResourceRoot {
         RootWidget::boxed(Box::new(self))
     }
 
-    /// The root as the widget a past version's preview draws.
-    pub(crate) fn into_root_widget(self) -> RootWidget {
-        RootWidget::new(Box::new(self))
+    /// The root as the widget a past version's preview draws. Boxed here,
+    /// not where the resource's type is known, so its widget table is
+    /// compiled once for every app.
+    pub(crate) fn into_root_widget(self) -> Box<dyn Widget> {
+        Box::new(RootWidget::new(Box::new(self)))
     }
 
     /// The handles of the root that name its resource type, when it is `R`.
@@ -1187,19 +1193,110 @@ impl ui_core::widget::document_effects::DocumentEffects for ResourceRoot {
 /// in the frame that asks for them.
 const OFF_THREAD_ENTRIES: usize = 1024;
 
-/// The index of the resource's search entries and its surfaces', as of one
-/// revision of the resource and one set of surface entries.
-struct SearchCache {
+/// What the resource's search entries are of: a revision of the resource
+/// and the entries its surfaces show.
+#[derive(PartialEq)]
+struct SearchState {
     revision: u64,
     shown: Vec<SearchEntry>,
+}
+
+/// An index search answers from, and the state it is of: none for the empty
+/// index answering before the first one arrives.
+struct AnsweringIndex {
+    of: Option<SearchState>,
     indexed: Arc<IndexedEntries>,
-    /// An index of newer entries being built away from the UI thread: the
-    /// revision and surface entries it is of, and where it arrives.
-    building: Option<(
-        u64,
-        Vec<SearchEntry>,
-        std::sync::mpsc::Receiver<IndexedEntries>,
-    )>,
+}
+
+/// An index being built away from the UI thread.
+struct BuildingIndex {
+    of: SearchState,
+    generation: u64,
+    arriving: std::sync::mpsc::Receiver<IndexedEntries>,
+}
+
+/// The resource's search index, built only when someone searches and at
+/// most one at a time.
+///
+/// Every state is given its index's generation when first seen, before
+/// anything is built: the action directory names that generation on every
+/// frame, and the index a later search builds carries it.
+#[derive(Default)]
+struct SearchCache {
+    answering: Option<AnsweringIndex>,
+    building: Option<BuildingIndex>,
+    /// The newest state nothing is built of yet, and its generation: built
+    /// when the next search asks once no build is in flight.
+    wanted: Option<(SearchState, u64)>,
+    next_generation: u64,
+    /// How many indexes of entries have been started.
+    #[cfg(test)]
+    builds: usize,
+}
+
+impl SearchCache {
+    fn reserve_generation(&mut self) -> u64 {
+        let generation = self.next_generation;
+        self.next_generation = generation.wrapping_add(1);
+        generation
+    }
+
+    /// Answer from an index that finished building since last asked.
+    fn receive(&mut self) {
+        let Some(building) = self.building.take() else {
+            return;
+        };
+        match building.arriving.try_recv() {
+            Ok(indexed) => {
+                self.answering = Some(AnsweringIndex {
+                    of: Some(building.of),
+                    indexed: Arc::new(indexed),
+                });
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => self.building = Some(building),
+            // A lost build: its state is wanted afresh when next asked.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
+    }
+
+    /// The generation of the index that answers for `state`, given now if
+    /// `state` is new. Builds nothing.
+    fn generation_for(&mut self, state: SearchState) -> u64 {
+        self.receive();
+        if let Some(answering) = &self.answering
+            && answering.of.as_ref() == Some(&state)
+        {
+            return answering.indexed.generation;
+        }
+        if let Some(building) = &self.building
+            && building.of == state
+        {
+            return building.generation;
+        }
+        if let Some((wanted, generation)) = &self.wanted
+            && *wanted == state
+        {
+            return *generation;
+        }
+        let generation = self.reserve_generation();
+        self.wanted = Some((state, generation));
+        generation
+    }
+
+    /// The index search answers from now: the empty one until a first
+    /// arrives.
+    fn answering(&mut self) -> Arc<IndexedEntries> {
+        if let Some(answering) = &self.answering {
+            return Arc::clone(&answering.indexed);
+        }
+        let generation = self.reserve_generation();
+        let indexed = Arc::new(IndexedEntries::built(Vec::new(), generation));
+        self.answering = Some(AnsweringIndex {
+            of: None,
+            indexed: Arc::clone(&indexed),
+        });
+        indexed
+    }
 }
 
 /// A [`SearchText`](tilo_resource::SearchText), as the index reads it.
@@ -1822,43 +1919,50 @@ impl RootModel for ResourceRoot {
 }
 
 impl ResourceRoot {
-    /// The index of the resource's entries at `revision` and the surfaces'
-    /// `shown` ones. A large set of entries (a browsing history, a store
-    /// catalogue) or one with prose bodies (whole books) is indexed away
-    /// from the UI thread: until that index arrives, search answers from the
-    /// one before it.
-    fn current_search_index(&self, revision: u64, shown: Vec<SearchEntry>) -> Arc<IndexedEntries> {
-        let mut cached = self.search.borrow_mut();
-        if let Some(cache) = cached.as_mut()
-            && let Some((at, entries_shown, arriving)) = cache.building.take()
+    /// What the resource's search entries are of now, and the surfaces'
+    /// query sinks. What the surfaces show (a page's text, live rows)
+    /// changes on its own, beside the resource's revision.
+    fn search_state(&self) -> (SearchState, Vec<super::surface::SearchQueries>) {
+        let mut shown = Vec::new();
+        let mut queries = Vec::new();
+        self.surfaces(&mut |surface| {
+            shown.extend(surface.search_entries());
+            queries.push(surface.search_queries());
+        });
+        let state = SearchState {
+            revision: self.typed.revision(),
+            shown,
+        };
+        (state, queries)
+    }
+
+    /// The index search answers `state` from, building it if nothing is. A
+    /// large set of entries (a browsing history, a store catalogue) or one
+    /// with prose bodies (whole books) is indexed away from the UI thread,
+    /// one build at a time: until the index of `state` arrives, search
+    /// answers from the one before it, and states that come and go while a
+    /// build is in flight cost only the newest one's build after it.
+    fn current_search_index(&self, state: SearchState) -> Arc<IndexedEntries> {
+        let mut cache = self.search.borrow_mut();
+        let generation = cache.generation_for(state);
+        if let Some(answering) = &cache.answering
+            && answering.of.is_some()
+            && answering.indexed.generation == generation
         {
-            match arriving.try_recv() {
-                Ok(indexed) => {
-                    cache.revision = at;
-                    cache.shown = entries_shown;
-                    cache.indexed = Arc::new(indexed);
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    cache.building = Some((at, entries_shown, arriving));
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
-            }
+            return Arc::clone(&answering.indexed);
         }
-        if let Some(cache) = cached.as_ref() {
-            let current = cache.revision == revision && cache.shown == shown;
-            let arriving = cache
-                .building
-                .as_ref()
-                .is_some_and(|(at, building, _)| *at == revision && *building == shown);
-            if current || arriving {
-                return Arc::clone(&cache.indexed);
-            }
+        if cache.building.is_some() {
+            return cache.answering();
         }
-        let generation = cached
-            .as_ref()
-            .map_or(0, |cache| cache.indexed.generation.wrapping_add(1));
+        let Some((state, generation)) = cache.wanted.take() else {
+            return cache.answering();
+        };
+        #[cfg(test)]
+        {
+            cache.builds = cache.builds.saturating_add(1);
+        }
         let mut entries = self.typed.search(&*self.typed.state());
-        entries.extend(shown.iter().cloned());
+        entries.extend(state.shown.iter().cloned());
         if entries.len() >= OFF_THREAD_ENTRIES || entries.iter().any(|entry| entry.body.is_some()) {
             let (send, arriving) = std::sync::mpsc::channel();
             let building = entries.clone();
@@ -1869,22 +1973,18 @@ impl ResourceRoot {
                 },
             );
             if spawned.is_ok() {
-                let cache = cached.get_or_insert_with(|| SearchCache {
-                    revision,
-                    shown: Vec::new(),
-                    indexed: Arc::new(IndexedEntries::built(Vec::new(), generation)),
-                    building: None,
+                cache.building = Some(BuildingIndex {
+                    of: state,
+                    generation,
+                    arriving,
                 });
-                cache.building = Some((revision, shown, arriving));
-                return Arc::clone(&cache.indexed);
+                return cache.answering();
             }
         }
         let indexed = Arc::new(IndexedEntries::built(entries, generation));
-        *cached = Some(SearchCache {
-            revision,
-            shown,
+        cache.answering = Some(AnsweringIndex {
+            of: Some(state),
             indexed: Arc::clone(&indexed),
-            building: None,
         });
         indexed
     }
@@ -1951,17 +2051,10 @@ impl ui_core::widget::Collaborative for ResourceRoot {
 
 impl RootSearch for ResourceRoot {
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
-        // The resource's entries change with its revision; what the surfaces
-        // show (a page's text, live rows) changes on their own, so their
-        // entries are read now and the index rebuilt only when either moved.
-        let revision = self.typed.revision();
-        let mut shown = Vec::new();
-        let mut queries = Vec::new();
-        self.surfaces(&mut |surface| {
-            shown.extend(surface.search_entries());
-            queries.push(surface.search_queries());
-        });
-        let indexed = self.current_search_index(revision, shown);
+        // The index is rebuilt only when the resource or what its surfaces
+        // show moved since the last one.
+        let (state, queries) = self.search_state();
+        let indexed = self.current_search_index(state);
         // The app's one search source: what its content widgets show beside
         // the resource reaches it as their surfaces' entries, never as a
         // provider of their own.
@@ -1969,6 +2062,23 @@ impl RootSearch for ResourceRoot {
         source.scopes = self.typed.search_scopes(&*self.typed.state());
         source.queries = queries;
         vec![Box::new(source)]
+    }
+
+    /// The one source [`Self::search_providers`] makes, named with the
+    /// generation its index has or will have once someone searches: the
+    /// action directory reads this on every frame, and indexing whole books
+    /// per keystroke for a search nobody runs is what it must not cost.
+    fn search_provider_descriptors(
+        &self,
+    ) -> Vec<ui_core::search::capability::SearchProviderDescriptor> {
+        let (state, _) = self.search_state();
+        let generation = self.search.borrow_mut().generation_for(state);
+        vec![ui_core::search::capability::SearchProviderDescriptor::new(
+            self.resource.label,
+            Some(generation),
+            // `ResourceSearch` keeps the provider default.
+            ui_core::widget::ActionDirectoryInvocationDomain::Unsupported,
+        )]
     }
 
     /// A picked hit opens the app at its anchor: the views registered with
@@ -2625,6 +2735,178 @@ mod search_tests {
         OPENED.with_borrow(|opened| {
             assert_eq!(opened.last().map(String::as_str), Some("folder:sent/msg:2"));
         });
+    }
+
+    /// How many indexes of its entries `app`'s resource has started.
+    fn index_builds<A: ResourceApp>(app: &mut TestApp<A>) -> usize {
+        app.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| root.search.borrow().builds)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_action_directory_names_the_search_source_without_indexing_it() {
+        let mut app = TestApp::<MailApp>::new().unwrap();
+        let mut named = Vec::new();
+        for edit in 0..4 {
+            app.invoke(Mailbox::SET_SUBJECT.with(format!("Draft {edit}")))
+                .unwrap();
+            let (first, again) = app
+                .harness()
+                .with_widget_mut(|root: &mut ResourceRoot| {
+                    (
+                        RootSearch::search_provider_descriptors(root),
+                        RootSearch::search_provider_descriptors(root),
+                    )
+                })
+                .unwrap();
+            assert_eq!(first, again, "an unchanged resource names the same build");
+            named.push(first);
+        }
+        assert_eq!(
+            index_builds(&mut app),
+            0,
+            "nobody searched: nothing indexed"
+        );
+        assert!(
+            named.windows(2).all(|pair| pair[0] != pair[1]),
+            "every revision names a new build, so the directory moves with it"
+        );
+
+        let (hits, searched, after) = app
+            .harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let providers = RootSearch::search_providers(root);
+                let hits = providers[0].search("invoice").len();
+                (
+                    hits,
+                    ui_core::search::capability::SearchProviderDescriptor::of(
+                        providers[0].as_ref(),
+                    ),
+                    RootSearch::search_provider_descriptors(root),
+                )
+            })
+            .unwrap();
+        assert_eq!(hits, 3);
+        assert_eq!(index_builds(&mut app), 1, "a search builds the index once");
+        assert_eq!(
+            named.last(),
+            Some(&vec![searched]),
+            "the directory named the build the search answers from"
+        );
+        assert_eq!(named.last(), Some(&after), "and searching did not move it");
+        app.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                RootSearch::search_providers(root)[0].search("invoice");
+            })
+            .unwrap();
+        assert_eq!(
+            index_builds(&mut app),
+            1,
+            "an unchanged resource is not reindexed"
+        );
+    }
+
+    /// Prose a book's entry carries, which sends its index off the UI thread.
+    struct Prose(&'static str);
+
+    impl tilo_resource::SearchText for Prose {
+        fn segment_count(&self) -> usize {
+            1
+        }
+
+        fn piece_count(&self, segment: usize) -> usize {
+            usize::from(segment == 0)
+        }
+
+        fn piece(&self, segment: usize, piece: usize) -> Option<tilo_resource::SearchPiece<'_>> {
+            (segment == 0 && piece == 0).then_some(tilo_resource::SearchPiece {
+                text: self.0,
+                space_before: false,
+            })
+        }
+    }
+
+    #[derive(Model, Default)]
+    pub struct Shelf {
+        pub title: String,
+    }
+
+    fn shelf_entries(shelf: &Shelf) -> Vec<SearchEntry> {
+        vec![
+            SearchEntry::new(shelf.title.clone(), "").with_body(tilo_resource::SearchBody::new(
+                Arc::new(Prose("The lighthouse keeper counted the waves.")),
+            )),
+        ]
+    }
+
+    #[resource(kind = "test.shelf", label = "Shelf", search = shelf_entries)]
+    impl Shelf {
+        /// Retitle the book.
+        #[action]
+        pub fn retitle(&mut self, title: String) {
+            self.title = title;
+        }
+    }
+
+    struct ShelfApp;
+
+    impl ResourceApp for ShelfApp {
+        type Resource = Shelf;
+        const ID: &'static str = "so.tilo.test-shelf";
+        const TITLE: &'static str = "Shelf";
+
+        fn view(_: &mut ViewCx<Shelf>) -> Element {
+            Box::new(Column::new())
+        }
+    }
+
+    #[test]
+    fn edits_while_an_index_builds_cost_one_build_after_it() {
+        let pumped = ui_core::background::Pumped::new();
+        let search = |app: &mut TestApp<ShelfApp>| {
+            let _background = pumped.background().enter();
+            app.harness()
+                .with_widget_mut(|root: &mut ResourceRoot| {
+                    RootSearch::search_providers(root)[0]
+                        .search("storm")
+                        .into_iter()
+                        .map(|hit| hit.title)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+        let mut app = TestApp::<ShelfApp>::new().unwrap();
+        app.invoke(Shelf::RETITLE.with("Storm Tales")).unwrap();
+        assert!(
+            search(&mut app).is_empty(),
+            "a book is indexed off the UI thread"
+        );
+        assert_eq!(index_builds(&mut app), 1);
+        for edit in 0..5 {
+            app.invoke(Shelf::RETITLE.with(format!("Storm Tales {edit}")))
+                .unwrap();
+            assert!(
+                search(&mut app).is_empty(),
+                "until it arrives, search answers from the index before it"
+            );
+        }
+        assert_eq!(
+            index_builds(&mut app),
+            1,
+            "edits while a build is in flight start no build beside it"
+        );
+
+        pumped.run_pending();
+        assert!(search(&mut app).contains(&"Storm Tales".to_owned()));
+        assert_eq!(
+            index_builds(&mut app),
+            2,
+            "once it arrives, the newest state alone is built"
+        );
+        pumped.run_pending();
+        assert!(search(&mut app).contains(&"Storm Tales 4".to_owned()));
+        assert_eq!(index_builds(&mut app), 2);
     }
 }
 

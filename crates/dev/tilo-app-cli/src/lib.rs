@@ -2260,46 +2260,7 @@ fn screen_writes(
     names.dedup();
     let registry_source = screen_registry_source(&names);
 
-    let library_path = app_dir.join("src/lib.rs");
-    let library_source = std::fs::read_to_string(&library_path)
-        .with_context(|| format!("reading {}", library_path.display()))?;
-    let syntax = syn::parse_file(&library_source)
-        .with_context(|| format!("parsing {} before screen wiring", library_path.display()))?;
-    let screens_modules: Vec<_> = syntax
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Mod(module) if module.ident == "screens" => Some(module),
-            _ => None,
-        })
-        .collect();
-    let updated_library = match screens_modules.as_slice() {
-        [] => {
-            let separator = if library_source.ends_with('\n') {
-                "\n"
-            } else {
-                "\n\n"
-            };
-            format!("{library_source}{separator}pub mod screens;\n")
-        }
-        [module]
-            if module.content.is_none()
-                && matches!(module.vis, syn::Visibility::Public(_))
-                && !module.attrs.iter().any(|attr| attr.path().is_ident("path")) =>
-        {
-            library_source.clone()
-        }
-        [_] => bail!(
-            "{} already defines a custom `screens` module; generated screens require a plain `pub mod screens;` declaration",
-            library_path.display()
-        ),
-        _ => bail!(
-            "{} defines `screens` more than once",
-            library_path.display()
-        ),
-    };
-    syn::parse_file(&updated_library)
-        .with_context(|| format!("validating screen wiring for {}", library_path.display()))?;
+    let library = library_module_write(app_dir, "screens", "screen")?;
 
     let mut writes = vec![PendingWrite {
         path: graph_path,
@@ -2313,14 +2274,61 @@ fn screen_writes(
             description: "screen registry",
         });
     }
-    if updated_library != library_source {
-        writes.push(PendingWrite {
-            path: library_path,
-            source: updated_library,
-            description: "app library",
-        });
-    }
+    writes.extend(library);
     Ok(writes)
+}
+
+/// The write that makes `src/lib.rs` declare `pub mod {module};` for
+/// generated `kind` code; `None` when it already has that plain declaration.
+fn library_module_write(app_dir: &Path, module: &str, kind: &str) -> Result<Option<PendingWrite>> {
+    let library_path = app_dir.join("src/lib.rs");
+    let library_source = std::fs::read_to_string(&library_path)
+        .with_context(|| format!("reading {}", library_path.display()))?;
+    let syntax = syn::parse_file(&library_source)
+        .with_context(|| format!("parsing {} before {kind} wiring", library_path.display()))?;
+    let declared: Vec<_> = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(declared) if declared.ident == module => Some(declared),
+            _ => None,
+        })
+        .collect();
+    let updated_library = match declared.as_slice() {
+        [] => {
+            let separator = if library_source.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
+            format!("{library_source}{separator}pub mod {module};\n")
+        }
+        [declared]
+            if declared.content.is_none()
+                && matches!(declared.vis, syn::Visibility::Public(_))
+                && !declared
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path().is_ident("path")) =>
+        {
+            return Ok(None);
+        }
+        [_] => bail!(
+            "{} already defines a custom `{module}` module; generated {module} require a plain `pub mod {module};` declaration",
+            library_path.display()
+        ),
+        _ => bail!(
+            "{} defines `{module}` more than once",
+            library_path.display()
+        ),
+    };
+    syn::parse_file(&updated_library)
+        .with_context(|| format!("validating {kind} wiring for {}", library_path.display()))?;
+    Ok(Some(PendingWrite {
+        path: library_path,
+        source: updated_library,
+        description: "app library",
+    }))
 }
 
 fn component_artifact_writes(
@@ -2356,46 +2364,7 @@ fn component_artifact_writes(
     let graph_names = graph_component_names(app_dir, &registry, &names, name, template)?;
     let registry_source = component_registry_source(&names, &graph_names)?;
 
-    let library_path = app_dir.join("src/lib.rs");
-    let library_source = std::fs::read_to_string(&library_path)
-        .with_context(|| format!("reading {}", library_path.display()))?;
-    let syntax = syn::parse_file(&library_source)
-        .with_context(|| format!("parsing {} before component wiring", library_path.display()))?;
-    let component_modules: Vec<_> = syntax
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Mod(module) if module.ident == "components" => Some(module),
-            _ => None,
-        })
-        .collect();
-    let updated_library = match component_modules.as_slice() {
-        [] => {
-            let separator = if library_source.ends_with('\n') {
-                "\n"
-            } else {
-                "\n\n"
-            };
-            format!("{library_source}{separator}pub mod components;\n")
-        }
-        [module]
-            if module.content.is_none()
-                && matches!(module.vis, syn::Visibility::Public(_))
-                && !module.attrs.iter().any(|attr| attr.path().is_ident("path")) =>
-        {
-            library_source.clone()
-        }
-        [_] => bail!(
-            "{} already defines a custom `components` module; generated components require a plain `pub mod components;` declaration",
-            library_path.display()
-        ),
-        _ => bail!(
-            "{} defines `components` more than once",
-            library_path.display()
-        ),
-    };
-    syn::parse_file(&updated_library)
-        .with_context(|| format!("validating component wiring for {}", library_path.display()))?;
+    let library = library_module_write(app_dir, "components", "component")?;
 
     let (component_source, messages) = component_source(name, &module_name, &type_name, template);
     syn::parse_file(&component_source)
@@ -2412,13 +2381,7 @@ fn component_artifact_writes(
             description: "component registry",
         });
     }
-    if updated_library != library_source {
-        writes.push(PendingWrite {
-            path: library_path,
-            source: updated_library,
-            description: "app library",
-        });
-    }
+    writes.extend(library);
     writes.extend(artifact_locale_writes(app_dir, &messages, force)?);
     Ok((writes, Some("tilo-app test".into())))
 }
@@ -5828,7 +5791,14 @@ fn collect_cargo_message(
         .get("manifest_path")
         .and_then(serde_json::Value::as_str)
         .map(Path::new)
-        .is_some_and(|path| path == expected_manifest);
+        // Cargo reports the path it was given; the caller's is canonical, and a path through a
+        // symlink (macOS's /tmp, a CARGO_HOME under it) differs from it only in spelling.
+        .is_some_and(|path| {
+            path == expected_manifest
+                || path
+                    .canonicalize()
+                    .is_ok_and(|path| path == expected_manifest)
+        });
     if !manifest_matches {
         return;
     }
@@ -6939,11 +6909,8 @@ type DevChooser = ();
 /// in, as its shell publishes it; `None` outside a session.
 #[cfg(target_os = "linux")]
 fn session_room() -> Option<String> {
-    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
-    if !runtime.is_absolute() {
-        return None;
-    }
-    let room = std::fs::read_to_string(runtime.join("tilo-session").join("workspace-id")).ok()?;
+    let session = tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    let room = std::fs::read_to_string(session.join(tilo_paths::login::WORKSPACE_ID_FILE)).ok()?;
     let room = room.trim();
     (!room.is_empty()).then(|| room.to_owned())
 }
@@ -7879,30 +7846,9 @@ fn stop_dev_child(child: &mut Option<Child>) {
     stop_dev_process_tree(&mut running);
 }
 
-#[cfg(unix)]
+#[cfg(not(windows))]
 fn stop_dev_process_tree(running: &mut Child) {
-    let Ok(pid) = i32::try_from(running.id()) else {
-        let _ = running.kill();
-        let _ = running.wait();
-        return;
-    };
-    // SAFETY: both development spawn paths create a process group whose ID is
-    // the child PID. Negating that validated PID confines SIGTERM to it.
-    let _ = unsafe { libc::kill(pid.saturating_neg(), libc::SIGTERM) };
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(1)) else {
-        let _ = running.kill();
-        let _ = running.wait();
-        return;
-    };
-    while Instant::now() < deadline {
-        if running.try_wait().ok().flatten().is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // SAFETY: the same dedicated process-group invariant applies to SIGKILL.
-    let _ = unsafe { libc::kill(pid.saturating_neg(), libc::SIGKILL) };
-    let _ = running.wait();
+    bounded_command::terminate_tree(running, Duration::from_secs(1));
 }
 
 #[cfg(windows)]
@@ -7918,12 +7864,6 @@ fn stop_dev_process_tree(running: &mut Child) {
     if !stopped_tree {
         let _ = running.kill();
     }
-    let _ = running.wait();
-}
-
-#[cfg(not(any(unix, windows)))]
-fn stop_dev_process_tree(running: &mut Child) {
-    let _ = running.kill();
     let _ = running.wait();
 }
 

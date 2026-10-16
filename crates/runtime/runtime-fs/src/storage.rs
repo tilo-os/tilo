@@ -88,17 +88,128 @@ pub struct EvictionReport {
     pub skipped: Vec<String>,
 }
 
+/// How the daemon caches workspace content on this device: whether it
+/// fetches the files it predicts will be opened next, and how many bytes
+/// of fetched content it keeps.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CachePolicy {
+    /// Fetch predicted files ahead of their open. Network, battery and disk
+    /// gates still apply when this is on.
+    pub prefetch: bool,
+    /// Bytes of fetched content to keep; `None` is the daemon's default, a
+    /// share of the disk that holds the cache. Pinned content and content
+    /// only this device holds are kept regardless.
+    pub budget_bytes: Option<u64>,
+}
+
+impl Default for CachePolicy {
+    fn default() -> Self {
+        Self {
+            prefetch: true,
+            budget_bytes: None,
+        }
+    }
+}
+
+/// The smallest cache budget the daemon accepts: below it, opening one
+/// large file would evict the files just prefetched for it.
+pub const MIN_CACHE_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Where one workspace's bytes on this device stand, by what losing this
+/// device would cost. The parts are disjoint and add up to the bytes the
+/// workspace holds here. Counts only: nothing here names a file.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResidencySplit {
+    /// Kept here because the person asked for it ("Keep offline"), and held
+    /// by another device too.
+    pub pinned_bytes: u64,
+    /// Kept here, and another device acknowledged holding the same version.
+    pub replicated_bytes: u64,
+    /// Held by no other device this one knows of: authored here and not yet
+    /// acknowledged elsewhere, or changed and not yet saved. Wiping this
+    /// device loses it.
+    pub only_here_bytes: u64,
+    /// Files with bytes only here.
+    pub only_here_files: u64,
+    /// Fetched from another device and dropped again when space is short:
+    /// safe to free, it downloads again when opened.
+    pub cache_bytes: u64,
+}
+
+impl ResidencySplit {
+    /// Every byte the workspace holds here.
+    #[must_use]
+    pub const fn total_bytes(&self) -> u64 {
+        self.pinned_bytes
+            .saturating_add(self.replicated_bytes)
+            .saturating_add(self.only_here_bytes)
+            .saturating_add(self.cache_bytes)
+    }
+}
+
+/// One workspace's [`ResidencySplit`] on this device.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceResidency {
+    pub workspace: String,
+    /// Whether the person keeps the whole workspace on this device.
+    pub kept_here: bool,
+    pub split: ResidencySplit,
+}
+
+/// What this device holds of each workspace it mounts. It is what the
+/// device answers its owner's other devices, so it carries counts per
+/// workspace and never a path or a file name.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResidencySummary {
+    pub workspaces: Vec<WorkspaceResidency>,
+}
+
+/// What freeing a workspace's cache dropped.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheFreed {
+    pub files: u64,
+    pub freed_bytes: u64,
+}
+
+/// A request on the storage socket.
+///
+/// The daemon and its clients are built and updated separately, and
+/// postcard numbers variants by position, so new variants go last. A
+/// daemon that predates one closes the connection.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StorageRequest {
     Snapshot,
-    Evict { selected: Vec<EvictionSelection> },
+    Evict {
+        selected: Vec<EvictionSelection>,
+    },
+    /// The cache policy in force.
+    CachePolicy,
+    /// Replace the cache policy; the daemon answers with the one it applied.
+    SetCachePolicy(CachePolicy),
+    /// The [`ResidencySummary`] of every workspace.
+    Residency,
+    /// Drop `workspace`'s cache.
+    FreeCache {
+        workspace: String,
+    },
+    /// Keep all of `workspace` on this device, or stop keeping it.
+    KeepHere {
+        workspace: String,
+        keep: bool,
+    },
 }
 
+/// An answer on the storage socket; new variants go last, as in
+/// [`StorageRequest`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StorageResponse {
     Snapshot(SyncStorageSnapshot),
     Evicted(EvictionReport),
     Error(String),
+    CachePolicy(CachePolicy),
+    Residency(ResidencySummary),
+    CacheFreed(CacheFreed),
+    Kept { keep: bool },
 }
 
 pub struct StorageClient {
@@ -124,10 +235,7 @@ impl StorageClient {
     pub fn snapshot(&mut self) -> std::io::Result<SyncStorageSnapshot> {
         match self.request(&StorageRequest::Snapshot)? {
             StorageResponse::Snapshot(snapshot) => Ok(snapshot),
-            StorageResponse::Error(error) => Err(std::io::Error::other(error)),
-            StorageResponse::Evicted(_) => {
-                Err(std::io::Error::other("unexpected storage response"))
-            }
+            other => Err(unexpected(other)),
         }
     }
 
@@ -139,10 +247,73 @@ impl StorageClient {
     pub fn evict(&mut self, selected: Vec<EvictionSelection>) -> std::io::Result<EvictionReport> {
         match self.request(&StorageRequest::Evict { selected })? {
             StorageResponse::Evicted(report) => Ok(report),
-            StorageResponse::Error(error) => Err(std::io::Error::other(error)),
-            StorageResponse::Snapshot(_) => {
-                Err(std::io::Error::other("unexpected storage response"))
-            }
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// The cache policy in force.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`std::io::Error`] if the socket write/read fails, the
+    /// daemon reports [`StorageResponse::Error`], or it replies with a
+    /// response other than [`StorageResponse::CachePolicy`].
+    pub fn cache_policy(&mut self) -> std::io::Result<CachePolicy> {
+        self.policy_request(&StorageRequest::CachePolicy)
+    }
+
+    /// Replace the cache policy, returning the one the daemon applied.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::cache_policy`]; the daemon refuses a budget below
+    /// [`MIN_CACHE_BUDGET_BYTES`].
+    pub fn set_cache_policy(&mut self, policy: CachePolicy) -> std::io::Result<CachePolicy> {
+        self.policy_request(&StorageRequest::SetCachePolicy(policy))
+    }
+
+    fn policy_request(&mut self, request: &StorageRequest) -> std::io::Result<CachePolicy> {
+        match self.request(request)? {
+            StorageResponse::CachePolicy(policy) => Ok(policy),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns an [`std::io::Error`] if the socket write/read fails, the
+    /// daemon reports [`StorageResponse::Error`], or it predates the request.
+    pub fn residency(&mut self) -> std::io::Result<ResidencySummary> {
+        match self.request(&StorageRequest::Residency)? {
+            StorageResponse::Residency(summary) => Ok(summary),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns an [`std::io::Error`] if the socket write/read fails, the
+    /// daemon reports [`StorageResponse::Error`], or it predates the request.
+    pub fn free_cache(&mut self, workspace: &str) -> std::io::Result<CacheFreed> {
+        match self.request(&StorageRequest::FreeCache {
+            workspace: workspace.to_owned(),
+        })? {
+            StorageResponse::CacheFreed(freed) => Ok(freed),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns an [`std::io::Error`] if the socket write/read fails, the
+    /// daemon reports [`StorageResponse::Error`], or it predates the request.
+    pub fn keep_here(&mut self, workspace: &str, keep: bool) -> std::io::Result<()> {
+        match self.request(&StorageRequest::KeepHere {
+            workspace: workspace.to_owned(),
+            keep,
+        })? {
+            StorageResponse::Kept { .. } => Ok(()),
+            other => Err(unexpected(other)),
         }
     }
 
@@ -154,10 +325,99 @@ impl StorageClient {
     }
 }
 
+/// The error for an answer other than the one asked for: the daemon's own
+/// refusal, or anything else.
+fn unexpected(response: StorageResponse) -> std::io::Error {
+    match response {
+        StorageResponse::Error(error) => std::io::Error::other(error),
+        _ => std::io::Error::other("unexpected storage response"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    /// The residency requests go last: the bytes of the requests an older
+    /// daemon knows stay what they were, and each new one is pinned.
+    #[test]
+    fn residency_requests_are_appended_to_the_wire() {
+        let encode = |request: &StorageRequest| {
+            let mut wire = Vec::new();
+            STORAGE_FRAMING.write_value(&mut wire, request).unwrap();
+            wire
+        };
+        assert_eq!(encode(&StorageRequest::Snapshot), [1, 0, 0, 0, 0]);
+        assert_eq!(encode(&StorageRequest::CachePolicy), [1, 0, 0, 0, 2]);
+        assert_eq!(encode(&StorageRequest::Residency), [1, 0, 0, 0, 4]);
+        assert_eq!(
+            encode(&StorageRequest::FreeCache {
+                workspace: "w".into()
+            }),
+            [3, 0, 0, 0, 5, 1, b'w']
+        );
+        assert_eq!(
+            encode(&StorageRequest::KeepHere {
+                workspace: "w".into(),
+                keep: true
+            }),
+            [4, 0, 0, 0, 6, 1, b'w', 1]
+        );
+
+        let summary = ResidencySummary {
+            workspaces: vec![WorkspaceResidency {
+                workspace: "w".into(),
+                kept_here: true,
+                split: ResidencySplit {
+                    pinned_bytes: 1,
+                    replicated_bytes: 2,
+                    only_here_bytes: 3,
+                    only_here_files: 1,
+                    cache_bytes: 4,
+                },
+            }],
+        };
+        assert_eq!(summary.workspaces[0].split.total_bytes(), 10);
+        let mut wire = Vec::new();
+        STORAGE_FRAMING
+            .write_value(&mut wire, &StorageResponse::Residency(summary.clone()))
+            .unwrap();
+        assert_eq!(wire.get(4), Some(&4), "the residency answer goes last");
+        let decoded: StorageResponse = STORAGE_FRAMING
+            .read_value(&mut std::io::Cursor::new(wire))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(decoded, StorageResponse::Residency(back) if back == summary));
+    }
+
+    /// The cache-policy requests' bytes. Appended variants keep the
+    /// existing ones' bytes and take the next numbers, so an older Settings
+    /// and a newer daemon still agree.
+    #[test]
+    fn cache_policy_wire_bytes_are_pinned() {
+        const REQUEST: [u8; 9] = [5, 0, 0, 0, 3, 0, 1, 0x80, 0x08];
+        const RESPONSE: [u8; 7] = [3, 0, 0, 0, 3, 1, 0];
+        let (client_end, mut daemon) = UnixStream::pair().unwrap();
+        daemon
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut request = [0_u8; REQUEST.len()];
+            daemon.read_exact(&mut request).unwrap();
+            daemon.write_all(&RESPONSE).unwrap();
+            request
+        });
+        let mut client = StorageClient { stream: client_end };
+        let applied = client
+            .set_cache_policy(CachePolicy {
+                prefetch: false,
+                budget_bytes: Some(1024),
+            })
+            .unwrap();
+        assert_eq!(daemon.join().unwrap(), REQUEST);
+        assert_eq!(applied, CachePolicy::default());
+    }
 
     #[test]
     fn storage_wire_bytes_and_protocol_carry_revalidation_identity() {

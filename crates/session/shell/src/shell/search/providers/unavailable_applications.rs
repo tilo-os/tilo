@@ -34,7 +34,7 @@ impl UnavailableApplicationsProvider {
     #[must_use]
     pub fn on(host: &[&str]) -> Self {
         Self {
-            apps: Applications(unavailable_on(host, &[])),
+            apps: Applications::new(unavailable_on(host, &[])),
         }
     }
 }

@@ -109,7 +109,7 @@ impl NativeAirDropTransfer {
     pub(super) fn available(&self) -> bool {
         self.enabled
             && (self.attended)()
-            && ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer)
+            && ContinuityPolicySnapshot::current().permits(ContinuityCapability::FileTransfer)
     }
 
     pub(super) fn available_to(&self, workspace: &str, person: Option<&str>) -> bool {
@@ -163,6 +163,7 @@ impl NativeAirDropTransfer {
             );
             drop(jobs);
         }
+        crate::shell::device_fabric_runtime::note_nearby_changed();
         let service = self.clone();
         if std::thread::Builder::new()
             .name("tilo-airdrop".into())
@@ -301,6 +302,8 @@ impl NativeAirDropTransfer {
         {
             job.phase = phase;
         }
+        // Files learns of the new phase by asking for a snapshot.
+        crate::shell::device_fabric_runtime::note_nearby_changed();
     }
 
     pub(super) fn statuses(&self, peer: u64, channel: &str) -> Vec<AirDropStatus> {

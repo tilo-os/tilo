@@ -15,6 +15,8 @@ use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{GroupId, RoomId, StripId, TabId, TileContent, Workspace, WorkspaceTree};
 use crate::shell::tab_binding::Placement;
 use tilo_desktop_model::MissingApp;
+#[cfg(not(test))]
+use tilo_lock::MutexRecover as _;
 
 /// Shown while the local instance is starting.
 pub(crate) const OPENING: &str = "Opening here…";
@@ -35,6 +37,103 @@ impl From<String> for Refusal {
     }
 }
 
+thread_local! {
+    /// Tabs whose app is being installed so its window can open in them,
+    /// keyed to the package and the name the catalogue offers it under:
+    /// the card shows the install under way, and a failed one offers it
+    /// again. Only the shell thread installs and settles.
+    static INSTALLING: std::cell::RefCell<std::collections::HashMap<TabId, (String, String)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Whether `tab`'s card stands for an install under way.
+pub(crate) fn installing(tab: TabId) -> bool {
+    INSTALLING.with(|installing| installing.borrow().contains_key(&tab))
+}
+
+/// The package `tab`'s install is fetching, and the app's name.
+pub(crate) fn installing_package(tab: TabId) -> Option<(String, String)> {
+    INSTALLING.with(|installing| installing.borrow().get(&tab).cloned())
+}
+
+/// A failed or timed-out install answers the card that asked for it rather
+/// than leaving it saying "Installing…" for good: it offers the install
+/// again and says what went wrong.
+pub(crate) fn settle_install(tree: &mut WorkspaceTree, package_id: &str, detail: &str) -> bool {
+    let settled: Vec<(TabId, String)> = INSTALLING.with(|installing| {
+        let mut installing = installing.borrow_mut();
+        let settled: Vec<_> = installing
+            .iter()
+            .filter(|(_, (app, _))| app == package_id)
+            .map(|(tab, (_, display_name))| (*tab, display_name.clone()))
+            .collect();
+        for (tab, _) in &settled {
+            installing.remove(tab);
+        }
+        settled
+    });
+    let mut changed = false;
+    for (tab, display_name) in settled {
+        changed |= set_state(
+            tree,
+            tab,
+            detail.to_owned(),
+            Some(MissingApp::Installable { display_name }),
+        );
+    }
+    changed
+}
+
+/// Visual review: a peer's window whose app is being fetched from the
+/// registry here, without starting a real install — the card a slow
+/// fetch shows, at the placement a launch would get.
+pub fn show_install_under_way_for_shots(
+    tree: &mut WorkspaceTree,
+    app_id: &str,
+    label: &str,
+) -> TabId {
+    let placement = crate::shell::placement::placement_for(
+        tree,
+        tilo_desktop_model::commands::OpenIntent::Launch,
+        None,
+    );
+    let tab = crate::shell::tab_binding::place_tab(
+        tree,
+        crate::shell::state::Tab {
+            id: crate::shell::state::next_id(),
+            title: label.to_owned(),
+            tile: TileContent::PeerWindow {
+                app_id: app_id.to_owned(),
+                label: label.to_owned(),
+                note: crate::shell::i18n::t_args(
+                    "peer-window-installing",
+                    &[("app", label.to_owned().into())],
+                ),
+                missing: None,
+            },
+        },
+        placement,
+    );
+    INSTALLING.with(|installing| {
+        installing
+            .borrow_mut()
+            .insert(tab, (app_id.to_owned(), label.to_owned()));
+    });
+    tab
+}
+
+/// Visual review: the install [`show_install_under_way_for_shots`] stands
+/// for has fetched `received` of `total` bytes.
+pub fn show_install_bytes_for_shots(app_id: &str, received: u64, total: u64) {
+    crate::shell::catalogue::set_install_progress(
+        app_id,
+        Some(crate::shell::catalogue::InstallProgress::Downloading {
+            received,
+            total: Some(total),
+        }),
+    );
+}
+
 /// Tabs whose card's install button was pressed, drained by [`examine`].
 #[cfg(not(test))]
 static INSTALL_REQUESTS: std::sync::Mutex<Vec<TabId>> = std::sync::Mutex::new(Vec::new());
@@ -52,11 +151,7 @@ fn with_install_requests<R>(apply: impl FnOnce(&mut Vec<TabId>) -> R) -> R {
     }
     #[cfg(not(test))]
     {
-        apply(
-            &mut INSTALL_REQUESTS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        apply(&mut INSTALL_REQUESTS.lock_recover())
     }
 }
 
@@ -83,11 +178,7 @@ fn with_retry_requests<R>(apply: impl FnOnce(&mut Vec<RetryRequest>) -> R) -> R 
     }
     #[cfg(not(test))]
     {
-        apply(
-            &mut RETRY_REQUESTS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        apply(&mut RETRY_REQUESTS.lock_recover())
     }
 }
 
@@ -396,6 +487,14 @@ fn install_for(tree: &mut WorkspaceTree, tab: TabId) -> bool {
     // Placement and any continued record are staged before the install
     // starts, so the window that finally maps lands in this tab.
     stage_continuation_for_tab(tree, &item);
+    // The window's deadline runs from when the app can start, not from
+    // the press: a cold fetch can take most of it.
+    launcher::hold_presentation_for(&item.app_id, crate::shell::catalogue::INSTALL_TIMEOUT);
+    INSTALLING.with(|installing| {
+        installing
+            .borrow_mut()
+            .insert(tab, (item.app_id.clone(), display_name.clone()));
+    });
     let changed = set_state(
         tree,
         tab,
@@ -1037,6 +1136,7 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let mut strip = Strip::new(StripId::from(next_id()), "main");
         strip.window_groups = vec![group];
@@ -1442,6 +1542,7 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let mut strip = Strip::new(StripId::from(next_id()), "main");
         strip.window_groups = vec![group];
@@ -1500,6 +1601,7 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let group_id = group.id;
         let mut strip = Strip::new(StripId::from(next_id()), "main");
@@ -1616,6 +1718,7 @@ mod tests {
                 active_tab: tab_id,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             };
             let mut strip = Strip::new(StripId::from(peer_id()), "main");
             strip.window_groups = vec![group];
@@ -1651,6 +1754,7 @@ mod tests {
                 active_tab: tab_id,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             };
             let mut strip = Strip::new(StripId::from(next_id()), "main");
             strip.window_groups = vec![group];
@@ -1742,11 +1846,10 @@ mod tests {
         crate::shell::catalogue::CatalogueApp {
             package_id: package_id.into(),
             display_name: display_name.into(),
-            description: String::new(),
-            category: None,
             version: "1.0.0".into(),
             registry: "main".into(),
             trust: "verified".into(),
+            ..Default::default()
         }
     }
 
@@ -1818,6 +1921,7 @@ mod tests {
             tab,
             "Word Processor",
             "Word Processor",
+            "",
         );
         card.press_for_test();
         let queued = with_install_requests(std::mem::take);
@@ -1863,6 +1967,7 @@ mod tests {
             managed_agent_id: None,
             managed_workspace_id: None,
             kind: launcher::LaunchEventKind::SpawnFailed {
+                reason: launcher::LaunchFailure::LauncherUnavailable,
                 detail: "worker refused".into(),
             },
         }

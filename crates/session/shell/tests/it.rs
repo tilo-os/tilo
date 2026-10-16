@@ -27,6 +27,8 @@ mod support;
 mod active_group_wireup_test;
 #[path = "advertised_globals.rs"]
 mod advertised_globals;
+#[path = "agent_door_e2e.rs"]
+mod agent_door_e2e;
 #[path = "argb_opaque_region.rs"]
 mod argb_opaque_region;
 #[path = "blend_layer_cost.rs"]
@@ -69,6 +71,8 @@ mod cursor_protocol;
 mod dbus_runtime_context;
 #[path = "desktop_env_interactions.rs"]
 mod desktop_env_interactions;
+#[path = "desktop_smoke.rs"]
+mod desktop_smoke;
 #[path = "display_layout_switcher.rs"]
 mod display_layout_switcher;
 #[path = "dmabuf_commit_barrier.rs"]
@@ -133,6 +137,8 @@ mod input_device_settings;
 mod input_method_wire;
 #[path = "interaction_test.rs"]
 mod interaction_test;
+#[path = "key_repeat_wire.rs"]
+mod key_repeat_wire;
 #[path = "keyboard_focus_wire.rs"]
 mod keyboard_focus_wire;
 #[path = "keyboard_layout_wire.rs"]
@@ -173,6 +179,8 @@ mod permissions_tab_test;
 mod persisted_app_placeholders;
 #[path = "pointer_lock_protocol.rs"]
 mod pointer_lock_protocol;
+#[path = "popover_pointer_routing.rs"]
+mod popover_pointer_routing;
 #[path = "portal_file_chooser_e2e.rs"]
 mod portal_file_chooser_e2e;
 #[path = "portal_grant_reaches_sandbox.rs"]
@@ -221,12 +229,16 @@ mod speaker_calibration_fabric;
 mod speaker_clock_policy;
 #[path = "state_file_format.rs"]
 mod state_file_format;
+#[path = "strip_holds_still.rs"]
+mod strip_holds_still;
 #[path = "strip_navigation.rs"]
 mod strip_navigation;
 #[path = "surface_substream_e2e.rs"]
 mod surface_substream_e2e;
 #[path = "tilo_e2e_test.rs"]
 mod tilo_e2e_test;
+#[path = "top_chrome_stack.rs"]
+mod top_chrome_stack;
 #[path = "toplevel_configure_states.rs"]
 mod toplevel_configure_states;
 #[path = "toplevel_icon_protocol.rs"]

@@ -43,6 +43,21 @@ pub fn audience(msg: &NeighbourMsg) -> Option<&[collab_types::Ed25519PublicKey]>
     }
 }
 
+/// Whether only a channel's steward reads `msg`: a device's access request
+/// (plain or routed) and its acknowledgements of the steward's frames. The
+/// steward is the device that governs the channel's room; every other
+/// member ignores these. A host that governs the room itself, and so
+/// stewards its channels, need deliver them to no member and replay them
+/// to none.
+pub fn steward_only(msg: &NeighbourMsg) -> bool {
+    matches!(
+        msg,
+        NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
+            | NeighbourMsg::MlsGovernanceAck { .. }
+    )
+}
+
 /// Whether checkpoint `msg` is the whole of its route: its author's next
 /// one on the same channel leaves it nothing to add, so a host keeps only
 /// the latest. A device's latest certificate, access request and
@@ -56,6 +71,7 @@ pub fn standalone(msg: &NeighbourMsg) -> bool {
             !matches!(frame.action, collab_types::MlsGovernanceAction::Genesis)
         }
         NeighbourMsg::MlsAccessRequest { .. }
+        | NeighbourMsg::MlsRoutedAccessRequest { .. }
         | NeighbourMsg::MlsGovernanceAck { .. }
         | NeighbourMsg::IdentityHello { .. } => true,
         _ => false,
@@ -143,6 +159,14 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         }
         NeighbourMsg::MlsAccessRequest { request, .. } => {
             let mut route = b"mls-access\0".to_vec();
+            route.extend_from_slice(request.channel.0.as_bytes());
+            route.extend_from_slice(request.device.as_bytes());
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
+        // Kept apart from the plain request it travels with, so a steward
+        // that predates the routed form still finds the plain one retained.
+        NeighbourMsg::MlsRoutedAccessRequest { request, .. } => {
+            let mut route = b"mls-routed-access\0".to_vec();
             route.extend_from_slice(request.channel.0.as_bytes());
             route.extend_from_slice(request.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
@@ -373,6 +397,18 @@ mod tests {
         assert_eq!(kind, Retention::Checkpoint);
         assert_ne!(mine, retention(&request(&other), false).unwrap().0);
         assert_ne!(mine, first.0);
+        // The routed form is kept beside the plain one, per device too.
+        let routed = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsRoutedAccessRequest {
+            room: "room".into(),
+            request: Box::new(MlsAccessRequestV1::signed(channel, vec![1], 1, key).unwrap()),
+            route: Box::new(collab_types::ChannelRoute::new("app", "record")),
+            delivery: 0,
+        };
+        let (routed_mine, kind) = retention(&routed(&device), false).unwrap();
+        assert_eq!(kind, Retention::Checkpoint);
+        assert!(standalone(&routed(&device)));
+        assert_ne!(routed_mine, mine);
+        assert_ne!(routed_mine, retention(&routed(&other), false).unwrap().0);
 
         let ack = NeighbourMsg::MlsGovernanceAck {
             room: "room".into(),
@@ -382,6 +418,14 @@ mod tests {
         let (acked, kind) = retention(&ack, false).unwrap();
         assert_eq!(kind, Retention::Checkpoint);
         assert_ne!(acked, mine);
+
+        // Requests and acknowledgements are the steward's alone; the frames
+        // it sends every member, and the genesis naming it, are not.
+        assert!(steward_only(&request(&device)));
+        assert!(steward_only(&routed(&device)));
+        assert!(steward_only(&ack));
+        assert!(!steward_only(&frame([0; 32])));
+        assert!(!steward_only(&change(2)));
     }
 
     fn host_persists_state_but_never_late_session_actions() {

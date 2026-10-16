@@ -1,7 +1,11 @@
-//! The actual endpoint-bound room service must sign and retain namespace claims.
+//! A member claims their own topology namespace as the relay's `tilo.member`
+//! action; the room signs and retains the claim.
+use super::governance_actions::{admitted, ask, host_operation, invocation, outcome, subscribed};
 use super::*;
 
-async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, room: &str) {
+/// Admit `member`'s person to `room` as an Editor, through an invitation
+/// `host` issues and `member`'s device redeems.
+pub(super) async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, room: &str) {
     let issued = relay
         .rooms()
         .unwrap()
@@ -9,7 +13,8 @@ async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, room: &str
             room,
             &host.cert,
             tilo_relay::rooms::IssueInvitationRequest {
-                request_id: [71; 32],
+                // One per member, so a room admits several this way.
+                request_id: *blake3::hash(&member.device_pubkey()).as_bytes(),
                 role: MemberRole::Editor,
                 recipient_user_public_key: Some(member.cert.user_public_key),
                 invitee_name: None,
@@ -34,7 +39,7 @@ async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, room: &str
             issued.signed_invitation,
             member.cert.clone(),
             &member.sk,
-            [72; 32],
+            *blake3::hash(&member.cert.user_public_key).as_bytes(),
         )
         .await
         .unwrap();
@@ -54,27 +59,63 @@ fn owns(peer: &StatePeer, salt: u16, member: &TestDevice) -> bool {
         })
 }
 
+/// Claiming the topology namespace `salt`, as the member's own action in
+/// `room`.
+fn claim(room: &str, salt: u16) -> tilo_actions::remote::RemoteActionMessage {
+    invocation(
+        tilo_relay::rooms::MEMBER_ACTIONS_PROVIDER,
+        tilo_relay::rooms::member_resource(room),
+        tilo_relay::rooms::CLAIM_TOPOLOGY_NAMESPACE,
+        serde_json::json!({ "salt": salt }),
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn namespace_claim_requires_exact_current_writer_and_reaches_signed_replicas() {
     let alice = TestUser::fresh("Fixture governor");
     let bob = TestUser::fresh("Fixture editor");
+    let carol = TestUser::fresh("Fixture second editor");
     let host = alice.enrol("private-host", DeviceCapabilities::host());
     let member = bob.enrol("private-member", DeviceCapabilities::member());
+    let other = carol.enrol("private-other", DeviceCapabilities::member());
     let scratch = tempfile::tempdir().unwrap();
     let relay = start(scratch.path(), &alice, &host).await;
     let rooms = relay.rooms().unwrap();
     let room = rooms.create("Private topology claim").await.unwrap();
-    let client = RoomAdminClient::new(device_endpoint(&member).await, member.cert.clone());
-    let command = || RoomCommand::ClaimTopologyNamespace {
-        room: room.room.clone(),
-        salt: 42,
-    };
+    let workspace = room.workspace_id;
     assert!(
-        client.send(relay.node_addr(), command()).await.is_err(),
+        !admitted(&relay, &member, workspace).await,
         "certificate alone grants no namespace"
     );
     admit(&relay, &host, &member, &room.room).await;
-    let state_session = session(&relay, &member, room.workspace_id).await;
+
+    // The member claims; a retry answers the committed generation, and the
+    // claim grants no administration.
+    let client = subscribed(&relay, &member, workspace).await;
+    let reply = outcome(ask(&client, &host, workspace, claim(&room.room, 42)).await).unwrap();
+    assert!(reply["generation"].as_u64().is_some(), "{reply}");
+    assert_eq!(
+        outcome(ask(&client, &host, workspace, claim(&room.room, 42)).await).unwrap(),
+        reply,
+        "retry keeps committed generation"
+    );
+    assert_eq!(
+        outcome(
+            ask(
+                &client,
+                &host,
+                workspace,
+                host_operation(tilo_relay::rooms::LIST_ROOMS, serde_json::json!({}))
+            )
+            .await
+        ),
+        Err(tilo_actions::remote::ActionHostError::UnknownAction),
+        "namespace confers no administration"
+    );
+    drop(client);
+
+    // The member's own replica verifies the signed publication.
+    let state_session = session(&relay, &member, workspace).await;
     let mut peer = StatePeer::new(
         &room.room,
         host.cert.clone(),
@@ -84,8 +125,6 @@ async fn namespace_claim_requires_exact_current_writer_and_reaches_signed_replic
     )
     .unwrap();
     peer.select_admission_v5().unwrap();
-    let reply = client.send(relay.node_addr(), command()).await.unwrap();
-    assert!(matches!(reply, RoomReply::Governance { .. }));
     receive_until(
         "member verifies signed namespace publication",
         &state_session,
@@ -94,31 +133,19 @@ async fn namespace_claim_requires_exact_current_writer_and_reaches_signed_replic
         |peer, _| owns(peer, 42, &member),
     )
     .await;
-    assert_eq!(
-        client.send(relay.node_addr(), command()).await.unwrap(),
-        reply,
-        "retry keeps committed generation"
-    );
-    let mismatch = RoomAdminClient::new(device_endpoint(&host).await, member.cert.clone());
+    state_session.close().await;
+
+    // Another writer cannot take the namespace over.
+    admit(&relay, &host, &other, &room.room).await;
+    let theirs = subscribed(&relay, &other, workspace).await;
     assert!(
-        mismatch.send(relay.node_addr(), command()).await.is_err(),
-        "caller must match QUIC endpoint"
-    );
-    assert!(
-        client
-            .send(relay.node_addr(), RoomCommand::List)
-            .await
-            .is_err(),
-        "namespace confers no administration"
-    );
-    let host_client = RoomAdminClient::new(device_endpoint(&host).await, host.cert.clone());
-    assert!(
-        host_client
-            .send(relay.node_addr(), command())
-            .await
-            .is_err(),
+        outcome(ask(&theirs, &host, workspace, claim(&room.room, 42)).await).is_err(),
         "namespace never rebinds"
     );
+    drop(theirs);
+
+    // A retry is decided again: after the member's Write narrows, and after
+    // their removal.
     rooms
         .set_member_role(
             &room.room,
@@ -131,8 +158,9 @@ async fn namespace_claim_requires_exact_current_writer_and_reaches_signed_replic
         )
         .await
         .unwrap();
+    let client = subscribed(&relay, &member, workspace).await;
     assert!(
-        client.send(relay.node_addr(), command()).await.is_err(),
+        outcome(ask(&client, &host, workspace, claim(&room.room, 42)).await).is_err(),
         "retry rechecks narrowed Write"
     );
     rooms
@@ -147,7 +175,12 @@ async fn namespace_claim_requires_exact_current_writer_and_reaches_signed_replic
         .await
         .unwrap();
     assert!(
-        client.send(relay.node_addr(), command()).await.is_err(),
+        !matches!(
+            super::governance_actions::try_ask(&client, &host, workspace, claim(&room.room, 42))
+                .await
+                .map(outcome),
+            Ok(Ok(_))
+        ),
         "retry rechecks removal"
     );
     relay.shutdown().await;

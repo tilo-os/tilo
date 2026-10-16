@@ -68,11 +68,20 @@ on:
         description: "Optional space-separated composefs object paths (two hex digits, slash, 126 hex digits) to read under native KVM."
         required: false
         default: ""
+      boot_assessment_image:
+        description: "Stage this immutable tilo-vm dev image, make only it unable to reach the greeter, and require the boot loader to spend its tries and go back by itself (os/tests/boot_assessment_rollback.sh)."
+        required: false
+        default: ""
+      boot_assessment_fault:
+        description: "With boot_assessment_image: greetd (greetd fails to start) or greeter (greetd stays active while its greeter keeps exiting)."
+        required: false
+        default: greetd
 
 jobs:
   boot:
     runs-on: ${{ github.event.inputs.architecture == 'x86_64' && 'runner-disk-100g' || 'runner-disk-100g-arm64' }}
-    timeout-minutes: 40
+    # A boot assessment adds a staged update and four boots to the diagnosis.
+    timeout-minutes: 90
     env:
       TILO_DISTROBOX: ""
       TILO_VM_ARCH: ${{ github.event.inputs.architecture || 'aarch64' }}
@@ -96,6 +105,8 @@ jobs:
       VERITY_SAMPLES: ${{ github.event.inputs.verity_samples }}
       SHARED_DISK_ESP: ${{ github.event.inputs.shared_disk_esp }}
       SHARED_DISK_SWITCH_IMAGE: ${{ github.event.inputs.shared_disk_switch_image }}
+      BOOT_ASSESSMENT_IMAGE: ${{ github.event.inputs.boot_assessment_image }}
+      BOOT_ASSESSMENT_FAULT: ${{ github.event.inputs.boot_assessment_fault || 'greetd' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -194,6 +205,17 @@ jobs:
           }
           [[ -z $UPGRADE_IMAGE || $UPGRADE_IMAGE =~ ^registry\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ ]] || {
             echo '::error::upgrade_image must pin a tilo-vm dev image digest'
+            exit 1
+          }
+          # The assessment counts this disk's own boot loader entries: a foreign
+          # ESP or a generated diagnostic UKI would change what it counts.
+          [[ -z $BOOT_ASSESSMENT_IMAGE || ( $BOOT_ASSESSMENT_IMAGE =~ ^registry\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ \
+             && $BOOT_ASSESSMENT_IMAGE != "$UPGRADE_IMAGE" && $SHARED_DISK_ESP == false && $DEV_UKI_BOOT == false ) ]] || {
+            echo '::error::boot_assessment_image must pin a tilo-vm dev image digest other than upgrade_image, without shared_disk_esp or dev_uki_boot'
+            exit 1
+          }
+          [[ $BOOT_ASSESSMENT_FAULT == greetd || $BOOT_ASSESSMENT_FAULT == greeter ]] || {
+            echo '::error::boot_assessment_fault must be greetd or greeter'
             exit 1
           }
           export TILO_KVM_CPU_VARIANT="$CPU_VARIANT"
@@ -410,6 +432,14 @@ jobs:
               os/tests/boot_performance_gate.sh "$TILO_USER@127.0.0.1:/tmp/boot-performance-gate.sh"
             ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/boot-performance-gate.sh" > "$TILO_RUN/boot-performance.log" 2>&1
           fi
+          # A broken update must roll itself back on this disk's own boot chain.
+          # It ends booted on the deployment that came back, so the greeter
+          # checks below also prove that machine reaches its greeter.
+          if [[ -n $BOOT_ASSESSMENT_IMAGE ]]; then
+            RUNNER='./os/dev/vm.sh ssh' SUDO_PASS="$TILO_PASS" FAULT="$BOOT_ASSESSMENT_FAULT" \
+              RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk '$overlay'" \
+              ./os/tests/boot_assessment_rollback.sh "$BOOT_ASSESSMENT_IMAGE" "$TILO_RUN/boot-assessment"
+          fi
           read -r -a samples <<< "$VERITY_SAMPLES"
           for sample in "${samples[@]}"; do
             [[ $sample =~ ^[0-9a-f]{2}/[0-9a-f]{126}$ ]] || {
@@ -524,6 +554,7 @@ jobs:
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/dev-uki-build.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/dev-uki-boot.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/desktop.ppm
+            /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/boot-assessment/
           if-no-files-found: ignore
 
       - name: Upload failed framebuffer

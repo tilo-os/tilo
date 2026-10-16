@@ -29,6 +29,7 @@ use tilo_action_broker::{
 };
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::provisioning::IdentityStorage;
+use tilo_lock::MutexRecover as _;
 
 /// Sealed channel state, and where a Linux profile keeps the key that seals
 /// it (owner-only).
@@ -56,7 +57,7 @@ pub(super) struct PumpWake {
 
 impl PumpWake {
     pub(super) fn poke(&self) {
-        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pending = self.pending.lock_recover();
         *pending = true;
         drop(pending);
         self.ready.notify_one();
@@ -64,7 +65,7 @@ impl PumpWake {
 
     /// Sleep until poked, or for at most `timeout` when there is one.
     fn wait(&self, timeout: Option<Duration>) {
-        let pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let pending = self.pending.lock_recover();
         let mut pending = match timeout {
             Some(timeout) => {
                 self.ready
@@ -166,8 +167,15 @@ impl ChannelDirectory for Directory {
     }
 
     /// Only the steward asks; this device stewards only its own room, which
-    /// it alone reads.
-    fn allowed_devices(&self, room: RoomId, _now: u64) -> BTreeSet<Ed25519PublicKey> {
+    /// it alone reads, every record of it: no other person is in it to be
+    /// denied one.
+    fn allowed_devices(
+        &self,
+        room: RoomId,
+        _channel: collab_types::ChannelId,
+        _route: Option<&collab_types::ChannelRoute>,
+        _now: u64,
+    ) -> BTreeSet<Ed25519PublicKey> {
         if room == self.own_room {
             BTreeSet::from([self.device])
         } else {

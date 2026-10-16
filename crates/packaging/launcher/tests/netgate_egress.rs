@@ -386,7 +386,7 @@ fn serve(body: &'static str) -> u16 {
 fn runtime_scratch_dir() -> PathBuf {
     let dir = PathBuf::from(format!(
         "/tmp/tilo-netgate-{}-{}",
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).expect("create runtime scratch dir");

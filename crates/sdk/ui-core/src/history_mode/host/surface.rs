@@ -32,8 +32,17 @@ impl HistoryHost {
         let presents = live
             .as_deref_mut()
             .is_some_and(|live| crate::widget::window_header::offer_history_control(live, control));
-        if presents != self.app_presents_button {
+        // Closed, the sync status reads as quiet text in the same row; open,
+        // it stays with this bar.
+        let status = (!self.open)
+            .then_some(self.sync_status.as_deref())
+            .flatten();
+        let presents_status = live
+            .as_deref_mut()
+            .is_some_and(|live| crate::widget::window_header::offer_sync_status(live, status));
+        if presents != self.app_presents_button || presents_status != self.app_presents_status {
             self.app_presents_button = presents;
+            self.app_presents_status = presents_status;
             self.rebuild_toolbar();
         }
         let toolbar = self.toolbar.build_layout(tree, theme, nodes);

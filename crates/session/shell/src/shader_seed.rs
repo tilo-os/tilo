@@ -17,10 +17,7 @@ static ADAPTER: OnceLock<wgpu::AdapterInfo> = OnceLock::new();
 static STARTED: AtomicBool = AtomicBool::new(false);
 
 fn persistent_dir() -> Option<PathBuf> {
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
-    Some(cache.join("tilo/public-mesa-seed"))
+    Some(tilo_paths::xdg::cache_home()?.join("tilo/public-mesa-seed"))
 }
 
 fn session_dir() -> PathBuf {

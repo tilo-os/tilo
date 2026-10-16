@@ -37,15 +37,6 @@
 //! - No networking. Fetching the payload of a thin `.tapp` belongs to
 //!   whoever knows where bytes are.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod blobs;
 pub mod chunks;
 #[cfg(not(target_arch = "wasm32"))]
@@ -57,6 +48,7 @@ pub mod image;
 pub mod manifest;
 pub mod pack;
 pub mod package;
+pub mod search_keywords;
 pub mod signed;
 pub mod tapp;
 pub mod trust;
@@ -89,8 +81,8 @@ pub use registry_types::interfaces;
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};
 pub use tapp::{TAPP_FORMAT_VERSION, Tapp, TappError};
 pub use trust::{
-    ATTESTATION_DOMAIN, AttestorScope, RevocationList, RevokedKey, TrustLoadError, TrustedAttestor,
-    TrustedAttestors, attestation_preimage, default_revoked_keys_path,
+    ATTESTATION_DOMAIN, AttestorScope, RevocationList, RevokedKey, TrustFile, TrustLoadError,
+    TrustedAttestor, TrustedAttestors, attestation_preimage, default_revoked_keys_path,
     default_trusted_attestors_path,
 };
 pub use unpack::{UnpackError, unpack, validate_materialized_payload};

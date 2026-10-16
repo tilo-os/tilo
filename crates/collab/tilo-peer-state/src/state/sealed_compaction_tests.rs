@@ -148,7 +148,7 @@ fn route() -> Route {
 }
 
 fn held(peer: &StatePeer) -> Vec<SignedOp> {
-    peer.core.documents[&route()].sealed.clone()
+    peer.core.documents[&route()].sealed.to_vec()
 }
 
 fn envelope_of(message: &NeighbourMsg) -> SignedOp {
@@ -704,7 +704,7 @@ fn a_full_history_refuses_writes_until_a_verified_compaction_supersedes_it() {
     let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
     admit(&mut f.host, &f.other, first, now);
     let one = held(&f.host).remove(0);
-    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS];
+    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS].into();
     let more = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
     let other = f.other.clone();
     refused_with(
@@ -790,7 +790,8 @@ fn a_history_near_its_bound_is_due_for_compaction() {
     admit(&mut f.host, &f.editor, first, now);
     assert!(f.host.sealed_records_to_compact().is_empty());
     let one = held(&f.host).remove(0);
-    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS / 4 * 3];
+    f.host.core.documents.get_mut(&route()).unwrap().sealed =
+        vec![one; MAX_SEALED_OPS / 4 * 3].into();
     assert_eq!(
         f.host.sealed_records_to_compact(),
         vec![(APP.to_owned(), RECORD.to_owned())]

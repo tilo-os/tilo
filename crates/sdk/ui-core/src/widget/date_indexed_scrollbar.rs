@@ -721,20 +721,11 @@ impl DateIndexedScrollbar {
             scene,
             &text,
             theme.text_primary,
-            translated(transform, label.x0 + pad_x, label.y0 + pad_y),
+            transform.pre_translate((label.x0 + pad_x, label.y0 + pad_y).into()),
             None,
             &style,
         );
     }
-}
-
-/// `kurbo::Affine` composition is infallible floating-point matrix math.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine multiplication composes two 2D transforms and cannot panic or overflow"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
 }
 
 #[cfg(test)]

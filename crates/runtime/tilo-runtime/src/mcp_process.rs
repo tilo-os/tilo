@@ -194,8 +194,7 @@ pub(crate) fn prepare_admission_profile_environment(
         ));
     }
     let paths = profile_environment(profile);
-    // SAFETY: geteuid has no arguments or memory preconditions.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     for path in std::iter::once(profile).chain(paths.iter().map(|(_, path)| path.as_path())) {
         let metadata = std::fs::symlink_metadata(path)?;
         if !metadata.is_dir()
@@ -519,10 +518,6 @@ pub(crate) fn serve_lines<'a>(
 /// Returns an error when the runtime, session or action broker cannot start,
 /// an app cannot be launched or exits, the input stream fails, or a reply
 /// cannot be written.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the session holds the profile lock and services until the server loop ends"
-)]
 pub fn serve<S, R, W>(
     profile: &Path,
     manifest: ValidatedManifest,

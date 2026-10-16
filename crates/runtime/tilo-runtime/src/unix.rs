@@ -21,8 +21,7 @@ pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true).mode(0o700).create(path)?;
     let metadata = std::fs::symlink_metadata(path)?;
-    // SAFETY: geteuid has no arguments or memory preconditions.
-    if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+    if !metadata.file_type().is_dir() || !tilo_files::native::private::owned_by_me(&metadata) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "runtime directory must be owned by this user and not a symlink",
@@ -218,9 +217,8 @@ pub(crate) fn private_file(path: &Path) -> io::Result<File> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
     let metadata = file.metadata()?;
-    // SAFETY: geteuid has no memory preconditions.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || !tilo_files::native::private::owned_by_me(&metadata)
         || metadata.nlink() != 1
         || metadata.permissions().mode() & 0o077 != 0
     {

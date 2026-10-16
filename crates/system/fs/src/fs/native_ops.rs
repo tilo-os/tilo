@@ -15,6 +15,7 @@ use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, document_code
 use crate::namespace::{
     ContentAuthority, LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease,
 };
+use tilo_lock::MutexRecover as _;
 
 /// One file or directory of the workspace tree as the record plane sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -410,7 +411,12 @@ impl QuickFS {
             let entries = self.visible_entries(dir).unwrap_or_default();
             for (ino, kind, name) in entries {
                 let name = name.as_bytes();
-                if name == b"." || name == b".." {
+                if !projectable_name(name) {
+                    tracing::warn!(
+                        target: "fs::native",
+                        ino,
+                        "not projecting an entry whose name is not one path component",
+                    );
                     continue;
                 }
                 let mut path = prefix.clone();
@@ -523,16 +529,12 @@ impl QuickFS {
         {
             eprintln!("records are published one by one: {error}");
         }
-        *self
-            .deferred_deltas
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Vec::new());
+        *self.deferred_deltas.lock_recover() = Some(Vec::new());
         self.ns().begin_incremental_batch();
         let store = std::sync::Arc::clone(&self.hydrator.store);
         store.defer_sync();
         let value = apply();
-        let rt = self.hydrator.runtime_handle.clone();
-        if let Err(error) = rt.block_on(store.end_deferred_sync()) {
+        if let Err(error) = self.hydrator.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
         let mut durable = if let Some(deferral) = deferral
@@ -562,14 +564,16 @@ impl QuickFS {
         // Taken before the namespace is persisted: a full save moves the
         // incremental cursor past the batch.
         let batch = self.ns().end_incremental_batch();
-        if durable && let Some(hook) = self.durability_hook.get() {
-            hook();
+        if durable
+            && let Some(hook) = self.durability_hook.get()
+            && let Err(error) = hook()
+        {
+            eprintln!("the namespace placing the changeset stays pending: {error}");
         }
         drop(gate);
         let mut deltas = self
             .deferred_deltas
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .take()
             .unwrap_or_default();
         deltas.push(batch);
@@ -578,25 +582,14 @@ impl QuickFS {
         } else {
             // Not durable yet: the next changeset broadcasts these with its
             // own, once both are on disk.
-            *self
-                .deferred_deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-            self.held_deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend(deltas);
+            *self.deferred_deltas.lock_recover() = None;
+            self.held_deltas.lock_recover().extend(deltas);
         }
         value
     }
 
     fn broadcast_deltas(&self, deltas: Vec<Vec<u8>>) {
-        let held = std::mem::take(
-            &mut *self
-                .held_deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let held = std::mem::take(&mut *self.held_deltas.lock_recover());
         let any = !held.is_empty() || !deltas.is_empty();
         if any && self.enforcement.is_some() {
             self.refresh_acl_visible_record_index();
@@ -609,12 +602,6 @@ impl QuickFS {
         if any {
             self.wake_pinned_hydration();
         }
-    }
-
-    /// Sets what runs after each changeset (persisting the namespace that
-    /// places its records). Set once.
-    pub fn set_durability_hook(&self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        let _ = self.durability_hook.set(hook);
     }
 
     /// The current time as the record plane stamps it.
@@ -720,12 +707,9 @@ impl QuickFS {
         let Some(hash) = view.hash else {
             return Ok(Vec::new());
         };
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.read(hash, offset, len).await })
-        })
-        .map_err(|_| EIO)
+        self.hydrator
+            .block_on(self.hydrator.read(hash, offset, len))
+            .map_err(|_| EIO)
     }
 
     /// The entries of the directory at `rel`, as [`Self::tree_snapshot`]
@@ -1110,6 +1094,41 @@ impl QuickFS {
                 Some((rel, lease))
             })
             .collect()
+    }
+}
+
+/// Whether a namespace entry's name is exactly one path component.
+///
+/// The native data plane turns these names into real paths under the live
+/// tree, as root. Local creates validate names, but a name merged from a
+/// peer's document is whatever bytes the peer wrote, so a separator, a NUL
+/// or a dot-link in it must never reach `Path::join`: `../../etc/cron.d/x`
+/// would leave the tree, and `/etc/cron.d/x` would replace it.
+pub fn projectable_name(name: &[u8]) -> bool {
+    !name.is_empty() && name != b"." && name != b".." && !name.contains(&b'/') && !name.contains(&0)
+}
+
+#[cfg(test)]
+mod projectable_name_tests {
+    use super::projectable_name;
+
+    #[test]
+    fn only_single_components_are_projected() {
+        for name in [&b"notes.md"[..], b"..hidden", b"a b", "é.txt".as_bytes()] {
+            assert!(projectable_name(name), "{name:?} is one component");
+        }
+        for name in [
+            &b""[..],
+            b".",
+            b"..",
+            b"../etc",
+            b"../../../../etc/cron.d/x",
+            b"/etc/cron.d/x",
+            b"a/b",
+            b"a\0b",
+        ] {
+            assert!(!projectable_name(name), "{name:?} must not be projected");
+        }
     }
 }
 

@@ -78,6 +78,7 @@ fn secrets_of(link: &Link) -> BTreeMap<String, String> {
         ("ticket", &link.secrets.ticket),
         ("token", &link.secrets.token),
         ("pair", &link.secrets.pair),
+        ("install", &link.secrets.install),
     ] {
         if let Some(secret) = secret {
             out.insert(name.to_owned(), secret.expose().to_owned());

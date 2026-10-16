@@ -202,8 +202,8 @@ mod tests {
         let reply = std::rc::Rc::new(RefCell::new(HostShellAllow::default()));
         let (pending_prompt, mut pending) = prompt(std::rc::Rc::downgrade(&reply));
         assert!(matches!(
-            pending_prompt.capability,
-            Capability::HostShell { .. }
+            pending_prompt.capability(),
+            Some(Capability::HostShell { .. })
         ));
         assert!(
             !pending.poll(),

@@ -84,7 +84,7 @@ pub(crate) fn receive(
                     existing.width = group.width;
                     existing.maximized = group.maximized;
                     if existing.tabs.iter().any(|t| t.id == group.active_tab) {
-                        existing.active_tab = group.active_tab;
+                        existing.activate_tab(group.active_tab);
                     }
                 }
             }

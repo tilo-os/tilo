@@ -172,7 +172,29 @@ impl RecordId {
     /// browser, so they all meet on one document. Constant, so every
     /// device derives the same id without asking; the room scopes it.
     pub fn room_default() -> Self {
-        Self::derived("default", &Self::for_tab(0))
+        Self::window_default(0)
+    }
+
+    /// The record a fresh window (`instance`, the launcher's tab id) of an
+    /// app that keeps a record per window opens when nothing names another
+    /// one. Window `0` is [`Self::room_default`], what a launch outside the
+    /// launcher opens. See `NativeProcessHost` for which apps get one.
+    pub fn window_default(instance: u64) -> Self {
+        Self::derived("default", &Self::for_tab(instance))
+    }
+
+    /// The window whose [default record](Self::window_default) is stored
+    /// under `storage_key` ([`Self::storage_key`]), if that is what it is.
+    /// Exact: the whole key, hash included, must be that record's.
+    pub fn window_default_of_storage_key(storage_key: &str) -> Option<Self> {
+        let tab = storage_key
+            .strip_prefix("derived_default_tab_")?
+            .get(..16)?;
+        if !tab.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
+            return None;
+        }
+        let id = Self::window_default(u64::from_str_radix(tab, 16).ok()?);
+        (id.storage_key() == storage_key).then_some(id)
     }
 
     /// Identity of the record that plays `role` for `of` — "the annotations
@@ -345,16 +367,14 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RecordKind(String);
 
-/// Kinds records were once stamped with, as the kind they are now. Writer's
-/// documents were `document`, then `qdoc.rich-text`, until its native app and
-/// its hosted and browser renderers settled on `tilo.rich-text`.
+/// Old Writer kind stamps still name the current rich-text resource.
+/// Reopening a record must not rewrite its attributed CRDT history.
 const FORMER_KINDS: [(&str, &str); 2] = [
     ("document", "tilo.rich-text"),
     ("qdoc.rich-text", "tilo.rich-text"),
 ];
 
 impl RecordKind {
-    /// A kind by name; a former name is the kind it became.
     pub fn new(kind: impl Into<String>) -> Self {
         let kind = kind.into();
         match FORMER_KINDS.iter().find(|(former, _)| *former == kind) {
@@ -363,10 +383,11 @@ impl RecordKind {
         }
     }
 
-    /// Whether a stored kind name, current or former, names this kind.
+    /// Whether a stored current or former name identifies this kind.
     pub fn names(&self, stored: &str) -> bool {
         Self::new(stored) == *self
     }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -1226,6 +1247,12 @@ pub struct RecordSet {
     // Retained from the private native construction scope; weakly borrows the
     // one actual worker after construction ends. Never a positive authority.
     native_initial: Option<crate::collaboration::native_initial::InitialReadBridge>,
+    /// Set by a caller that must not wait on the disk (the compositor, see
+    /// [`RecordStore::open_without_waiting`]): a record whose document the
+    /// store has yet to open is opened by the store's own thread, which
+    /// calls this when done, and the caller is told
+    /// [`RecordOpenError::Opening`] meanwhile.
+    storage_wake: Option<durable_store::ReadyWake>,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
     _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
@@ -1291,6 +1318,7 @@ impl RecordSet {
             pending: HashMap::new(),
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
+            storage_wake: None,
             _profile_lifetime: None,
         }
     }
@@ -1316,6 +1344,7 @@ impl RecordSet {
             pending: HashMap::new(),
             next_reservation: 0,
             native_initial: None,
+            storage_wake: None,
             _profile_lifetime: None,
         }
     }
@@ -1662,6 +1691,22 @@ impl RecordSet {
             })
     }
 
+    /// With [`Self::storage_wake`] set, make sure leasing `record_key`'s
+    /// document waits on nothing: `Err(Opening)` while the store's thread
+    /// opens it.
+    fn prepare_scoped_document(&self, record_key: &str) -> Result<(), RecordOpenError> {
+        let Some(wake) = &self.storage_wake else {
+            return Ok(());
+        };
+        app_state::validate_record_identity(&self.package_id, &self.home, record_key)?;
+        let key = StorageKey::record(&self.package_id, &self.home, record_key);
+        match self.documents()?.prepare_shared(&key, wake) {
+            Ok(()) => Ok(()),
+            Err(durable_store::StoreError::Opening(_)) => Err(RecordOpenError::Opening),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// The shared-writer document for one record in this set's room.
     fn scoped_document(
         &self,
@@ -1921,7 +1966,11 @@ impl RecordSet {
             let read = bridge
                 .record(&self.package_id, &self.home, want)
                 .map_err(RecordOpenError::Initialization)?;
-            let store = app_state::DocStore::exclusive(backend, key)?;
+            let store = if want.id.is_package_primary() {
+                app_state::DocStore::shared(backend, key)?
+            } else {
+                app_state::DocStore::exclusive(backend, key)?
+            };
             let creation = read.clone();
             let creation_heads = creation_capture_heads(&read)?;
             let (mut doc, autosave) = crate::persist::finish_canonical_created(
@@ -1953,7 +2002,16 @@ impl RecordSet {
             );
             return Ok(RecordOpenOutcome::Loaded);
         }
-        let owner = app_state::DocOwner::acquire(Rc::clone(&backend), key)?;
+        // The room's own document is the one every window of a room-record
+        // app opens, each in its own process, and a relaunch overlaps the
+        // instance still exiting: it joins the document's shared writers
+        // (appends interleave and every load merges them) instead of
+        // refusing the second opener. Other records have one owner.
+        let owner = if want.id.is_package_primary() {
+            app_state::DocOwner::acquire_shared(Rc::clone(&backend), key)?
+        } else {
+            app_state::DocOwner::acquire(Rc::clone(&backend), key)?
+        };
         let loaded = if recover_partial {
             owner.load()?
         } else {
@@ -2306,6 +2364,7 @@ impl RecordOwners {
             native_initial: (joins_construction && self.portable.is_none())
                 .then(crate::collaboration::native_initial::capture_bridge)
                 .flatten(),
+            storage_wake: None,
             _profile_lifetime: self.profile_lifetime.clone(),
         });
         if let Some(cache) = &self.portable {
@@ -2345,6 +2404,11 @@ pub enum RecordOpenError {
     MissingRecord,
     #[error("record is reserved or already initialized")]
     Busy,
+    /// The store's own thread is still opening the record's document; the
+    /// caller is woken when it is done (see
+    /// [`RecordStore::open_without_waiting`]).
+    #[error("the document is still opening")]
+    Opening,
     #[error("the new record identity already exists or is reserved")]
     AlreadyExists,
     #[error("record initialization failed: {0}")]
@@ -2892,6 +2956,47 @@ impl RecordStore {
         let set = self.0.borrow();
         (set.package_id.clone(), set.home.clone())
     }
+
+    /// Every [window default record](RecordId::window_default) of `kind`
+    /// this package keeps in this room, sorted by id, each as last made
+    /// durable: what an app that kept a record per window left behind once
+    /// it keeps one per room. Read without taking any writer, so a window
+    /// still showing one keeps it, and nothing here changes them. A record
+    /// that cannot be read, is retired, or is not of `kind` in this room is
+    /// left out (and logged), never an error: these are a migration's
+    /// sources, and one bad one must not keep the others out.
+    pub fn window_records(&self, kind: &RecordKind) -> Vec<(RecordId, AutoCommit)> {
+        let Some(store) = self.backend() else {
+            return Vec::new();
+        };
+        let (package, home) = self.package_and_home();
+        if home.is_empty() {
+            return Vec::new();
+        }
+        let keys = match store.records(&package, &home) {
+            Ok(keys) => keys,
+            Err(error) => {
+                tracing::warn!(%package, room = %home, %error, "listing the room's records failed");
+                return Vec::new();
+            }
+        };
+        let mut found = keys
+            .iter()
+            .filter_map(|key| RecordId::window_default_of_storage_key(key))
+            .filter_map(|id| {
+                let origin = transfer::Origin::Record(RecordCheckout::new(id.clone(), kind.clone()));
+                match transfer::read(&store, &package, &home, &origin) {
+                    Ok(doc) => Some((id, doc)),
+                    Err(error) => {
+                        tracing::warn!(record = %id, room = %home, %error, "window record not readable; left out");
+                        None
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
+    }
     /// Explicit immutable identity only: the store namespace, package and
     /// workspace. Legacy and memory sets have no canonical namespace.
     pub(crate) fn canonical_namespace(&self) -> Option<(String, String, String)> {
@@ -2941,7 +3046,13 @@ impl RecordStore {
         if set.pending.contains_key(&want.id) || set.open.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
         }
-        let owner = app_state::DocOwner::acquire(backend, key)?;
+        // The reservation becomes the live writer, so the room's own document
+        // is joined as a shared writer here too; see `try_open_record`.
+        let owner = if want.id.is_package_primary() {
+            app_state::DocOwner::acquire_shared(backend, key)?
+        } else {
+            app_state::DocOwner::acquire(backend, key)?
+        };
         if owner.load()?.is_some() {
             return Err(RecordOpenError::Busy);
         }
@@ -3134,6 +3245,16 @@ impl RecordStore {
         self.0.borrow_mut().open_record(want, None)
     }
 
+    /// From now on, never wait on the disk to open or create a record: one
+    /// whose document the store has yet to open is refused with
+    /// [`RecordOpenError::Opening`] while the store's own thread opens it,
+    /// and `wake` is called when that is done, so the caller asks again.
+    /// For a caller on a frame loop. A store with no thread of its own
+    /// still opens in place.
+    pub fn open_without_waiting(&self, wake: durable_store::ReadyWake) {
+        self.0.borrow_mut().storage_wake = Some(wake);
+    }
+
     /// Create exactly the new resource named by its owning action. Reopening
     /// existing tabs must use existing-only admission instead.
     ///
@@ -3165,6 +3286,7 @@ impl RecordStore {
         }
         let owner = if set.persistent {
             let key = want.id.storage_key();
+            set.prepare_scoped_document(&key)?;
             let mut owner = set.scoped_document(&key)?;
             // An empty/corrupt document is existing evidence too, never
             // permission to replace it with a freshly initialized one.
@@ -3265,6 +3387,7 @@ impl RecordStore {
                 return Err(RecordOpenError::IdentityMismatch);
             }
             let key = want.id.storage_key();
+            set.prepare_scoped_document(&key)?;
             let mut owner = set.scoped_document(&key)?;
             let (mut doc, adopted) = if let Some(doc) = owner.load_complete()? {
                 (doc, false)
@@ -3839,32 +3962,30 @@ mod tests {
         assert_eq!(one.get_changes(&[]).len(), 1, "they converge on one record");
     }
 
-    /// A Writer record stamped `document` before the kind was renamed opens
-    /// as the rich-text kind, and opening it rewrites nothing.
+    /// Writer records stamped before the kind rename reopen as rich text
+    /// without rewriting their attributed history.
     #[test]
-    fn a_record_stamped_with_a_former_kind_opens_as_the_current_one() {
+    fn records_stamped_with_former_writer_kinds_reopen_without_rewrite() {
         let current = RecordKind::new("tilo.rich-text");
-        assert_eq!(RecordKind::new("document"), current);
-        assert_eq!(RecordKind::new("qdoc.rich-text"), current);
-        assert!(
-            current.names("document")
-                && current.names("qdoc.rich-text")
-                && current.names("tilo.rich-text")
-        );
-        let id = RecordId::for_tab(7);
-        let mut doc = AutoCommit::new();
-        init(&mut doc, &id, &current, "room");
-        let meta = meta_obj(&mut doc).unwrap();
-        doc.put(&meta, "kind", "document").unwrap();
-        doc.commit();
-        let heads = doc.get_heads();
-        assert_eq!(
-            identity(&doc),
-            Some(RecordCheckout::new(id.clone(), current.clone()))
-        );
-        assert!(init_scoped(&mut doc, &id, &current, "room", None));
-        doc.commit();
-        assert_eq!(doc.get_heads(), heads);
+        assert!(current.names("tilo.rich-text"));
+        for former in ["document", "qdoc.rich-text"] {
+            assert_eq!(RecordKind::new(former), current);
+            assert!(current.names(former));
+            let id = RecordId::for_tab(7);
+            let mut doc = AutoCommit::new();
+            init(&mut doc, &id, &current, "room");
+            let meta = meta_obj(&mut doc).unwrap();
+            doc.put(&meta, "kind", former).unwrap();
+            doc.commit();
+            let heads = doc.get_heads();
+            assert_eq!(
+                identity(&doc),
+                Some(RecordCheckout::new(id.clone(), current.clone()))
+            );
+            assert!(init_scoped(&mut doc, &id, &current, "room", None));
+            doc.commit();
+            assert_eq!(doc.get_heads(), heads);
+        }
     }
 
     /// Two members of a room each create the record the room derives for
@@ -4875,6 +4996,63 @@ mod tests {
             Some("primary-room")
         ));
         assert!(!admission.matches(&foreign, &primary));
+    }
+
+    /// Every window of a room-record app is its own process on the room's
+    /// one notebook, and a relaunch overlaps the instance still exiting: the
+    /// room's own document opens for all of them at once, and again after
+    /// the first closes, instead of failing on the writer's gate.
+    #[test]
+    fn the_room_primary_opens_in_a_second_window_and_across_a_quick_relaunch() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        let primary = RecordCheckout::package_primary(RecordKind::new("primary"));
+
+        let mut first_owners = RecordOwners::new(root.clone());
+        let first = first_owners
+            .open("so.tilo.shared-test", "shared-room")
+            .unwrap();
+        first
+            .reserve_record(&primary)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        first.try_open_record(&primary).unwrap();
+
+        // A second window: its own process, so its own owners and store.
+        let mut second_owners = RecordOwners::new(root.clone());
+        let second = second_owners
+            .open("so.tilo.shared-test", "shared-room")
+            .unwrap();
+        // The first window's creation is on disk after its debounce window;
+        // until then there is nothing to open, which is not a lock failure.
+        tilo_test_env::wait_until(
+            "the second window opens the shared notebook",
+            || match second.try_open_record(&primary) {
+                Ok(_) => true,
+                Err(RecordOpenError::MissingRecord) => false,
+                Err(other) => panic!("a second window must share the notebook: {other}"),
+            },
+        );
+
+        // Close both and reopen at once, with the previous holders still
+        // being torn down.
+        let mut relaunch_owners = RecordOwners::new(root.clone());
+        let relaunched = relaunch_owners
+            .open("so.tilo.shared-test", "shared-room")
+            .unwrap();
+        drop(first);
+        relaunched
+            .try_open_record(&primary)
+            .expect("a relaunch overlapping the exiting window opens");
+        drop(second);
+        drop(relaunched);
+        let mut again = RecordOwners::new(root);
+        again
+            .open("so.tilo.shared-test", "shared-room")
+            .unwrap()
+            .try_open_record(&primary)
+            .expect("a reopen after everything closed opens");
     }
 
     #[test]

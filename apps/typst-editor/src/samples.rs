@@ -1,6 +1,6 @@
-//! Bundled Typst documents for captures and tests. Each one is valid Typst 0.14
-//! and is deliberately kept simple so it always compiles cleanly — they double
-//! as the `--shots` fixture and as a feature tour of the highlighter.
+//! Bundled Typst documents for captures and tests, using Typst 0.15.
+//! They exercise real typesetting and the highlighter without seeding a live
+//! workspace. The tutorial remains available alongside a compact research note.
 
 /// A bundled, named document.
 pub struct Sample {
@@ -25,10 +25,14 @@ pub const SAMPLES: &[Sample] = &[
         name: "cheatsheet.typ",
         source: CHEATSHEET,
     },
+    Sample {
+        name: "motion-notes.typ",
+        source: MOTION_NOTES,
+    },
 ];
 
 /// Index of the demo document shown first in `--shots` and the example gallery.
-pub const DEFAULT_INDEX: usize = 0;
+pub const DEFAULT_INDEX: usize = 4;
 
 /// A document carrying exactly one **warning** (an unknown font family, on the
 /// first line) and one **error** (a reference to an undefined variable, further
@@ -44,6 +48,57 @@ This paragraph uses #undefined_value, which is unknown.
 
 The heading is fine; the font and variable are wrong.
 "#;
+
+const MOTION_NOTES: &str = r##"#set page(width: 18cm, height: auto, margin: (x: 1.2cm, y: 0.8cm))
+#set text(font: "Libertinus Serif", size: 10pt)
+#set par(justify: true, leading: 0.6em)
+#show heading: set text(fill: rgb("#245568"))
+
+#text(8pt, tracking: 1.5pt)[MOTION SYSTEMS / RESEARCH NOTE 01]
+= Smooth motion, by design
+_Leah Chen · Interaction Lab · October 2026_
+
+*Abstract.* A good transition makes a change
+easy to follow without drawing attention to
+itself. We derive one smooth trajectory from
+six boundary conditions.
+
+== From constraints to a curve
+Let $tau = t / T$ be normalized time. A
+minimum-jerk path starts and ends at rest,
+with zero acceleration:
+
+$ s(tau) = 10 tau^3 - 15 tau^4 + 6 tau^5 $
+
+#block(fill: rgb("#eef4f6"), inset: 9pt, radius: 3pt)[
+  *Boundary conditions.* For $tau in {0, 1}$,
+  $s'(tau) = s''(tau) = 0$. Among paths with these
+  endpoints, this curve minimizes the squared jerk:
+  $ J = integral_0^T (dif^3 x / dif t^3)^2 dif t $
+]
+
+== A gentler handoff
+The curve covers little distance near either endpoint
+and moves fastest halfway through. Unlike linear
+motion, it has no sudden jump in velocity.
+
+#figure(
+  table(columns: (1.4fr, 1fr, 1fr, 1fr),
+    stroke: none, inset: 5pt,
+    fill: (x, y) => if y == 0 { rgb("#eef4f6") },
+    align: (left, right, right, right),
+    table.header([*Time*], [*25%*], [*50%*], [*75%*]),
+    [Linear], [25.0%], [50.0%], [75.0%],
+    [Minimum jerk], [10.4%], [50.0%], [89.6%],
+  ),
+  caption: [Distance traveled at three points in time.],
+)
+
+== Design implication
+Use this profile for short, deliberate transitions.
+Keep the destination stable, allow interruption, and
+respect the reader's reduced-motion preference.
+"##;
 
 const WELCOME: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)
 #set text(font: "Libertinus Serif", size: 11pt)

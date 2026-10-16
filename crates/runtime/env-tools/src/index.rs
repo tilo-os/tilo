@@ -81,11 +81,10 @@ impl LocalIndex {
     ///
     /// Creating the directory or writing/renaming the file.
     pub fn put(&self, entry: &Entry) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.root)?;
-        let path = self.path(&entry.key.digest());
-        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-        std::fs::write(&tmp, serde_json::to_vec_pretty(entry)?)?;
-        std::fs::rename(&tmp, &path)
+        tilo_files::native::atomic::write_creating_parent(
+            &self.path(&entry.key.digest()),
+            &serde_json::to_vec_pretty(entry)?,
+        )
     }
 
     /// Forget a key (its tool image was collected).

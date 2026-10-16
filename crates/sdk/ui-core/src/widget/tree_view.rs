@@ -41,6 +41,7 @@ use crate::widget::data_table::{
 };
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
+mod access_rows;
 mod affordances;
 mod editing;
 #[cfg(test)]
@@ -953,24 +954,22 @@ pub struct TreeView<T, M = TreeNode<T>> {
     /// A drag staged for a capture, applied once rows have geometry: the
     /// dragged row and the row it hovers before.
     staged_drag: Option<(NodeId, NodeId)>,
+    /// The node rows of the accessibility tree the last walk handed over,
+    /// kept with what they were built from ([`Self::access_rows`]).
+    access_rows: std::cell::RefCell<access_rows::KeptAccessRows>,
+    /// The node rows [`Self::access_rows`] built rather than kept.
+    #[cfg(any(test, feature = "test-support"))]
+    access_row_builds: std::cell::Cell<usize>,
 }
 
 /// Matches `theme.tokens.spacing.s4` (16.0); also the per-depth indent unit.
 const DISCLOSURE_WIDTH: f64 = 16.0;
 /// Indent per depth before a theme is seen: the `s4` step, unscaled.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const; f32 -> f64 is exact"
-)]
 const DEFAULT_INDENT: f64 = crate::tokens::Spacing::BASE.s4 as f64;
 /// A dense row before a theme is seen: one `Body` line and its `s1` pads,
 /// rounded to whole pixels.
 const ROW_HEIGHT: f64 = 28.0;
 /// Label-to-trailing-content gap before a theme is seen: the `s2` step.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const; f32 -> f64 is exact"
-)]
 const DEFAULT_ROW_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 const MAX_TRANSITION_ROWS: usize = 512;
 /// The role every row label is set in; the rename field matches it.
@@ -1167,6 +1166,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
             nav: None,
             laid_out: false,
             staged_drag: None,
+            access_rows: std::cell::RefCell::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            access_row_builds: std::cell::Cell::new(0),
         };
         view.refresh_anchor();
         view.refresh_transition_snapshot();
@@ -3770,12 +3772,22 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.is_focused
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the complete virtual tree semantic hierarchy is constructed in one auditable pass"
-    )]
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        self.accessibility_shared()
+            .map(crate::a11y::SharedAccessNode::into_owned)
+    }
+
+    /// A tree is never hidden: answered without building its rows.
+    fn accessibility_hidden(&self) -> bool {
+        false
+    }
+
+    /// The tree, its rows shared with the last walk where nothing they are
+    /// built from changed ([`Self::access_rows`]): a walk while the tree
+    /// is unchanged (a keystroke in the editor beside it) builds no row.
+    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        use std::sync::Arc;
         // Labels are runtime strings supplied by the host, not FTL keys.
         let value = self
             .selected()
@@ -3805,125 +3817,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         // Keep the semantic tree bounded exactly like painting. Absolute
         // positions retain useful "N of M" announcements even though rows
         // outside the viewport have no synthetic node this frame.
-        let row_count = self.index.len();
-        let children = self
-            .visible_row_range()
-            .filter_map(|index| {
-                let (key, depth) = self.index.row_at(&self.model, index)?;
-                let delegate_child = self
-                    .mounted_rows
-                    .iter()
-                    .find(|row| row.key == key)
-                    .and_then(|row| row.widget.accessibility());
-                let delegate_label = delegate_child.as_ref().and_then(|child| child.name.clone());
-                let (label, expanded, busy, invalid, selected) = match key {
-                    TreeRowKey::Node(id) => (
-                        self.model.label(id)?.to_owned(),
-                        self.model
-                            .is_branch(id)
-                            .then(|| self.expanded.contains(&id)),
-                        false,
-                        false,
-                        self.selection.is_selected(&id),
-                    ),
-                    TreeRowKey::Slot(slot) => {
-                        match self.model.child_state(slot.parent, slot.index) {
-                            TreeChildState::Ready(_) => return None,
-                            TreeChildState::Loading => (
-                                delegate_label.unwrap_or_else(|| "Loading".to_owned()),
-                                None,
-                                true,
-                                false,
-                                false,
-                            ),
-                            TreeChildState::Error { message } => {
-                                let label = delegate_label.unwrap_or_else(|| {
-                                    format!(
-                                        "{}. Activate to retry",
-                                        message.unwrap_or("Could not load")
-                                    )
-                                });
-                                (label, None, false, true, false)
-                            }
-                        }
-                    }
-                };
-                let mut item = AccessNode::new(Role::TreeItem)
-                    .with_action_target(match key {
-                        TreeRowKey::Node(id) => format!("node:{id}"),
-                        TreeRowKey::Slot(slot) => {
-                            format!("slot:{}:{}", slot.parent, slot.index)
-                        }
-                    })
-                    .with_name(label)
-                    .with_position(index.saturating_add(1), row_count)
-                    .with_level(depth.saturating_add(1))
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.is_focused
-                            && self.focused_affordance.is_none()
-                            && self.focused == Some(key),
-                        selected,
-                        expanded,
-                        disabled: !self.is_enabled(),
-                        busy,
-                        invalid,
-                        ..Default::default()
-                    });
-                if let (Some(top), Some(height)) = (
-                    self.viewport.item_view_top(index),
-                    self.viewport.item_height(index),
-                ) {
-                    item = item.with_bounds(Rect::new(
-                        self.rect.x0,
-                        self.body_top() + top,
-                        self.rect.x1,
-                        self.body_top() + top + height,
-                    ));
-                }
-                if let TreeRowKey::Node(id) = key
-                    && let Some(description) = self.row_descriptions.get(&id)
-                {
-                    item = item.with_description(description.clone());
-                }
-                if let TreeRowKey::Node(id) = key
-                    && let Some((description, checked)) = self.nav_semantics(id)
-                {
-                    if let Some(description) = description {
-                        item = item.with_description(description);
-                    }
-                    item.state.checked = checked;
-                }
-                if let TreeRowKey::Node(id) = key
-                    && let Some(semantic) = self.model.semantic_key(id)
-                {
-                    item.key = Some(crate::a11y::hash_key(&semantic));
-                    item = item.with_semantic_key(semantic);
-                }
-                let mut item_children = Vec::new();
-                if let Some(child) = delegate_child {
-                    item_children.push(child);
-                }
-                if let TreeRowKey::Node(id) = key {
-                    let label = self.model.label(id).unwrap_or_default();
-                    item_children.extend(self.row_semantic_children(
-                        id,
-                        label,
-                        self.visible_row_rect(index),
-                    ));
-                }
-                if !item_children.is_empty() {
-                    item = item.with_children(item_children);
-                }
-                Some(item)
-            })
-            .collect::<Vec<_>>();
-        let mut all = Vec::with_capacity(children.len().saturating_add(2));
-        all.extend(self.heading_action_node());
-        all.extend(children);
-        all.extend(self.menu_node());
-        node = node.with_children(all);
-        Some(node)
+        let rows = self.access_rows();
+        let mut children = Vec::with_capacity(rows.len().saturating_add(2));
+        children.extend(self.heading_action_node().map(Arc::new));
+        children.extend(rows);
+        children.extend(self.menu_node().map(Arc::new));
+        Some(crate::a11y::SharedAccessNode { node, children })
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {

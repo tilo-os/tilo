@@ -25,6 +25,7 @@ mod tests {
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
     };
     use automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
+    use durable_store::DurableStore as _;
     use std::collections::HashMap as StdMap;
     use ui::record::{RecordId, RecordStore};
     use ui::widget::WindowGroup as UiGroup;
@@ -154,7 +155,9 @@ mod tests {
             widget.for_each_child(&mut |child| descriptions(child, out));
         }
         for (phase, detail) in [
-            ("opening", crate::shell::peer_windows::OPENING.to_string()),
+            // The opening card: the app's name over the moving indicator,
+            // which a screen reader hears as "Opening…".
+            ("opening", crate::shell::i18n::t("shell-window-opening")),
             ("failed", crate::shell::i18n::t("launch-failed-stopped")),
             (
                 "timeout",
@@ -174,7 +177,7 @@ mod tests {
                 group.tabs[0].tile = StateTile::LocalApp {
                     app_id: "so.tilo.browser".into(),
                     label: "Browser".into(),
-                    note: if phase == "interrupted" {
+                    note: if phase == "interrupted" || phase == "opening" {
                         crate::shell::peer_windows::OPENING.into()
                     } else {
                         detail.clone()
@@ -262,6 +265,7 @@ mod tests {
             managed_agent_id: None,
             managed_workspace_id: None,
             kind: crate::shell::launcher::LaunchEventKind::SpawnFailed {
+                reason: crate::shell::launcher::LaunchFailure::LauncherUnavailable,
                 detail: "synthetic worker refusal".into(),
             },
         });
@@ -308,6 +312,7 @@ mod tests {
                 active_tab: TAB_A,
                 width: StateWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");
@@ -326,6 +331,225 @@ mod tests {
             },
             ..WorkspaceTree::default()
         })
+    }
+
+    /// A disk whose documents open only when the test says so, as one stuck
+    /// behind its journal would. While held, `prepare_shared` declines and
+    /// remembers who asked; a lease, which is where the `mkdir` and the
+    /// gate files would happen on the caller's thread, is noted.
+    struct HeldDisk {
+        inner: app_state::FsStore,
+        held: std::sync::Mutex<Option<Vec<(durable_store::StorageKey, durable_store::ReadyWake)>>>,
+        /// A lease was taken, on the caller's thread, while the disk was held.
+        leased_while_held: std::sync::atomic::AtomicBool,
+    }
+
+    impl HeldDisk {
+        fn hold(&self) {
+            *self.held.lock().unwrap() = Some(Vec::new());
+        }
+
+        /// Let the disk go: what was asked for opens on the store's thread.
+        fn release(&self) {
+            let asked = self.held.lock().unwrap().take().unwrap_or_default();
+            for (key, ready) in asked {
+                match self.inner.prepare_shared(&key, &ready) {
+                    Ok(()) => ready(),
+                    Err(durable_store::StoreError::Opening(_)) => {}
+                    Err(error) => panic!("opening {key} failed: {error}"),
+                }
+            }
+        }
+    }
+
+    impl durable_store::DurableStore for HeldDisk {
+        fn namespace(&self) -> &str {
+            self.inner.namespace()
+        }
+        fn read(
+            &self,
+            key: &durable_store::StorageKey,
+        ) -> Result<Option<durable_store::Stored>, durable_store::StoreError> {
+            self.inner.read(key)
+        }
+        fn write(
+            &self,
+            key: &durable_store::StorageKey,
+            op: durable_store::WriteOp,
+            writer: Option<&[u8]>,
+        ) -> Result<durable_store::Revision, durable_store::StoreError> {
+            self.inner.write(key, op, writer)
+        }
+        fn durability(
+            &self,
+            key: &durable_store::StorageKey,
+            revision: durable_store::Revision,
+        ) -> durable_store::Durability {
+            self.inner.durability(key, revision)
+        }
+        fn flush(
+            &self,
+            key: Option<&durable_store::StorageKey>,
+        ) -> Result<(), durable_store::StoreError> {
+            self.inner.flush(key)
+        }
+        fn flush_without_waiting(
+            &self,
+            key: &durable_store::StorageKey,
+        ) -> Result<(), durable_store::StoreError> {
+            self.inner.flush_without_waiting(key)
+        }
+        fn is_settled(&self, key: &durable_store::StorageKey) -> bool {
+            self.inner.is_settled(key)
+        }
+        fn lease(
+            &self,
+            key: &durable_store::StorageKey,
+        ) -> Result<durable_store::Lease, durable_store::StoreError> {
+            self.inner.lease(key)
+        }
+        fn lease_shared(
+            &self,
+            key: &durable_store::StorageKey,
+        ) -> Result<durable_store::SharedLease, durable_store::StoreError> {
+            if self.held.lock().unwrap().is_some() {
+                self.leased_while_held
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            self.inner.lease_shared(key)
+        }
+        fn prepare_shared(
+            &self,
+            key: &durable_store::StorageKey,
+            ready: &durable_store::ReadyWake,
+        ) -> Result<(), durable_store::StoreError> {
+            if let Some(asked) = self.held.lock().unwrap().as_mut() {
+                asked.push((key.clone(), std::sync::Arc::clone(ready)));
+                return Err(durable_store::StoreError::Opening(key.to_string()));
+            }
+            self.inner.prepare_shared(key, ready)
+        }
+        fn claim(
+            &self,
+            key: &durable_store::StorageKey,
+            claimant: &str,
+        ) -> Result<bool, durable_store::StoreError> {
+            self.inner.claim(key, claimant)
+        }
+        fn records(
+            &self,
+            package: &str,
+            workspace: &str,
+        ) -> Result<Vec<String>, durable_store::StoreError> {
+            self.inner.records(package, workspace)
+        }
+        fn local_path(&self, key: &durable_store::StorageKey) -> Option<std::path::PathBuf> {
+            self.inner.local_path(key)
+        }
+        fn write_hint(
+            &self,
+            key: &durable_store::StorageKey,
+            hint: &[u8],
+        ) -> Result<(), durable_store::StoreError> {
+            self.inner.write_hint(key, hint)
+        }
+        fn read_hint(&self, key: &durable_store::StorageKey) -> Option<Vec<u8>> {
+            self.inner.read_hint(key)
+        }
+    }
+
+    /// Opening a new tab, as the new-terminal action does, never waits on
+    /// the disk for its record: on the compositor's loop a `mkdir` stuck
+    /// behind the journal froze the desktop. The record's document opens on
+    /// the store's thread, the loop is woken, and the next frame creates
+    /// the record in it.
+    #[test]
+    fn a_new_tab_creates_its_record_without_waiting_on_the_disk() {
+        const PACKAGE: &str = "so.tilo.test-record-off-loop";
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let disk = std::rc::Rc::new(HeldDisk {
+            inner: app_state::FsStore::new(tmp.path()),
+            held: std::sync::Mutex::new(None),
+            leased_while_held: std::sync::atomic::AtomicBool::new(false),
+        });
+        let store = RecordStore::new(ui::record::RecordSet::open_in(
+            std::rc::Rc::clone(&disk) as std::rc::Rc<dyn durable_store::DurableStore>,
+            PACKAGE,
+            uuid::Uuid::nil().to_string(),
+        ));
+        store.create_record(&scratch_tab_record(TAB_A)).unwrap();
+        store.create_record(&scratch_tab_record(TAB_B)).unwrap();
+        let (mut host, chrome) = crate::shell::build_tilo_overlay_host_with_records(
+            tree_with_two_document_tabs(),
+            false,
+            store.clone(),
+        );
+        let shell_doc = AutoCommit::new();
+        host.update(&shell_doc, &automerge::ROOT);
+        let (woke, woken) = std::sync::mpsc::channel::<()>();
+        let woke = std::sync::Mutex::new(woke);
+        chrome
+            .borrow_mut()
+            .open_records_without_waiting(std::sync::Arc::new(move || {
+                let _ = woke.lock().unwrap().send(());
+            }));
+
+        disk.hold();
+        let started = std::time::Instant::now();
+        let tab = crate::shell::window_actions::open_hosted(
+            &mut chrome.borrow_mut(),
+            AppKind::Other("Notes".into()),
+            "New note",
+            crate::shell::window_actions::Destination::Here,
+        );
+        host.update(&shell_doc, &automerge::ROOT);
+        host.update(&shell_doc, &automerge::ROOT);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "opening the tab waited {:?} for the disk",
+            started.elapsed()
+        );
+        let record = RecordId::for_tab(tab);
+        assert!(
+            !disk
+                .leased_while_held
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "a record's document was opened on the loop while the disk was held"
+        );
+        assert!(
+            !store.is_ready(&record),
+            "created before its document opened"
+        );
+        assert!(
+            chrome
+                .borrow()
+                .record_creation_errors(&chrome.borrow().tree())
+                .is_empty(),
+            "an opening document is not a failed creation"
+        );
+
+        disk.release();
+        woken
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the store wakes the loop once the document is open");
+        host.update(&shell_doc, &automerge::ROOT);
+        assert!(
+            store.is_ready(&record),
+            "the woken frame creates the record"
+        );
+        store
+            .await_submitted(&record)
+            .unwrap_or_else(|error| panic!("the new record's writer failed: {error}"));
+        assert!(
+            disk.inner
+                .local_path(&durable_store::StorageKey::record(
+                    PACKAGE,
+                    uuid::Uuid::nil().to_string(),
+                    record.storage_key(),
+                ))
+                .is_some_and(|path| path.is_file()),
+            "the record reaches the disk"
+        );
     }
 
     /// A store persisting below `data_home` rather than `$XDG_DATA_HOME`,

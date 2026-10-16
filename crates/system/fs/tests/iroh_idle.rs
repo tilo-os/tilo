@@ -137,26 +137,30 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
 #[cfg(target_os = "linux")]
 #[test]
 fn an_endpoint_hears_of_network_changes_through_netlink() {
-    const CHILD: &str = "TILO_IROH_NETNS_CHILD";
     const NAME: &str = "an_endpoint_hears_of_network_changes_through_netlink";
-    if std::env::var_os(CHILD).is_some() {
+    if netns::in_child() {
         netns::changes_reach_the_endpoint();
         return;
     }
-    let output = std::process::Command::new("unshare")
-        .args(["--user", "--map-root-user", "--net", "--"])
-        .arg(std::env::current_exe().expect("this test binary"))
-        .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
-        .env(CHILD, "1")
-        .output()
-        .expect("util-linux unshare runs");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    eprintln!("{stdout}\n{stderr}");
-    assert!(
-        output.status.success() && stdout.contains("1 passed"),
-        "the endpoint in its own network namespace did not see the changes"
-    );
+    netns::rerun_in_private_network(NAME);
+}
+
+/// A router that advertises its prefix every few seconds makes the kernel
+/// announce the same address again with new lifetimes to every netlink
+/// subscriber, and an endpoint's network monitor is one. Nothing changed, so
+/// the endpoint must not wake for it: the kernel drops these messages before
+/// they reach the monitor's socket. Here the lifetimes are refreshed five times
+/// a second, in a network namespace of its own, and the endpoint's threads
+/// still do not wake. Runs itself again inside a user and network namespace.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_endpoint_sleeps_through_address_lifetime_refreshes() {
+    const NAME: &str = "an_endpoint_sleeps_through_address_lifetime_refreshes";
+    if netns::in_child() {
+        netns::refreshes_do_not_wake_the_endpoint();
+        return;
+    }
+    netns::rerun_in_private_network(NAME);
 }
 
 #[cfg(target_os = "linux")]
@@ -167,6 +171,157 @@ mod netns {
     };
 
     use super::NOTICED_WITHIN;
+
+    const CHILD: &str = "TILO_IROH_NETNS_CHILD";
+
+    pub(super) fn in_child() -> bool {
+        std::env::var_os(CHILD).is_some()
+    }
+
+    /// Run test `name` again in a user and network namespace of its own, where
+    /// it may change `lo`, and require that it passed.
+    pub(super) fn rerun_in_private_network(name: &str) {
+        let output = std::process::Command::new("unshare")
+            .args(["--user", "--map-root-user", "--net", "--"])
+            .arg(std::env::current_exe().expect("this test binary"))
+            .args(["--exact", name, "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .expect("util-linux unshare runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("{stdout}\n{stderr}");
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{name} did not pass in its own network namespace"
+        );
+    }
+
+    /// How long the endpoint is watched while the lifetimes are refreshed.
+    const REFRESH_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+    pub(super) fn refreshes_do_not_wake_the_endpoint() {
+        set_up("lo", true);
+        // The address exists before the endpoint does, as a router's does.
+        let mut refresher = Refresher::new();
+        refresher.refresh();
+        let runtime = super::endpoint_runtime();
+        let endpoint = runtime.block_on(async {
+            iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .relay_mode(iroh::RelayMode::Disabled)
+                .bind()
+                .await
+                .expect("the endpoint binds")
+        });
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let router = {
+            let stop = std::sync::Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                    refresher.refresh();
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                refresher.sent
+            })
+        };
+        let threads = || {
+            let mut threads = tilo_test_env::idle::sample_process(std::process::id())
+                .expect("this process's threads");
+            threads.retain(|thread| thread.comm.starts_with(super::ENDPOINT_THREADS));
+            threads
+        };
+        let before = threads();
+        let started = Instant::now();
+        std::thread::sleep(REFRESH_WINDOW);
+        let wakeups = tilo_test_env::idle::Wakeups::between(before, threads(), started.elapsed());
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        let sent = router.join().expect("the router simulation ends");
+        eprintln!("{sent} lifetime refreshes; the endpoint: {wakeups}");
+        assert!(sent >= 40, "the router simulation ran: {sent}");
+        assert_eq!(
+            wakeups.blocking(),
+            0,
+            "address lifetime refreshes woke the endpoint:\n{wakeups}"
+        );
+        runtime.block_on(endpoint.close());
+    }
+
+    /// Refreshes the lifetimes of `fd00::1` on `lo`, as a router's
+    /// advertisements do to an address derived from its prefix: an
+    /// `RTM_NEWADDR` that replaces the address with the same one.
+    struct Refresher {
+        socket: libc::c_int,
+        sent: u32,
+    }
+
+    impl Refresher {
+        fn new() -> Self {
+            // SAFETY: a plain netlink socket, closed on drop.
+            let socket = unsafe {
+                libc::socket(
+                    libc::AF_NETLINK,
+                    libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                    libc::NETLINK_ROUTE,
+                )
+            };
+            assert!(
+                socket >= 0,
+                "a netlink socket: {}",
+                std::io::Error::last_os_error()
+            );
+            Self { socket, sent: 0 }
+        }
+
+        fn refresh(&mut self) {
+            const RTM_NEWADDR: u16 = 20;
+            // REQUEST | ACK | REPLACE | CREATE
+            const FLAGS: u16 = 0x1 | 0x4 | 0x100 | 0x400;
+            self.sent += 1;
+            let lifetime = 100_000_u32.saturating_sub(self.sent);
+            let address = std::net::Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1).octets();
+            let mut message = Vec::with_capacity(84);
+            message.extend_from_slice(&84_u32.to_ne_bytes());
+            message.extend_from_slice(&RTM_NEWADDR.to_ne_bytes());
+            message.extend_from_slice(&FLAGS.to_ne_bytes());
+            message.extend_from_slice(&self.sent.to_ne_bytes());
+            message.extend_from_slice(&0_u32.to_ne_bytes());
+            let family = u8::try_from(libc::AF_INET6).expect("AF_INET6 fits");
+            message.extend_from_slice(&[family, 128, 0, 0]);
+            message.extend_from_slice(&1_u32.to_ne_bytes());
+            for kind in [2_u16, 1] {
+                // IFA_LOCAL, then IFA_ADDRESS
+                message.extend_from_slice(&20_u16.to_ne_bytes());
+                message.extend_from_slice(&kind.to_ne_bytes());
+                message.extend_from_slice(&address);
+            }
+            message.extend_from_slice(&20_u16.to_ne_bytes());
+            message.extend_from_slice(&6_u16.to_ne_bytes()); // IFA_CACHEINFO
+            for value in [lifetime, lifetime, 0, 0] {
+                message.extend_from_slice(&value.to_ne_bytes());
+            }
+            let mut reply = [0_u8; 256];
+            // SAFETY: sends `message` to the kernel and reads its answer into
+            // `reply`, both alive for the calls.
+            let answered = unsafe {
+                libc::send(self.socket, message.as_ptr().cast(), message.len(), 0);
+                libc::recv(self.socket, reply.as_mut_ptr().cast(), reply.len(), 0)
+            };
+            assert!(
+                answered > 0,
+                "the kernel answered: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+
+    impl Drop for Refresher {
+        fn drop(&mut self) {
+            // SAFETY: the socket is ours and unused after this.
+            unsafe { libc::close(self.socket) };
+        }
+    }
 
     /// An address of its own, added to `lo` under a label.
     const ALIAS: &str = "lo:7";
@@ -267,6 +422,118 @@ mod netns {
         }
         ioctl(&mut request, libc::SIOCSIFADDR);
     }
+}
+
+/// A topic keeps its membership shuffle only while it can send it to a
+/// neighbor. Exercise the public protocol state without wall-clock sleeps,
+/// including a peer returning before and after the pending timer expires.
+#[test]
+fn gossip_stops_shuffling_after_its_last_peer_leaves_and_restarts_on_join() {
+    use iroh_gossip::proto::{Command, Config, PeerData, topic};
+    use tokio::time::Instant;
+
+    let config = Config::default();
+    let interval = config.membership.shuffle_interval;
+    let mut now = Instant::now();
+    let mut owner: topic::State<u64, _> = topic::State::new(1, None, config.clone());
+    let mut peer: topic::State<u64, _> = topic::State::new(2, None, config);
+    let join = peer
+        .handle(topic::InEvent::Command(Command::Join(vec![1])), now)
+        .find_map(|event| match event {
+            topic::OutEvent::SendMessage(1, message) => Some(message),
+            _ => None,
+        })
+        .expect("the peer sends its join request");
+    let shuffles = |events: Vec<topic::OutEvent<u64>>| -> Vec<topic::Timer<u64>> {
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                topic::OutEvent::ScheduleTimer(after, timer @ topic::Timer::Swarm(_))
+                    if after == interval =>
+                {
+                    Some(timer)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(
+        shuffles(
+            owner
+                .handle(topic::InEvent::UpdatePeerData(PeerData::default()), now)
+                .collect()
+        )
+        .is_empty(),
+        "a lone topic needs no membership shuffle"
+    );
+    let mut armed = shuffles(
+        owner
+            .handle(topic::InEvent::RecvMessage(2, join.clone()), now)
+            .collect(),
+    );
+    assert!(owner.has_active_peers(), "the peer joined the topic");
+    assert_eq!(armed.len(), 1, "a neighbor arms one shuffle");
+
+    // While linked, the same cadence and shuffle messages must survive.
+    now += interval;
+    let events: Vec<_> = owner
+        .handle(topic::InEvent::TimerExpired(armed.pop().unwrap()), now)
+        .collect();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, topic::OutEvent::SendMessage(2, _))),
+        "a live neighbor still receives the shuffle"
+    );
+    armed = shuffles(events);
+    assert_eq!(armed.len(), 1, "a live topic rearms exactly one shuffle");
+    owner
+        .handle(topic::InEvent::PeerDisconnected(2), now)
+        .for_each(drop);
+    assert!(!owner.has_active_peers(), "the last peer left");
+
+    // The outstanding timer may fire once, but it must not keep waking a
+    // desktop that has nobody with whom to exchange membership information.
+    now += interval;
+    let events: Vec<_> = owner
+        .handle(topic::InEvent::TimerExpired(armed.pop().unwrap()), now)
+        .collect();
+    assert!(
+        events.is_empty(),
+        "a peerless topic stops shuffling: {events:?}"
+    );
+    armed = shuffles(
+        owner
+            .handle(topic::InEvent::RecvMessage(2, join.clone()), now)
+            .collect(),
+    );
+    assert!(owner.has_active_peers(), "the returning peer joined");
+    assert_eq!(armed.len(), 1, "a returning peer restarts one shuffle");
+
+    // A shorter absence must reuse the still-pending timer, not duplicate it.
+    owner
+        .handle(topic::InEvent::PeerDisconnected(2), now)
+        .for_each(drop);
+    assert!(
+        shuffles(
+            owner
+                .handle(topic::InEvent::RecvMessage(2, join), now)
+                .collect()
+        )
+        .is_empty(),
+        "returning before expiry does not arm a second shuffle"
+    );
+    now += interval;
+    assert_eq!(
+        shuffles(
+            owner
+                .handle(topic::InEvent::TimerExpired(armed.pop().unwrap()), now)
+                .collect()
+        )
+        .len(),
+        1,
+        "the pending timer continues shuffling after the early return"
+    );
 }
 
 /// iroh-gossip sweeps a topic's message cache only while something is

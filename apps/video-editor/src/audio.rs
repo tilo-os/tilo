@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 use crate::model::{ClipId, MediaId, Project, TrackId, TrackKind};
+use ui::lock::MutexRecover as _;
 
 /// Everything mixes at one rate, so summing never has to resample.
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -1082,15 +1083,9 @@ impl AudioMonitor {
                     let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
                     continue;
                 }
-                let at = *state
-                    .position
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let at = *state.position.lock_recover();
                 let (block, report) = {
-                    let project = state
-                        .project
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let project = state.project.lock_recover();
                     mix_block_metered(&project, at, MONITOR_BLOCK, source.as_mut())
                 };
                 // Recorded before the push, so a device that goes away
@@ -1103,10 +1098,7 @@ impl AudioMonitor {
                 // Advance by exactly what was mixed, so the audio clock
                 // is the sample count rather than wall time and cannot
                 // drift away from the picture.
-                *state
-                    .position
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = at + block_secs;
+                *state.position.lock_recover() = at + block_secs;
             }
         })
         .ok();

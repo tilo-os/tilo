@@ -143,6 +143,9 @@ async fn read(
                 break false;
             };
             if let Ok(data) = chunk.into_data() {
+                client
+                    .received
+                    .fetch_add(data.len() as u64, Ordering::Relaxed);
                 buffer.extend_from_slice(&data);
             }
             let mut ended = None;

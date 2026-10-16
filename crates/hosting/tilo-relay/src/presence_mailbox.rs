@@ -50,11 +50,12 @@
 //! presence.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use neighbour_wire::PresenceSlot;
 use tilo_delivery_protocol::transport_v2::{MAX_SLOTTED_PRESENCE_BYTES, PresenceSlotKey};
-use tilo_peer_state::PresenceSlot;
+use tilo_lock::MutexRecover as _;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
@@ -193,7 +194,7 @@ impl State {
 
 impl PresenceMailbox {
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// Post `payload`, which `author` sent to room `workspace_id` in `slot`

@@ -37,6 +37,7 @@ pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
 
 mod catalogue;
 pub mod feedback;
+pub mod own_device;
 mod pending;
 mod wait;
 
@@ -465,6 +466,108 @@ pub fn room_governance_resource(room: &str) -> String {
     format!("{ROOM_GOVERNANCE_KIND}:{room}")
 }
 
+/// Pairing a nearby device with the person's identity. The host runs it —
+/// LAN discovery, and the approval an administrator authenticates — so no
+/// application starts a privileged process. It is answered under the
+/// host's provider, which a caller names without reading a catalogue, for
+/// the person at this device in the room their connection was admitted to.
+pub mod device_pairing {
+    use super::{ActionAddress, RemoteActionTarget};
+
+    /// The provider the host answers pairing under.
+    pub const PROVIDER: &str = "tilo.device-pairing";
+    /// The resource the steps are actions of.
+    pub const RESOURCE: &str = "identity.device.pair";
+    /// Look for a nearby device (`role`); answers the device found.
+    pub const DISCOVER: &str = "discover";
+    /// Admit a discovered device (`role`, `device`, `service`, `confirm`).
+    pub const APPROVE: &str = "approve";
+    /// Forget a discovered device and stop approving it (`device`).
+    pub const REJECT: &str = "reject";
+
+    /// The target of pairing step `step`.
+    #[must_use]
+    pub fn target(step: &str) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: ActionAddress::new(RESOURCE, step),
+        }
+    }
+}
+
+/// Administering the person's identities and the devices trusted under
+/// them. The host keeps the identity store — records, root secrets, the
+/// active selector, device fleets — and runs every step, so no application
+/// reads a secret or signs with the root key. It is answered under the
+/// host's provider, which a caller names without reading a catalogue, for
+/// the person at this device in the room their connection was admitted to.
+pub mod identity_admin {
+    use serde::{Deserialize, Serialize};
+
+    use super::{ActionAddress, RemoteActionTarget};
+
+    /// The provider the host answers identity administration under.
+    pub const PROVIDER: &str = "tilo.identity";
+    /// The resource the steps are actions of.
+    pub const RESOURCE: &str = "identity";
+    /// The person's identities on this device, without secrets.
+    pub const LIST: &str = "list";
+    /// Sign new apps in as identity `id`.
+    pub const ACTIVATE: &str = "activate";
+    /// Remove identity `id` from this device (`confirm`).
+    pub const REMOVE: &str = "remove";
+    /// Move identity `id`'s key from a plain file into protected storage.
+    pub const PROTECT: &str = "protect";
+    /// The devices trusted under the room's identity, as [`FleetDevice`]s.
+    pub const DEVICES: &str = "devices";
+    /// Root-sign a device's permanent revocation (`device`, `reason`,
+    /// `confirm`).
+    pub const REVOKE: &str = "revoke";
+    /// Root-revoke and stop a paired home server (`device`, `service`,
+    /// `confirm`).
+    pub const HOME_PEER_REMOVE: &str = "home-peer-remove";
+    /// Deliver the home-server removals that could not reach their server.
+    pub const HOME_PEER_RETRY: &str = "home-peer-retry-removals";
+
+    /// Every step, in the order a catalogue lists them.
+    pub const STEPS: [&str; 8] = [
+        LIST,
+        ACTIVATE,
+        REMOVE,
+        PROTECT,
+        DEVICES,
+        REVOKE,
+        HOME_PEER_REMOVE,
+        HOME_PEER_RETRY,
+    ];
+
+    /// The target of identity step `step`.
+    #[must_use]
+    pub fn target(step: &str) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: ActionAddress::new(RESOURCE, step),
+        }
+    }
+
+    /// One device trusted under an identity, as [`DEVICES`] answers it.
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct FleetDevice {
+        /// The name the device was enrolled with.
+        pub label: String,
+        /// The device's public key, 64 lowercase hex characters.
+        pub key_hex: String,
+        /// The key's short form people compare between screens.
+        pub fingerprint: String,
+        /// Whether it is the device answering.
+        pub current: bool,
+        /// Whether its trust was revoked.
+        pub revoked: bool,
+        /// Whether it may host workspaces for the person.
+        pub can_host: bool,
+    }
+}
+
 /// Why a host refuses a directory action that asks for confirmation when
 /// the request names no revision: the confirmation covers the action as the
 /// person was shown it, which only that revision identifies. A caller that
@@ -890,7 +993,14 @@ impl InvocationState {
 }
 
 /// Why a host would not do what was asked. Every variant means nothing ran.
+///
+/// On the wire it keeps the shape peers decoded before
+/// [`Self::StaleRevision`] existed: that variant travels as the
+/// [`Self::InvalidRequest`] those peers sent and understand, and such a
+/// refusal from them reads back as it. A variant an older peer cannot
+/// decode would fail its whole frame.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[serde(from = "WireHostError", into = "WireHostError")]
 pub enum ActionHostError {
     /// The host serves no actions right now (no live apps, service off).
     #[error("remote actions are unavailable: {reason}")]
@@ -908,6 +1018,11 @@ pub enum ActionHostError {
     /// The request is malformed for this action (arguments, input).
     #[error("invalid request: {reason}")]
     InvalidRequest { reason: String },
+    /// The target changed since the revision the request named, or the one
+    /// its host resolved it against: list it again and invoke what is
+    /// offered now.
+    #[error("invalid request: {}", STALE_REVISION_REASON)]
+    StaleRevision,
     /// The invocation id is unknown to this caller.
     #[error("no such invocation")]
     UnknownInvocation,
@@ -932,10 +1047,88 @@ impl ActionHostError {
             Self::NotPermitted => "not_permitted",
             Self::ConfirmationRequired => "action_confirmation_required",
             Self::InvalidRequest { .. } => "invalid_arguments",
+            Self::StaleRevision => "stale_revision",
             Self::UnknownInvocation => "unknown_invocation",
             Self::InvocationConflict => "invocation_conflict",
             Self::NotCancellable { .. } => "not_cancellable",
             Self::Refused { .. } => "refused",
+        }
+    }
+
+    /// Whether the host refused a directory action that asks for
+    /// confirmation because the request named no revision
+    /// ([`CONFIRMED_ACTION_NEEDS_REVISION`]).
+    #[must_use]
+    pub fn needs_revision(&self) -> bool {
+        matches!(self, Self::InvalidRequest { reason } if reason == CONFIRMED_ACTION_NEEDS_REVISION)
+    }
+}
+
+/// What [`ActionHostError::StaleRevision`] says, and the reason it carries
+/// on the wire as an [`ActionHostError::InvalidRequest`].
+pub const STALE_REVISION_REASON: &str = "the target changed since that revision; list it again";
+
+/// The reasons hosts gave a stale revision before it had a variant: such a
+/// refusal from a peer that still sends one reads as
+/// [`ActionHostError::StaleRevision`].
+const UNTYPED_STALE_REVISION_REASONS: [&str; 4] = [
+    STALE_REVISION_REASON,
+    "the action changed since that revision; list it again",
+    "the room changed since that revision",
+    "the catalogue changed since that revision",
+];
+
+/// [`ActionHostError`] as it travels: only variants every peer decodes.
+#[derive(Serialize, Deserialize)]
+#[serde(rename = "ActionHostError")]
+enum WireHostError {
+    Unavailable { reason: String },
+    UnknownAction,
+    NotPermitted,
+    ConfirmationRequired,
+    InvalidRequest { reason: String },
+    UnknownInvocation,
+    InvocationConflict,
+    NotCancellable { reason: String },
+    Refused { reason: String },
+}
+
+impl From<ActionHostError> for WireHostError {
+    fn from(error: ActionHostError) -> Self {
+        match error {
+            ActionHostError::Unavailable { reason } => Self::Unavailable { reason },
+            ActionHostError::UnknownAction => Self::UnknownAction,
+            ActionHostError::NotPermitted => Self::NotPermitted,
+            ActionHostError::ConfirmationRequired => Self::ConfirmationRequired,
+            ActionHostError::InvalidRequest { reason } => Self::InvalidRequest { reason },
+            ActionHostError::StaleRevision => Self::InvalidRequest {
+                reason: STALE_REVISION_REASON.to_owned(),
+            },
+            ActionHostError::UnknownInvocation => Self::UnknownInvocation,
+            ActionHostError::InvocationConflict => Self::InvocationConflict,
+            ActionHostError::NotCancellable { reason } => Self::NotCancellable { reason },
+            ActionHostError::Refused { reason } => Self::Refused { reason },
+        }
+    }
+}
+
+impl From<WireHostError> for ActionHostError {
+    fn from(error: WireHostError) -> Self {
+        match error {
+            WireHostError::InvalidRequest { reason } | WireHostError::Refused { reason }
+                if UNTYPED_STALE_REVISION_REASONS.contains(&reason.as_str()) =>
+            {
+                Self::StaleRevision
+            }
+            WireHostError::Unavailable { reason } => Self::Unavailable { reason },
+            WireHostError::UnknownAction => Self::UnknownAction,
+            WireHostError::NotPermitted => Self::NotPermitted,
+            WireHostError::ConfirmationRequired => Self::ConfirmationRequired,
+            WireHostError::InvalidRequest { reason } => Self::InvalidRequest { reason },
+            WireHostError::UnknownInvocation => Self::UnknownInvocation,
+            WireHostError::InvocationConflict => Self::InvocationConflict,
+            WireHostError::NotCancellable { reason } => Self::NotCancellable { reason },
+            WireHostError::Refused { reason } => Self::Refused { reason },
         }
     }
 }
@@ -1633,6 +1826,73 @@ mod tests {
 
     use super::*;
     use crate::{ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind};
+
+    /// A stale revision is typed in this build and travels in the shape
+    /// every peer decodes: an older peer reads the invalid request it always
+    /// sent, and the reasons older hosts gave it read back as the variant.
+    #[test]
+    fn a_stale_revision_is_typed_and_travels_as_older_peers_read_it() {
+        let encoded = serde_json::to_value(ActionHostError::StaleRevision).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({"InvalidRequest": {"reason": STALE_REVISION_REASON}})
+        );
+        assert_eq!(
+            serde_json::from_value::<ActionHostError>(encoded).unwrap(),
+            ActionHostError::StaleRevision
+        );
+        assert_eq!(ActionHostError::StaleRevision.code(), "stale_revision");
+        for (variant, reason) in [
+            (
+                "InvalidRequest",
+                "the action changed since that revision; list it again",
+            ),
+            ("Refused", "the room changed since that revision"),
+            ("Refused", "the catalogue changed since that revision"),
+        ] {
+            let sent = serde_json::json!({ variant: { "reason": reason } });
+            assert_eq!(
+                serde_json::from_value::<ActionHostError>(sent).unwrap(),
+                ActionHostError::StaleRevision,
+                "{variant}: {reason}"
+            );
+        }
+        // Only those exact reasons: a refusal that merely mentions a
+        // revision is the refusal it is.
+        let other = ActionHostError::Refused {
+            reason: "the call changed since that revision, honestly".into(),
+        };
+        let round_trip: ActionHostError =
+            serde_json::from_value(serde_json::to_value(&other).unwrap()).unwrap();
+        assert_eq!(round_trip, other);
+        let needs = ActionHostError::InvalidRequest {
+            reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
+        };
+        assert!(needs.needs_revision());
+        assert!(!ActionHostError::StaleRevision.needs_revision());
+    }
+
+    /// A failure's structured details travel beside its message.
+    #[test]
+    fn a_failure_with_details_round_trips() {
+        let update = InvocationUpdate::Failed {
+            invocation: InvocationId::new(),
+            error: ActionFailure {
+                code: "invalid_arguments".into(),
+                message: "argument `pageSize` must be at most 64".into(),
+                details: Some(serde_json::json!({
+                    "param": "pageSize",
+                    "violation": {"kind": "maximum", "bound": 64}
+                })),
+                retryable: false,
+            },
+        };
+        let encoded = serde_json::to_string(&update).unwrap();
+        assert_eq!(
+            serde_json::from_str::<InvocationUpdate>(&encoded).unwrap(),
+            update
+        );
+    }
 
     #[test]
     fn a_bot_is_its_own_principal_acting_for_its_installer() {

@@ -139,6 +139,10 @@ pub(super) struct Runtime {
     /// writer (its owner, its accepted authority, its path) is kept beside
     /// it, so the loop never waits for a disk.
     pub writer: Mutex<Writer>,
+    /// Serializes opening this writer's owner ([`super::open`]), which binds
+    /// and publishes without holding the tree, so the tree's lock is never
+    /// held across a disk sync. Nothing on the frame loop takes it.
+    opening: Mutex<()>,
     /// The state file this writer owns, set once its lease is held. It
     /// never changes afterwards.
     path: std::sync::OnceLock<PathBuf>,
@@ -164,6 +168,7 @@ impl Default for Runtime {
     fn default() -> Self {
         Self {
             writer: Mutex::new(Writer::default()),
+            opening: Mutex::new(()),
             path: std::sync::OnceLock::new(),
             accepted: Mutex::new(None),
             attached: Mutex::new(None),
@@ -269,6 +274,21 @@ impl NativeStateRuntime {
             return Err("state writer already belongs to a different native tree handle".into());
         }
         Ok(Some(owner))
+    }
+    /// Held for the whole of opening this writer's owner, so two opens
+    /// never both restore one.
+    pub(super) fn opening(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.0.opening.lock()
+    }
+    /// Whether `other` is this same writer, not merely another handle on
+    /// the same file.
+    pub(super) fn is(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+    /// Whether the record the state file holds, as of the latest completed
+    /// bind or publication, is the one whose digest is `authority`.
+    pub(super) fn holds(&self, authority: [u8; 32]) -> bool {
+        *self.0.accepted.lock() == Some(authority)
     }
     pub(super) fn attach(&self, owner: &NativeWorkspaceOwner, tree: &WorkspaceTreeHandle) {
         *self.0.attached.lock() = Some((owner.downgrade(), tree.downgrade()));

@@ -10,15 +10,6 @@
 //! deployed, lives in a content store doing dedup/streaming — gzip would
 //! only waste CPU.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -511,6 +502,24 @@ fn main() -> Result<()> {
     }
 }
 
+/// Fill `[package.keywords]` from the app's `search/*.ftl`, which are the
+/// only place the words are written; a manifest that also declares some by
+/// hand is refused rather than merged.
+fn add_search_keywords(manifest: &mut Manifest, manifest_path: &Path) -> Result<()> {
+    let app_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let keywords = tilo_app_package::search_keywords::read(app_dir).map_err(|e| anyhow!(e))?;
+    if !keywords.is_empty() && !manifest.package.keywords.is_empty() {
+        bail!(
+            "{} declares [package.keywords] and has search/*.ftl; keep the words in search/*.ftl only",
+            manifest_path.display()
+        );
+    }
+    if !keywords.is_empty() {
+        manifest.package.keywords = keywords;
+    }
+    Ok(())
+}
+
 fn cmd_pack(
     manifest_path: &Path,
     payload_dir: &Path,
@@ -521,6 +530,7 @@ fn cmd_pack(
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("read manifest {}", manifest_path.display()))?;
     let mut manifest = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    add_search_keywords(&mut manifest, manifest_path)?;
 
     let identity = match identity_path {
         Some(p) => load_identity(p)?,
@@ -631,7 +641,8 @@ struct PackDesktopArgs<'a> {
 fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
     let manifest_src = std::fs::read_to_string(args.manifest)
         .with_context(|| format!("read manifest {}", args.manifest.display()))?;
-    let authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    let mut authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    add_search_keywords(&mut authored, args.manifest)?;
     let name = args
         .executable
         .file_name()
@@ -726,9 +737,8 @@ fn cmd_compress(file: &Path, output: Option<&Path>) -> Result<()> {
         },
         Path::to_path_buf,
     );
-    let temp = output.with_extension(format!("zst.tmp.{}", std::process::id()));
-    std::fs::write(&temp, &twin).with_context(|| format!("write {}", temp.display()))?;
-    std::fs::rename(&temp, &output).with_context(|| format!("write {}", output.display()))?;
+    tilo_files::native::atomic::write(&output, &twin)
+        .with_context(|| format!("write {}", output.display()))?;
     eprintln!(
         "compressed {} -> {}: {} -> {} bytes",
         file.display(),
@@ -1187,10 +1197,7 @@ fn reconcile_entry_history(
             .registry_owner_pubkey
             .as_deref()
             .context("runtime catalogue requires an existing registry owner pin")?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .context("clock precedes Unix epoch")?
-            .as_secs();
+        let now = tilo_clock::try_unix_now().context("clock precedes Unix epoch")?;
         registry_types::verify_snapshot(&catalogue, owner, now)
             .context("verify runtime catalogue against registry owner")?;
         let dropped = registry_client::runtime_history::reconcile(

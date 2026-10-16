@@ -272,6 +272,9 @@ impl BrowserWidget {
                 "show-downloads",
             )));
         }
+        for button in self.extensions.toolbar_buttons() {
+            row = row.push(button);
+        }
         row = row.push(Box::new(self.overflow_menu()));
         Box::new(row)
     }

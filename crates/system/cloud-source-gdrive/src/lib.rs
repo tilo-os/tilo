@@ -59,7 +59,7 @@ mod upload;
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use cloud_source::{
@@ -76,6 +76,7 @@ use serde::{Deserialize, Serialize};
 pub use reqwest::Url;
 
 use crate::api::{About, ErrorBody, File, FileList, RevisionEntry, RevisionList};
+use tilo_lock::MutexRecover as _;
 
 /// Google's API origin.
 pub const DEFAULT_API: &str = "https://www.googleapis.com/";
@@ -178,10 +179,6 @@ pub(crate) struct Inner {
     folders: Mutex<HashMap<String, Vec<String>>>,
 }
 
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 impl GDrive {
     /// A source for `config` authenticating with `credentials`. No request
     /// is made until the first call.
@@ -241,12 +238,12 @@ impl Inner {
         if let Some(root) = self.configured_root() {
             return Ok(root.to_owned());
         }
-        let cached = lock(&self.real_root).clone();
+        let cached = self.real_root.lock_recover().clone();
         if let Some(root) = cached {
             return Ok(root);
         }
         let file = self.get_file("root", "id")?;
-        *lock(&self.real_root) = Some(file.id.clone());
+        *self.real_root.lock_recover() = Some(file.id.clone());
         Ok(file.id)
     }
 
@@ -280,7 +277,7 @@ impl Inner {
     }
 
     pub(crate) fn remember_folder(&self, id: &str, parents: Vec<String>) {
-        lock(&self.folders).insert(id.to_owned(), parents);
+        self.folders.lock_recover().insert(id.to_owned(), parents);
     }
 
     // --- HTTP -------------------------------------------------------------

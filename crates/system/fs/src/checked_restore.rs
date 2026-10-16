@@ -149,7 +149,8 @@ impl QuickFS {
     /// bytes are `data`: the current document plus one change that reaches
     /// the selected state, so its history continues instead of forking. With
     /// no document on one side there is nothing to merge, and the selected
-    /// bytes are the result.
+    /// bytes are the result. The current document's bytes must already be
+    /// local; this never fetches them.
     pub(super) fn restored_document(
         &self,
         current_hash: Option<Hash>,
@@ -162,12 +163,9 @@ impl QuickFS {
         if data.is_empty() || Some(ContentHash(*current_hash.as_bytes())) == selected {
             return Ok(data.to_vec());
         }
-        let hydrator = self.hydrator.clone();
-        let handle = hydrator.runtime_handle.clone();
-        let current = tokio::task::block_in_place(|| {
-            handle.block_on(hydrator.read(current_hash, 0, u64::MAX))
-        })
-        .map_err(|_| DocumentRestoreError::Unavailable)?;
+        let current = self
+            .local_version_bytes(Some(ContentHash(*current_hash.as_bytes())))
+            .ok_or(DocumentRestoreError::Unavailable)?;
         match tilo_doc::restore::restore_serialized(&current, data, None) {
             Ok(Some(restored)) => Ok(restored),
             Ok(None) => Ok(current),
@@ -312,9 +310,15 @@ impl QuickFS {
         self.review_locked(ino, &namespace, &history, &repository)
     }
 
+    /// Restore `ino` as `request` asks. Content that is not local yet is
+    /// hydrated by a history job and the answer is `RecoveryPending`; the
+    /// same request, repeated once the job is ready, commits.
     pub fn checked_history_restore(&self, ino: u64, request: Request) -> Outcome {
         match self.restore_checked_inner(ino, request) {
-            Ok(value) | Err(value) => value,
+            Ok(Step::Settled(value)) | Err(value) => value,
+            Ok(Step::Hydrating) => Outcome::RecoveryPending {
+                intent_id: request.intent_id,
+            },
         }
     }
 
@@ -344,9 +348,19 @@ impl QuickFS {
                 &path,
                 Access::Read,
             )?;
-            let receipt = journal
-                .checked_receipt(intent_id)
-                .ok_or(Outcome::Unavailable)?;
+            let Some(receipt) = journal.checked_receipt(intent_id) else {
+                // Not admitted yet: its content may still be hydrating.
+                return Err(
+                    if matches!(
+                        self.history_job(ino, intent_id),
+                        Some(fs_protocol::files::HistoryJobStateV1::Hydrating { .. })
+                    ) {
+                        Outcome::RecoveryPending { intent_id }
+                    } else {
+                        Outcome::Unavailable
+                    },
+                );
+            };
             if namespace.record_id_for(ino) != Some(receipt.record_id)
                 || self.restore_workspace()? != receipt.workspace_id
             {
@@ -372,7 +386,13 @@ impl QuickFS {
         let request: Request = serde_json::from_slice(value).map_err(|_| EINVAL)?;
         // EALREADY is the explicit successful no-op receipt for this transport;
         // applied/pending use the durable exact-ID result xattr. Never downgrade.
-        match self.checked_history_restore(ino, request) {
+        // EINPROGRESS: the selected content is hydrating in a history job;
+        // repeat the request once it is ready.
+        let outcome = match self.restore_checked_inner(ino, request) {
+            Ok(Step::Hydrating) => return Err(libc::EINPROGRESS),
+            Ok(Step::Settled(value)) | Err(value) => value,
+        };
+        match outcome {
             Outcome::Applied { .. } | Outcome::RecoveryPending { .. } => Ok(()),
             Outcome::Unchanged { .. } => Err(libc::EALREADY),
             Outcome::NotVisible => Err(ENOENT),
@@ -546,7 +566,7 @@ impl QuickFS {
                   namespace, history, repository, ACL) are acquired and released in a fixed order; \
                   splitting it would scatter that ordering"
     )]
-    fn restore_checked_inner(&self, ino: u64, request: Request) -> Result<Outcome, Outcome> {
+    fn restore_checked_inner(&self, ino: u64, request: Request) -> Result<Step, Outcome> {
         request.validate().map_err(|_| Outcome::InvalidRequest)?;
         self.check_access(ino, Access::Write).map_err(|errno| {
             if errno == EROFS {
@@ -573,7 +593,7 @@ impl QuickFS {
             if matches!(outcome, Outcome::Applied { .. }) {
                 self.project_checked_availability(request.review.record_id);
             }
-            return Ok(outcome);
+            return Ok(Step::Settled(outcome));
         }
         let (selected_id, compensates) = self.restore_selection(runtime, ino, request)?;
         if request.review.mount_lifetime != self.mount_lifetime {
@@ -589,16 +609,25 @@ impl QuickFS {
             })
             .ok_or(Outcome::InvalidRequest)?;
         let kind = Self::restore_kind(&self.ns(), ino)?;
-        let data = if let Some(hash) = selected.content_hash {
-            let hydrator = self.hydrator.clone();
-            let handle = hydrator.runtime_handle.clone();
-            tokio::task::block_in_place(|| {
-                handle.block_on(hydrator.read(Hash::from(hash.0), 0, u64::MAX))
-            })
-            .map_err(|_| Outcome::Unavailable)?
-        } else {
-            Vec::new()
-        };
+        // The selected version must be local before anything commits; a
+        // serialized document also merges into the current one. What is
+        // missing hydrates in a history job, never on this FUSE worker.
+        let mut needed = vec![selected.content_hash];
+        if kind.is_serialized_document() {
+            needed.push(
+                self.ns()
+                    .hash_for(ino)
+                    .map(|hash| ContentHash(*hash.as_bytes())),
+            );
+        }
+        match self.history_content_local(ino, request.intent_id, &needed) {
+            Ok(()) => {}
+            Err(libc::EINPROGRESS) => return Ok(Step::Hydrating),
+            // A job for this intent is still fetching other content: the
+            // current document changed under it.
+            Err(EBUSY) => return Err(Outcome::ReviewRequired),
+            Err(_) => return Err(Outcome::Unavailable),
+        }
         #[cfg(test)]
         test_pause(request.intent_id, TestPause::Hydrated);
         let (current_hash, current_size) = {
@@ -613,10 +642,14 @@ impl QuickFS {
             None => 0,
         };
         // The bytes the restore makes current. Opaque content is the selected
-        // version's own; a serialized document is the current document plus
-        // a change reaching the selected state, written to the store before
-        // any lock is taken, as the selected bytes already are.
-        let (restored_hash, data) = if kind.is_serialized_document() {
+        // version's own, already in the store: it is committed by hash and
+        // never read. A serialized document is the current document plus a
+        // change reaching the selected state, written to the store before
+        // any lock is taken.
+        let (restored_hash, restored_len) = if kind.is_serialized_document() {
+            let data = self
+                .local_version_bytes(selected.content_hash)
+                .ok_or(Outcome::Unavailable)?;
             let restored = self
                 .restored_document(current_hash, selected.content_hash, &data)
                 .map_err(DocumentRestoreError::outcome)?;
@@ -624,9 +657,13 @@ impl QuickFS {
                 .write_content_blocking(&restored)
                 .map_err(|_| Outcome::Unavailable)?
                 .map(|hash| ContentHash(*hash.as_bytes()));
-            (hash, restored)
+            (hash, restored.len() as u64)
         } else {
-            (selected.content_hash, data)
+            (
+                selected.content_hash,
+                self.local_version_len(selected.content_hash)
+                    .ok_or(Outcome::Unavailable)?,
+            )
         };
         let mut journal = runtime.journal.lock().map_err(|_| Outcome::Unavailable)?;
         let _publication = publisher
@@ -660,7 +697,7 @@ impl QuickFS {
             if admitted != request {
                 return Err(Outcome::InvalidRequest);
             }
-            return Ok(
+            return Ok(Step::Settled(
                 if journal.checked_phase(request.intent_id) == Some(Phase::BroadcastCommitted) {
                     Outcome::Applied {
                         receipt: journal
@@ -672,7 +709,7 @@ impl QuickFS {
                         intent_id: request.intent_id,
                     }
                 },
-            );
+            ));
         }
         if journal.get(request.intent_id).is_some() {
             return Err(Outcome::InvalidRequest);
@@ -700,11 +737,11 @@ impl QuickFS {
         if prior.byte_len != current_len {
             return Err(Outcome::Unavailable);
         }
-        if prior.content_hash == restored_hash && prior.byte_len == data.len() as u64 {
-            return Ok(Outcome::Unchanged {
+        if prior.content_hash == restored_hash && prior.byte_len == restored_len {
+            return Ok(Step::Settled(Outcome::Unchanged {
                 intent_id: request.intent_id,
                 review: current_review,
-            });
+            }));
         }
         if state.heads.len() > fs_protocol::files::MAX_VERSION_PARENTS {
             return Err(Outcome::Unavailable);
@@ -725,7 +762,7 @@ impl QuickFS {
         let metadata = VersionMetadataDigest {
             path: Some(path.clone()),
             kind: 2,
-            byte_len: data.len() as u64,
+            byte_len: restored_len,
             deleted: false,
         };
         let metadata_hash = ContentHash(
@@ -747,7 +784,7 @@ impl QuickFS {
             record_id: proposed.record_id,
             version_id: proposed.id,
             content_hash: proposed.content_hash,
-            byte_len: data.len() as u64,
+            byte_len: restored_len,
             metadata_hash,
         };
         let mut participant = FileMutationParticipant {
@@ -887,10 +924,23 @@ impl QuickFS {
             .advance(request.intent_id, Phase::BroadcastCommitted, Some(delta))
             .map_err(|_| pending())?;
         drop(journal);
-        Ok(Outcome::Applied {
+        Ok(Step::Settled(Outcome::Applied {
             receipt: result_receipt,
-        })
+        }))
     }
+}
+
+/// How far one pass of a checked restore got.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "lives only on the stack of one restore call, beside the same wire answer the \
+              error side already returns by value"
+)]
+enum Step {
+    /// The final answer for this pass.
+    Settled(Outcome),
+    /// The content is hydrating in a history job; nothing was admitted.
+    Hydrating,
 }
 
 #[cfg(test)]

@@ -35,6 +35,8 @@ serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
 thiserror.workspace = true
+# Parses the slot user's package registry from a descriptor opened without following links.
+toml.workspace = true
 tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 console-control = { path = "../../session/console-control" }
 tilo-actions = { path = "../../collab/actions" }
@@ -46,7 +48,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
-toml.workspace = true
 # The device test drives tilo-vm's own commands against this daemon.
 tilo-test-env = { path = "../test-env" }
 tilo-vm = { path = "../tilo-vm" }

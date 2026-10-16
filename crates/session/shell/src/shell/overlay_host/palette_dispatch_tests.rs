@@ -1,7 +1,6 @@
 use super::*;
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::WorkspaceTree;
-use ui::TextRole;
 use ui::widget::Container;
 
 fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
@@ -917,20 +916,16 @@ fn an_app_that_showed_its_window_and_then_failed_is_not_reported_as_unopened() {
 #[test]
 fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
     /// A launcher parent may exit after daemonising but before its GUI child
-    /// maps a toplevel. The opening acknowledgement retires immediately while
-    /// the placement promise remains available for the bounded handoff grace.
-    fn clean_launch_exit_retires_its_pending_open_notice() {
-        let (mut host, chrome) = host_with_launch_polling();
+    /// maps a toplevel. The pending launch settles immediately while the
+    /// placement promise remains available for the bounded handoff grace.
+    fn clean_launch_exit_settles_its_pending_launch() {
+        let (mut host, _chrome) = host_with_launch_polling();
         let package_id = "so.tilo.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,
             crate::compositor::tab_binding::Placement::NewGroup,
         );
-        let notice = chrome.borrow_mut().push_notification_full(
-            tilo_desktop::notifications::Notification::new("Opening Fixture", "Loading…")
-                .with_dismiss_after(std::time::Duration::from_secs(120)),
-        );
-        crate::shell::catalogue::note_pending_notice(package_id, notice);
+        crate::shell::catalogue::note_pending_launch(package_id);
         crate::shell::launcher::push_event(crate::shell::launcher::LaunchEvent {
             package_id: package_id.to_string(),
             display_name: "Fixture".to_string(),
@@ -939,18 +934,10 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
             kind: crate::shell::launcher::LaunchEventKind::Exited,
         });
 
-        assert!(host.drain_launch_events());
+        host.drain_launch_events();
         assert!(
-            chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .all(|n| n.id != notice),
-            "the terminal launch event must dismiss its opening notice"
-        );
-        assert!(
-            crate::shell::catalogue::pending_notice(package_id).is_none(),
-            "the pending id must be consumed along with the card"
+            !crate::shell::catalogue::pending_launch(package_id),
+            "the terminal launch event must settle the pending launch"
         );
         assert_eq!(
             crate::shell::launcher::placement_for_toplevel(package_id, 99_001),
@@ -1016,7 +1003,7 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
         );
     }
 
-    clean_launch_exit_retires_its_pending_open_notice();
+    clean_launch_exit_settles_its_pending_launch();
     launchpad_refusal_reporting_does_not_duplicate_callback_notice();
     escape_dismisses_the_latest_launch_error_without_touching_layout();
 }
@@ -1173,28 +1160,19 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     fn shortcut_reference_groups_keep_a_consistent_responsive_rhythm() {
         assert_eq!(shortcut_reference_columns(688.0), 3);
         assert_eq!(shortcut_reference_columns(912.0), 3);
-        assert_eq!(shortcut_reference_step(true), 31.0);
-        assert_eq!(shortcut_reference_step(false), 34.0);
-        assert!(shortcut_reference_group_height(true) >= 6.0 * shortcut_reference_step(true));
-        assert!(shortcut_reference_group_height(false) >= 6.0 * shortcut_reference_step(false));
+        assert_eq!(shortcut_reference_columns(520.0), 2);
+        assert!(
+            shortcut_reference_group_height() >= 6.0 * shortcut_reference_step(),
+            "a group must hold its six rows"
+        );
     }
 
-    fn compact_shortcut_reference_keeps_the_complete_action_set_visible() {
+    fn shortcut_reference_keeps_the_complete_action_set() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
-        let body_height = 426.0;
-        let navigation_height = 154.0;
-        let essentials_y = navigation_height + 12.0;
-        let reference_top = essentials_y + 18.0;
-        let final_pill_bottom = reference_top + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
-
         assert_eq!(
             rows.len(),
             18,
             "the guide must retain every documented desktop action without repeating itself"
-        );
-        assert!(
-            final_pill_bottom <= body_height,
-            "the final shortcut pill must remain inside an 800×600 guide body"
         );
         for essential in [
             "Screenshot",
@@ -1206,27 +1184,25 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         }
     }
 
-    fn compact_shortcut_recovery_actions_fit_their_cells() {
+    fn shortcut_reference_keycaps_fit_their_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let theme = Theme::dark();
         let mut renderer = TextRenderer::new();
-        let chord_size = Theme::dark().tokens.typography.size(TextRole::Caption);
-        // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
-        // compact guide uses three semantic columns with quiet key pills.
-        let columns = shortcut_reference_columns(688.0);
-        assert_eq!(columns, 3);
-        let available_text_width = (688.0 - 12.0 * 2.0) / 3.0 - 24.0;
+        // The narrowest three-column body is 640 wide.
+        let cell = (640.0 - 12.0 * 2.0) / 3.0 - 24.0;
         for (_, chord) in rows {
-            let (width, _) = renderer.measure(&chord, chord_size, None);
-            assert!(
-                f64::from(width) + 16.0 <= available_text_width,
-                "{chord:?} must not clip inside the compact guide's key pill"
-            );
+            let mut width = 0.0;
+            for (index, keys) in shortcut_chord_keycaps(&chord).iter().enumerate() {
+                if index > 0 {
+                    width += 20.0;
+                }
+                width += ui::widget::InputHint::measure_keycap_labels(keys, &mut renderer, &theme);
+            }
+            assert!(width <= cell, "{chord:?} is {width}px, cell is {cell}px");
         }
     }
 
     fn shortcut_reference_columns_stay_semantically_grouped() {
-        assert_eq!(shortcut_reference_columns(688.0), 3);
-        assert_eq!(shortcut_reference_columns(912.0), 3);
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         assert_eq!(rows.len(), 18);
         assert!(rows.chunks(6).all(|group| group.len() == 6));
@@ -1252,8 +1228,8 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     shortcut_reference_never_promises_a_rebound_default();
     shortcut_reference_does_not_repeat_the_open_guide_action();
     shortcut_reference_groups_keep_a_consistent_responsive_rhythm();
-    compact_shortcut_reference_keeps_the_complete_action_set_visible();
-    compact_shortcut_recovery_actions_fit_their_cells();
+    shortcut_reference_keeps_the_complete_action_set();
+    shortcut_reference_keycaps_fit_their_cells();
     shortcut_reference_columns_stay_semantically_grouped();
     shortcut_accessibility_names_workspace_and_group_navigation();
 }
@@ -1979,37 +1955,24 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         );
     }
 
-    /// The loading notice must outlive the fork (nothing on screen yet) but
-    /// retire the moment the window's own place says which app is coming —
-    /// otherwise it's noise, or a stale "Loading…" under "isn't responding".
-    fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
+    /// A pending launch must outlive the fork (nothing on screen yet) but
+    /// settle the moment the window's own place says which app is coming,
+    /// so the app can be opened again.
+    fn a_pending_launch_stands_until_the_window_place_speaks_for_itself() {
         const SURFACE: u64 = 918_273;
         let (h, chrome) = host_with_launch_polling();
-        let notice = {
-            let mut st = chrome.borrow_mut();
-            st.push_notification_full(tilo_desktop::notifications::Notification::new(
-                "Opening Ledger",
-                "Loading…",
-            ))
-        };
-        crate::shell::catalogue::note_pending_notice("so.tilo.retirefixture", notice);
+        crate::shell::catalogue::note_pending_launch("so.tilo.retirefixture");
 
         assert!(
-            !h.retire_notices_for_opened_windows(),
+            !h.settle_launches_of_opened_windows(),
             "nothing has appeared yet, so nothing is settled"
         );
-        assert!(
-            chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "the user is still waiting; the acknowledgement must still be up"
-        );
+        assert!(crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
 
         // Adoption isn't the end of the wait — for the first moments the
-        // tab holds nothing visible, and a blink-fast app must not be
-        // preceded by an indicator flashing on and off.
+        // tab holds nothing visible.
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
         {
@@ -2023,40 +1986,25 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
         assert!(
-            !h.retire_notices_for_opened_windows(),
-            "a tab with nothing painted in it yet is not somewhere the wait \
-             can be handed to; retiring on it hands the user back an empty \
-             desktop"
+            !h.settle_launches_of_opened_windows(),
+            "a tab with nothing painted in it yet has not opened the app"
         );
-        assert!(
-            chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "still waiting — nothing stands in the window's place"
-        );
+        assert!(crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
 
-        // Past the delay the window's place names the app; the notice
-        // stands down rather than repeating it.
+        // Past the delay the window's place names the app.
         store.backdate_first_seen(
             SURFACE,
             crate::compositor::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),
         );
         assert!(
-            h.retire_notices_for_opened_windows(),
-            "the window's own place is naming the app; a second indication \
-             in the corner is noise"
+            h.settle_launches_of_opened_windows(),
+            "the window's own place is naming the app; the launch is settled"
         );
-        assert!(
-            !chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "the wait has moved to where the window will be, and only one \
-             thing may be saying it"
-        );
+        assert!(!crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
         store.forget(SURFACE);
     }
 
@@ -2065,14 +2013,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
     fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
         const SURFACE: u64 = 918_274;
         let (h, chrome) = host_with_launch_polling();
-        let notice = {
-            let mut st = chrome.borrow_mut();
-            st.push_notification_full(tilo_desktop::notifications::Notification::new(
-                "Opening Ledger",
-                "Loading…",
-            ))
-        };
-        crate::shell::catalogue::note_pending_notice("so.tilo.retirefixture", notice);
+        crate::shell::catalogue::note_pending_launch("so.tilo.retirefixture");
 
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
@@ -2087,7 +2028,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
         assert!(
-            !h.retire_notices_for_opened_windows(),
+            !h.settle_launches_of_opened_windows(),
             "precondition: nothing stands in the window's place yet"
         );
 
@@ -2100,18 +2041,13 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
             "precondition: it presented"
         );
         assert!(
-            h.retire_notices_for_opened_windows(),
+            h.settle_launches_of_opened_windows(),
             "the window is on screen, which is the end of the wait however \
              fast it came"
         );
-        assert!(
-            !chrome
-                .borrow()
-                .notifications()
-                .iter()
-                .any(|n| n.id == notice),
-            "once the app is on screen the indication has done its job"
-        );
+        assert!(!crate::shell::catalogue::pending_launch(
+            "so.tilo.retirefixture"
+        ));
         store.forget(SURFACE);
     }
 
@@ -2129,7 +2065,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
     }
 
     each_face_of_the_card_offers_its_own_gesture_as_a_button();
-    the_loading_indication_stands_until_the_window_place_speaks_for_itself();
+    a_pending_launch_stands_until_the_window_place_speaks_for_itself();
     a_window_that_paints_before_the_card_is_due_settles_the_open_too();
     escape_still_dismisses_the_card();
 }
@@ -2305,6 +2241,86 @@ fn invitation_actions_return_their_network_output_to_the_caller() {
             Some(serde_json::json!({"canceled": true}))
         );
     }
+}
+
+/// Every footer button of the invitation sheet is as wide as its face needs,
+/// so a label such as "Cancel" is never elided to "Ca...", and the row stays
+/// inside the sheet, in English and in German copy.
+#[test]
+fn peer_sync_sheet_buttons_fit_their_labels() {
+    let (mut h, _) = host_with_chrome();
+    h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let snapshots = [
+        PeerSyncSnapshot {
+            invite_name: Some("bob".to_string()),
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_name: Some("bob".to_string()),
+            invite_review_open: true,
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            connect_input: Some(String::new()),
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_token: Some("tilo-invite-token".to_string()),
+            ..PeerSyncSnapshot::default()
+        },
+    ];
+    // Resolve one string first so the catalogue is loaded on this thread.
+    let _ = crate::shell::i18n::t("peer-sync-cancel");
+    for locale in ["en-US", "de-DE"] {
+        ui::i18n::I18nManager::set_locale(locale);
+        for snapshot in snapshots.clone() {
+            h.set_peer_sync_snapshot_for_tests(snapshot);
+            let mut scene = Scene::new();
+            h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let (sheet, labels) = h.peer_sync_overlay.drawn_labels_for_tests();
+            let rects = h.peer_sync_prompt_rects_for_tests();
+            assert_eq!(labels.len(), rects.len());
+            let footer: Vec<_> = labels
+                .iter()
+                .zip(&rects)
+                .filter(|(_, (id, _))| {
+                    matches!(
+                        *id,
+                        "create"
+                            | "review"
+                            | "back"
+                            | "join"
+                            | "cancel"
+                            | "copy"
+                            | "paste"
+                            | "paste-identity"
+                            | "copy-identity"
+                    )
+                })
+                .collect();
+            assert!(!footer.is_empty(), "{locale}: the sheet drew no footer");
+            for (label, (id, rect)) in footer {
+                let mut face = ui::widget::ButtonFace::new(Rect::ZERO, label)
+                    .control_size(ui::widget::ControlSize::Large);
+                if matches!(*id, "create" | "join" | "copy") {
+                    face = face.role(ui::widget::ButtonRole::Primary);
+                }
+                let need = face.intrinsic_width(&mut tr, &theme);
+                assert!(
+                    rect.width() + 0.5 >= need,
+                    "{locale}: {label:?} is {}px wide but its face needs {need}px",
+                    rect.width()
+                );
+                assert!(
+                    rect.x0 >= sheet.x0 && rect.x1 <= sheet.x1,
+                    "{locale}: {label:?} at {rect:?} leaves the sheet {sheet:?}"
+                );
+            }
+        }
+    }
+    ui::i18n::I18nManager::set_locale("en-US");
 }
 
 fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {

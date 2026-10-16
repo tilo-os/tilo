@@ -7,13 +7,14 @@ use std::collections::btree_map::{self, BTreeMap};
 use std::future::Future;
 use std::ops::Bound;
 use std::pin::Pin;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::task::{Context, Poll, Waker};
 
 use tilo_clock::SystemTime;
 
 use crate::watch::{ChangeKind, Watchers};
 use crate::{Entry, FsError, Kind, LockMode, Meta, VPath};
+use tilo_lock::MutexRecover as _;
 
 /// A tree: every entry keyed by its full `/`-joined path, the root being the
 /// empty key, plus the locks held on its paths.
@@ -83,7 +84,7 @@ impl Tree {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 }
 
@@ -170,8 +171,9 @@ impl Scope {
                 modified: now,
             },
         );
+        let wakes = self.tree.watchers.notify(&key, ChangeKind::Changed);
         drop(state);
-        self.tree.watchers.notify(&key, ChangeKind::Changed);
+        wakes.wake();
         Ok(())
     }
 
@@ -187,8 +189,9 @@ impl Scope {
                     bytes: bytes.to_vec(),
                     modified: now,
                 });
+                let wakes = self.tree.watchers.notify(&key, ChangeKind::Changed);
                 drop(state);
-                self.tree.watchers.notify(&key, ChangeKind::Changed);
+                wakes.wake();
                 Ok(true)
             }
         }
@@ -213,9 +216,10 @@ impl Scope {
                 state.nodes.insert(new, node);
             }
         }
+        let wakes = self.tree.watchers.notify(&from, ChangeKind::Removed);
+        let wakes = wakes.and(self.tree.watchers.notify(&to, ChangeKind::Changed));
         drop(state);
-        self.tree.watchers.notify(&from, ChangeKind::Removed);
-        self.tree.watchers.notify(&to, ChangeKind::Changed);
+        wakes.wake();
         Ok(())
     }
 
@@ -230,8 +234,9 @@ impl Scope {
             Some(_) => {}
         }
         state.nodes.remove(&key);
+        let wakes = self.tree.watchers.notify(&key, ChangeKind::Removed);
         drop(state);
-        self.tree.watchers.notify(&key, ChangeKind::Removed);
+        wakes.wake();
         Ok(())
     }
 
@@ -247,8 +252,9 @@ impl Scope {
             },
             btree_map::Entry::Vacant(vacant) => {
                 vacant.insert(Node::Dir { modified: now });
+                let wakes = self.tree.watchers.notify(&key, ChangeKind::Changed);
                 drop(state);
-                self.tree.watchers.notify(&key, ChangeKind::Changed);
+                wakes.wake();
                 Ok(())
             }
         }
@@ -335,7 +341,7 @@ impl Scope {
                 .tree
                 .released
                 .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
@@ -494,4 +500,50 @@ fn descendants(nodes: &BTreeMap<String, Node>, key: &str) -> Vec<String> {
     descendant_range(nodes, key)
         .map(|(child, _)| child.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::watch::{Change, Watch};
+
+    /// Two threads writing and removing one file: whichever change happened
+    /// last, the watch's last change for the file says what the tree holds.
+    /// Checked after each of many short races, since a reordering shows
+    /// only when it falls at the end of one.
+    #[test]
+    fn racing_writes_and_removals_are_reported_in_the_order_they_happened() {
+        let scope = Scope::fresh();
+        let watch = Watch::new(scope.watch(&VPath::root()), Box::new(()));
+        let file = VPath::new("a.md").unwrap();
+        for round in 0..500 {
+            std::thread::scope(|threads| {
+                threads.spawn(|| {
+                    for _ in 0..8 {
+                        scope.write_atomic(&file, b"x").unwrap();
+                    }
+                });
+                threads.spawn(|| {
+                    for _ in 0..8 {
+                        match scope.remove(&file) {
+                            Ok(()) | Err(FsError::NotFound) => {}
+                            Err(error) => panic!("{error:?}"),
+                        }
+                    }
+                });
+            });
+            let last = std::iter::from_fn(|| watch.try_next())
+                .filter(|change: &Change| change.path == file)
+                .last()
+                .map(|change| change.kind);
+            let now = if scope.read(&file).is_ok() {
+                ChangeKind::Changed
+            } else {
+                ChangeKind::Removed
+            };
+            if let Some(last) = last {
+                assert_eq!(last, now, "round {round}");
+            }
+        }
+    }
 }

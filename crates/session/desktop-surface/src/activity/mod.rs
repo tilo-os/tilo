@@ -25,7 +25,7 @@ pub use index::*;
 pub use pane::{
     ACTIVITY_ACKNOWLEDGE, ACTIVITY_TASKS, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE,
     HISTORY_UNDO, NativeManagedTaskRequest, NativeManualTaskRequest, Period, RoomActivityOutcome,
-    RoomActivityPane, RoomScope,
+    RoomActivityPane, RoomScope, TaskDispatchRequest,
 };
 
 /// A causal document paired with its admitted desktop projection. Implementors
@@ -310,6 +310,7 @@ mod admitted_history_tests {
                 active_tab: (5 << 48) | 3,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
                 tabs: vec![Tab {
                     id: (5 << 48) | 3,
                     title: "Before".into(),

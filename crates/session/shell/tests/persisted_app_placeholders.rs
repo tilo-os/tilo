@@ -36,6 +36,7 @@ fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     };
     let ws = Workspace::new(ws_id, "Home");

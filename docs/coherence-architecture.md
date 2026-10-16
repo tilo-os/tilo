@@ -34,7 +34,7 @@ model right and the rest composes.
 There is **no single cloud**. The unit of sync is a **workspace**: its CRDT doc-set +
 its fuse-fs subtree, replicated between an authoritative **host** and its **clients** over
 iroh. A host is any Tilo machine in host mode: your laptop (P2P invites), your always-on
-home server, or a company cluster (`tilo-relay`, `compositor/hosted.rs`).
+home server, or a company cluster (`crates/hosting/tilo-relay`).
 
 - **Phone + desktop + home server sync:** all three are *clients* of one personal
   workspace whose durable host is the home server; when the server is off they P2P and
@@ -165,7 +165,7 @@ sane roles (owner/editor/commenter/viewer) that a user can then refine.
   odt/docx · desktop-env (resize/reorder/h-scroll/drag-file) · fractional scaling · HDR ·
   terminal redesign.
 - **Next coherence wave (after these land):** (1) workspace/host/sync runtime +
-  per-app-backend placement + durability (on tilo-relay + hosted.rs); (2) capability
+  per-app-backend placement + durability (on tilo-relay); (2) capability
   permission system + FUSE enforcement + the role-matrix UI; (3) make Ctrl+K canonical
   (retire app search bars, permission-aware ranked providers, headless action API);
   (4) the admin-workspace app for server management.

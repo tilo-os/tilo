@@ -3,7 +3,8 @@
 # does not depend on who runs it or where, and a test cannot touch the
 # desktop of whoever runs it:
 #
-#   - LANG=C.UTF-8 with no other locale override, and TZ=UTC;
+#   - LANG=C.UTF-8 with no other locale override, TZ=UTC, and the US
+#     keyboard layout (XKB_DEFAULT_LAYOUT=us);
 #   - a fresh, empty HOME and XDG base directories (config, data, state,
 #     cache, runtime) that are deleted afterwards;
 #   - no desktop session: no display, keyring (on macOS, no login Keychain),
@@ -98,6 +99,10 @@ unset LANGUAGE LC_ALL LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY \
     LC_MESSAGES LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT \
     LC_IDENTIFICATION
 export TZ=UTC
+# The machine's keyboard layout is a default too (an unset input section
+# types it), so pin it like the locale: US, no variant, no options.
+export XKB_DEFAULT_LAYOUT=us
+unset XKB_DEFAULT_VARIANT XKB_DEFAULT_MODEL XKB_DEFAULT_OPTIONS XKB_DEFAULT_RULES
 
 unset "${session_vars[@]}"
 # Nothing ever listens on these paths. A test that needs a bus brings its own

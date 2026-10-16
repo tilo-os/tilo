@@ -866,10 +866,6 @@ struct PublishRequest<'a> {
     bytes: Option<&'a Vec<u8>>,
     moving: bool,
 }
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "keep owned source and durable publication/removal transitions in one auditable scope"
-)]
 fn copy_publish(
     ctx: &mut Context<'_>,
     request: PublishRequest<'_>,
@@ -938,7 +934,6 @@ fn copy_publish(
 }
 #[allow(
     clippy::too_many_lines,
-    clippy::needless_pass_by_value,
     reason = "one owner encloses every post-creation exit while the inner scope tracks publication/removal"
 )]
 fn copy_publish_staged(

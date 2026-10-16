@@ -77,6 +77,8 @@ include!("app/host.rs");
 mod android_text_input;
 #[cfg(feature = "native")]
 mod native_runner;
+#[cfg(feature = "native")]
+mod slow_event;
 /// How an app's error begins when its window stopped without being closed.
 /// The shell recognises it in a failed launch's output.
 pub const WINDOW_LOST: &str = "the window stopped without being closed";
@@ -984,6 +986,7 @@ impl App {
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.mark_semantic_tree_stale();
         self.retire_semantic_root();
         self.control_domain.close();
         self.actions.bound_record_sync = None;
@@ -1036,6 +1039,7 @@ impl App {
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        self.mark_semantic_tree_stale();
         // SAFETY: exclusive App access prevents overlapping target references/rebuild.
         unsafe {
             crate::bound_dispatch::mutate_bound_node(
@@ -1052,6 +1056,7 @@ impl App {
         action: &crate::a11y::Action,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, String> {
+        self.mark_semantic_tree_stale();
         let author = self.collaboration.local_author.clone();
         // SAFETY: the runner exclusively owns the unchanged admitted tree.
         unsafe {
@@ -1074,6 +1079,7 @@ impl App {
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        self.mark_semantic_tree_stale();
         // SAFETY: exclusive App owns both maps and this stable tree.
         unsafe {
             crate::bound_dispatch::invoke_bound_node(
@@ -1441,34 +1447,6 @@ impl App {
     ) -> Self {
         Self::from_scoped_parts_with_inputs(wake_scope, state, root_widget, || {
             AppConstructionInputs::production(CollaborationManager::new())
-        })
-    }
-
-    /// Construct a live app without discovering workspace services or identity.
-    ///
-    /// Local effects and wake ownership remain available. The caller still owns
-    /// storage policy; private windows must supply memory-only state/autosave.
-    pub fn from_scoped_parts_local(
-        wake_scope: crate::wake::WakeScope,
-        state: State,
-        root_widget: Box<dyn Widget>,
-    ) -> Self {
-        Self::from_scoped_parts_with_inputs(wake_scope, state, root_widget, || {
-            let identity = uuid::Uuid::new_v4();
-            let author = crate::permissions::UserId(format!("local:{identity}"));
-            let mut presence = PresenceCtx::empty();
-            presence.set_own_identity([author.0.clone()]);
-            let mut inputs = AppConstructionInputs::production(CollaborationManager::disabled());
-            inputs.local_author = ConstructionValue::Ready(author);
-            inputs.presence_ctx = ConstructionValue::Ready(presence);
-            inputs.surface_id = ConstructionValue::Ready(format!("local-surface:{identity}"));
-            inputs.pending_continuation_restore = || None;
-            inputs.floating_surface_client = || None;
-            inputs.startup_presence_scope = || None;
-            // An ephemeral identity wears the default colour, not the
-            // person's.
-            inputs.your_colour = || None;
-            inputs
         })
     }
 
@@ -2530,11 +2508,32 @@ impl App {
             && self.history.is_none()
             && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
         {
-            if focus_reset {
+            // A rebuilt tree can already hold focus: a form that re-creates
+            // its controls puts the keyboard back on the field the person was
+            // in, by identity. That field is where focus belongs; the old
+            // ordinal would move it to whatever now sits in the same slot and
+            // leave both fields drawn as focused.
+            // SAFETY: the maps describe the tree built above, exclusively owned.
+            let retained = if focus_reset {
+                None
+            } else {
+                unsafe {
+                    crate::widget::layout::CompositionFocus::current(
+                        &self.layout.node_map,
+                        &self.bindings,
+                        Some(&self.focusable_order),
+                    )
+                }
+            };
+            if let Some(node) = retained {
+                self.focused_node = Some(node);
+            } else if focus_reset {
+                clear_stray_focus(self.root_widget.as_mut());
                 if let Some(target) = self.reset_focus_target() {
                     self.set_focused_node(Some(target));
                 }
             } else if let Some(idx) = prev_focus_idx {
+                clear_stray_focus(self.root_widget.as_mut());
                 let exact = self.focusable_order.get(idx).copied();
                 let target = exact.or_else(|| self.focusable_order.last().copied());
                 if let Some(id) = target {
@@ -2614,6 +2613,17 @@ impl Drop for App {
             Box::new(crate::widget::Container::new()),
         );
         drop(root);
+    }
+}
+
+/// Take the keyboard from every focusable control in `widget`'s tree, so the
+/// one the app then focuses is the only one that draws as focused.
+fn clear_stray_focus(widget: &mut dyn crate::widget::Widget) {
+    if widget.is_focusable() && widget.is_focused() {
+        widget.set_focus(false);
+    }
+    for child in widget.children_mut() {
+        clear_stray_focus(child);
     }
 }
 
@@ -2931,11 +2941,6 @@ mod document_routes;
 #[cfg(test)]
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
-
-#[cfg(test)]
-#[cfg(feature = "local-daemons")]
-#[path = "app/local_privacy_tests.rs"]
-mod local_privacy_tests;
 
 #[cfg(test)]
 #[path = "app/participant_invocation_tests.rs"]

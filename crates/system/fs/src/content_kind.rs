@@ -14,7 +14,7 @@ use fs_protocol::FileNameV1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SerializedDocumentSchema {
     /// A `tilo_doc::Document`: an Automerge document of the rich-text schema.
-    Qdoc,
+    TiloDoc,
 }
 
 /// How a record's content is owned.
@@ -30,12 +30,6 @@ pub enum RecordContentKind {
     NamespaceDocument { codec: String },
 }
 
-/// Record names whose content is a serialized document, by extension.
-const SERIALIZED_DOCUMENTS: [(&str, SerializedDocumentSchema); 2] = [
-    ("qdoc", SerializedDocumentSchema::Qdoc),
-    ("tilo-doc", SerializedDocumentSchema::Qdoc),
-];
-
 impl RecordContentKind {
     /// The kind a record of this name holds when the namespace keeps no
     /// codec for it. Signed record bindings carry the name, so every replica
@@ -45,14 +39,13 @@ impl RecordContentKind {
             .ok()
             .and_then(|name| name.rsplit_once('.'))
             .map(|(_, extension)| extension.to_ascii_lowercase());
-        extension
-            .and_then(|extension| {
-                SERIALIZED_DOCUMENTS
-                    .iter()
-                    .find(|(known, _)| *known == extension)
-                    .map(|(_, schema)| Self::SerializedDocument { schema: *schema })
-            })
-            .unwrap_or(Self::Opaque)
+        match extension.as_deref() {
+            // Existing .qdoc records retain the same serialized-document policy.
+            Some("qdoc" | "tilo-doc") => Self::SerializedDocument {
+                schema: SerializedDocumentSchema::TiloDoc,
+            },
+            _ => Self::Opaque,
+        }
     }
 
     /// The kind of `ino`'s content, or `None` when the namespace has no such
@@ -81,14 +74,17 @@ mod tests {
 
     #[test]
     fn serialized_documents_are_known_by_name_not_bytes() {
-        let qdoc = RecordContentKind::SerializedDocument {
-            schema: SerializedDocumentSchema::Qdoc,
+        let document = RecordContentKind::SerializedDocument {
+            schema: SerializedDocumentSchema::TiloDoc,
         };
-        assert_eq!(kind("notes.qdoc"), qdoc);
-        assert_eq!(kind("Notes.QDOC"), qdoc);
-        assert_eq!(kind("draft.tilo-doc"), qdoc);
+        assert_eq!(kind("notes.qdoc"), document);
+        assert_eq!(kind("Notes.QDOC"), document);
+        assert_eq!(kind("notes.tilo-doc"), document);
+        assert_eq!(kind("Notes.TILO-DOC"), document);
         assert_eq!(kind("notes.qdoc.bin"), RecordContentKind::Opaque);
+        assert_eq!(kind("notes.tilo-doc.bin"), RecordContentKind::Opaque);
         assert_eq!(kind("qdoc"), RecordContentKind::Opaque);
+        assert_eq!(kind("tilo-doc"), RecordContentKind::Opaque);
         assert_eq!(kind("report.docx"), RecordContentKind::Opaque);
     }
 
@@ -99,7 +95,7 @@ mod tests {
             .create_document(crate::namespace::ROOT_INO, "report.md", "md", 1)
             .unwrap();
         let file = namespace
-            .create_file(crate::namespace::ROOT_INO, "data.qdoc", None, 0, 1)
+            .create_file(crate::namespace::ROOT_INO, "data.tilo-doc", None, 0, 1)
             .unwrap();
         assert_eq!(
             RecordContentKind::of(&namespace, document),

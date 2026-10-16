@@ -15,6 +15,7 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 mod cache;
 pub use cache::PreparedText;
 use cache::{CacheKey, CacheQuery, TextCache};
+use tilo_lock::RwLockRecover as _;
 
 /// Product-wide primary font families. Tilo ships these exact faces, and the
 /// renderer also assigns them to the CSS-like generic families below. Keeping
@@ -178,9 +179,7 @@ static HOST_FONT_DATABASE: std::sync::RwLock<Option<(String, cosmic_text::fontdb
     std::sync::RwLock::new(None);
 
 fn share_host_font_database(font_system: &FontSystem) {
-    *HOST_FONT_DATABASE
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+    *HOST_FONT_DATABASE.write_recover() =
         Some((font_system.locale().to_owned(), font_system.db().clone()));
 }
 
@@ -194,10 +193,7 @@ fn share_host_font_database(font_system: &FontSystem) {
 /// product names.
 #[cfg(not(test))]
 pub fn configured_font_system() -> FontSystem {
-    let host = HOST_FONT_DATABASE
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
+    let host = HOST_FONT_DATABASE.read_recover().clone();
     if let Some((locale, database)) = host {
         return crate::font_catalog::system_over(locale, database);
     }
@@ -506,6 +502,9 @@ impl std::hash::Hash for Hyphenation {
             Self::Auto(language) => {
                 1_u8.hash(state);
                 language.hash(state);
+                // Layouts made before the patterns' code arrived (where it
+                // loads on first use) have no hyphens: make them again.
+                crate::text_break::hyphenation_generation().hash(state);
             }
             Self::Custom(hyphenator) => {
                 2_u8.hash(state);

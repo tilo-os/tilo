@@ -219,10 +219,9 @@ impl ToolBuildService {
         Ok(runtime.spawn(async move {
             let member = Arc::new(member);
             while let Ok((stream, _)) = listener.accept().await {
-                let expected = member.uid.unwrap_or_else(|| {
-                    // SAFETY: geteuid cannot fail.
-                    unsafe { libc::geteuid() }
-                });
+                let expected = member
+                    .uid
+                    .unwrap_or_else(|| rustix::process::geteuid().as_raw());
                 if stream.peer_cred().map(|cred| cred.uid()).ok() != Some(expected) {
                     continue;
                 }
@@ -356,8 +355,7 @@ async fn send(
 pub fn key_file_private(path: &Path) -> std::io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::symlink_metadata(path)?;
-    // SAFETY: geteuid cannot fail.
-    let worker = unsafe { libc::geteuid() };
+    let worker = rustix::process::geteuid().as_raw();
     Ok(metadata.is_file() && metadata.uid() == worker && metadata.mode().trailing_zeros() >= 6)
 }
 

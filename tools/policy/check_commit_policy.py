@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""CI counterpart of commit-msg and pre-commit, including commits made with --no-verify."""
+"""CI counterpart of commit-msg and pre-commit, including commits made with --no-verify.
+
+Every new commit's message, its exact changed blobs (text, LF) and the lines it
+adds (credentials, merge-conflict markers, dbg!: tools/policy/added_line_policy.py).
+"""
 import argparse
 import os
 from contextlib import contextmanager
@@ -13,6 +17,11 @@ from check_changed_rust_allows import comparison_range
 from check_commit_message import EXAMPLES, validate
 from check_public_references import internal_reference
 from check_source_content import content_issues
+from added_line_policy import GUIDANCE, added_line_issues, added_lines
+
+DIFF_TREE = ("diff-tree", "-r", "--raw", "--no-abbrev", "-z", "--no-renames", "--no-commit-id")
+# Modes whose object is not a blob: absent, and a submodule's commit.
+NOT_A_BLOB = (b"000000", b"160000")
 
 
 class IncompleteHistory(ValueError):
@@ -51,6 +60,34 @@ def blob_reader(root):
         raise ValueError("Git changed blob reader failed.")
 
 
+def changed_blobs(root, parent, commit):
+    """{path: (old mode, new mode, old oid, new oid)} for what `commit` changes."""
+    changes = git(root, *DIFF_TREE, parent, commit) if parent else git(root, *DIFF_TREE, "--root", commit)
+    records = changes.split(b"\0")
+    result = {}
+    for index in range(0, len(records) - 1, 2):
+        metadata, path = records[index], records[index + 1]
+        if metadata:
+            fields = metadata.split()
+            result[path] = (fields[0].lstrip(b":"), fields[1], fields[2], fields[3])
+    return result
+
+
+def parent_versions(path, change, other_parents):
+    """Oids of every parent's version of `path`, or None when one parent already has the result.
+
+    A merge is charged only with paths its resolution changed relative to every
+    parent; a file taken verbatim from either side passed that side's checks.
+    """
+    versions = [change[2]] if change[0] not in NOT_A_BLOB else []
+    for other in other_parents:
+        if path not in other:
+            return None
+        if other[path][0] not in NOT_A_BLOB:
+            versions.append(other[path][2])
+    return versions
+
+
 def inspect(root, base, head="HEAD"):
     baseline = {}
     for record in git(root, "ls-tree", "-r", "-z", base).split(b"\0"):
@@ -64,6 +101,7 @@ def inspect(root, base, head="HEAD"):
         shallow_path = root / shallow_path
     shallow = set(shallow_path.read_text().splitlines()) if shallow_path.is_file() else set()
     failures = []
+    added_line_hit = False
     with blob_reader(root) as read_blob:
         for commit in commits:
             raw = git(root, "cat-file", "commit", commit)
@@ -81,23 +119,26 @@ def inspect(root, base, head="HEAD"):
                 failure = "Commit message is not UTF-8 text."
             if failure:
                 failures.append(commit[:12] + ": " + failure)
-            args = ("diff-tree", "-r", "--raw", "--no-abbrev", "-z", "--no-renames", "--no-commit-id")
-            changes = git(root, *args, parents[0], commit) if parents else git(root, *args, "--root", commit)
-            records = changes.split(b"\0")
-            for index in range(0, len(records) - 1, 2):
-                metadata, path = records[index], records[index + 1]
-                if not metadata:
-                    continue
-                fields = metadata.split()
-                mode, oid = fields[1], fields[3]
+            other_parents = [changed_blobs(root, parent, commit) for parent in parents[1:]]
+            for path, change in changed_blobs(root, parents[0] if parents else None, commit).items():
+                mode, oid = change[1], change[3]
                 if mode == b"000000":
                     continue
                 if mode == b"160000":
                     failures.append(commit[:12] + ": uninspected submodule " + path.decode(errors="replace"))
                     continue
-                issues = content_issues(read_blob(oid))
+                data = read_blob(oid)
+                issues = content_issues(data)
                 if issues and baseline.get(path) != oid:
                     failures.append(commit[:12] + ": " + path.decode(errors="replace") + ": " + ", ".join(issues) + "; new/modified non-text or non-LF blobs are forbidden")
+                versions = None if issues else parent_versions(path, change, other_parents)
+                if versions is not None:
+                    lines = added_lines(data, [read_blob(version) for version in versions])
+                    for finding in added_line_issues(path.decode(errors="replace"), lines):
+                        added_line_hit = True
+                        failures.append(commit[:12] + ": " + finding[:160])
+    if added_line_hit:
+        failures.append(GUIDANCE)
     return failures, len(commits)
 
 

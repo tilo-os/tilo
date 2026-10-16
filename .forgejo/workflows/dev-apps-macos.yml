@@ -20,14 +20,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The generated template outside the repository, Calculator and Notes as
-  # ad-hoc-signed .app bundles rendered offscreen, and a packaged .app zip
-  # with its signing descriptor (Developer ID signing and notarization need
-  # release secrets; without them `package` signs ad hoc). The registry has no
-  # macOS artifact format yet, so the zip is not turned into an entry.
+  # The generated template outside the repository taken from `new` to a
+  # signed macOS .tapp waiting in a loopback registry's review queue,
+  # Calculator and Notes as ad-hoc-signed .app bundles rendered offscreen,
+  # and a packaged .app zip with its signing descriptor (Developer ID signing
+  # and notarization need release secrets; without them `package` signs ad
+  # hoc). The registry has no format for the .app zip, so it is not turned
+  # into an entry.
   sdk:
     runs-on: macos-aarch64
-    timeout-minutes: 120
+    # The template's macOS package is a release build of the whole toolkit.
+    timeout-minutes: 150
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

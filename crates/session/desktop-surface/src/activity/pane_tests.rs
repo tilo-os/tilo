@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_switch_reads_only_its_own_change_and_derives_the_same_history() {
+    fn a_workspace_switch_reads_only_its_own_change_and_derives_nothing() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let first = tree.active;
         let second = tree.append_empty_workspace("Second");
@@ -246,27 +246,34 @@ mod tests {
                 crate::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
             )
         };
+        let derived = format!("{:?}", pane.derived);
         for n in 0..12 {
             tree.set_active(if n % 2 == 0 { second } else { first });
             tree.commit_room_change();
             let (diffs, forks) = reads();
+            let logged = pane.history_log.changes_read();
             pane.refresh(&mut tree);
             let (diffs_after, forks_after) = reads();
-            // Each switch is one change: re-reading the room's whole history
-            // made a switch's first frame O(history).
+            // The switch's change is read once and passed over: no row to
+            // describe, nothing derived again.
             assert_eq!(
-                diffs_after - diffs,
+                pane.history_log.changes_read() - logged,
                 1,
-                "switch {n} diffs only its own change"
+                "switch {n} reads only its own change"
             );
-            // The first visit to "Second" also checkpoints the change that
-            // created it; after that a switch forks for its own entry alone.
-            if n >= 1 {
-                assert!(
-                    forks_after - forks <= 1,
-                    "switch {n} forks the document at most for its own checkpoint"
-                );
-            }
+            assert_eq!(diffs_after - diffs, 0, "switch {n} describes no change");
+            assert_eq!(
+                format!("{:?}", pane.derived),
+                derived,
+                "switch {n} leaves the rows as they were"
+            );
+            // The first visit to "Second" checkpoints the change that
+            // created it, a row of that workspace; nothing else forks.
+            assert!(
+                forks_after - forks <= usize::from(n == 0),
+                "switch {n} forks the document {} times",
+                forks_after - forks
+            );
         }
 
         // What the incremental refreshes derived is what one refresh of the
@@ -289,8 +296,91 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        assert!(!frames(&pane).is_empty(), "the switches are replayable");
+        assert!(
+            !frames(&pane).is_empty(),
+            "the desktop's changes are replayable"
+        );
         assert_eq!(frames(&pane), frames(&fresh), "the replay checkpoints");
+    }
+
+    /// Switching takes no place in Activity's window: switching back and
+    /// forth 250 times used to fill all 200 places with switches, and the
+    /// rename before them, the one thing anyone did, was gone.
+    #[test]
+    fn switching_workspaces_never_pushes_what_people_did_out_of_activity() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let first = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|w| w.id == first) {
+            workspace.name = "Renamed before switching".to_string();
+        }
+        tree.seed_doc_from_cache();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        let renamed = |pane: &RoomActivityPane| {
+            pane.derived
+                .iter()
+                .filter(|(entry, _)| is_feed_change(entry))
+                .filter(|(entry, _)| entry.summary.contains("Renamed before switching"))
+                .count()
+        };
+        assert_eq!(renamed(&pane), 1, "the rename is in Activity");
+        let rows = pane.derived.len();
+        for n in 0..250 {
+            tree.set_active(if n % 2 == 0 { second } else { first });
+            tree.commit_room_change();
+            pane.refresh(&mut tree);
+        }
+        assert_eq!(renamed(&pane), 1, "the rename is still in Activity");
+        assert_eq!(pane.derived.len(), rows, "no switch became a row");
+        // A pane reading the whole document from scratch agrees.
+        let mut fresh = native_pane();
+        fresh.refresh(&mut tree);
+        assert_eq!(renamed(&fresh), 1);
+        assert_eq!(
+            format!("{:?}", fresh.derived),
+            format!("{:?}", pane.derived)
+        );
+    }
+
+    /// A change that switches workspaces and edits a workspace at once does
+    /// show a desktop of its own: replay reads it from the document, as for
+    /// any other change.
+    #[test]
+    fn a_switch_written_with_an_edit_replays_the_edit() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        tree.set_active(second);
+        if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|w| w.id == second) {
+            workspace.name = "Renamed".to_string();
+        }
+        tree.seed_doc_from_cache();
+        pane.refresh(&mut tree);
+        let last = pane.replay_frames.last().expect("the change is replayable");
+        assert_eq!(
+            last.workspaces
+                .iter()
+                .map(|workspace| workspace.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Renamed"],
+            "the frame shows the workspace as the change left it"
+        );
+        let mut fresh = native_pane();
+        fresh.refresh(&mut tree);
+        assert_eq!(
+            format!(
+                "{:?}",
+                pane.replay_frames.last().map(|frame| &frame.workspaces)
+            ),
+            format!(
+                "{:?}",
+                fresh.replay_frames.last().map(|frame| &frame.workspaces)
+            ),
+        );
     }
 
     #[test]
@@ -402,7 +492,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let room = tree.desktop.active_workspace().expect("workspace").room;
         let records = RecordStore::in_memory();
-        let record = RecordId::for_file("campaign-brief.qdoc");
+        let record = RecordId::for_file("campaign-brief.tilo-doc");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
         assert!(records.open_record(&checkout));
         let agent = ActorId::from(b"writing-agent".as_slice());
@@ -511,7 +601,7 @@ mod tests {
 
         let mut tree = WorkspaceTree::bootstrap_demo();
         let room = tree.desktop.active_workspace().expect("workspace").room;
-        let record = RecordId::for_file("campaign-brief.qdoc");
+        let record = RecordId::for_file("campaign-brief.tilo-doc");
         let kind = ui::RecordKind::new("document");
         let agent = ActorId::from(b"writing-agent".as_slice());
         let agent_hex = agent.to_hex_string();
@@ -1319,6 +1409,111 @@ mod tests {
             .expect("task remains stored");
         assert_eq!(task.status, WorkspaceTaskStatus::Queued);
         assert_eq!(task.audit.len(), 1, "no synthetic start audit was added");
+    }
+
+    /// Records each dispatch and whether the test held the tree for it.
+    #[derive(Default)]
+    struct DispatchHost {
+        tree_held: Rc<Cell<bool>>,
+        dispatched: RefCell<Vec<(String, String, bool)>>,
+        refusal: Option<String>,
+    }
+    impl ActivityHost for DispatchHost {
+        fn local_user(&self) -> String {
+            "ada".into()
+        }
+        fn mutations_available(&self) -> bool {
+            true
+        }
+        fn all_workspaces_available(&self) -> bool {
+            true
+        }
+        fn agent_is_live(&self, _room: &str, _agent: &str) -> bool {
+            true
+        }
+        fn dispatch_task(&self, room: &str, task: &str) -> Result<(), String> {
+            self.dispatched
+                .borrow_mut()
+                .push((room.into(), task.into(), self.tree_held.get()));
+            self.refusal.clone().map_or(Ok(()), Err)
+        }
+    }
+
+    fn launchable_task(host: Rc<DispatchHost>) -> (WorkspaceTree, RoomActivityPane, String) {
+        let (mut tree, workspace, _) = busy_room();
+        let task_id = tree
+            .create_workspace_task(
+                workspace,
+                "Prepare screenshots",
+                "ada",
+                Some("studio-agent".into()),
+                WorkspaceTaskRoute::RulesOnly,
+                None,
+            )
+            .expect("task is created");
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(host);
+        pane.set_view(ActivityView::Tasks);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        pane.selected_task = Some(task_id.clone());
+        (tree, pane, task_id)
+    }
+
+    /// The broker that runs a task checks the room's authority against the
+    /// workspace tree. The shell holds that tree for writing while the pane
+    /// handles the click, so dispatching from inside the handler stopped the
+    /// compositor. Launch now only asks; the dispatch runs once the caller
+    /// has let go of the tree.
+    #[test]
+    fn launching_a_task_dispatches_only_after_the_tree_is_released() {
+        let host = Rc::new(DispatchHost::default());
+        let (mut tree, mut pane, task_id) = launchable_task(Rc::clone(&host));
+        let task = pane
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .cloned()
+            .expect("task is projected");
+        assert!(pane.task_actions_for(&task).contains(&TaskAction::Launch));
+
+        host.tree_held.set(true);
+        let outcome = pane.apply_task_action(TaskAction::Launch, &mut tree);
+        host.tree_held.set(false);
+
+        assert!(
+            host.dispatched.borrow().is_empty(),
+            "nothing dispatched while the tree is held"
+        );
+        let request = outcome.dispatch_task.expect("Launch asks for a dispatch");
+        assert_eq!(request.task_id, task_id);
+        assert_eq!(request.assigned_agent.as_deref(), Some("studio-agent"));
+        assert!(outcome.handled);
+        assert!(pane.dispatch_task(request), "the live agent took the run");
+        assert_eq!(
+            host.dispatched.borrow().as_slice(),
+            [(pane.task_room.clone(), task_id, false)]
+        );
+    }
+
+    #[test]
+    fn a_refused_dispatch_offers_the_agent_start_again_with_its_reason() {
+        let host = Rc::new(DispatchHost {
+            refusal: Some("the assigned agent is not live and task-capable".into()),
+            ..DispatchHost::default()
+        });
+        let (mut tree, mut pane, _) = launchable_task(Rc::clone(&host));
+        let request = pane
+            .apply_task_action(TaskAction::Launch, &mut tree)
+            .dispatch_task
+            .expect("Launch asks for a dispatch");
+        let room = request.room.clone();
+
+        assert!(!pane.dispatch_task(request));
+        assert!(matches!(
+            pane.agent_startup.get(&(room, "studio-agent".into())),
+            Some(AgentStartup::Failed { detail }) if detail.contains("not live")
+        ));
     }
 
     #[test]
@@ -4145,6 +4340,75 @@ mod morning_source_tests {
     use crate::activity::ActivityHost;
     use crate::activity::testing::TestTree;
     use automerge::transaction::CommitOptions;
+
+    /// A browser visitor: no private morning sources, no local identity.
+    struct VisitorHost;
+    impl ActivityHost for VisitorHost {}
+
+    #[test]
+    fn a_visitor_catch_up_shows_no_ids_and_no_morning_section() {
+        let record = "3f2a9c41d0b7e8aa5c1d9e0f";
+        let mut tree = TestTree::bootstrap_default();
+        let context = tilo_actions::ActionContext::for_resource(record, "notes.note", record)
+            .with_app("org.tilo.Notes", "org.tilo.Notes")
+            .with_described(crate::activity::testing::verb("Update"));
+        tree.doc
+            .put(automerge::ROOT, "name", "Visitor history")
+            .unwrap();
+        tree.doc.commit_with(
+            CommitOptions::default()
+                .with_time(1_800_000_000)
+                .with_message(context.change_message().unwrap()),
+        );
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(Rc::new(VisitorHost));
+        pane.refresh(&mut tree);
+        pane.set_view(ActivityView::CatchUp);
+        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
+        let theme = Theme::light();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        assert!(
+            !pane.digest().briefs.is_empty(),
+            "the change itself stays visible"
+        );
+        for brief in &pane.digest().briefs {
+            for shown in [
+                brief.title.clone(),
+                brief.detail.clone(),
+                brief.glance(),
+                brief.apps.join(" "),
+                brief.resources.join(" "),
+            ] {
+                assert!(
+                    !ui::history_source::contains_opaque_id(&shown),
+                    "an identifier reached a visitor: {shown:?}"
+                );
+            }
+        }
+        for focus in pane.focus_order() {
+            let label = pane.focus_label(&focus).unwrap_or_default();
+            assert!(
+                !label.contains(record),
+                "an identifier reached a visitor: {label:?}"
+            );
+        }
+        assert!(pane.morning_rects.is_empty());
+        let mut scene = Scene::new();
+        let y = pane.draw_morning_sources(&mut scene, Affine::IDENTITY, &mut text, &theme, 120.0);
+        assert!(
+            (y - 120.0).abs() < f64::EPSILON,
+            "an unavailable morning section must take no space"
+        );
+        assert!(scene.encoding().is_empty(), "nor paint anything");
+    }
 
     fn fixture() -> (TestTree, RoomActivityPane) {
         let mut tree = TestTree::bootstrap_default();

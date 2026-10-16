@@ -52,6 +52,7 @@ action_control! {
     Slider => f64, |control| control.with_enabled(false);
     NumberInput => f64, |control| control.with_enabled(false);
     Dropdown => String, |control| control.with_enabled(false);
+    ui_core::widget::ToggleGroup => usize, |control| control.with_enabled(false);
     ui_core::KeyboardMapSelection => String, |control| control.with_enabled(false);
     Button => (), |control| control.with_enabled(false);
     EmptyState => (), |control| control.with_enabled(false);

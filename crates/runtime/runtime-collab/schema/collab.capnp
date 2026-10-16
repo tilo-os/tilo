@@ -155,6 +155,29 @@ interface ChannelHandle {
   # something gone.
   publishActions @13 (appId :Text, actions :List(ExportedAction)) -> ();
 
+  # `publishActions` as a delta against this connection's current surface,
+  # for surfaces whose actions repeat one catalogue across many resources
+  # (every page of a notebook offers the same editing actions). Each distinct
+  # catalogue entry crosses once as a shape, and each distinct ordered set of
+  # shapes once as a template, each named by a content hash the publisher
+  # chose. A resource is listed with the fields that are its own and the
+  # template of the actions it offers. The broker expands the result into the
+  # same published surface `publishActions` installs, so readers never see the
+  # difference.
+  #
+  # `reset` discards what this connection published before applying the
+  # rest. Without it the delta applies to the connection's surface as the
+  # broker holds it: shapes and templates are added, a listed resource
+  # replaces what the broker holds of that resource, and `removed` drops
+  # resources. A delta that does not apply (an unknown shape or template, an
+  # invalid action) is refused and changes nothing; the publisher then sends
+  # a `reset` delta.
+  publishActionSurface @61 (appId :Text, reset :Bool,
+                            shapes :List(ActionShape),
+                            templates :List(ActionTemplate),
+                            resources :List(ActionResource),
+                            removed :List(Text)) -> ();
+
   # Subscribe to invocations the session has addressed to THIS
   # application.
   #
@@ -423,6 +446,15 @@ interface ChannelHandle {
   # Final receipt remains authoritative. No fallback to raw execution or @58.
   approvedCheckReportedProgress @60 (request :Data) -> (stream :ApprovedCheckReportedProgressStream);
 
+  # Resolves once what `nearbyTransferCommand`'s snapshot would show this
+  # connection (devices online, transfers and their phases) may have changed
+  # since `after`: 0 at first, then the `change` the previous call returned.
+  # It carries no device, transfer or handle; the endpoint asks for a fresh
+  # snapshot through `nearbyTransferCommand`, which re-checks the route and
+  # the person's continuity policy on every answer. An endpoint keeps one
+  # call pending instead of asking on a timer. Only the certified Files
+  # route is answered; a host without Nearby Send answers unimplemented.
+  nearbyTransferChanged @62 (after :UInt64) -> (change :UInt64);
 
 }
 
@@ -969,6 +1001,34 @@ struct ResourceViewRangeSpec {
   startParam @1 :Text;
   endParam @2 :Text;
   unitParam @3 :Text;
+}
+
+# One catalogue entry of a published surface: an action's id, labels,
+# description, input, parameters, contract and resource view, with nothing of
+# the resource it is offered on. `id` is a content hash the publisher chose;
+# the broker keys the entry by it and trusts nothing else about it.
+struct ActionShape {
+  id @0 :Data;
+  # An `ExportedAction` whose resource, resourceKind, resourceLabel and
+  # semanticIdentity are empty.
+  action @1 :ExportedAction;
+}
+
+# An ordered set of shapes a resource offers, named by a content hash.
+struct ActionTemplate {
+  id @0 :Data;
+  # The shape ids, concatenated, each of the same fixed length.
+  shapes @1 :Data;
+}
+
+# One resource of a published surface: the fields that are its own, and the
+# template of the actions it offers.
+struct ActionResource {
+  resource @0 :Text;
+  resourceKind @1 :Text;
+  resourceLabel @2 :Text;
+  semanticIdentity @3 :ResourceSemanticIdentity;
+  template @4 :Data;
 }
 
 # Each read returns exactly one nonempty field. Receipt/error freezes the lane.

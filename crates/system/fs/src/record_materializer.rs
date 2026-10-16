@@ -2148,7 +2148,7 @@ mod tests {
         {
             for codec in [
                 ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
-                ConflictMergeCodecV1::QdocAutomergeV1,
+                ConflictMergeCodecV1::TiloDocAutomergeV1,
             ] {
                 remote_completed_merge_case(codec);
             }

@@ -27,7 +27,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use tilo_app_package::trust::{RevocationList, TrustedAttestor, TrustedAttestors};
+use tilo_app_package::trust::{RevocationList, TrustFile, TrustedAttestor, TrustedAttestors};
 use tilo_app_package::{
     BlobFetcher, BlobHash, BlobSink, Kind, PackageFetcher, PackageId, PackageMeta, Verification,
 };
@@ -37,6 +37,7 @@ use crate::StoreError;
 use crate::catalog::SystemStore;
 use crate::layout::{COLLECTION_FILE, Layout, MANIFEST_FILE, SIGNED_ROOT_FILE};
 use crate::store::{Admission, PackageStore};
+use tilo_lock::MutexRecover as _;
 
 /// File, beside the system store's registry, naming the publishers whose
 /// images this installation trusts, one hex Ed25519 key per line. The OS
@@ -182,11 +183,11 @@ impl ImageTrust {
         };
         let attestors = match tilo_app_package::default_trusted_attestors_path() {
             Some(path) => TrustedAttestors::load(&path).map_err(refused)?,
-            None => TrustedAttestors::empty(),
+            None => TrustedAttestors::default(),
         };
         let revoked = match tilo_app_package::default_revoked_keys_path() {
             Some(path) => RevocationList::load(&path).map_err(refused)?,
-            None => RevocationList::empty(),
+            None => RevocationList::default(),
         };
         let mut trust = Self {
             publishers: Vec::new(),
@@ -542,9 +543,7 @@ impl Store {
                     }),
                     Err(error) => {
                         let reason = error.to_string();
-                        *refusal
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+                        *refusal.lock_recover() = Some(error);
                         Err(reason)
                     }
                 }

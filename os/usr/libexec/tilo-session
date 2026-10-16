@@ -87,6 +87,15 @@ XDG_SESSION_DESKTOP=tilo
 XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 
+# Fedora's glibc backs every heap and thread stack with transparent huge pages,
+# so each thread's 2 MiB malloc arena is resident the moment it allocates: an
+# idle compositor held 180 MiB for 34 MiB of live data. The compositor and
+# every service of this session start without them. glibc reads tunables only
+# when a process starts, so this is where they are set; the launcher gives
+# sandboxed apps the same value (`launcher::hardening::NO_HUGE_PAGES_TUNABLES`,
+# which a test holds to this line).
+export GLIBC_TUNABLES=glibc.malloc.hugetlb=0:glibc.pthread.stack_hugetlb=0
+
 stop_target() {
   if [ "$target_started" = 1 ]; then
     "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
@@ -95,10 +104,10 @@ stop_target() {
   if [ "$environment_imported" = 1 ]; then
     "$DBUS_UPDATE" --systemd \
       WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= \
-      XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= >/dev/null 2>&1 || true
+      XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES= >/dev/null 2>&1 || true
     "$SYSTEMCTL" --user unset-environment \
       DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
-      XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
+      XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES \
       >/dev/null 2>&1 || true
     environment_imported=0
   fi
@@ -184,8 +193,16 @@ fi
   DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
   XDG_SESSION_DESKTOP >/dev/null 2>&1 || true
 environment_imported=1
-"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
-"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
+"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
+# pam_gnome_keyring starts the login keyring daemon inside the PAM session and
+# publishes its control socket in GNOME_KEYRING_CONTROL.  Hand that to the user
+# bus and manager: tilo-secret-service, which owns org.freedesktop.secrets, is
+# started by D-Bus activation and uses it to reach the unlocked login keyring
+# and import it once.  Without it the import never finds the daemon.
+if [ -n "${GNOME_KEYRING_CONTROL:-}" ]; then
+  "$DBUS_UPDATE" --systemd GNOME_KEYRING_CONTROL
+fi
 "$SYSTEMCTL" --user start "$SESSION_TARGET"
 target_started=1
 
@@ -197,8 +214,9 @@ target_started=1
 # compositor run is retained, with its per-frame trace: the previous login's,
 # or after a desktop restart, the run that was restarted.
 flight_dir="${XDG_STATE_HOME:-${HOME:?}/.local/state}/tilo/session-logs"
-"$MKDIR" -p -- "$flight_dir"
-"$CHMOD" 0700 "$flight_dir"
+# A full or failing disk must not stop the login: without the directory the
+# record only reaches the journal.
+{ "$MKDIR" -p -- "$flight_dir" && "$CHMOD" 0700 "$flight_dir"; } 2>/dev/null || true
 flight_log="$flight_dir/latest.log"
 TILO_FRAME_TRACE="$flight_dir/frame-trace.csv"
 export TILO_FRAME_TRACE
@@ -220,52 +238,62 @@ fi
 # Rotate the record, start a recorder for one compositor run and open its
 # pipe as descriptor 4.
 start_flight_record() {
+  # Every disk write here is best effort: a full or failing disk must never
+  # keep the person from logging in. Without storage the session still runs;
+  # its record then only exists in the recorder's memory and on its stdout.
   # Opt-in belongs to the installed slot generation. Allocate a fresh private
   # path on every compositor start; its create_new writer refuses old files.
   # The pointer names the current record without consulting process internals.
   unset TILO_FRAME_CPU_TRACE
   if [ "${TILO_VM_FRAME_CPU_TRACE:-0}" = 1 ]; then
     local cpu_dir
-    cpu_dir=$("$MKDTEMP" -d "$flight_dir/frame-cpu.XXXXXX")
-    export TILO_FRAME_CPU_TRACE="$cpu_dir/frame-cpu.csv"
-    (umask 077; printf '%s\n' "$TILO_FRAME_CPU_TRACE" >"$flight_dir/frame-cpu-path.tmp")
-    "$MV" -f -- "$flight_dir/frame-cpu-path.tmp" "$flight_dir/frame-cpu-path"
+    if cpu_dir=$("$MKDTEMP" -d "$flight_dir/frame-cpu.XXXXXX" 2>/dev/null); then
+      export TILO_FRAME_CPU_TRACE="$cpu_dir/frame-cpu.csv"
+      { (umask 077; printf '%s\n' "$TILO_FRAME_CPU_TRACE" >"$flight_dir/frame-cpu-path.tmp") &&
+        "$MV" -f -- "$flight_dir/frame-cpu-path.tmp" "$flight_dir/frame-cpu-path"; } 2>/dev/null || true
+    fi
   else
-    "$RM" -f -- "$flight_dir/frame-cpu-path"
+    "$RM" -f -- "$flight_dir/frame-cpu-path" 2>/dev/null || true
   fi
   if [ -f "$flight_log" ]; then
-    "$TAIL" -c 4194304 -- "$flight_log" >"$flight_dir/previous.log.tmp" || true
-    "$CHMOD" 0600 "$flight_dir/previous.log.tmp"
-    "$MV" -f -- "$flight_dir/previous.log.tmp" "$flight_dir/previous.log"
+    { "$TAIL" -c 4194304 -- "$flight_log" >"$flight_dir/previous.log.tmp" &&
+      "$CHMOD" 0600 "$flight_dir/previous.log.tmp" &&
+      "$MV" -f -- "$flight_dir/previous.log.tmp" "$flight_dir/previous.log"; } 2>/dev/null ||
+      "$RM" -f -- "$flight_dir/previous.log.tmp" 2>/dev/null || true
   fi
   if [ -f "$TILO_FRAME_TRACE" ]; then
-    "$CP" -- "$TILO_FRAME_TRACE" "$flight_dir/previous-frame-trace.csv.tmp"
-    "$CHMOD" 0600 "$flight_dir/previous-frame-trace.csv.tmp"
-    "$MV" -f -- "$flight_dir/previous-frame-trace.csv.tmp" "$flight_dir/previous-frame-trace.csv"
+    { "$CP" -- "$TILO_FRAME_TRACE" "$flight_dir/previous-frame-trace.csv.tmp" &&
+      "$CHMOD" 0600 "$flight_dir/previous-frame-trace.csv.tmp" &&
+      "$MV" -f -- "$flight_dir/previous-frame-trace.csv.tmp" "$flight_dir/previous-frame-trace.csv"; } 2>/dev/null ||
+      "$RM" -f -- "$flight_dir/previous-frame-trace.csv.tmp" 2>/dev/null || true
   fi
-  : >"$flight_log"
-  "$CHMOD" 0600 "$flight_log"
-  : >"$TILO_FRAME_TRACE"
-  "$CHMOD" 0600 "$TILO_FRAME_TRACE"
+  { : >"$flight_log" && "$CHMOD" 0600 "$flight_log"; } 2>/dev/null || true
+  { : >"$TILO_FRAME_TRACE" && "$CHMOD" 0600 "$TILO_FRAME_TRACE"; } 2>/dev/null || true
   "$RM" -f -- "$flight_pipe"
   "$MKFIFO" -m 0600 -- "$flight_pipe"
+  # The recorder marks itself ready here (runtime tmpfs, never full of the
+  # person's data) once it has tried to persist its start record, whether
+  # storage took it or not.
+  local flight_ready="$flight_pipe.ready"
+  "$RM" -f -- "$flight_ready"
   # Opening a FIFO blocks until the other end is open, so the recorder would
   # not even start before the compositor runs. A read-write descriptor opens
   # at once and serves as the other end for both opens; it is closed before
   # the compositor starts, so this wrapper never reads the pipe itself and a
   # dead recorder still gives writers EPIPE instead of a full pipe.
   exec 3<>"$flight_pipe"
-  "$FLIGHT_RECORDER" "$flight_log" "$("$DATE" --iso-8601=seconds)" "$$" "$SHELL_BIN" \
+  TILO_FLIGHT_RECORD_READY="$flight_ready" \
+    "$FLIGHT_RECORDER" "$flight_log" "$("$DATE" --iso-8601=seconds)" "$$" "$SHELL_BIN" \
     <"$flight_pipe" 3<&- &
   flight_relay_pid=$!
   exec 4>"$flight_pipe" 3<&-
-  # The recorder replaces the empty log with its persisted start record
-  # before it reads anything. Wait for that, or for the recorder to die, so
-  # the compositor never runs unrecorded and a crash right after login keeps
-  # its record however slowly the recorder started.
-  while [ ! -s "$flight_log" ] && kill -0 "$flight_relay_pid" 2>/dev/null; do
+  # Wait until the recorder is ready (or died), so the compositor never runs
+  # unrecorded and a crash right after login keeps its record however slowly
+  # the recorder started.
+  while [ ! -e "$flight_ready" ] && [ ! -s "$flight_log" ] && kill -0 "$flight_relay_pid" 2>/dev/null; do
     "$SLEEP" 0.05
   done
+  "$RM" -f -- "$flight_ready"
 }
 
 # Close descriptor 4, let the recorder drain and append the end record.
@@ -288,7 +316,7 @@ end_flight_record() {
   printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s restart_request=%s\n' \
     "$("$DATE" --iso-8601=seconds)" "$status" \
     "$([ -e "$logout_request_path" ] && printf yes || printf no)" \
-    "$([ "$restart_requested" = 1 ] && printf yes || printf no)" >>"$flight_log"
+    "$([ "$restart_requested" = 1 ] && printf yes || printf no)" >>"$flight_log" 2>/dev/null || true
 }
 
 while :; do

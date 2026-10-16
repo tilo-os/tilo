@@ -8,6 +8,17 @@ store-operation-failed = Der Vorgang konnte nicht abgeschlossen werden
 store-error-refresh = Apps aktualisieren
 store-repository-timeout = { $name } hat nicht geantwortet. Andere Apps bleiben verfügbar. Aktualisiere die Apps, um es erneut zu versuchen.
 store-build-version = Vollständige Build-Version
+
+store-runtime-install = Laufzeit installieren
+store-runtime-reference = Benötigte Laufzeit
+store-runtime-installed = { $name } { $version } wurde installiert. Öffne die App erneut, um sie zu verwenden.
+store-runtime-reviewed = { $name } wurde geprüft. Die Installation erfolgt in einem eigenen Schritt.
+store-runtime-changed = Das geprüfte Laufzeitpaket hat sich geändert. Prüfe es erneut.
+store-runtime-service-unavailable = Der App-Dienst ist nicht verfügbar. Es wurde keine Laufzeitoperation versucht.
+store-runtime-offer-mismatch = Das signierte Laufzeitangebot entspricht nicht der angeforderten Identität.
+store-runtime-offer-ambiguous = Mehrere Quellen bieten diese Laufzeit an. Wähle vor der Installation eine Quelle aus.
+store-runtime-unavailable = Keine aktivierte Quelle bietet die benötigte Laufzeit für dieses Gerät an.
+
 store-remotes-title = Flatpak repositories
 store-remotes-description = Browse software from your configured repositories. Repositories supplied by this device stay available; repositories you add belong to your account.
 store-remote-user = This account
@@ -68,6 +79,8 @@ store-package-new-install = Not installed on this device.
 store-package-file-type = Tilo package
 store-package-review-busy = Too many package reviews are waiting. Finish the current reviews first.
 store-package-local-trust = Verified by an existing trusted attestor
+store-installed-unanswered = Bei der Installation verifiziert. { $repositories } hat nicht geantwortet. Beschreibung und Updates dieser App erscheinen hier, sobald die Quelle antwortet.
+store-installed-unlisted = Bei der Installation verifiziert. Keine aktivierte Paketquelle führt diese App, daher gibt es hier keine Updates für sie.
 store-package-local-description = Signed local application. Installation requires its payload and exact runtime to be available.
 store-package-local-source = Local package
 

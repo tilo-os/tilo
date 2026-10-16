@@ -26,6 +26,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard", "files.open", "files.paths", "app-files", "threads", "media.decode"]
 
+[resources]
+kinds = ["photos.library"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

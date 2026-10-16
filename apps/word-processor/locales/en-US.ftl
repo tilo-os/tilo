@@ -162,14 +162,8 @@ style-menu-delete = Delete style
 style-menu-duplicate = Duplicate style
 
 ## Transient toasts (confirmation cues)
-toast-toc-updated = Table of contents updated ({ $n } { $n ->
-        [one] entry
-       *[other] entries
-    })
 toast-toc-empty = Add headings first — a table of contents lists them
-toast-style-deleted = Style deleted
-toast-style-duplicated = Style duplicated
-toast-saved = Document saved
+saved-file = Saved { $file }
 toast-save-failed = Could not save the document
 toast-open-failed = Could not open the document. Your current document is unchanged.
 toast-view-only = This document is open to view only.

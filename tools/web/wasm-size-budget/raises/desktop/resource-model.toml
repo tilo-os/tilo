@@ -1,4 +1,0 @@
-bytes = 4063232
-run = 68841
-measured = 88815904
-reason = "feature growth: every app on the one resource/action/view model, with its typed effect vocabularies, live rows and search sources (#2553)"

@@ -412,7 +412,7 @@ class ReleaseGateTests(unittest.TestCase):
             workflow = WORKFLOW.read_text()
             archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
             uses = list(archive.finditer(workflow))
-            self.assertEqual(len(uses), 6)
+            self.assertEqual(len(uses), 7)
             for use in uses:
                 self.assertRegex(
                     workflow[use.end():use.end() + 24],

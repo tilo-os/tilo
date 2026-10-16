@@ -894,6 +894,7 @@ mod room_tests {
                     active_tab: second_tab,
                     width: WindowWidth::Wide,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
             let mut tree = tree_with(vec![w]);
@@ -941,6 +942,7 @@ mod room_tests {
                     active_tab: tab_id,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
             let tree = tree_with(vec![w]);

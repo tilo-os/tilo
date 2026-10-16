@@ -117,9 +117,11 @@ members = [
     "apps/slides",
     "apps/shortcuts",
     "apps/snippets",
+    "apps/staging-handoff-model",
     "apps/store",
     "apps/terminal",
     "apps/themes",
+    "apps/thumbnails",
     "apps/totp",
     "apps/tube",
     "apps/typst-editor",
@@ -158,6 +160,7 @@ members = [
     "crates/collab/collab-fixtures",
     "crates/collab/collab-types",
     "crates/collab/neighbour-wire",
+    "crates/collab/owner-commit",
     "crates/collab/reference",
     "crates/collab/feedback-review",
     "crates/collab/feedback",
@@ -167,6 +170,7 @@ members = [
     "crates/collab/tilo-joined-room",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
+    "crates/collab/workspace-join",
 
     # Dev
     "crates/dev/collab-link",
@@ -206,6 +210,8 @@ members = [
     "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",
     "crates/hosting/tilo-relay-session",
+    "crates/hosting/tilo-relay-shell",
+    "crates/hosting/tilo-relay-store",
 
     # Media
     "crates/media/ocr",
@@ -255,6 +261,8 @@ members = [
     "crates/platform/tilo-input-context",
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
+    "crates/platform/tilo-lock",
+    "crates/platform/tilo-wake",
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
@@ -287,9 +295,11 @@ members = [
     "crates/runtime/runtime-collab",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
-    # Single-app engines shipped beside it in the runtime bundle.
+    # Engines one or two apps load, shipped beside it in the runtime bundle.
+    "crates/runtime/engines/paint",
     "crates/runtime/engines/spotify",
     "crates/runtime/engines/typst",
+    "crates/runtime/engines/youtube",
     "crates/runtime/runtime-fs",
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
@@ -312,8 +322,11 @@ members = [
     "crates/session/greeter",
     "crates/session/install-profile-model",
     "crates/session/installer",
+    "crates/session/network-secret-agent",
+    "crates/session/polkit-agent",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
+    "crates/session/tray-host",
 
     # System
     "crates/system/account-custody",
@@ -321,6 +334,8 @@ members = [
     "crates/system/advisory-lock",
     "crates/system/app-state",
     "crates/system/block-devices",
+    "crates/system/board-successor",
+    "crates/system/boot-order",
     "crates/system/bounded-command",
     "crates/system/cloud-source",
     "crates/system/cloud-source-dav",
@@ -333,21 +348,28 @@ members = [
     "crates/system/content",
     "crates/system/durable-store",
     "crates/system/endpoint-reachability",
+    "crates/system/esp-write",
+    "crates/system/extension-helper",
+    "crates/system/firstboot-files",
     "crates/system/fs",
     "crates/system/fs-content",
     "crates/system/fs-protocol",
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",
+    "crates/system/image-policy-check",
+    "crates/system/tilo-pycompat",
+    "crates/system/install-helpers",
     "crates/system/libvirt-domain",
     "crates/system/messaging-protocol",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
     "crates/system/sandbox-core",
+    "crates/system/secret-service",
     "crates/system/secret-vault",
     "crates/system/settings-store",
-    "crates/system/ssh-agent-client",
+    "crates/system/staging-reclaim",
     "crates/system/swipe",
     "crates/system/system-extension",
     "crates/system/tilo-bluez",
@@ -391,6 +413,12 @@ homepage = "https://tilo.so"
 # workspace-hack is never named in code: it only unifies third-party features.
 [workspace.metadata.cargo-machete]
 ignored = ["workspace-hack"]
+
+[workspace.lints.rust]
+# `tilo_no_js`: a wasm32-unknown-unknown build for a host that is not a
+# JavaScript page (a sandboxed format provider), which must link no
+# wasm-bindgen glue.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
@@ -494,6 +522,7 @@ cosmic-text = { version = "0.19.0", default-features = false }
 # ---------------------------------------------------------------------------
 tokio = "1.52.3"
 tilo-rt = { version = "0.1.0", path = "crates/platform/tilo-rt" }
+tilo-wake = { version = "0.1.0", path = "crates/platform/tilo-wake" }
 tilo-paths = { version = "0.1.0", path = "crates/platform/tilo-paths" }
 tilo-clipboard = { version = "0.1.0", path = "crates/platform/tilo-clipboard" }
 tilo-dialogs = { version = "0.1.0", path = "crates/platform/tilo-dialogs" }
@@ -537,9 +566,7 @@ quick-xml = "0.41.0"
 roxmltree = "0.21"
 capnp = "0.26"
 capnp-rpc = "0.26"
-capnpc = "0.26"
 base64 = "0.22.1"
-bs58 = "0.5.1"
 data-encoding = "2.10"
 data-encoding-macro = "0.1.19"
 hex = "0.4.3"
@@ -568,9 +595,8 @@ sha2 = "0.11"
 # Gravatar paths and the Drive fake's checksums.
 md-5 = "0.11"
 hmac = "0.13"
-# SRP-6a for the iCloud sign-in (cloud-source-icloud).
+# SRP-6a for the iCloud sign-in (tilo-crypto `srp`).
 pbkdf2 = "0.13"
-num-bigint = "0.5"
 blake3 = "1.8.5"
 # Raw AEAD and password-KDF crates are for `crates/system/tilo-seal` only;
 # `tools/policy/check_crypto_dependencies.py` rejects any other direct user.
@@ -639,7 +665,7 @@ notify = "8"
 landlock = "0.4"
 seccompiler = "0.5"
 sd-notify = "0.4"
-sysinfo = "0.32"
+sysinfo = "0.36"
 open = "5.3.5"
 libc = "0.2.186"
 rustix = "1.1.4"
@@ -662,6 +688,9 @@ walkdir = "2.5.0"
 lru = { version = "0.18.3", default-features = false }
 moka = { version = "0.12.15", features = ["sync"] }
 regex = "1"
+# For patterns in code every browser visitor loads first (action schemas,
+# feedback redaction): about a tenth of `regex`'s size, ASCII classes only.
+regex-lite = "0.1"
 semver = "1"
 parking_lot = "0.12.5"
 fluent = "0.17.0"

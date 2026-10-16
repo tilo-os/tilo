@@ -30,7 +30,7 @@ class CiImagePins(unittest.TestCase):
             if container and 'image: ${{ needs.builder.outputs.image }}' in container[1]:
                 observed.add(name)
                 self.assertNotIn('credentials:', container[1], name)
-        self.assertEqual(observed, {'real-fuse', 'cloud-servers', 'cloud-live', 'native-tier1', 'files-ux'})
+        self.assertEqual(observed, {'cloud-servers', 'cloud-live'})
         self.assertIn('TILO_REQUIRE_CLOUD_SERVERS: "1"', source)
         self.assertIn('TILO_LIVE_NEXTCLOUD_PASSWORD: ${{ secrets.TILO_LIVE_NEXTCLOUD_PASSWORD }}', source)
 

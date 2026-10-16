@@ -11,9 +11,7 @@ use crate::services::{
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_action_policy::roles::AgentPreset;
-use tilo_peer_state::owner_commit::{
-    CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
-};
+use tilo_owner_commit::{CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_peer_state::workspace_task::{
     WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskSnapshot,
@@ -122,6 +120,9 @@ impl OwnerCommitService for Native {
         let key = self.key.clone();
         let cert = self.certificate.clone();
         Box::pin(async move {
+            // A real owner commits asynchronously: let other requests run
+            // first, as they do while a commit is on its way.
+            tokio::task::yield_now().await;
             let receipt = match request.operation {
                 CommitOperation::WorkspaceTaskCommand { .. } => owner
                     .commit_workspace_task_command(request.clone(), std::time::SystemTime::now()),
@@ -191,8 +192,11 @@ impl WorkspaceTaskExecution for Native {
             return Err("foreign task room".into());
         }
         self.owner.with_current(room(), |view| {
-            view.peer()
-                .check_task_execution_actor(agent, None, std::time::SystemTime::now())?;
+            view.peer().workspace().check_task_execution_actor(
+                agent,
+                None,
+                std::time::SystemTime::now(),
+            )?;
             tilo_peer_state::workspace_task::snapshot(
                 view.peer()
                     .admitted_room()
@@ -238,7 +242,9 @@ impl WorkspaceTaskExecution for Native {
         }
         self.owner.with_current(room(), |view| {
             let now = std::time::SystemTime::now();
-            view.peer().check_task_execution_actor(agent, None, now)?;
+            view.peer()
+                .workspace()
+                .check_task_execution_actor(agent, None, now)?;
             requirement.check(view.peer(), requested, agent, now)
         })
     }
@@ -644,7 +650,8 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
         .with_current(room(), |view| {
             let before = view.peer().clone();
             let mut next = before.clone();
-            next.put_governed_grants(&[grant], &f.native.key, now)?;
+            next.governance_mut()
+                .put_governed_grants(&[grant], &f.native.key, now)?;
             next.durable_mutation_messages(
                 &before,
                 &f.native.key,
@@ -1167,6 +1174,35 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
                     .status,
                 WorkspaceTaskStatus::Cancelled
             );
+            drop(f);
+        })
+        .await;
+}
+
+/// An agent reports acceptance and its first progress without waiting for
+/// the host in between. Progress is decided against the accepted run, so it
+/// must apply after acceptance, not race its commit: refused, it failed the
+/// run at its end ("public progress requires accepted run").
+#[tokio::test(flavor = "current_thread")]
+async fn progress_sent_right_after_acceptance_applies_in_order() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (accepted, progress) = tokio::join!(
+                report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted),
+                report(
+                    &agent,
+                    &run,
+                    runtime_collab::TaskRunUpdate::Progress {
+                        message: "Reviewing the catalogue".into(),
+                    },
+                ),
+            );
+            accepted.unwrap();
+            progress.unwrap();
             drop(f);
         })
         .await;

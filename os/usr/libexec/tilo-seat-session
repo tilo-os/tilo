@@ -40,6 +40,7 @@ esac
 getent_bin=${TILO_SEAT_GETENT:-/usr/bin/getent}
 id_bin=${TILO_SEAT_ID:-/usr/bin/id}
 install_bin=${TILO_SEAT_INSTALL:-/usr/bin/install}
+runuser_bin=${TILO_SEAT_RUNUSER:-/usr/sbin/runuser}
 systemd_run=${TILO_SEAT_SYSTEMD_RUN:-/usr/bin/systemd-run}
 systemctl_bin=${TILO_SEAT_SYSTEMCTL:-/usr/bin/systemctl}
 display_present=${TILO_DISPLAY_PRESENT:-/usr/libexec/tilo-display-present}
@@ -59,8 +60,12 @@ uid=$("$id_bin" -u "$account")
 gid=$("$id_bin" -g "$account")
 
 # The user manager sets no XDG base directories. Without XDG_STATE_HOME the
-# compositor keeps collaboration history in memory only.
-"$install_bin" -d -m 0700 -o "$uid" -g "$gid" \
+# compositor keeps collaboration history in memory only. Created as the
+# account, not as root: `install -d` follows a symlinked `.local` or
+# `.config`, and this runs again on every restart of a session the account
+# controls, so a root `install -o "$uid"` here would chown wherever the
+# account pointed the link.
+"$runuser_bin" -u "$account" -- "$install_bin" -d -m 0700 \
   "$home/.local/state" "$home/.local/share" "$home/.config"
 session_env=(
   --setenv=XDG_STATE_HOME="$home/.local/state"

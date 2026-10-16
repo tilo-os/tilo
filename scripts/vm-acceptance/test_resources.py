@@ -7,6 +7,7 @@ cgroups and process names of run 90408's dump (seat0 greeter as uid 974, the slo
 1001, the dev image's services, a root ssh session), with the dump's newer fields.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -337,6 +338,149 @@ class DiskTest(unittest.TestCase):
     def test_a_missing_line_is_unobservable_not_zero(self):
         with self.assertRaises(core.Unobservable):
             resources.parse_disk("tilo-runtime 1\nbuilds 0\n")
+
+
+# Two `SAMPLE` snapshots 10 s apart: the compositor (100) with two broker threads, Notes
+# (300) and Files (400) with a shovel each, and the relay (500), whose own threads count
+# for nothing here. Fields: pid tid comm ticks context-switches.
+SHARED_SAMPLE = """\
+@@0
+U 100.0
+P 100 shell 0 0 1 1000
+H 100 100 shell 0 0
+H 100 101 tilo-collab-bro 0 10
+H 100 102 tilo-collab-bro 0 4
+P 300 app 0 0 1 2000
+H 300 301 ui-collab-shove 0 7
+P 400 app 0 0 1 2000
+H 400 401 ui-collab-shove 0 3
+P 500 tilo-relay 0 0 1 2000
+H 500 501 ui-collab-shove 0 0
+T 10000 9000
+@@1
+U 110.0
+P 100 shell 5 30 1 1000
+H 100 100 shell 2 10
+H 100 101 tilo-collab-bro 1 16
+H 100 102 tilo-collab-bro 0 6
+H 100 103 tilo-collab-bro 0 2
+P 300 app 1 0 1 2000
+H 300 301 ui-collab-shove 0 7
+P 400 app 1 0 1 2000
+H 400 401 ui-collab-shove 0 4
+P 500 tilo-relay 9 50 1 2000
+T 11000 9900
+HZ 100
+"""
+HOST = bytes(range(32))
+BUDGETS = {"idle_shared_broker_wakeups_per_s": 1.0, "idle_shared_shovel_wakeups_per_s": 0.0}
+
+
+def shared_state(governor_caps: dict | None, room="7a1e", pending=()):
+    """A state dump whose workspace 2 is in `room`, held under HOST's governance."""
+    rooms = {} if governor_caps is None else {room: {"governor": {
+        "device_public_key": list(HOST), "capabilities": governor_caps}}}
+    return {"workspace_tree": {
+        "active": 1,
+        "workspaces": [{"id": 1, "room": "0000"}, {"id": 2, "room": room}],
+        "native_authority": {"revision": 3, "rooms": rooms, "pending": {r: {} for r in pending}}}}
+
+
+class SharedWorkspaceTest(unittest.TestCase):
+    def measured(self):
+        sample = resources._parse_sample(SHARED_SAMPLE)
+        return {"compositor_pid": resources.compositor_pid(sample["procs"][0]),
+                "named_threads": resources.named_threads(
+                    sample, (resources.BROKER_THREAD, resources.SHOVEL_THREAD), 10)}
+
+    def test_named_threads_sum_per_process_and_count_new_threads_from_zero(self):
+        rows = {(r["pid"], r["thread"]): r for r in self.measured()["named_threads"]}
+        self.assertEqual(rows[(100, "tilo-collab-bro")]["threads"], 3)
+        # 6 + 2 switches by the old threads, 2 by the one born in the window.
+        self.assertEqual(rows[(100, "tilo-collab-bro")]["ctxt_switches_per_s"], 1.0)
+        self.assertEqual(rows[(100, "tilo-collab-bro")]["cpu_pct"], 0.1)
+        self.assertEqual(rows[(300, "ui-collab-shove")]["ctxt_switches_per_s"], 0.0)
+        self.assertEqual(rows[(400, "ui-collab-shove")]["ctxt_switches_per_s"], 0.1)
+        self.assertNotIn((100, "shell"), rows)
+        self.assertNotIn((500, "ui-collab-shove"), rows, "a thread that ended has no window")
+
+    def test_the_broker_and_the_shovels_are_judged_apart(self):
+        judged, problems = resources.shared_idle(self.measured(), BUDGETS)
+        self.assertEqual((judged["broker_wakeups_per_s"], judged["broker_threads"]), (1.0, 3))
+        self.assertEqual((judged["shovel_wakeups_per_s"], judged["shovels"]), (0.1, 2))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("shovels woke 0.1/s > 0.0/s (app[400] 0.1/s)", problems[0])
+        judged, problems = resources.shared_idle(self.measured(), dict(BUDGETS, idle_shared_broker_wakeups_per_s=0.5,
+                                                                       idle_shared_shovel_wakeups_per_s=0.1))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("broker woke 1.0/s > 0.5/s", problems[0])
+
+    def test_without_a_broker_or_a_shovel_nothing_was_measured(self):
+        m = self.measured()
+        no_broker = dict(m, named_threads=[r for r in m["named_threads"] if r["thread"] != "tilo-collab-bro"])
+        with self.assertRaises(core.Unobservable):
+            resources.shared_idle(no_broker, BUDGETS)
+        # A shovel in the compositor is not an app's.
+        compositor_only = dict(m, named_threads=[dict(r, pid=100) for r in m["named_threads"]])
+        with self.assertRaises(core.Unobservable):
+            resources.shared_idle(compositor_only, BUDGETS)
+
+    def test_a_room_a_host_governs_is_committed(self):
+        host = {"can_own_workspaces": False, "can_act_as_host": True, "foreign": False}
+        self.assertEqual(resources.committed_workspace(shared_state(host), HOST.hex())["id"], 2)
+
+    def test_a_node_stewards_its_rooms_another_device_governs_none_and_pending_is_not_yet(self):
+        node = {"can_own_workspaces": True, "can_act_as_host": True, "foreign": False}
+        self.assertIsNone(resources.committed_workspace(shared_state(node), HOST.hex()))
+        host = {"can_own_workspaces": False, "can_act_as_host": True, "foreign": False}
+        self.assertIsNone(resources.committed_workspace(shared_state(host), bytes(32).hex()))
+        pending = shared_state(None, pending=("7a1e",))
+        self.assertIsNone(resources.committed_workspace(pending, HOST.hex()))
+        self.assertIn("pending: 7a1e", resources.describe_native_rooms(pending))
+        self.assertIn("7a1e (governor 000102030405)", resources.describe_native_rooms(shared_state(host)))
+
+    def test_only_the_runs_relay_leaves_the_home_peer_registry(self):
+        mine, other = "ab" * 32, "cd" * 32
+        text = json.dumps([{"device_node_id": mine, "label": "Acceptance home relay"},
+                           {"device_node_id": other, "label": "Home server"}])
+        self.assertEqual(json.loads(resources.without_home_peer(text, mine)),
+                         [{"device_node_id": other, "label": "Home server"}])
+        self.assertIsNone(resources.without_home_peer(text, "ef" * 32))
+        self.assertIsNone(resources.without_home_peer("", mine))
+        self.assertIsNone(resources.without_home_peer('{"not": "a list"}', mine))
+
+    def test_each_slot_user_has_its_own_relay_port_below_the_ephemeral_range(self):
+        ports = {resources.home_relay_port(uid) for uid in range(1000, 1010)}
+        self.assertEqual(len(ports), 10)
+        self.assertTrue(all(1024 < p < 32768 for p in ports))
+
+    def test_setup_failures_name_what_the_guest_lacked(self):
+        key = '{"device_public_key": "%s", "relay_service_node_id": "%s"}' % ("ab" * 32, "cd" * 32)
+
+        def ctx_answering(setup):
+            class Vm:
+                def exec(self, script, timeout=120, check=True):
+                    return key if "device-key" in script and "certify" not in script else setup
+
+                def slot_uid(self):
+                    return 1001
+
+            class Ctx:
+                vm = Vm()
+
+                def write(self, name, text):
+                    pass
+            return Ctx()
+
+        cases = {"HOME-RELAY no-identity-root\n": "identity root of its own",
+                 "error: unexpected argument '--home-peer-service' found\n": "predates",
+                 "Failed to start transient service unit\n": "did not start"}
+        for out, said in cases.items():
+            with self.assertRaises(core.Unobservable) as raised:
+                resources.start_home_relay(ctx_answering(out))
+            self.assertIn(said, str(raised.exception))
+        relay = resources.start_home_relay(ctx_answering("HOME-RELAY started\n"))
+        self.assertEqual(relay, {"device": "ab" * 32, "service": "cd" * 32, "port": 24000 + 1001 % 8000})
 
 
 if __name__ == "__main__":

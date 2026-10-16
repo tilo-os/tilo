@@ -39,12 +39,6 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
     Some(PeerPresence { key, payload })
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the sole caller (collab_broker.rs) always hands over an owned, freshly-decoded \
-              PeerPresence it has no further use for; taking &PeerPresence would only add an \
-              indirection with no caller benefit"
-)]
 pub fn from_peer(presence: PeerPresence) -> Option<(PresenceKey, PresencePayload)> {
     let key = postcard::from_bytes(&presence.key).ok()?;
     let payload = match presence.payload {

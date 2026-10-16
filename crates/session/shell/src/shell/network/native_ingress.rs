@@ -66,6 +66,20 @@ impl ShellNetwork {
         if &certificate != creator {
             return Err("application initialization creator custody changed".into());
         }
+        if self.governed_elsewhere(room) {
+            // The host governing the room created the empty record for this
+            // device; the bootstrap is this member's own change to it, which
+            // the host admits like any other.
+            let revision = owner.initialize_application_record_as_member(
+                room,
+                &certificate,
+                &identity.device_signing_key,
+                initialization,
+                SystemTime::now(),
+            )?;
+            self.schedule_native_owner_publication(room);
+            return Ok(revision);
+        }
         owner.initialize_application_record(
             room,
             &certificate,
@@ -177,6 +191,22 @@ impl ShellNetwork {
                     self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
                         room,
                         request: request.clone(),
+                        route: None,
+                    });
+                }
+                true
+            }
+            NeighbourMsg::MlsRoutedAccessRequest {
+                room: named,
+                request,
+                route,
+                ..
+            } => {
+                if RoomId::parse(named) == Some(room) {
+                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
+                        room,
+                        request: request.clone(),
+                        route: Some(route.clone()),
                     });
                 }
                 true
@@ -243,13 +273,18 @@ impl ShellNetwork {
     /// admitted for `device`, a member's device the room's relay
     /// authenticated: a browser of the room announces no identity of its
     /// own to this device.
+    ///
+    /// Asked for inbound events on the frame loop, so it reads only an
+    /// owner already open: the tick holds inbound events back while one is
+    /// opening ([`ShellNetwork::tick`]), and without one no device is
+    /// governed.
     pub(super) fn governed_identity(
         &self,
         ws: u64,
         device: iroh::EndpointId,
     ) -> Option<crate::network::identity::PeerIdentity> {
         let room = self.room_for_topic(ws)?;
-        let owner = self.native_owner().ok()?;
+        let owner = self.opened_native_owner()?;
         owner
             .with_current(room, |view| {
                 let now = SystemTime::now();
@@ -271,6 +306,8 @@ impl ShellNetwork {
     }
 
     /// Native presence uses admitted governance, never the legacy hello cache.
+    /// Like [`Self::governed_identity`], it reads only an owner already
+    /// open, and allows nothing without one.
     pub(super) fn governed_presence_allows(
         &self,
         ws: u64,
@@ -284,7 +321,7 @@ impl ShellNetwork {
         if room.to_string() != cluster || app.is_empty() {
             return false;
         }
-        let Ok(owner) = self.native_owner() else {
+        let Some(owner) = self.opened_native_owner() else {
             return false;
         };
         owner
@@ -302,15 +339,41 @@ impl ShellNetwork {
             tree.requires_native_owner(room) && !tree.commits_native_documents(room)
         })
     }
-    pub(super) fn dispatch_native_input(&self, input: &native_ingress::Input) {
+    /// Handle `input` here, admitting it in place: a commit through the
+    /// room's owner, which publishes the state file.
+    pub(super) fn dispatch_native_input(&self, input: native_ingress::Input) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };
-        if self.dispatch_channel_traffic(input) {
+        if self.dispatch_channel_traffic(&input) {
             return;
         }
-        let generation = input.generation().ok();
-        let report = match input.admit(identity) {
+        self.complete_native_input(super::native_admission::admit(input, identity));
+    }
+
+    /// Handle `input` on the frame loop: what needs no admission here, its
+    /// admission on the admission worker, which no later event overtakes.
+    pub(super) fn dispatch_native_input_off_loop(&self, input: native_ingress::Input) {
+        let Some(identity) = self.host_identity.clone() else {
+            return;
+        };
+        if self.dispatch_channel_traffic(&input) {
+            return;
+        }
+        if let Some(input) = self.admit_off_loop(input, identity) {
+            // No worker to take it: admitting late would reorder it.
+            self.dispatch_native_input(input);
+        }
+    }
+
+    /// What follows an admission, on the thread handling inbound events.
+    pub(super) fn complete_native_input(&self, admitted: super::native_admission::Admitted) {
+        let super::native_admission::Admitted {
+            input,
+            changed,
+            report,
+        } = admitted;
+        let report = match report {
             Ok(report) => report,
             Err(error) => {
                 tracing::warn!(%error,room=%input.room(),"native relay admission denied");
@@ -319,7 +382,7 @@ impl ShellNetwork {
         };
         // A genuine committed change can enable successors or retire custody.
         // An unchanged replay must not enqueue another expensive recovery pass.
-        if generation != input.generation().ok() {
+        if changed {
             let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
                 ws: room_topic_id(input.room()),
             });

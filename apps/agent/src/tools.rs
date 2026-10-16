@@ -440,7 +440,9 @@ fn plan_definition(most_steps: usize) -> Value {
                             },
                             "arguments": {
                                 "type": "object",
-                                "description": ARGUMENTS_DESCRIPTION
+                                "description": ARGUMENTS_DESCRIPTION,
+                                // Open by design; see `invoke_definition`.
+                                "additionalProperties": true
                             }
                         },
                         "required": ["operation", "arguments"],
@@ -509,7 +511,12 @@ fn invoke_definition() -> Value {
                 },
                 INVOKE_PARAMETERS: {
                     "type": "object",
-                    "description": ARGUMENTS_DESCRIPTION
+                    "description": ARGUMENTS_DESCRIPTION,
+                    // Each operation names its own arguments, so this object
+                    // is open; saying so explicitly matters because Gemini
+                    // reads an object schema without properties as an empty
+                    // object and would then never pass a required argument.
+                    "additionalProperties": true
                 },
                 PARTS: parts_schema(),
                 INVOKE_REPLY: {
@@ -2058,6 +2065,41 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&skipped).unwrap()["result"],
             "not run"
+        );
+    }
+
+    /// Every open object in the tool schemas says it is open. Gemini reads an
+    /// object schema without properties as an empty object, so an argument
+    /// map left implicit would reach every operation empty and a required
+    /// argument (a new note's title, say) could never be passed.
+    #[test]
+    fn every_open_argument_object_declares_itself_open() {
+        fn walk(path: &str, node: &Value, open: &mut Vec<String>) {
+            match node {
+                Value::Object(map) => {
+                    if map.get("type").and_then(Value::as_str) == Some("object")
+                        && !map.contains_key("properties")
+                        && map.get("additionalProperties") != Some(&Value::Bool(true))
+                    {
+                        open.push(path.to_owned());
+                    }
+                    for (key, child) in map {
+                        walk(&format!("{path}/{key}"), child, open);
+                    }
+                }
+                Value::Array(items) => {
+                    for (index, child) in items.iter().enumerate() {
+                        walk(&format!("{path}/{index}"), child, open);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut undeclared = Vec::new();
+        walk("", &definitions(4), &mut undeclared);
+        assert!(
+            undeclared.is_empty(),
+            "implicitly open objects: {undeclared:?}"
         );
     }
 }

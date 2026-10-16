@@ -68,7 +68,10 @@ pub struct KeyEventBuilder {
 }
 impl Default for KeyEventBuilder {
     fn default() -> Self {
-        KeyEventBuilder { event_info: Mutex::new(None), pending: Default::default() }
+        KeyEventBuilder {
+            event_info: Mutex::new(None),
+            pending: Default::default(),
+        }
     }
 }
 impl KeyEventBuilder {
@@ -96,13 +99,13 @@ impl KeyEventBuilder {
                     let kbd_state = get_async_kbd_state();
                     let key_events = Self::synthesize_kbd_state(ElementState::Pressed, &kbd_state);
                     MatchResult::MessagesToDispatch(self.pending.complete_multi(key_events))
-                },
+                }
                 WM_KILLFOCUS => {
                     // synthesize keyup events
                     let kbd_state = get_kbd_state();
                     let key_events = Self::synthesize_kbd_state(ElementState::Released, &kbd_state);
                     MatchResult::MessagesToDispatch(self.pending.complete_multi(key_events))
-                },
+                }
                 WM_KEYDOWN | WM_SYSKEYDOWN => {
                     if msg_kind == WM_SYSKEYDOWN && wparam as VIRTUAL_KEY == VK_F4 {
                         // Don't dispatch Alt+F4 to the application.
@@ -148,11 +151,14 @@ impl KeyEventBuilder {
                         let ev = event_info.finalize();
                         return MatchResult::MessagesToDispatch(self.pending.complete_pending(
                             pending_token,
-                            MessageAsKeyEvent { event: ev, is_synthetic: false },
+                            MessageAsKeyEvent {
+                                event: ev,
+                                is_synthetic: false,
+                            },
                         ));
                     }
                     MatchResult::TokenToRemove(pending_token)
-                },
+                }
                 WM_DEADCHAR | WM_SYSDEADCHAR => {
                     let pending_token = self.pending.add_pending();
                     *result = ProcResult::Value(0);
@@ -162,9 +168,12 @@ impl KeyEventBuilder {
                     let ev = event_info.finalize();
                     MatchResult::MessagesToDispatch(self.pending.complete_pending(
                         pending_token,
-                        MessageAsKeyEvent { event: ev, is_synthetic: false },
+                        MessageAsKeyEvent {
+                            event: ev,
+                            is_synthetic: false,
+                        },
                     ))
-                },
+                }
                 WM_CHAR | WM_SYSCHAR => {
                     let mut event_info = self.event_info.lock().unwrap();
                     if event_info.is_none() {
@@ -193,7 +202,7 @@ impl KeyEventBuilder {
                             None => {
                                 warn!("The event_info was None when it was expected to be some");
                                 return MatchResult::TokenToRemove(pending_token);
-                            },
+                            }
                         };
                         let start_offset = utf16parts.len();
                         let new_size = utf16parts.len() + 2;
@@ -222,7 +231,7 @@ impl KeyEventBuilder {
                             None => {
                                 warn!("The event_info was None when it was expected to be some");
                                 return MatchResult::TokenToRemove(pending_token);
-                            },
+                            }
                         };
                         let mut layouts = LAYOUT_CACHE.lock().unwrap();
                         // It's okay to call `ToUnicode` here, because at this point the dead key
@@ -254,10 +263,13 @@ impl KeyEventBuilder {
                         let ev = event_info.finalize();
                         MatchResult::MessagesToDispatch(self.pending.complete_pending(
                             pending_token,
-                            MessageAsKeyEvent { event: ev, is_synthetic: false },
+                            MessageAsKeyEvent {
+                                event: ev,
+                                is_synthetic: false,
+                            },
                         ))
                     }
-                },
+                }
                 WM_KEYUP | WM_SYSKEYUP => {
                     let pending_token = self.pending.add_pending();
                     *result = ProcResult::Value(0);
@@ -291,11 +303,14 @@ impl KeyEventBuilder {
                         let event = event_info.finalize();
                         return MatchResult::MessagesToDispatch(self.pending.complete_pending(
                             pending_token,
-                            MessageAsKeyEvent { event, is_synthetic: false },
+                            MessageAsKeyEvent {
+                                event,
+                                is_synthetic: false,
+                            },
                         ));
                     }
                     MatchResult::TokenToRemove(pending_token)
-                },
+                }
                 _ => MatchResult::Nothing,
             }
         };
@@ -377,8 +392,14 @@ impl KeyEventBuilder {
             }
         };
         let do_modifier = |key_events: &mut Vec<_>, layouts: &mut _| {
-            const CLEAR_MODIFIER_VKS: [VIRTUAL_KEY; 6] =
-                [VK_LCONTROL, VK_LSHIFT, VK_LMENU, VK_RCONTROL, VK_RSHIFT, VK_RMENU];
+            const CLEAR_MODIFIER_VKS: [VIRTUAL_KEY; 6] = [
+                VK_LCONTROL,
+                VK_LSHIFT,
+                VK_LMENU,
+                VK_RCONTROL,
+                VK_RSHIFT,
+                VK_RMENU,
+            ];
             for vk in CLEAR_MODIFIER_VKS.iter() {
                 if is_key_pressed!(*vk) {
                     let event = Self::create_synthetic(
@@ -403,11 +424,11 @@ impl KeyEventBuilder {
             ElementState::Pressed => {
                 do_non_modifier(&mut key_events, &mut layouts);
                 do_modifier(&mut key_events, &mut layouts);
-            },
+            }
             ElementState::Released => {
                 do_modifier(&mut key_events, &mut layouts);
                 do_non_modifier(&mut key_events, &mut layouts);
-            },
+            }
         }
 
         key_events
@@ -427,8 +448,11 @@ impl KeyEventBuilder {
         }
         let scancode = scancode as ExScancode;
         let physical_key = scancode_to_physicalkey(scancode as u32);
-        let mods =
-            if caps_lock_on { WindowsModifiers::CAPS_LOCK } else { WindowsModifiers::empty() };
+        let mods = if caps_lock_on {
+            WindowsModifiers::CAPS_LOCK
+        } else {
+            WindowsModifiers::empty()
+        };
         let layout = layouts.layouts.get(&(locale_id as u64)).unwrap();
         let logical_key = layout.get_key(mods, num_lock_on, vk, &physical_key);
         let key_without_modifiers =
@@ -453,7 +477,10 @@ impl KeyEventBuilder {
         let mut event = event_info.finalize();
         event.logical_key = logical_key;
         event.platform_specific.text_with_all_modifiers = text;
-        Some(MessageAsKeyEvent { event, is_synthetic: true })
+        Some(MessageAsKeyEvent {
+            event,
+            is_synthetic: true,
+        })
     }
 }
 
@@ -566,7 +593,7 @@ impl PartialKeyEventInfo {
                     } else {
                         Key::Unidentified(NativeKey::Unidentified)
                     }
-                },
+                }
                 key => key,
             }
         };
@@ -603,10 +630,10 @@ impl PartialKeyEventInfo {
                         text = Some(SmolStr::new(string));
                     }
                 }
-            },
+            }
             PartialText::Text(s) => {
                 text = s.map(SmolStr::new);
-            },
+            }
         }
 
         let logical_key = match self.logical_key {
@@ -617,7 +644,7 @@ impl PartialKeyEventInfo {
                     } else {
                         Key::Character(s.clone())
                     }
-                },
+                }
                 None => Key::Unidentified(NativeKey::Windows(self.vkey)),
             },
             PartialLogicalKey::This(v) => v,
@@ -709,8 +736,10 @@ fn get_async_kbd_state() -> [u8; 256] {
 /// the next event is a right Alt (AltGr) event. If this is the case, the current event must be the
 /// fake Ctrl event.
 fn is_current_fake(curr_info: &PartialKeyEventInfo, next_msg: MSG, layout: &Layout) -> bool {
-    let curr_is_ctrl =
-        matches!(curr_info.logical_key, PartialLogicalKey::This(Key::Named(NamedKey::Control)));
+    let curr_is_ctrl = matches!(
+        curr_info.logical_key,
+        PartialLogicalKey::This(Key::Named(NamedKey::Control))
+    );
     if layout.has_alt_graph {
         let next_code = ex_scancode_from_lparam(next_msg.lParam);
         let next_is_altgr = next_code == 0xe038; // 0xE038 is right alt
@@ -757,7 +786,10 @@ impl<T> PendingEventQueue<T> {
     pub fn add_pending(&self) -> PendingMessageToken {
         let token = self.next_token();
         let mut pending = self.pending.lock().unwrap();
-        pending.push(IdentifiedPendingMessage { token, msg: PendingMessage::Incomplete });
+        pending.push(IdentifiedPendingMessage {
+            token,
+            msg: PendingMessage::Incomplete,
+        });
         token
     }
 
@@ -833,7 +865,7 @@ impl<T> PendingEventQueue<T> {
                         "Found an incomplete pending message when collecting messages. This \
                          indicates a bug in winit."
                     )
-                },
+                }
             })
             .collect()
     }
@@ -851,7 +883,10 @@ impl<T> PendingEventQueue<T> {
 }
 impl<T> Default for PendingEventQueue<T> {
     fn default() -> Self {
-        PendingEventQueue { pending: Mutex::new(Vec::new()), next_id: AtomicU32::new(0) }
+        PendingEventQueue {
+            pending: Mutex::new(Vec::new()),
+            next_id: AtomicU32::new(0),
+        }
     }
 }
 
@@ -866,8 +901,13 @@ impl<T> Default for PendingEventQueue<T> {
 pub fn next_kbd_msg(hwnd: HWND) -> Option<MSG> {
     unsafe {
         let mut next_msg = MaybeUninit::uninit();
-        let peek_retval =
-            PeekMessageW(next_msg.as_mut_ptr(), hwnd, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE);
+        let peek_retval = PeekMessageW(
+            next_msg.as_mut_ptr(),
+            hwnd,
+            WM_KEYFIRST,
+            WM_KEYLAST,
+            PM_NOREMOVE,
+        );
         (peek_retval != 0).then(|| next_msg.assume_init())
     }
 }
@@ -893,7 +933,7 @@ fn get_location(scancode: ExScancode, hkl: HKL) -> KeyLocation {
             } else {
                 KeyLocation::Numpad
             }
-        },
+        }
         VK_NUMPAD0 | VK_NUMPAD1 | VK_NUMPAD2 | VK_NUMPAD3 | VK_NUMPAD4 | VK_NUMPAD5
         | VK_NUMPAD6 | VK_NUMPAD7 | VK_NUMPAD8 | VK_NUMPAD9 | VK_DECIMAL | VK_DIVIDE
         | VK_MULTIPLY | VK_SUBTRACT | VK_ADD | ABNT_C2 => KeyLocation::Numpad,
@@ -916,7 +956,7 @@ pub(crate) fn physicalkey_to_scancode(physical_key: PhysicalKey) -> Option<u32> 
                 NativeKeyCode::Windows(scancode) => Some(scancode as u32),
                 _ => None,
             };
-        },
+        }
     };
 
     match code {
@@ -991,14 +1031,14 @@ pub(crate) fn physicalkey_to_scancode(physical_key: PhysicalKey) -> Option<u32> 
             } else {
                 Some(0x0072)
             }
-        },
+        }
         KeyCode::Lang2 => {
             if is_korean {
                 Some(0xe0f1)
             } else {
                 Some(0x0071)
             }
-        },
+        }
         KeyCode::KanaMode => Some(0x0070),
         KeyCode::NonConvert => Some(0x007b),
         KeyCode::Delete => Some(0xe053),

@@ -140,14 +140,8 @@ style-menu-delete = Stil löschen
 style-menu-duplicate = Stil duplizieren
 
 ## Transient toasts (confirmation cues)
-toast-toc-updated = Inhaltsverzeichnis aktualisiert ({ $n } { $n ->
-        [one] Eintrag
-       *[other] Einträge
-    })
 toast-toc-empty = Erst Überschriften hinzufügen — ein Inhaltsverzeichnis listet sie auf
-toast-style-deleted = Stil gelöscht
-toast-style-duplicated = Stil dupliziert
-toast-saved = Dokument gespeichert
+saved-file = { $file } gespeichert
 toast-save-failed = Dokument konnte nicht gespeichert werden
 toast-open-failed = Dokument konnte nicht geöffnet werden. Das aktuelle Dokument bleibt unverändert.
 toast-view-only = Dieses Dokument ist nur zum Ansehen geöffnet.

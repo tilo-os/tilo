@@ -20,6 +20,7 @@ use ui::tilo_resource::SearchEntry;
 use crate::favorites::Favorite;
 use crate::model::WorkspaceRecord;
 use crate::remote_accounts::RemoteAccount;
+use ui::lock::RwLockRecover as _;
 
 pub const OPEN_ACTION: &str = "open";
 pub const REVEAL_ACTION: &str = "reveal";
@@ -95,10 +96,7 @@ impl PlacesSearch {
     /// a steady-state `sync` into a full traversal.
     pub fn refresh(&self, revision: u64, favorites: &[Favorite]) -> bool {
         {
-            let snapshot = self
-                .snapshot
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let snapshot = self.snapshot.read_recover();
             if snapshot.revision == Some(revision) {
                 return false;
             }
@@ -107,10 +105,7 @@ impl PlacesSearch {
             .iter()
             .map(|favorite| (place_resource_id(&favorite.path), favorite.clone()))
             .collect();
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = self.snapshot.write_recover();
         snapshot.favorites = current;
         snapshot.revision = Some(revision);
         true
@@ -178,18 +173,12 @@ impl CollaborativeRecordSearch {
 
     pub(crate) fn refresh(&self, revision: u64, entries: &[WorkspaceRecord]) -> bool {
         {
-            let snapshot = self
-                .snapshot
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let snapshot = self.snapshot.read_recover();
             if snapshot.revision == Some(revision) {
                 return false;
             }
         }
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = self.snapshot.write_recover();
         snapshot.records.clear();
         snapshot.revision = Some(revision);
         drop(snapshot);
@@ -201,10 +190,7 @@ impl CollaborativeRecordSearch {
     /// A source reset uses [`Self::refresh`] first; a mismatched revision is
     /// refused rather than merging two authority generations.
     pub(crate) fn append_page(&self, revision: u64, entries: &[WorkspaceRecord]) -> bool {
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = self.snapshot.write_recover();
         if snapshot.revision != Some(revision) {
             return false;
         }
@@ -295,10 +281,7 @@ impl RemoteAccountSearch {
 
     pub fn refresh(&self, revision: u64, accounts: &[RemoteAccount]) -> bool {
         {
-            let snapshot = self
-                .snapshot
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let snapshot = self.snapshot.read_recover();
             if snapshot.revision == Some(revision) {
                 return false;
             }
@@ -312,10 +295,7 @@ impl RemoteAccountSearch {
                 )
             })
             .collect();
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = self.snapshot.write_recover();
         snapshot.accounts = current;
         snapshot.revision = Some(revision);
         true

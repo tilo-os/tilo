@@ -11,10 +11,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::widget::RouteSnapshot;
 
-/// Directory set by `tilo-app dev`. The checkpoint file inside it is
-/// `checkpoint.bin`.
-pub const DEV_SESSION_ENV: &str = "TILO_DEV_SESSION";
-
 const DEV_CHECKPOINT_VERSION: u32 = 1;
 const CHECKPOINT_FILE: &str = "checkpoint.bin";
 
@@ -90,16 +86,10 @@ pub(crate) fn write_dev_checkpoint(app: &App, dir: &Path) -> bool {
     replace_file(&dir.join(CHECKPOINT_FILE), &bytes)
 }
 
-/// Write `bytes` beside `destination`, then rename them over it, so a reader
-/// never sees a partial file.
+/// Replace `destination` atomically, so a reader never sees a partial file.
 #[cfg(any(feature = "native", test))]
 fn replace_file(destination: &Path, bytes: &[u8]) -> bool {
-    let mut temporary = destination.as_os_str().to_os_string();
-    temporary.push(".partial");
-    if std::fs::write(&temporary, bytes).is_err() {
-        return false;
-    }
-    std::fs::rename(&temporary, destination).is_ok()
+    tilo_files::native::atomic::write(destination, bytes).is_ok()
 }
 
 /// Appended to a reloaded library's path for the file that records where that

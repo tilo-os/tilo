@@ -214,19 +214,6 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
 )]
 #[serial_test::serial]
 fn hosted_service_sockets_are_probed_and_never_fall_back() {
-    // Case `lifetime_socket_probe_sees_the_supervisor_close_its_end`.
-    {
-        use crate::inner::lifetime_socket_open;
-
-        let (terminal_end, supervisor_end) =
-            std::os::unix::net::UnixStream::pair().expect("socket pair");
-        assert!(lifetime_socket_open(&terminal_end));
-        supervisor_end
-            .shutdown(std::net::Shutdown::Both)
-            .expect("supervisor closes the session");
-        assert!(!lifetime_socket_open(&terminal_end));
-    }
-
     // Case `an_open_waits_for_a_supervisor_answer_slower_than_the_connect_bound`.
     {
         use std::io::BufRead as _;
@@ -239,10 +226,16 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 std::os::unix::net::UnixStream::pair().expect("socket pair");
             terminal_end.set_read_timeout(bound).unwrap();
             let supervisor = std::thread::spawn(move || {
-                let mut request = String::new();
-                std::io::BufReader::new(&supervisor_end)
-                    .read_line(&mut request)
+                let mut reader = std::io::BufReader::new(&supervisor_end);
+                // The persistent-control handshake precedes every open.
+                let mut hello = String::new();
+                reader.read_line(&mut hello).unwrap();
+                assert!(hello.contains("\"op\":\"hello\""), "{hello}");
+                (&supervisor_end)
+                    .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
                     .unwrap();
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
                 std::thread::sleep(delay);
                 (&supervisor_end)
                     .write_all(b"{\"result\":\"no-runtime\",\"reason\":\"checked\"}\n")
@@ -283,27 +276,42 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
 
         // The supervisor's reply byte for byte as `ServeResponse::Session`
         // serialises it for a bash session whose request named a key (ush's
-        // `a_session_reply_keeps_its_wire_form` pins this form). Every Terminal
+        // `a_session_reply_keeps_its_wire_form` pins this form), leased on the
+        // persistent control connection: the protocol it was granted under,
+        // then the PTY master and the session's private lease. Every Terminal
         // open names a key, so this is the reply of every default-environment open.
-        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}\n";
+        const REPLY: &[u8] = b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true,\"protocol\":2}\n";
         let (terminal_end, supervisor_end) =
             std::os::unix::net::UnixStream::pair().expect("socket pair");
         let supervisor = std::thread::spawn(move || {
-            let mut request = String::new();
-            std::io::BufReader::new(&supervisor_end)
-                .read_line(&mut request)
+            let mut reader = std::io::BufReader::new(&supervisor_end);
+            // The persistent-control handshake precedes every open.
+            let mut hello = String::new();
+            reader.read_line(&mut hello).unwrap();
+            assert!(hello.contains("\"op\":\"hello\""), "{hello}");
+            (&supervisor_end)
+                .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
                 .unwrap();
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
             let pair = portable_pty::native_pty_system()
                 .openpty(PtySize::default())
                 .unwrap();
-            runtime_portal::fd_transport::send_with_fd(
+            let (lease, terminal_lease) =
+                std::os::unix::net::UnixStream::pair().expect("lease pair");
+            runtime_portal::fd_transport::send_with_fds(
                 &supervisor_end,
                 REPLY,
                 // SAFETY: `pair` owns the master and outlives this call.
-                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
+                &[
+                    unsafe {
+                        std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap())
+                    },
+                    std::os::fd::AsFd::as_fd(&terminal_lease),
+                ],
             )
             .unwrap();
-            (request, supervisor_end, pair)
+            (request, supervisor_end, pair, lease)
         });
         let opened = crate::inner::ush_backend_on(
             &terminal_end,
@@ -312,7 +320,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             crate::Requester::Person,
             None,
         );
-        let (request, _supervisor_end, _pair) = supervisor.join().unwrap();
+        let (request, _supervisor_end, _pair, _lease) = supervisor.join().unwrap();
         let request: serde_json::Value = serde_json::from_str(&request).unwrap();
         let backend = match opened {
             Ok(backend) => backend,
@@ -369,15 +377,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         }
     }
 
-    // Case `each_nonblocking_connect_progress_error_is_retried`.
-    {
-        for error in [libc::EINPROGRESS, libc::EALREADY, libc::EAGAIN] {
-            assert!(crate::unix_connect_is_pending(Some(error)));
-        }
-        assert!(!crate::unix_connect_is_pending(Some(libc::ECONNREFUSED)));
-        assert!(!crate::unix_connect_is_pending(None));
-    }
-
     // Case `hosted_services_discover_and_use_a_healthy_ush_socket`.
     {
         use std::io::{BufRead, BufReader};
@@ -385,11 +384,17 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let runtime = tempfile::tempdir().unwrap();
         let listener = private_ush_listener(runtime.path());
         let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().unwrap())
-                .read_line(&mut request)
+            use std::io::Write;
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut hello = String::new();
+            reader.read_line(&mut hello).unwrap();
+            assert!(hello.contains("\"op\":\"hello\""), "{hello}");
+            stream
+                .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
                 .unwrap();
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
             assert!(request.contains("\"op\":\"open-session\""), "{request}");
             assert!(
                 request.contains("\"target\":{\"kind\":\"environment\"}"),
@@ -398,11 +403,16 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             let pair = portable_pty::native_pty_system()
                 .openpty(portable_pty::PtySize::default())
                 .unwrap();
-            runtime_portal::fd_transport::send_with_fd(
+            let (_supervisor_lease, terminal_lease) =
+                std::os::unix::net::UnixStream::pair().unwrap();
+            runtime_portal::fd_transport::send_with_fds(
                 &stream,
-                b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
+                b"{\"result\":\"session\",\"protocol\":2,\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
                 // SAFETY: `pair` owns the master and outlives this call.
-                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
+                &[
+                    unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
+                    std::os::fd::AsFd::as_fd(&terminal_lease),
+                ],
             )
             .unwrap();
         });
@@ -820,6 +830,7 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
                 next_link_id: &mut next_link_id,
                 current_link_id: 0,
                 title_out: &mut title_out,
+                allow_osc52_clipboard: true,
                 responses: &mut responses,
                 print_buf: None,
             };
@@ -1508,6 +1519,111 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             );
         }
     }
+}
+
+/// In a session the framework hosts, the person's own paste — the shortcut
+/// or the menu row — reaches the process at once, while the published Paste
+/// a script or an agent invokes still waits for confirmation.
+#[test]
+#[serial_test::serial]
+fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
+    use crate::resource::TerminalEffect;
+    use vello::kurbo::Point;
+    let mut app =
+        ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
+    let writes = app
+        .with_surface(|terminal: &mut TerminalWidget| {
+            terminal.accept_input_for_test();
+            terminal.attach_input_probe()
+        })
+        .expect("hosted terminal");
+    app.settle();
+
+    // Diagnostics: the framework's own-gesture verdict and the direct path.
+    let (own, direct) = app
+        .with_surface(|terminal: &mut TerminalWidget| {
+            let probe = TerminalEffect::Paste { text: "d".into() };
+            (
+                terminal.own_gesture_verdict(&probe),
+                terminal.perform(probe),
+            )
+        })
+        .expect("hosted terminal");
+    assert_eq!((own, direct), (Some(true), Ok(())));
+    let _ = drain_writes(&writes);
+
+    // Case `ctrl_shift_v_pastes_without_confirmation`.
+    ui::clipboard_copy("person shortcut paste");
+    app.with_surface(|terminal: &mut TerminalWidget| {
+        use winit::keyboard::{Key, NamedKey, SmolStr};
+        let mut doc = AutoCommit::new();
+        terminal.set_focus(true);
+        send_key(
+            terminal,
+            &mut doc,
+            Key::Character(SmolStr::new_static("V")),
+            true,
+            true,
+        );
+        // Case `shift_insert_pastes_without_confirmation`.
+        send_key(
+            terminal,
+            &mut doc,
+            Key::Named(NamedKey::Insert),
+            false,
+            true,
+        );
+    })
+    .expect("hosted terminal");
+    app.settle();
+    assert_eq!(
+        drain_writes(&writes),
+        b"person shortcut pasteperson shortcut paste",
+        "the person's Ctrl+Shift+V and Shift+Insert paste with no confirmation step"
+    );
+
+    // Case `context_menu_paste_pastes_without_confirmation`.
+    ui::clipboard_copy("person menu paste");
+    app.with_surface(|terminal: &mut TerminalWidget| {
+        terminal.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        terminal.open_context_menu_at(Point::new(20.0, 20.0));
+        let paste = terminal
+            .context_menu_labels()
+            .iter()
+            .position(|item| item == "Paste")
+            .expect("menu has Paste");
+        terminal.activate_menu_row_for_test(paste);
+    })
+    .expect("hosted terminal");
+    app.settle();
+    assert_eq!(drain_writes(&writes), b"person menu paste");
+
+    // Case `agent_and_script_paste_still_ask_for_confirmation`.
+    let paste = TerminalEffect::Paste {
+        text: "invoked paste".into(),
+    };
+    assert!(
+        matches!(
+            app.effect_by("agent:paste-test", &paste),
+            Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        ),
+        "an agent's paste waits for confirmation"
+    );
+    assert!(
+        matches!(
+            app.effect(&paste),
+            Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        ),
+        "a script's or the palette's paste waits for confirmation"
+    );
+    app.settle();
+    assert!(
+        drain_writes(&writes).is_empty(),
+        "an unconfirmed paste never reaches the process"
+    );
+    app.effect_confirmed(&paste).expect("confirmed paste");
+    app.settle();
+    assert_eq!(drain_writes(&writes), b"invoked paste");
 }
 
 // ---------------------------------------------------------------
@@ -3825,19 +3941,28 @@ fn osc_sequences_update_title_and_hyperlinks() {
 #[cfg(target_os = "linux")]
 #[serial_test::serial]
 fn osc_52_writes_clipboard_from_base64() {
-    // OSC 52 ; c ; <base64> sets the clipboard. Read back through the
-    // production paste entry point rather than a concrete backend — the
-    // copy resolves to an in-process buffer in a windowless test, so
-    // asking arboard reported the host's real clipboard instead. No
-    // skip: the round trip is always observable, so an OSC 52 that
-    // decoded nothing fails here rather than passing quietly.
+    // OSC 52 ; c ; <base64> sets the clipboard — only once the person has
+    // allowed programs to. Read back through the production paste entry
+    // point rather than a concrete backend — the copy resolves to an
+    // in-process buffer in a windowless test, so asking arboard reported
+    // the host's real clipboard instead. No skip: the round trip is always
+    // observable, so an OSC 52 that decoded nothing fails here rather than
+    // passing quietly.
     let (mut w, _) = build_test_widget();
+    ui::text_selection::clipboard_copy("untouched");
     // base64("tilo-osc52") = dGlsby1vc2M1Mg==
     w.feed(b"\x1b]52;c;dGlsby1vc2M1Mg==\x07");
     assert_eq!(
         ui::text_selection::clipboard_paste().as_deref(),
+        Some("untouched"),
+        "by default, program output must not replace the clipboard"
+    );
+    w.set_allow_osc52_clipboard(true);
+    w.feed(b"\x1b]52;c;dGlsby1vc2M1Mg==\x07");
+    assert_eq!(
+        ui::text_selection::clipboard_paste().as_deref(),
         Some("tilo-osc52"),
-        "OSC 52 decodes base64 into the clipboard"
+        "once allowed, OSC 52 decodes base64 into the clipboard"
     );
 }
 

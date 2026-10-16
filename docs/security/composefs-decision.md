@@ -1,7 +1,13 @@
 # Will bootc's composefs backend stabilise by ~February 2027?
 
 Researched 2026-08-11 against bootc 1.16.7 (latest release) and bootc `main`.
-Tilo currently pins bootc 1.16.4 and `quay.io/centos-bootc/bootc-image-builder:latest`.
+At the time Tilo pinned bootc 1.16.4 and `quay.io/centos-bootc/bootc-image-builder:latest`.
+
+> **As built since:** the image builds bootc 1.16.13 (`BOOTC_VERSION` in
+> `os/Containerfile`), and the disk step no longer uses bootc-image-builder:
+> `os/dev/disk-image.sh` partitions with `systemd-repart` and installs with
+> `bootc install to-filesystem`, the second way out described below. The
+> research text is kept as written.
 
 ## Verdict
 
@@ -256,10 +262,10 @@ So bib's gap is plumbing, not a missing primitive. Two ways out:
   systemd-repart partitioning into `bootc install` itself and raising the default
   ESP to 2GB for composefs — so this path is converging on being built in.
 
-Tilo uses bib in `os/build.sh`, `os/build-host.sh`, `os/verify-test.sh`,
+Tilo then used bib in `os/build.sh`, `os/build-host.sh`, `os/verify-test.sh`,
 `os/dev/build-image.sh`, `os/dev/build-installer.sh` and
-`os/dev/build-custom-installer.sh`. This is the work item to size, and it is the
-honest cost of the decision.
+`os/dev/build-custom-installer.sh`. This was the work item to size, and it was the
+honest cost of the decision; it has since been paid (`os/dev/disk-image.sh`).
 
 Worth noting: Tilo's `os/usr/lib/bootc/install/40-tilo.toml` already sets
 `bootloader = "systemd"`, and its own comment claims bib drives the same install

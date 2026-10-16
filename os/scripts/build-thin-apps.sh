@@ -137,9 +137,16 @@ fi
 # supported app argument; reaching main (any status except the loader's 127)
 # is enough for this ABI check.
 rust_target_libdir=$(rustc --print target-libdir)
+# An object's dynamic section, read whole before it is searched: with
+# pipefail, `readelf | grep -q` fails whenever grep stops at its match while
+# readelf is still writing (SIGPIPE), which reported a correctly built object
+# as wrongly built.
+dynamic_section() {
+    readelf -dW "$1"
+}
 # The shared runtime's relocations run in every app process; the
 # wrapper packs them. Without RELR it was linked without the wrapper.
-readelf -dW "$TARGET_DIR/$PROFILE/libruntime_dylib.so" | grep -Fq '(RELR)' || {
+grep -Fq '(RELR)' <<<"$(dynamic_section "$TARGET_DIR/$PROFILE/libruntime_dylib.so")" || {
     echo "libruntime_dylib.so was not linked through rustc-thin-app-wrapper.sh (no RELR)" >&2
     exit 1
 }
@@ -150,7 +157,8 @@ for index in "${!binaries[@]}"; do
     # carries its own static copy of the runtime (tens of MiB). Cargo silently
     # routes `<package>/thin` to a dependency when the package has one keyed by
     # its own name, so name the cause here rather than at the tapp size limit.
-    readelf -dW "$TARGET_DIR/$PROFILE/$binary" | grep -Fq '[libruntime_dylib.so]' || {
+    binary_dynamic=$(dynamic_section "$TARGET_DIR/$PROFILE/$binary")
+    grep -Fq '[libruntime_dylib.so]' <<<"$binary_dynamic" || {
         echo "thin app does not link libruntime_dylib.so: $binary" >&2
         echo "its <package>/thin feature was not applied; a dependency keyed by the package's own name claims it" >&2
         exit 1
@@ -159,7 +167,7 @@ for index in "${!binaries[@]}"; do
     # their absence means the tapp crate compiled at the profile's speed
     # settings instead, megabytes larger and caught otherwise only at the tapp
     # size limit.
-    readelf -dW "$TARGET_DIR/$PROFILE/$binary" | grep -Fq '(RELR)' || {
+    grep -Fq '(RELR)' <<<"$binary_dynamic" || {
         echo "thin app was not compiled through rustc-thin-app-wrapper.sh: $binary" >&2
         exit 1
     }
@@ -193,11 +201,12 @@ for engine in ${engines[@]+"${engines[@]}"}; do
     library="lib${engine//-/_}.so"
     [ -f "$TARGET_DIR/$PROFILE/$library" ] \
         || { echo "runtime engine $engine did not produce $library" >&2; exit 1; }
-    readelf -dW "$TARGET_DIR/$PROFILE/$library" | grep -Fq '[libruntime_dylib.so]' || {
+    library_dynamic=$(dynamic_section "$TARGET_DIR/$PROFILE/$library")
+    grep -Fq '[libruntime_dylib.so]' <<<"$library_dynamic" || {
         echo "runtime engine $library does not link libruntime_dylib.so; it would carry its own copy of the shared crates" >&2
         exit 1
     }
-    readelf -dW "$TARGET_DIR/$PROFILE/$library" | grep -Fq '(RELR)' || {
+    grep -Fq '(RELR)' <<<"$library_dynamic" || {
         echo "runtime engine $library was not linked through rustc-thin-app-wrapper.sh (no RELR)" >&2
         exit 1
     }

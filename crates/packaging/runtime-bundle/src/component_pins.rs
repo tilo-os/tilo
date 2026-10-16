@@ -256,7 +256,7 @@ fn decode(bytes: &[u8], optional_engine: bool) -> std::io::Result<Option<String>
 #[cfg(unix)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     use std::process::Command;
 
     fn namespace(executable: &Path, operator: &Path) -> Command {
@@ -465,6 +465,12 @@ mod tests {
             "writebits",
         ] {
             let mut command = namespace(&executable, &operator);
+            if std::fs::metadata(&pin).unwrap().uid() != 0 {
+                // An unprivileged runner's files are its own. Map it to root in
+                // the namespace so the fixture looks as the root-owned image
+                // files the pins are read from do.
+                command.args(["--uid", "0", "--gid", "0"]);
+            }
             match case {
                 "symlink" => {
                     command.args(["--symlink", "/operator.txt", PINS[0]]);

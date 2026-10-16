@@ -55,9 +55,13 @@ fn app_elf(foreign: bool) -> Vec<u8> {
     bytes
 }
 
-fn runtime(layer: &Path, work: &Path, missing: bool) -> String {
+fn runtime(layer: &Path, work: &Path, case: &str) -> String {
     let host = work.join("host");
-    let needed: &[&str] = if missing { &["missing.so"] } else { &[] };
+    let needed: &[&str] = if case == "closure" {
+        &["missing.so"]
+    } else {
+        &[]
+    };
     let library = work.join("libruntime_dylib.so");
     fs::write(&library, elf(needed, false)).unwrap();
     for path in runtime_bundle::host_minimal_paths_for(std::env::consts::ARCH).unwrap() {
@@ -74,6 +78,25 @@ fn runtime(layer: &Path, work: &Path, missing: bool) -> String {
     let key = runtime_bundle::Identity::load(&identity)
         .unwrap()
         .public_key_hex();
+    let mut includes = vec![library];
+    if case != "incomplete" {
+        let membership = work.join("system-app-cohort.json");
+        let mut apps = vec!["so.tilo.fixture".into()];
+        if matches!(case, "pair" | "membership_missing") {
+            apps.push("so.tilo.sibling".into());
+        }
+        fs::write(
+            &membership,
+            serde_json::to_vec(&super::SystemMembership {
+                schema: 1,
+                source_inventory: "ab".repeat(32),
+                apps,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        includes.push(membership);
+    }
     let (bundle, _) = runtime_bundle::build_abi_bundle(
         &layer.join("usr/lib/tilo-runtime"),
         "2026.07",
@@ -81,7 +104,7 @@ fn runtime(layer: &Path, work: &Path, missing: bool) -> String {
             from: Some(&host),
             arch: Some(std::env::consts::ARCH),
             identity: Some(&identity),
-            extra_libs: &[library],
+            extra_libs: &includes,
         },
     )
     .unwrap();
@@ -213,7 +236,7 @@ pub(crate) fn fixture(root: &Path, case: &str) {
     let layer = root.join("layer");
     let work = root.join("work");
     fs::create_dir_all(&work).unwrap();
-    let version = runtime(&layer, &work, case == "closure");
+    let version = runtime(&layer, &work, case);
     let claimed = if case == "runtime" {
         "2026.07+native.00000000000000000000000000000000"
     } else {
@@ -225,7 +248,7 @@ pub(crate) fn fixture(root: &Path, case: &str) {
     save(&registry, &layer.join("usr/share/tilo-apps/registry.toml"));
     let base = root.join("base");
     fs::create_dir_all(&base).unwrap();
-    if case == "incomplete" {
+    if matches!(case, "incomplete" | "retired") {
         let mut missing = row;
         missing.id = "so.tilo.missing".into();
         registry.upsert(missing);
@@ -233,6 +256,14 @@ pub(crate) fn fixture(root: &Path, case: &str) {
     save(&registry, &base.join("registry.toml"));
     match case {
         "publisher" => pin(&layer, "runtime-bundle-publisher.hex", &"11".repeat(32)),
+        "membership_tamper" => fs::write(
+            layer
+                .join("usr/lib/tilo-runtime")
+                .join(&version)
+                .join("lib/system-app-cohort.json"),
+            b"{}",
+        )
+        .unwrap(),
         "payload" => fs::write(
             layer.join("usr/share/tilo-apps/payload/fixture/bin/fixture"),
             b"corrupt",
@@ -301,7 +332,10 @@ fn verify_subject(root: &Path, case: &str) {
         &root.join("base"),
         std::env::consts::ARCH,
     );
-    if matches!(case, "valid" | "dual_isa" | "service" | "empty_isa") {
+    if matches!(
+        case,
+        "valid" | "dual_isa" | "service" | "empty_isa" | "retired"
+    ) {
         assert!(result.is_ok(), "{}", result.err().unwrap());
         let cohort = result.unwrap();
         if case == "valid" {
@@ -419,6 +453,9 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
         "arch",
         "closure",
         "incomplete",
+        "retired",
+        "membership_missing",
+        "membership_tamper",
         "executable",
         "escape",
         "record_escape",
@@ -466,7 +503,7 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
 }
 
 pub(crate) fn fixture_pair(root: &Path) {
-    fixture(root, "valid");
+    fixture(root, "pair");
     let layer = root.join("layer");
     let registry_path = layer.join("usr/share/tilo-apps/registry.toml");
     let mut registry = Registry::load(&registry_path).unwrap();

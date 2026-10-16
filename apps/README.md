@@ -157,8 +157,8 @@ touch. Expanded neighbouring targets must not overlap.
 
 | Crate | What it is |
 |---|---|
-| `word-processor` | Rich-text word processor over `qdoc`; round-trips .odt/.docx/.md plus PDF/HTML/RTF/EPUB via the `qdoc-*` codec crates. Binary `word-processor`. |
-| `sheets` | Spreadsheet: A1 addressing, tokenizer→parser→evaluator formula engine with dependency-aware recalc; .xlsx and .ods import/export through qdoc's bounded codecs, and .csv. |
+| `word-processor` | Rich-text word processor over `tilo-doc`; round-trips .odt/.docx/.md plus PDF/HTML/RTF/EPUB via the `tilo-doc-*` codec crates. Binary `word-processor`. |
+| `sheets` | Spreadsheet: A1 addressing, tokenizer→parser→evaluator formula engine with dependency-aware recalc; .xlsx and .ods import/export through tilo-doc's bounded codecs, and .csv. |
 | `slides` | Presentation editor: slide editor, inspector, thumbnail rail, present mode; image import via the XDG file-chooser portal. |
 | `notes` | Collaborative block notes: nested note tree, rich Markdown editing, `[[Note]]` links, tables, formulas, images, metadata, history-aware actions, and host-owned Automerge storage. |
 | `calendar` | Calendar + task manager (Planify-style): month/week/day/agenda, recurrence, tasks; iCalendar interop and live CalDAV sync (PROPFIND/REPORT/ETag PUT, worker thread, `live` on by default). |
@@ -175,8 +175,8 @@ touch. Expanded neighbouring targets must not overlap.
 | Crate | What it is |
 |---|---|
 | `music` | Streaming + local library: swappable YouTube-Music backend (rustypipe InnerTube under `live`), GStreamer `playbin` audio (`audio`), lrclib synced lyrics, iroh P2P library sync — all off by default over a bundled sample library. |
-| `tube` | Privacy YouTube client: Invidious metadata, SponsorBlock skip, DeArrow de-clickbait; openh264 H.264 decode; optional rustypipe `live` backend and Grayjay device sync over the Noise protocol. |
-| `video-editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/openh264 preview decode and GStreamer export, both feature-gated. |
+| `tube` | Privacy YouTube client: Invidious metadata, SponsorBlock skip, DeArrow de-clickbait; playback through the shared GStreamer media engine; optional rustypipe `live` backend and Grayjay device sync over the Noise protocol. |
+| `video-editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/GStreamer preview decode and GStreamer export, both feature-gated. |
 | `camera` | Camera with QR/barcode and multi-page document scanning; typed SANE capture, reversible crop/rotation, and shared structured OCR; captured photos and videos open in their owning media apps; live v4l2 capture via GStreamer. |
 | `imager` | Install-media creator + Tilo installer ("Install Media"): `lsblk` target enumeration, dd-style ISO write + verify, structured/unattended install config. |
 | `maps` | OpenStreetMap client: Nominatim search, OSRM routing (car/bike/foot), Transitous/MOTIS transit; Vello vector basemap; device location via the XDG Location portal (GeoClue2). |
@@ -228,7 +228,7 @@ touch. Expanded neighbouring targets must not overlap.
 
 | Crate | What it is |
 |---|---|
-| `file-explorer` | Spatial file manager with safe native ZIP/TAR inspection, extraction and creation; opens editable documents in the word processor via `qdoc`. Binary `file-explorer`. |
+| `file-explorer` | Spatial file manager with safe native ZIP/TAR inspection, extraction and creation; opens editable documents in the word processor via `tilo-doc`. Binary `file-explorer`. |
 | `agent` | `tilo-agent`: a participant without a window. Consumes the broker-published live catalogue for arbitrary applications, plans typed arguments from their descriptors, invokes through broker permission/confirmation policy, and follows invocation receipts through terminal status. |
 | `browser` | Web browser embedding Servo (libservo + surfman + glow) with adblock; chrome is a `ui` widget (migrated off iced). |
 

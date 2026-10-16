@@ -29,6 +29,7 @@ use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::HttpsLink;
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::custody::HostIdentity;
@@ -36,16 +37,15 @@ use tilo_joined_room::NativeWorkspaceOwner;
 use tilo_joined_room::session::{Connect, Scope};
 use tilo_joined_room::voice::{Channel, Participation};
 use tilo_moq::client::{Client, Status};
-use tilo_peer_state::NeighbourMsg;
-use tilo_peer_state::join::{self, MemberRole};
+use tilo_peer_state::join;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
-use tilo_relay::rooms::RoomAdminClient;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
 use call::{
-    CHAT, browser, carrier, create_voice_channel, endpoint, enter, granted, hears, invite, until,
+    CHAT, browser, carrier, create_voice_channel, endpoint, enter, granted, hears, invite, issue,
+    until,
 };
 use support::{TestHost, enrol, start_room_host};
 
@@ -227,25 +227,10 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
 
     // Alice's room on her relay; her native device holds it as its owner,
     // and Bob's person is invited.
-    let admin = RoomAdminClient::new(endpoint(&laptop.key).await, laptop.cert.clone());
-    let room = admin.create(address.clone(), "Standup").await.unwrap();
-    enter(&admin, address.clone(), &room.room).await;
-    enter(
-        &RoomAdminClient::new(endpoint(&desk.key).await, desk.cert.clone()),
-        address.clone(),
-        &room.room,
-    )
-    .await;
-    let own = admin
-        .invite(
-            address.clone(),
-            &room.room,
-            MemberRole::Editor,
-            Some(alice.verifying_key().to_bytes()),
-            Duration::from_secs(600),
-        )
-        .await
-        .unwrap();
+    let room = relay.rooms().unwrap().create("Standup").await.unwrap();
+    enter(&relay, &laptop.cert, &room.room).await;
+    enter(&relay, &desk.cert, &room.room).await;
+    let own = issue(&relay, &laptop.cert, &room.room, &alice).await;
     let directory = tempfile::tempdir().unwrap();
     let mut native = Native::join(
         directory.path(),
@@ -255,7 +240,7 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
         room.workspace_id,
     )
     .await;
-    invite(&admin, address.clone(), &room.room, &bob, &page).await;
+    invite(&relay, &laptop.cert, &room.room, &bob, &page).await;
 
     // The chat gets a voice channel; Alice's native device starts its call
     // and the governor grants her the first participation.

@@ -108,7 +108,7 @@ impl Sampler {
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
         self.sys.refresh_processes(ProcessesToUpdate::All, true);
-        self.networks.refresh();
+        self.networks.refresh(true);
 
         let m = &mut model.metrics;
         m.cores = self

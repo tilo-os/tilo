@@ -20,9 +20,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_index,
-};
+use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
 
 const ARC_STEPS: u32 = 64;
 
@@ -183,28 +181,11 @@ impl SunburstChart {
             .any(|segment| segment.id == id)
             .then(|| id.to_owned());
         self.inspection.keyboard = self.inspection.hovered.is_some();
-        self.update_inspection_anchor();
+        self.anchor_hovered();
         self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
         self.inspection.clear();
-    }
-
-    fn update_inspection_anchor(&mut self) {
-        let Some(id) = self.inspection.hovered.as_deref() else {
-            return;
-        };
-        let Some(segment) = self.segments().into_iter().find(|segment| segment.id == id) else {
-            return;
-        };
-        let (center, inner, _, band) = self.geometry();
-        let angle = segment.start.midpoint(segment.end);
-        let depth = f64::from(u32::try_from(segment.depth).unwrap_or(u32::MAX));
-        let radius = inner + (depth - 0.5) * band;
-        self.inspection.pointer = Point::new(
-            center.x + radius * angle.cos(),
-            center.y + radius * angle.sin(),
-        );
     }
 
     fn depth(&self) -> usize {
@@ -385,18 +366,25 @@ impl InteractiveChart for SunburstChart {
         self.activated = Some(id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self.segments();
-        let current = self
-            .inspection
-            .hovered
-            .as_deref()
-            .and_then(|id| candidates.iter().position(|segment| segment.id == id));
-        self.inspection.hovered = moved_index(current, candidates.len(), action)
-            .and_then(|index| candidates.get(index))
-            .map(|segment| segment.id.clone());
-        self.update_inspection_anchor();
-        self.inspection.hovered.is_some()
+    fn keyboard_items(&self) -> Vec<String> {
+        self.segments()
+            .into_iter()
+            .map(|segment| segment.id)
+            .collect()
+    }
+    fn anchor(&self, id: &String) -> Option<Point> {
+        let segment = self
+            .segments()
+            .into_iter()
+            .find(|segment| segment.id == *id)?;
+        let (center, inner, _, band) = self.geometry();
+        let angle = segment.start.midpoint(segment.end);
+        let depth = f64::from(u32::try_from(segment.depth).unwrap_or(u32::MAX));
+        let radius = inner + (depth - 0.5) * band;
+        Some(Point::new(
+            center.x + radius * angle.cos(),
+            center.y + radius * angle.sin(),
+        ))
     }
 }
 
@@ -411,9 +399,7 @@ impl Widget for SunburstChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.inspection.keyboard {
-            self.update_inspection_anchor();
-        }
+        self.follow_keyboard_anchor();
         let (base_center, inner, _, band) = self.geometry();
         for segment in self.segments() {
             let half_gap = (self.style.angular_gap / 2.0).min((segment.end - segment.start) * 0.2);
@@ -530,15 +516,13 @@ impl Widget for SunburstChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        let Some(id) = crate::widget::chart_navigation::activated_id(
+        let segments = self.segments();
+        crate::widget::chart_navigation::activate(
+            &mut self.activated,
             action,
             key_path,
-            self.segments().into_iter().map(|segment| segment.id),
-        ) else {
-            return false;
-        };
-        self.activated = Some(id);
-        true
+            segments.into_iter().map(|segment| segment.id),
+        )
     }
     fn name(&self) -> &'static str {
         "SunburstChart"

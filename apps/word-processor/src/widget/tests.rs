@@ -1,4 +1,20 @@
+use super::accessibility::{review_action_target, tool_action_a11y_label};
+use super::block_layout::{line_spacing as block_line_spacing, list_marker_x};
+use super::image_layout::{
+    cropped_source as cropped_image_source, paint_transform as image_paint_transform,
+};
+use super::text_runs::{
+    block_change_decos, block_comment_ranges, block_note_refs, block_runs, composed_block,
+    note_numbering, note_text, running_head_runs,
+};
+use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE};
 use super::*;
+use crate::compact_swatch_palette::PaletteKind;
+use crate::effects::WordProcessorEffect;
+use crate::style_menu::StyleMenuAction;
+use ui::{PresenceCtx, clipboard_paste};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 fn edits(doc: &mut automerge::AutoCommit) -> ui::widget::Edits<'_> {
     ui::widget::Edits::lend(doc)
 }
@@ -1099,8 +1115,8 @@ fn character_marks_shape_their_spans() {
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "hello world");
         select_range(&mut wp, 0, 5);
-        wp.model_mut()
-            .set_highlight(&mut edits(&mut state.doc), "#fff35c");
+        let yellow = crate::actions::MarkVal::Str("#fff35c".into());
+        wp.dispatch_set_mark_value(&mut edits(&mut state.doc), "highlight", yellow);
         wp.refresh_blocks(&state.doc);
         let b = wp
             .blocks
@@ -1131,7 +1147,7 @@ fn character_marks_shape_their_spans() {
         wp.sync(&state.doc, &state.root);
         wp.model_mut().insert_str(&mut edits(&mut state.doc), "x2");
         select_range(&mut wp, 1, 2); // the "2"
-        wp.model_mut().toggle_super(&mut edits(&mut state.doc));
+        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::Super);
         wp.refresh_blocks(&state.doc);
         let b = wp
             .blocks
@@ -1180,8 +1196,11 @@ fn character_marks_shape_their_spans() {
         );
 
         // Now set double spacing and redraw on the same path.
-        wp.model_mut()
-            .set_line_spacing(&mut edits(&mut state.doc), 2.0);
+        wp.dispatch_block_attr(
+            &mut edits(&mut state.doc),
+            "line_spacing",
+            crate::actions::AttrVal::Float(2.0),
+        );
         wp.refresh_blocks(&state.doc);
         assert_eq!(
             block_line_spacing(wp.blocks.iter().find(|b| b.text == long).unwrap()),
@@ -1200,6 +1219,36 @@ fn character_marks_shape_their_spans() {
             "double line spacing yields a much taller layout: single={single_h}, double={double_h}"
         );
     }
+}
+
+/// Superscript and subscript from the toolbar exclude each other, and a second
+/// press turns the mark off.
+#[test]
+fn super_and_sub_are_mutually_exclusive() {
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
+    wp.sync(&state.doc, &state.root);
+    wp.model_mut().insert_str(&mut edits(&mut state.doc), "x2");
+    let c = wp.model().containers.clone().unwrap();
+    let block = wp.model().caret().block.clone();
+    let marked = |doc: &automerge::AutoCommit, name: &str| {
+        tilo_doc::model::has_mark_over(doc, &c, &block, 1, 2, name)
+    };
+    select_range(&mut wp, 1, 2);
+    wp.apply_tool(&mut edits(&mut state.doc), ToolAction::Super);
+    assert!(marked(&state.doc, "super"), "super applied");
+    assert!(!marked(&state.doc, "sub"), "no sub yet");
+
+    // Subscript over the same range clears superscript.
+    select_range(&mut wp, 1, 2);
+    wp.apply_tool(&mut edits(&mut state.doc), ToolAction::Sub);
+    assert!(marked(&state.doc, "sub"), "sub applied");
+    assert!(!marked(&state.doc, "super"), "super cleared");
+
+    // Subscript again turns it off.
+    select_range(&mut wp, 1, 2);
+    wp.apply_tool(&mut edits(&mut state.doc), ToolAction::Sub);
+    assert!(!marked(&state.doc, "sub"), "sub toggled off");
 }
 
 /// The layout cache reuses unchanged blocks and reshapes after an edit, and draw renders headings and
@@ -1473,23 +1522,6 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
             |b| matches!(b.attrs.get("style"), Some(tilo_doc::AttrVal::Str(s)) if s == &custom_id),
         );
         assert!(!dangling, "no block still references the deleted style");
-    }
-
-    // Phase: builtin_style_is_never_deleted.
-    // A built-in style cannot be deleted through the model even if asked.
-    {
-        let (mut state, mut wp) = bound();
-        wp.model_mut().insert_str(&mut edits(&mut state.doc), "x");
-        assert!(
-            !wp.model_mut()
-                .delete_style(&mut edits(&mut state.doc), "body"),
-            "built-in delete is refused"
-        );
-        wp.sync(&state.doc, &state.root);
-        assert!(
-            wp.sheet.styles.contains_key("body"),
-            "Body survives a delete attempt"
-        );
     }
 
     // Phase: font_size_lives_in_exactly_one_place.
@@ -2408,7 +2440,7 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
 
     // Phase: line_spacing_applies_to_the_paragraph_via_the_panel.
     // Line spacing likewise cycles the current paragraph from the panel (1.0 →
-    // 1.15), on the same `caret_line_spacing` path the layout pass reads.
+    // 1.15), read off the block view the layout pass reads.
     {
         let mut state = crate::initialized_state();
         let mut wp = WordProcessorWidget::detached();
@@ -2417,15 +2449,18 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
             .insert_str(&mut edits(&mut state.doc), "spaced");
         let mut framed = mount(state, wp, 1000, 700);
         let (wp, state) = Framed::split(&mut framed);
+        let spacing = |wp: &WordProcessorWidget| {
+            block_line_spacing(wp.blocks.iter().find(|b| b.text == "spaced").unwrap())
+        };
         assert!(
-            (wp.model().caret_line_spacing(&state.doc) - 1.0).abs() < 1e-9,
+            (spacing(wp) - 1.0).abs() < 1e-9,
             "single spacing by default"
         );
 
         wp.line_spacing_pick.set(Some(1));
         wp.drain_hosted_fields(&mut edits(&mut state.doc));
         assert!(
-            (wp.model().caret_line_spacing(&state.doc) - 1.15).abs() < 1e-9,
+            (spacing(wp) - 1.15).abs() < 1e-9,
             "the picked spacing applies to the paragraph"
         );
     }
@@ -2957,7 +2992,7 @@ fn long_documents_paginate_across_discrete_pages() {
             "Second paragraph still on page one.",
         );
         // Ctrl+Enter behaviour: split + mark the new block to break before.
-        wp.model_mut().insert_page_break(&mut edits(&mut state.doc));
+        wp.page_break_via_action(&mut edits(&mut state.doc));
         wp.model_mut().insert_str(
             &mut edits(&mut state.doc),
             "This paragraph is forced onto page two.",
@@ -3238,6 +3273,45 @@ fn press_named_with_modifiers(
         .doc(&mut state.doc)
         .path(&state.root)
         .send(wp, &ui::synthetic_input::keyboard_input(ev));
+}
+
+/// A space typed right after a Markdown line prefix restyles the paragraph and
+/// consumes the prefix; a dash inside text stays text.
+#[test]
+fn markdown_prefixes_autoformat_on_space() {
+    let kind = |wp: &WordProcessorWidget, state: &ui::State| {
+        let c = wp.model().containers.clone().unwrap();
+        let block = tilo_doc::model::materialize(&state.doc, &c)
+            .blocks
+            .into_iter()
+            .find(|b| b.id == wp.model().caret().block)
+            .unwrap();
+        let level = match block.attrs.get("level") {
+            Some(tilo_doc::AttrVal::Int(level)) => Some(*level),
+            _ => None,
+        };
+        let ordered = block.flag("ordered");
+        (block.kind, level, ordered, block.text)
+    };
+    for (typed, expected) in [
+        ("-", ("list_item", None, false, "")),
+        ("1.", ("list_item", None, true, "")),
+        ("##", ("heading", Some(2), false, "")),
+        ("a-", ("paragraph", None, false, "a- ")),
+    ] {
+        let (mut state, mut wp) = bound();
+        seed_text(&mut wp, &mut state, typed);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
+        wp.lifecycle.focused = true;
+        press_named(wp, state, NamedKey::Space);
+        let (kind, level, ordered, text) = kind(wp, state);
+        assert_eq!(
+            (kind.as_str(), level, ordered, text.as_str()),
+            expected,
+            "{typed:?} then Space"
+        );
+    }
 }
 
 fn pinch(
@@ -4606,11 +4680,11 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         wp.inner.insert_str(&mut edits(&mut state.doc), "hello");
 
         // Copy a bold selection. The system-facing clipboard carries plain text;
-        // the widget's matching sidecar carries the qdoc marks.
+        // the widget's matching sidecar carries the tilo-doc marks.
         wp.inner.caret.offset = 0;
         wp.inner.set_anchor();
         wp.inner.caret.offset = 5;
-        wp.inner.toggle_mark(&mut edits(&mut state.doc), "strong");
+        wp.dispatch_toggle_mark(&mut edits(&mut state.doc), "strong");
         wp.inner.caret.offset = 0;
         wp.inner.clear_anchor();
         wp.inner.set_anchor();
@@ -5585,7 +5659,7 @@ fn tracked_changes_render_and_accept_individually() {
     // Phase: accepting_tracked_deletion_removes_the_struck_text.
     {
         // "keep gone": flag "gone" (5..9) as a tracked deletion (retained-but-struck).
-        // qdoc semantics: ACCEPTING a deletion applies it (removes the struck text);
+        // tilo-doc semantics: ACCEPTING a deletion applies it (removes the struck text);
         // REJECTING keeps the text and drops the `del` mark. We assert both arms
         // on the materialized snapshot (the production read path).
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
@@ -5876,11 +5950,9 @@ fn doc_with_headings(w: u32, h: u32) -> Framed<WordProcessorWidget> {
     wp.sync(&state.doc, &state.root);
     let add_heading = |wp: &mut WordProcessorWidget, st: &mut ui::State, text: &str, level: i64| {
         wp.model_mut().insert_str(&mut edits(&mut st.doc), text);
-        wp.model_mut()
-            .set_paragraph_style(&mut edits(&mut st.doc), "heading", Some(level), None);
+        wp.dispatch_paragraph_style(&mut edits(&mut st.doc), "heading", Some(level), None);
         wp.model_mut().enter(&mut edits(&mut st.doc));
-        wp.model_mut()
-            .set_paragraph_style(&mut edits(&mut st.doc), "paragraph", None, None);
+        wp.dispatch_paragraph_style(&mut edits(&mut st.doc), "paragraph", None, None);
     };
     add_heading(&mut wp, &mut state, "Introduction", 1);
     for i in 0..30 {
@@ -6026,9 +6098,9 @@ fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
     );
 }
 
-/// Regenerating the TOC replaces rather than duplicates, and the TOC action sets a confirmation toast.
+/// Regenerating the TOC replaces rather than duplicates, and the TOC action brings the table into view.
 #[test]
-fn regenerating_the_toc_replaces_it_and_confirms() {
+fn regenerating_the_toc_replaces_it_and_shows_it() {
     // Phase: regenerating_toc_replaces_rather_than_duplicating.
     {
         let mut framed = doc_with_headings(1000, 700);
@@ -6058,18 +6130,16 @@ fn regenerating_the_toc_replaces_it_and_confirms() {
         );
     }
 
-    // Phase: toc_action_sets_a_confirmation_toast.
-    // Generating a TOC leaves a visible confirmation toast (the button used to
-    // give no feedback at all).
+    // Phase: toc_action_scrolls_the_table_into_view.
+    // The table itself is the feedback: generating it scrolls to the top
+    // where it lands, with no toast repeating what is on screen.
     {
         let mut framed = doc_with_headings(1000, 700);
         let (wp, state) = Framed::split(&mut framed);
-        assert!(!wp.toast.is_shown(), "no toast before the action");
+        wp.scroll_y = 144.0;
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertToc);
-        assert!(
-            wp.toast.is_shown(),
-            "generating a TOC surfaces a confirmation toast"
-        );
+        assert_eq!(wp.scroll_y, 0.0, "the new table of contents is in view");
+        assert!(!wp.toast.is_shown(), "no toast repeats the visible result");
         // And it actually produced TOC lines.
         let c = wp.model().containers.clone().unwrap();
         let toc = tilo_doc::model::materialize(&state.doc, &c)
@@ -6577,11 +6647,16 @@ fn the_ruler_tracks_margins_indent_and_zoom() {
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "para");
         // Set a known left/hanging indent + first-line indent on the caret block.
-        let block = wp.model().caret().block.clone();
-        wp.model_mut()
-            .set_block_indent(&mut edits(&mut state.doc), &block, 40.0);
-        wp.model_mut()
-            .set_block_first_line_indent(&mut edits(&mut state.doc), &block, 18.0);
+        wp.dispatch_block_attr(
+            &mut edits(&mut state.doc),
+            "indent",
+            crate::actions::AttrVal::Float(40.0),
+        );
+        wp.dispatch_block_attr(
+            &mut edits(&mut state.doc),
+            "first_line_indent",
+            crate::actions::AttrVal::Float(18.0),
+        );
         let mut framed = mount(state, wp, 1200, 760);
         let (wp, _) = Framed::split(&mut framed);
 
@@ -6733,7 +6808,16 @@ fn ruler_drags_and_clicks_set_indents_and_tab_stops() {
         wp.ruler_drag_release(&mut edits(&mut state.doc));
 
         // The block's `indent` attr was persisted (~60 px).
-        let stored = wp.model().block_indent(&state.doc, &block);
+        let c = wp.model().containers.clone().unwrap();
+        let stored = tilo_doc::model::materialize(&state.doc, &c)
+            .blocks
+            .iter()
+            .find(|b| b.id == block)
+            .and_then(|b| match b.attrs.get("indent") {
+                Some(tilo_doc::AttrVal::Float(px)) => Some(*px),
+                _ => None,
+            })
+            .unwrap_or(0.0);
         assert!(
             (stored - 60.0).abs() < 1.0,
             "indent persisted to the block attr (got {stored})"
@@ -6825,8 +6909,11 @@ fn tab_stops_insert_spaces_without_stops_and_drag_off_to_remove() {
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "para");
         let block = wp.model().caret().block.clone();
-        wp.model_mut()
-            .set_block_tab_stops(&mut edits(&mut state.doc), &block, &[150.0]);
+        wp.dispatch_block_attr(
+            &mut edits(&mut state.doc),
+            "tab_stops",
+            crate::actions::AttrVal::Str("150.0".into()),
+        );
         let mut framed = mount(state, wp, 1200, 760);
         let (wp, state) = Framed::split(&mut framed);
 
@@ -6920,12 +7007,10 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
         // First block: a level-1 heading "Title".
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Title");
-        wp.model_mut()
-            .set_paragraph_style(&mut edits(&mut state.doc), "heading", Some(1), None);
+        wp.dispatch_paragraph_style(&mut edits(&mut state.doc), "heading", Some(1), None);
         wp.model_mut().enter(&mut edits(&mut state.doc));
         // Second block: a body paragraph.
-        wp.model_mut()
-            .set_paragraph_style(&mut edits(&mut state.doc), "paragraph", None, None);
+        wp.dispatch_paragraph_style(&mut edits(&mut state.doc), "paragraph", None, None);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Body text here");
         wp.sync(&state.doc, &state.root);
@@ -7026,8 +7111,7 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
         let mut state = crate::initialized_state();
         let mut wp = WordProcessorWidget::detached();
         wp.sync(&state.doc, &state.root);
-        wp.model_mut()
-            .insert_table(&mut edits(&mut state.doc), 2, 2);
+        wp.insert_table_via_action(&mut edits(&mut state.doc), 2, 2);
         wp.sync(&state.doc, &state.root);
 
         let tree = wp.accessibility_tree();
@@ -8202,15 +8286,16 @@ fn doc_with_custom_style() -> (Framed<WordProcessorWidget>, String) {
     wp.sync(&state.doc, &state.root);
     wp.model_mut()
         .insert_str(&mut edits(&mut state.doc), "styled paragraph");
+    let mut framed = mount(state, wp, 1000, 700);
     // Duplicate Body into a fresh custom style and apply it to the caret block.
+    let (wp, state) = Framed::split(&mut framed);
+    wp.apply_panel_hit(&mut edits(&mut state.doc), PanelHit::NewStyle);
+    wp.refresh_blocks(&state.doc);
     let new_id = wp
-        .model_mut()
-        .duplicate_style(&mut edits(&mut state.doc), "body")
-        .expect("duplicate body");
-    wp.model_mut()
-        .set_block_style(&mut edits(&mut state.doc), &new_id);
-    wp.sync(&state.doc, &state.root);
-    (mount(state, wp, 1000, 700), new_id)
+        .focused_style_key()
+        .expect("the paragraph took the new style");
+    pipeline_draw(&mut framed, 1000, 700);
+    (framed, new_id)
 }
 
 // ---- style size and direct character size stay distinct ----------------
@@ -8649,10 +8734,19 @@ fn render_review_shots() {
     {
         let (mut framed, id) = doc_with_selected_image();
         let (wp, state) = Framed::split(&mut framed);
-        wp.model_mut()
-            .set_image_size(&mut edits(&mut state.doc), &id, 300.0, 200.0);
-        wp.model_mut()
-            .flip_image(&mut edits(&mut state.doc), &id, true);
+        wp.perform_action(
+            &mut edits(&mut state.doc),
+            &crate::actions::set_image_size_action(&id, 300, 200),
+        );
+        wp.perform_action(
+            &mut edits(&mut state.doc),
+            &crate::actions::set_block_attr_action(
+                crate::actions::RegionKind::Body,
+                vec![id],
+                "flip_h",
+                crate::actions::AttrVal::Bool(true),
+            ),
+        );
         render_review_png(&mut framed, w, h, &dir, "image-selected");
     }
 

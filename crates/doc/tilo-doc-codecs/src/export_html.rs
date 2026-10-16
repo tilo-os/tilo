@@ -34,12 +34,6 @@ impl Default for HtmlOptions {
 /// Render a materialized qdoc snapshot to an HTML string, embedding the images it references (read
 /// from `content`) as `data:` URIs. Always succeeds: unknown block kinds degrade to a `<p>`, and
 /// image blocks whose content is missing render an empty `<img>` with an `alt` note.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "HtmlOptions is a small public options struct passed by value at every call site \
-              across other crates (the Tilo-wide builder-options idiom); switching to a reference \
-              would only move the & to each of those callers for no behavioural gain"
-)]
 pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions, content: &dyn ContentSource) -> String {
     let snap = tilo_doc::export::without_kept_placeholders(snap);
     render_resolved(&Resolved::new(&snap, content), opts)

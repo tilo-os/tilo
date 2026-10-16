@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  CHUNK_FIRST, CHUNK_KEY, CHUNK_LAST, INDEX_RECORD, LEGACY_APP,
-  createLegacyWindows, createReassembler, createStreamDecoder, decodeFrame, evdevKey, h264CodecString,
+  CHUNK_FIRST, CHUNK_KEY, CHUNK_LAST, INDEX_RECORD, LEGACY_APP, MAX_TEXT_BYTES, VIDEO_DECODER_CONFIGS,
+  createLegacyWindows, createReassembler, createStreamDecoder, decodableCodecs, decodeFrame, evdevKey, h264CodecString,
   wheelPixels, windowPoint, windowTitle,
 } from './legacy-windows.mjs';
 
@@ -217,13 +217,15 @@ test('keys map to evdev codes, points to window pixels through the letterbox, wh
   assert.equal(windowTitle('org.libreoffice.writer'), 'Writer');
 });
 
+/** The hidden text area a window's keyboard (and input method) lives in. */
+const keyboardOf = (layer, index = 0) => layer.children.filter(child => child.tag === 'textarea')[index];
 async function controlled(options) {
   const m = mount(options);
   m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
   await tick();
   m.place([{key: KEY, rect: [10, 36, 410, 300]}]);
   m.run();
-  return {...m, canvas: m.layer.layer.children[0]};
+  return {...m, canvas: m.layer.layer.children[0], keyboard: keyboardOf(m.layer.layer)};
 }
 
 test('a member the host lets drive the window clicks, scrolls, types and pastes into it', async () => {
@@ -234,11 +236,11 @@ test('a member the host lets drive the window clicks, scrolls, types and pastes 
   m.canvas.dispatch('pointerup', {button: 0});
   m.canvas.dispatch('wheel', {deltaMode: 1, deltaX: 0, deltaY: 1});
   m.canvas.dispatch('wheel', {deltaMode: 1, deltaX: 0, deltaY: 1});
-  m.canvas.dispatch('keydown', {code: 'KeyA'});
-  m.canvas.dispatch('keydown', {code: 'ControlLeft', ctrlKey: true});
-  m.canvas.dispatch('keydown', {code: 'KeyV', ctrlKey: true});
-  m.canvas.dispatch('paste', {clipboardData: {getData: type => (type === 'text/plain' ? 'hello' : '')}});
-  m.canvas.dispatch('keyup', {code: 'KeyV', ctrlKey: true});
+  m.keyboard.dispatch('keydown', {code: 'KeyA'});
+  m.keyboard.dispatch('keydown', {code: 'ControlLeft', ctrlKey: true});
+  m.keyboard.dispatch('keydown', {code: 'KeyV', ctrlKey: true});
+  m.keyboard.dispatch('paste', {clipboardData: {getData: type => (type === 'text/plain' ? 'hello' : '')}});
+  m.keyboard.dispatch('keyup', {code: 'KeyV', ctrlKey: true});
   await tick();
   await tick();
   assert.deepEqual(new Set(m.sent.map(request => `${request.publisher}:${request.stream}`)), new Set([KEY]));
@@ -269,19 +271,19 @@ test('typing reaches the window as every stroke in order, and a held key repeats
   const text = 'Hello, World! example.com';
   for (const c of text) {
     const shift = c in SHIFTED || /[A-Z]/.test(c);
-    if (shift) m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true});
-    m.canvas.dispatch('keydown', {code: code(c), shiftKey: shift});
-    m.canvas.dispatch('keyup', {code: code(c), shiftKey: shift});
-    if (shift) m.canvas.dispatch('keyup', {code: 'ShiftLeft'});
+    if (shift) m.keyboard.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true});
+    m.keyboard.dispatch('keydown', {code: code(c), shiftKey: shift});
+    m.keyboard.dispatch('keyup', {code: code(c), shiftKey: shift});
+    if (shift) m.keyboard.dispatch('keyup', {code: 'ShiftLeft'});
   }
-  m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true});
-  m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true, repeat: true});
-  m.canvas.dispatch('keyup', {code: 'ShiftLeft'});
-  m.canvas.dispatch('keydown', {code: 'KeyO'});
-  m.canvas.dispatch('keydown', {code: 'KeyO', repeat: true});
-  m.canvas.dispatch('keydown', {code: 'KeyO', repeat: true});
-  m.canvas.dispatch('keyup', {code: 'KeyO'});
-  m.canvas.dispatch('keydown', {code: 'KeyP', repeat: true});
+  m.keyboard.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true});
+  m.keyboard.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true, repeat: true});
+  m.keyboard.dispatch('keyup', {code: 'ShiftLeft'});
+  m.keyboard.dispatch('keydown', {code: 'KeyO'});
+  m.keyboard.dispatch('keydown', {code: 'KeyO', repeat: true});
+  m.keyboard.dispatch('keydown', {code: 'KeyO', repeat: true});
+  m.keyboard.dispatch('keyup', {code: 'KeyO'});
+  m.keyboard.dispatch('keydown', {code: 'KeyP', repeat: true});
   for (let i = 0; i < 8; i++) await tick();
   const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
   const strokes = [];
@@ -302,8 +304,8 @@ test('character modifier snapshots reach the window as shift edges even without 
   m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
   m.run();
   for (const [code, shiftKey] of [['KeyM', true], ['KeyI', false], ['Slash', true], ['Digit7', true], ['KeyA', false]]) {
-    m.canvas.dispatch('keydown', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
-    m.canvas.dispatch('keyup', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
+    m.keyboard.dispatch('keydown', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
+    m.keyboard.dispatch('keyup', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
   }
   for (let i = 0; i < 8; i++) await tick();
   const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
@@ -319,9 +321,9 @@ test('a shortcut held before focus is restored and its modifier is released on b
   const m = await controlled({control: true});
   m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
   m.run();
-  m.canvas.dispatch('keydown', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
-  m.canvas.dispatch('keyup', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
-  m.canvas.dispatch('blur');
+  m.keyboard.dispatch('keydown', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
+  m.keyboard.dispatch('keyup', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
+  m.keyboard.dispatch('blur');
   for (let i = 0; i < 8; i++) await tick();
   const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
   assert.deepEqual(keys, [[29, true], [38, true], [38, false], [29, false]]);
@@ -332,23 +334,221 @@ test('the window the desktop focuses takes the keyboard, and a click focuses its
   const focused = [];
   let desktop = 0;
   const m = await controlled({control: true, focusWindow: key => focused.push(key), focusDesktop: () => { desktop++; m.doc.activeElement = m.surface; }});
-  assert.notEqual(m.doc.activeElement, m.canvas, 'an unfocused window leaves the keyboard alone');
+  assert.notEqual(m.doc.activeElement, m.keyboard, 'an unfocused window leaves the keyboard alone');
   m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
   m.run();
-  assert.equal(m.doc.activeElement, m.canvas, 'opening it, or choosing its tab, focuses it');
+  assert.equal(m.doc.activeElement, m.keyboard, 'opening it, or choosing its tab, focuses it');
   await tick();
   assert.deepEqual(m.sent.flatMap(request => request.events)[0], {KeyboardFocus: {surface: 0, focused: true}});
   m.place([{key: KEY, rect: [10, 36, 410, 300], focused: false}]);
   m.run();
   assert.equal(desktop, 1, 'the desktop focusing another window takes the keyboard back');
   m.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
-  assert.equal(m.doc.activeElement, m.canvas);
+  assert.equal(m.doc.activeElement, m.keyboard);
   assert.deepEqual(focused, [KEY], 'a click into the window focuses its desktop window');
   m.layer.close();
   const watcher = await controlled({control: false});
   watcher.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
   watcher.run();
-  assert.notEqual(watcher.doc.activeElement, watcher.canvas, 'a watcher keeps typing on the desktop');
+  assert.notEqual(watcher.doc.activeElement, watcher.keyboard, 'a watcher keeps typing on the desktop');
+  watcher.layer.close();
+});
+
+test('an input method\'s composition reaches the focused window once as text, never as the keys that composed it', async () => {
+  const m = await controlled({control: true});
+  m.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  m.canvas.dispatch('pointerup', {button: 0});
+  await tick();
+  const before = m.sent.flatMap(request => request.events).length;
+  // Chromium's order for typing にほん and committing 日本 with Enter.
+  m.keyboard.dispatch('keydown', {code: 'KeyN', key: 'Process', keyCode: 229});
+  m.keyboard.dispatch('compositionstart', {data: ''});
+  m.keyboard.dispatch('beforeinput', {inputType: 'insertCompositionText', data: 'n', isComposing: true});
+  m.keyboard.value = 'n';
+  m.keyboard.dispatch('input', {inputType: 'insertCompositionText', isComposing: true});
+  m.keyboard.dispatch('keyup', {code: 'KeyN', key: 'n', keyCode: 78, isComposing: true});
+  m.keyboard.dispatch('keydown', {code: 'KeyI', key: 'Process', keyCode: 229, isComposing: true});
+  m.keyboard.dispatch('beforeinput', {inputType: 'insertCompositionText', data: 'に', isComposing: true});
+  m.keyboard.dispatch('keydown', {code: 'Space', key: 'Process', keyCode: 229, isComposing: true});
+  m.keyboard.dispatch('keydown', {code: 'Enter', key: 'Process', keyCode: 229, isComposing: true});
+  m.keyboard.dispatch('beforeinput', {inputType: 'insertCompositionText', data: '日本', isComposing: true});
+  m.keyboard.dispatch('compositionend', {data: '日本'});
+  assert.equal(m.keyboard.value, '', 'the hidden target is empty after each commit');
+  m.keyboard.dispatch('keyup', {code: 'Enter', key: 'Enter', keyCode: 13});
+  // An emoji picker or dictation commits without a composition.
+  let cancelled = 0;
+  m.keyboard.dispatch('beforeinput', {inputType: 'insertText', data: '🎉', preventDefault() { cancelled++; }});
+  m.keyboard.dispatch('keydown', {code: 'KeyA', key: 'a', keyCode: 65});
+  m.keyboard.dispatch('keyup', {code: 'KeyA', key: 'a', keyCode: 65});
+  for (let i = 0; i < 8; i++) await tick();
+  assert.equal(cancelled, 1, 'the picker\'s text is not left in the hidden target');
+  assert.deepEqual(m.sent.flatMap(request => request.events).slice(before), [
+    {Text: {text: '日本'}},
+    {Text: {text: '🎉'}},
+    {Key: {keysym: 30, pressed: true, modifiers: 0}},
+    {Key: {keysym: 30, pressed: false, modifiers: 0}},
+  ], 'one Text per commit, no key of the composition, plain keys still keys');
+  m.layer.close();
+});
+
+test('committed text is bounded like the session bounds it and goes only to the window holding the keyboard', async () => {
+  const m = await controlled({control: true});
+  const commit = text => {
+    m.keyboard.dispatch('compositionstart', {data: ''});
+    m.keyboard.dispatch('compositionend', {data: text});
+  };
+  commit('unfocused');
+  m.keyboard.dispatch('beforeinput', {inputType: 'insertText', data: 'unfocused'});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  commit('');
+  commit('x'.repeat(MAX_TEXT_BYTES + 1));
+  commit('é'.repeat(MAX_TEXT_BYTES / 2));
+  m.keyboard.dispatch('beforeinput', {inputType: 'insertText', data: '語'.repeat(MAX_TEXT_BYTES)});
+  for (let i = 0; i < 8; i++) await tick();
+  const texts = m.sent.flatMap(request => request.events).filter(event => 'Text' in event).map(({Text}) => Text.text);
+  assert.deepEqual(texts, ['é'.repeat(MAX_TEXT_BYTES / 2)], 'empty, oversize and unfocused text never leaves the page');
+  m.layer.close();
+  const watcher = await controlled({control: false});
+  watcher.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  watcher.run();
+  watcher.keyboard.dispatch('compositionstart', {data: ''});
+  watcher.keyboard.dispatch('compositionend', {data: '日本'});
+  watcher.keyboard.dispatch('beforeinput', {inputType: 'insertText', data: '🎉'});
+  await tick();
+  assert.deepEqual(watcher.sent, [], 'a watcher sends no text');
+  watcher.layer.close();
+});
+
+/**
+ * One keystroke as a browser delivers it to the hidden text area: `keydown`;
+ * then, unless the page cancelled that keydown, the browser's default action
+ * inserts what the platform produced for it, one `beforeinput`/`input` pair
+ * per character it reports (a cancelled `beforeinput` leaves the area empty);
+ * then `keyup`.
+ */
+function stroke(keyboard, down, inserted = [], up = {...down, key: down.key === 'Dead' ? 'Dead' : down.key?.toLowerCase()}) {
+  let prevented = false;
+  keyboard.dispatch('keydown', {...down, preventDefault() { prevented = true; }});
+  if (!prevented) {
+    for (const data of inserted) {
+      let cancelled = false;
+      keyboard.dispatch('beforeinput', {inputType: 'insertText', data, preventDefault() { cancelled = true; }});
+      if (!cancelled) keyboard.value = `${keyboard.value ?? ''}${data}`;
+      keyboard.dispatch('input', {inputType: 'insertText', data});
+    }
+  }
+  keyboard.dispatch('keyup', up);
+}
+const modifiersOff = {shiftKey: false, ctrlKey: false, altKey: false, metaKey: false};
+/**
+ * A dead key as Chromium and Firefox on Windows report it, and Linux browsers
+ * whose input method commits without a preedit: a `keydown` with
+ * `key: 'Dead'` and no composition. Nothing is inserted until the next key,
+ * whose default action inserts the composed character (`insertText`).
+ */
+const dead = (code, keyCode, extra = {}) => ({code, key: 'Dead', keyCode, ...modifiersOff, ...extra});
+
+test('a dead key in a Windows or Linux browser reaches the focused window as the composed character, once', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  await tick();
+  const before = m.sent.flatMap(request => request.events).length;
+  // German layout: ´ (the Equal key) then e is é; ^ (Backquote) then o is ô.
+  stroke(m.keyboard, dead('Equal', 221));
+  stroke(m.keyboard, {code: 'KeyE', key: 'é', keyCode: 69, ...modifiersOff}, ['é'], {code: 'KeyE', key: 'e', keyCode: 69, ...modifiersOff});
+  stroke(m.keyboard, dead('Backquote', 220));
+  stroke(m.keyboard, {code: 'KeyO', key: 'ô', keyCode: 79, ...modifiersOff}, ['ô'], {code: 'KeyO', key: 'o', keyCode: 79, ...modifiersOff});
+  // A dead key then Space is the accent itself.
+  stroke(m.keyboard, dead('Equal', 221));
+  stroke(m.keyboard, {code: 'Space', key: '´', keyCode: 32, ...modifiersOff}, ['´'], {code: 'Space', key: ' ', keyCode: 32, ...modifiersOff});
+  // A dead key then a key it does not combine with is both characters, as
+  // the browser reports them (Windows produces two).
+  stroke(m.keyboard, dead('Equal', 221));
+  stroke(m.keyboard, {code: 'KeyX', key: 'x', keyCode: 88, ...modifiersOff}, ['´', 'x']);
+  // French layout: ^ (BracketLeft), then Shift+e is Ê; the Shift edges still reach the window.
+  stroke(m.keyboard, dead('BracketLeft', 221));
+  m.keyboard.dispatch('keydown', {code: 'ShiftLeft', key: 'Shift', keyCode: 16, ...modifiersOff, shiftKey: true});
+  stroke(m.keyboard, {code: 'KeyE', key: 'Ê', keyCode: 69, ...modifiersOff, shiftKey: true}, ['Ê'], {code: 'KeyE', key: 'E', keyCode: 69, ...modifiersOff, shiftKey: true});
+  m.keyboard.dispatch('keyup', {code: 'ShiftLeft', key: 'Shift', keyCode: 16, ...modifiersOff});
+  // Plain keys after it are keys again, and so is a shortcut chord pressed after a dead key.
+  stroke(m.keyboard, {code: 'KeyA', key: 'a', keyCode: 65, ...modifiersOff});
+  stroke(m.keyboard, dead('Equal', 221));
+  m.keyboard.dispatch('keydown', {code: 'ControlLeft', key: 'Control', keyCode: 17, ...modifiersOff, ctrlKey: true});
+  stroke(m.keyboard, {code: 'KeyL', key: 'l', keyCode: 76, ...modifiersOff, ctrlKey: true});
+  m.keyboard.dispatch('keyup', {code: 'ControlLeft', key: 'Control', keyCode: 17, ...modifiersOff});
+  stroke(m.keyboard, {code: 'KeyB', key: 'b', keyCode: 66, ...modifiersOff});
+  for (let i = 0; i < 8; i++) await tick();
+  assert.equal(m.keyboard.value ?? '', '', 'nothing is left in the hidden target');
+  const key = (keysym, pressed) => ({Key: {keysym, pressed, modifiers: 0}});
+  assert.deepEqual(m.sent.flatMap(request => request.events).slice(before), [
+    {Text: {text: 'é'}},
+    {Text: {text: 'ô'}},
+    {Text: {text: '´'}},
+    {Text: {text: '´'}},
+    {Text: {text: 'x'}},
+    key(42, true),
+    {Text: {text: 'Ê'}},
+    key(42, false),
+    key(30, true), key(30, false),
+    key(29, true), key(38, true), key(38, false), key(29, false),
+    key(48, true), key(48, false),
+  ], 'one Text per composed character, never the dead key or the key that completed it');
+  m.layer.close();
+});
+
+test('a dead key that opens a composition (Linux preedit, Firefox on macOS) leaves no key held in the window', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  await tick();
+  const before = m.sent.flatMap(request => request.events).length;
+  // Firefox with a GTK input method that shows the accent as a preedit: the
+  // dead keydown arrives before the composition starts.
+  m.keyboard.dispatch('keydown', dead('Equal', 0));
+  m.keyboard.dispatch('compositionstart', {data: ''});
+  m.keyboard.dispatch('beforeinput', {inputType: 'insertCompositionText', data: '´', isComposing: true});
+  m.keyboard.dispatch('keyup', {...dead('Equal', 0), isComposing: true});
+  m.keyboard.dispatch('keydown', {code: 'KeyE', key: 'Process', keyCode: 229, isComposing: true});
+  m.keyboard.dispatch('beforeinput', {inputType: 'insertCompositionText', data: 'é', isComposing: true});
+  m.keyboard.dispatch('compositionend', {data: 'é'});
+  m.keyboard.dispatch('keyup', {code: 'KeyE', key: 'e', keyCode: 69});
+  // Firefox on macOS: Option+e is a dead key reported with its keyCode, then a composition.
+  m.keyboard.dispatch('keydown', {code: 'AltLeft', key: 'Alt', keyCode: 18, ...modifiersOff, altKey: true});
+  m.keyboard.dispatch('keydown', dead('KeyE', 69, {altKey: true}));
+  m.keyboard.dispatch('compositionstart', {data: ''});
+  m.keyboard.dispatch('keyup', {...dead('KeyE', 69, {altKey: true}), isComposing: true});
+  m.keyboard.dispatch('keyup', {code: 'AltLeft', key: 'Alt', keyCode: 18, ...modifiersOff, isComposing: true});
+  m.keyboard.dispatch('keydown', {code: 'KeyU', key: 'Process', keyCode: 229, isComposing: true});
+  m.keyboard.dispatch('compositionend', {data: 'ú'});
+  m.keyboard.dispatch('keyup', {code: 'KeyU', key: 'u', keyCode: 85});
+  m.keyboard.dispatch('blur');
+  for (let i = 0; i < 8; i++) await tick();
+  const events = m.sent.flatMap(request => request.events).slice(before);
+  assert.deepEqual(events.filter(event => 'Text' in event), [{Text: {text: 'é'}}, {Text: {text: 'ú'}}]);
+  assert.deepEqual(events.filter(event => 'Key' in event && event.Key.keysym !== 56), [],
+    'neither dead key is pressed in the window, so blur has none to release');
+  m.layer.close();
+});
+
+test('dead-key text goes only to the focused window of a member who drives it', async () => {
+  const typeAcute = keyboard => {
+    stroke(keyboard, dead('Equal', 221));
+    stroke(keyboard, {code: 'KeyE', key: 'é', keyCode: 69, ...modifiersOff}, ['é']);
+  };
+  const m = await controlled({control: true});
+  typeAcute(m.keyboard);
+  for (let i = 0; i < 4; i++) await tick();
+  assert.deepEqual(m.sent.flatMap(request => request.events).filter(event => 'Text' in event || 'Key' in event), [],
+    'a window that does not hold the keyboard gets neither text nor keys');
+  m.layer.close();
+  const watcher = await controlled({control: false});
+  watcher.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  watcher.run();
+  typeAcute(watcher.keyboard);
+  await tick();
+  assert.deepEqual(watcher.sent, [], 'a watcher sends nothing');
   watcher.layer.close();
 });
 
@@ -408,7 +608,62 @@ test('chunks with inconsistent timestamps, sizes or key flags drop the access un
 
 test('an index cannot redirect a surface to an arbitrary record or codec', () => {
   assert.equal(decodeFrame(json(1, [{...STREAM, record: '@tilo:private-document'}])), null);
-  assert.equal(decodeFrame(json(1, [{...STREAM, codec: 'vp9'}])), null);
+  assert.deepEqual(decodeFrame(json(1, [{...STREAM, codec: 'hevc-main10'}])), {kind: 'index', streams: []},
+    'a codec the page does not know lists nothing');
+  assert.equal(decodeFrame(json(2, {...STREAM, codec: 'hevc-main10'})), null);
+  assert.equal(decodeFrame(json(1, [STREAM, 7])), null, 'a stream that is not one still spoils the index');
+});
+
+test('a stream in a codec the page does not know is left out, and the publisher\'s other windows still show', () => {
+  const other = {...STREAM, surface: '0000000000000008', record: '@tilo:legacy-window:0000000000000008', codec: 'hevc-main10'};
+  assert.deepEqual(decodeFrame(json(1, [other, STREAM])), {kind: 'index', streams: [STREAM]});
+  const m = mount();
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [other, STREAM]));
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'h264'}]);
+  m.layer.close();
+});
+
+test('VP9 and AV1 streams decode with their codec\'s configuration, and a session\'s switch reconfigures', () => {
+  const m = mount();
+  const vp9 = {...STREAM, codec: 'vp9'};
+  // The first bytes of a libvpx key frame and the inter frame after it.
+  const vp9Key = [0x82, 0x49, 0x83, 0x42, 0x00, 0x00, 0xf0, 0x00];
+  const vp9Inter = [0x86, 0x00, 0x40, 0x92, 0x9c, 0x28, 0x49, 0x40];
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [vp9]));
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'vp9'}]);
+  m.live.deliver(STREAM.record, SHELL, json(2, vp9));
+  m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_KEY | CHUNK_FIRST | CHUNK_LAST, 0, vp9Key));
+  m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_FIRST | CHUNK_LAST, 1, vp9Inter));
+  assert.equal(m.codecs.decoders[0].config.codec, 'vp09.00.10.08');
+  assert.deepEqual(m.codecs.decoders[0].chunks.map(chunk => chunk.type), ['key', 'delta']);
+  // Its session switched to AV1 (a viewer joined that decodes it): the
+  // window stays, and the next key frame reconfigures.
+  const av1 = {...STREAM, codec: 'av1'};
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [av1]));
+  m.live.deliver(STREAM.record, SHELL, json(2, av1));
+  m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_FIRST | CHUNK_LAST, 2, vp9Inter));
+  assert.equal(m.codecs.decoders.length, 1, 'nothing decodes before the new key frame');
+  m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_KEY | CHUNK_FIRST | CHUNK_LAST, 3, [0x12, 0x00, 0x0a, 0x0b]));
+  assert.equal(m.codecs.decoders.length, 2);
+  assert.equal(m.codecs.decoders[0].state, 'closed');
+  assert.equal(m.codecs.decoders[1].config.codec, 'av01.0.04M.08');
+  assert.equal(m.layer.stats().streams, 1);
+  m.layer.close();
+});
+
+test('the page says which video codecs its WebCodecs decodes', async () => {
+  const asked = [];
+  const VideoDecoder = {
+    async isConfigSupported(config) {
+      asked.push(config.codec);
+      if (config.codec.startsWith('av01')) throw new Error('not here');
+      return {supported: config.codec !== 'nope', config};
+    },
+  };
+  assert.deepEqual(await decodableCodecs(VideoDecoder), ['h264', 'vp9']);
+  assert.deepEqual(asked, Object.values(VIDEO_DECODER_CONFIGS));
+  assert.deepEqual(await decodableCodecs({isConfigSupported: async () => ({supported: false})}), []);
+  assert.deepEqual(await decodableCodecs(undefined), [], 'without WebCodecs the page plays no window');
 });
 
 test('closing while input is in flight drops unsent events', async () => {
@@ -427,11 +682,11 @@ test('closing while input is in flight drops unsent events', async () => {
     }, requestFrame: () => 1, cancelFrame() {}, setInterval: () => 1, clearInterval() {}});
   live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
   await tick();
-  const canvas = layer.layer.children[0];
-  canvas.dispatch('keydown', {code: 'KeyA'});
+  const keyboard = keyboardOf(layer.layer);
+  keyboard.dispatch('keydown', {code: 'KeyA'});
   await tick();
   assert.equal(sent.length, 1, 'the first key is in flight before closing');
-  canvas.dispatch('keydown', {code: 'KeyB'});
+  keyboard.dispatch('keydown', {code: 'KeyB'});
   layer.close();
   complete(true);
   await tick();
@@ -443,10 +698,10 @@ test('closing while input is in flight drops unsent events', async () => {
 test('blur releases held buttons and keys before relinquishing keyboard focus', async () => {
   const m = await controlled({control: true});
   m.canvas.dispatch('pointerdown', {button: 0, pointerId: 5, clientX: 210, clientY: 168});
-  m.canvas.dispatch('keydown', {code: 'ShiftLeft'});
+  m.keyboard.dispatch('keydown', {code: 'ShiftLeft'});
   await tick();
   await tick();
-  m.canvas.dispatch('blur');
+  m.keyboard.dispatch('blur');
   await tick();
   await tick();
   const events = m.sent.flatMap(request => request.events);
@@ -534,7 +789,7 @@ test('a delayed HTTPS send preserves a mixed-case typing burst in wire order', a
   const expected = [];
   for (let repeat = 0; repeat < 20; repeat++) {
     for (const [code, keysym, pressed, shiftKey] of physical) {
-      m.canvas.dispatch(pressed ? 'keydown' : 'keyup', {code, shiftKey});
+      m.keyboard.dispatch(pressed ? 'keydown' : 'keyup', {code, shiftKey});
       expected.push({Key: {keysym, pressed, modifiers: 0}});
     }
   }
@@ -564,7 +819,7 @@ test('an unresponsive host still bounds the input queue and revokes control', as
       await new Promise(resolve => { release = resolve; });
       return true;
     }});
-  for (let i = 0; i < 600; i++) m.canvas.dispatch(i % 2 ? 'keyup' : 'keydown', {code: 'KeyA'});
+  for (let i = 0; i < 600; i++) m.keyboard.dispatch(i % 2 ? 'keyup' : 'keydown', {code: 'KeyA'});
   assert.equal(m.layer.streams()[0].control, false);
   assert.deepEqual(errors, ['Error: legacy window input backlog exceeded']);
   await tick();
@@ -586,11 +841,11 @@ test('two windows share the native input rate budget while draining queued keys'
   const second = {...STREAM, surface: '0000000000000008', record: '@tilo:legacy-window:0000000000000008'};
   m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM, second]));
   await tick();
-  const [first, other] = m.layer.layer.children;
+  const [first, other] = [keyboardOf(m.layer.layer), keyboardOf(m.layer.layer, 1)];
   for (let i = 0; i < 60; i++) {
-    for (const [canvas, code] of [[first, 'KeyA'], [other, 'KeyB']]) {
-      canvas.dispatch('keydown', {code});
-      canvas.dispatch('keyup', {code});
+    for (const [keyboard, code] of [[first, 'KeyA'], [other, 'KeyB']]) {
+      keyboard.dispatch('keydown', {code});
+      keyboard.dispatch('keyup', {code});
     }
   }
   for (let batch = 0; batch < 10; batch++) await tick();
@@ -626,5 +881,50 @@ test('a dismissed window queues one close while its host acknowledges it', async
   m.run();
   await tick();
   assert.deepEqual(sent, [['Close']], 'the same dismissal is still one action after acknowledgement');
+  m.layer.close();
+});
+
+test('a window that goes still while its decoder skips a backlog is subscribed again and ends on its last picture', () => {
+  const m = mount();
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
+  const send = (seq, key) => m.live.deliver(STREAM.record, SHELL,
+    chunk((key ? CHUNK_KEY : 0) | CHUNK_FIRST | CHUNK_LAST, seq, key ? SPS_IDR : [0, 0, 1, 0x41]));
+  const group = (from, to) => {
+    m.live.deliver(STREAM.record, SHELL, json(2, STREAM));
+    for (let seq = from; seq <= to; seq++) send(seq, seq === from);
+  };
+  // The first group (what the host replays to the new subscription) is decoded
+  // whole even though it arrives at once and outruns the decoder.
+  group(0, 1);
+  const decoder = m.codecs.decoders[0];
+  decoder.decodeQueueSize = 100;
+  send(2, false);
+  assert.equal(decoder.chunks.length, 3, 'the replayed group is caught up on');
+  // Live: the next group is subject to the backlog bound, and its tail is skipped.
+  group(3, 3);
+  send(4, false);
+  send(5, false);
+  assert.equal(decoder.chunks.length, 3, 'a backlog skips until the next keyframe');
+  // Still within the quiet time, nothing changes.
+  m.clock.t += 100;
+  m.poll();
+  m.run();
+  assert.equal(m.layer.stats().resyncs, 0);
+  // The window went still: no keyframe will come. Subscribe again.
+  m.clock.t += 500;
+  m.poll();
+  m.run();
+  assert.equal(m.layer.stats().resyncs, 1);
+  const watches = m.live.watches.filter(watch => watch.record.record === STREAM.record);
+  assert.deepEqual(watches.map(watch => watch.active), [false, true], 'one live subscription, the new one');
+  // The host replays its current group: all of it is decoded, ending on frame 5.
+  group(3, 5);
+  assert.deepEqual(decoder.chunks.slice(3).map(chunk => chunk.type), ['key', 'delta', 'delta']);
+  assert.equal(m.codecs.decoders.length, 1, 'the same decoder');
+  // Caught up, nothing further to resync.
+  m.clock.t += 1000;
+  m.poll();
+  m.run();
+  assert.equal(m.layer.stats().resyncs, 1);
   m.layer.close();
 });

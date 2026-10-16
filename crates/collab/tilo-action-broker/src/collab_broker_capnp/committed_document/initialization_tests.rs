@@ -156,20 +156,23 @@ fn first_materialization_only_and_refused_publication_do_not_consume_receipt() {
     assert_eq!(
         initialization
             .context
-            .prepare_application(service.as_ref())
+            .prepare_application(service.as_ref(), None)
             .unwrap(),
         Some(workspace())
     );
     assert_eq!(
         initialization
             .context
-            .prepare_application(service.as_ref())
+            .prepare_application(service.as_ref(), None)
             .unwrap(),
         None
     );
     let mut restore = initialization.context.clone();
     restore.creation = None;
-    assert_eq!(restore.prepare_application(service.as_ref()).unwrap(), None);
+    assert_eq!(
+        restore.prepare_application(service.as_ref(), None).unwrap(),
+        None
+    );
     initialization.acknowledged = false;
     assert!(
         initialization
@@ -254,4 +257,51 @@ fn first_capture_only_carries_source_scoped_creation_not_existing_empty() {
             .is_err()
     );
     assert!(existing.initialization.is_none());
+}
+
+#[test]
+fn a_creation_made_elsewhere_decides_the_open_in_place_of_the_owner() {
+    let (initialization, service, live) = fixture();
+    let context = &initialization.context;
+    assert_eq!(
+        context
+            .prepare_application(service.as_ref(), Some(Ok(Some(workspace()))))
+            .unwrap(),
+        Some(workspace()),
+        "the host's creation for this caller is its creation receipt"
+    );
+    assert!(
+        service.created.load(Ordering::Acquire),
+        "the owner's own creation is not consulted"
+    );
+    assert_eq!(
+        context
+            .prepare_application(service.as_ref(), Some(Ok(None)))
+            .unwrap(),
+        None,
+        "a record the host already held is read, never initialized"
+    );
+    assert_eq!(
+        context
+            .prepare_application(service.as_ref(), Some(Err("host refused".into())))
+            .unwrap_err(),
+        "host refused",
+        "a refused creation fails the Open"
+    );
+    let mut restore = context.clone();
+    restore.creation = None;
+    assert_eq!(
+        restore
+            .prepare_application(service.as_ref(), Some(Ok(Some(workspace()))))
+            .unwrap(),
+        None,
+        "without original launch evidence nothing is created"
+    );
+    live.store(false, Ordering::Release);
+    assert!(
+        context
+            .prepare_application(service.as_ref(), Some(Ok(Some(workspace()))))
+            .is_err(),
+        "custody ended while the host created the record"
+    );
 }

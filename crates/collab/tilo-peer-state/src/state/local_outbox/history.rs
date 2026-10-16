@@ -41,7 +41,9 @@ use collab_types::DocumentMutation;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 #[cfg(not(test))]
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
+#[cfg(not(test))]
+use tilo_lock::MutexRecover as _;
 
 /// Histories kept: one per publication the governor has not yet
 /// acknowledged, for a few records at a time.
@@ -417,7 +419,7 @@ fn remembered_in<T: 'static, R>(
 ) -> R {
     #[cfg(not(test))]
     {
-        with(&mut store.lock().unwrap_or_else(PoisonError::into_inner))
+        with(&mut store.lock_recover())
     }
     #[cfg(test)]
     {

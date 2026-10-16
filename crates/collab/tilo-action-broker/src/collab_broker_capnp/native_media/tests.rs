@@ -95,8 +95,10 @@ os._exit(0)
         .expect("child service");
     runtime_portal::process_binding::arm(&stream).expect("kernel sender credentials");
     stream.write_all(b"G").await.expect("proof go");
-    let mut receiver =
-        runtime_portal::process_binding::Receiver::new([51; 32], unsafe { libc::geteuid() });
+    let mut receiver = runtime_portal::process_binding::Receiver::new(
+        [51; 32],
+        rustix::process::geteuid().as_raw(),
+    );
     let peer = loop {
         if let Some(peer) = stream
             .async_io(tokio::io::Interest::READABLE, || receiver.receive(&stream))

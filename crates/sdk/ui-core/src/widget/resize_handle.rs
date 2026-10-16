@@ -34,13 +34,13 @@ pub const HANDLE_HOVER_PX: f64 = 3.0;
 /// the strip's canvas (`GroupRow::usable_per_group`) has to step by this
 /// between adjacent groups.
 pub const HANDLE_SLOT_PX: f64 = 8.0;
-/// 8 px each side → 16 px total, the smallest touch-friendly target
-/// Fitts'-law-wise while still leaving room for the surrounding tab-bar
-/// affordances (the bar's drag-detach pill rect is also ~16 px tall).
-pub const HANDLE_HIT_HALF_PX: f64 = 8.0;
+/// The seam's hit zone is the slot plus one grab zone of each neighbour
+/// (`RESIZE_HANDLE_PX` inside each window), so every window edge, seam or
+/// outer, has the same size of target. Half of the 20 px total each side.
+pub const HANDLE_HIT_HALF_PX: f64 = HANDLE_SLOT_PX / 2.0 + crate::widget::RESIZE_HANDLE_PX;
 
 /// Captured-at-press snapshot of the two adjacent groups' widths and the
-/// cursor's x, so mid-drag each group's new width is `cursor_x -
+/// cursor's x, so mid-drag each group's new width is offset by `cursor_x -
 /// origin_cursor_x` and the edge follows the cursor 1:1.
 #[derive(Clone, Copy, Debug)]
 struct DragOrigin {
@@ -64,6 +64,8 @@ pub struct ResizeHandle {
     /// Drives the "thicken to 3 px" paint branch; the OS `EwResize`
     /// cursor hint is driven separately by [`Widget::cursor_shape`].
     hover: bool,
+    /// Last pointer x, so a press anchors the drag where the pointer is.
+    last_cursor_x: f64,
     /// `Some` once the user pressed inside the hit area. Carries the
     /// press-time cursor x and both neighbours' press-time widths so the
     /// per-frame update changes only the left width by default; Shift at
@@ -105,6 +107,7 @@ impl ResizeHandle {
             left_rect: Rect::ZERO,
             right_rect: Rect::ZERO,
             hover: false,
+            last_cursor_x: 0.0,
             drag: None,
             rect: Rect::ZERO,
             pending: None,
@@ -234,10 +237,10 @@ impl Widget for ResizeHandle {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
-        // Taffy's reported rect for the zero-width leaf sits on the gap's
-        // left edge, useful for neither hit-test nor paint, so it is
-        // ignored in favour of the row's explicit `set_neighbour_rects`.
+    /// A fixed slot whose geometry comes from its neighbours, never from
+    /// what it contains: there is never anything to measure.
+    fn is_layout_dirty(&self) -> bool {
+        false
     }
 
     fn draw(
@@ -288,6 +291,7 @@ impl Widget for ResizeHandle {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor_x = pt.x;
                 self.hover = self.rect.contains(pt) && self.drag.is_none();
                 if let Some(origin) = self.drag {
                     let dx = pt.x - origin.cursor_x;
@@ -318,10 +322,9 @@ impl Widget for ResizeHandle {
                 let (min, max) = self.bounds;
                 let left_w = self.left_rect.width().max(0.0).clamp(min, max);
                 let right_w = self.right_rect.width().max(0.0).clamp(min, max);
-                // `GroupRow::handle_event` always dispatches CursorMoved
-                // before any MouseInput on the same frame, so the centre
-                // of `self.rect` is accurate to the nearest pixel here.
-                let cursor_x = f64::midpoint(self.rect.x0, self.rect.x1);
+                // Anchor at the pointer, not the seam centre: the hit zone is
+                // wider than the gap, so the edge must not jump to the cursor.
+                let cursor_x = self.last_cursor_x;
                 self.drag = Some(DragOrigin {
                     cursor_x,
                     left_w,
@@ -380,8 +383,7 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
 
-    /// `min_group_px(2000)` is exactly 300, so the clamp cases below
-    /// still read against a familiar bound.
+    /// A strip wide enough that the floor, not a share, is the minimum.
     const USABLE: f64 = 2000.0;
 
     fn bounds() -> (f64, f64) {
@@ -394,19 +396,18 @@ mod tests {
         {
             // The legal width range is a property of the display: a fixed
             // `[300, 1200]` could not express a 3840-px output's ceiling.
-            assert_eq!(max_group_px(1600.0), 1600.0);
-            assert_eq!(max_group_px(3840.0), 3840.0);
-            // The floor is a fraction too, with an absolute backstop so a
-            // narrow output doesn't yield an unusable sliver.
-            assert_eq!(min_group_px(3840.0), 576.0);
-            assert_eq!(min_group_px(1200.0), 240.0);
+            assert_eq!(max_group_px(1600.0), 16_000.0);
+            assert_eq!(max_group_px(3840.0), 38_400.0);
+            // The only minimum is the absolute floor, whatever the display.
+            assert_eq!(min_group_px(3840.0), crate::widget::WIDTH_FLOOR_PX);
+            assert_eq!(min_group_px(1200.0), crate::widget::WIDTH_FLOOR_PX);
         }
 
         // Case `handle_adopts_the_strips_bounds`.
         {
             let mut h = ResizeHandle::new();
             h.set_strip_usable_px(3840.0);
-            assert_eq!(h.bounds(), (min_group_px(3840.0), 3840.0));
+            assert_eq!(h.bounds(), (min_group_px(3840.0), max_group_px(3840.0)));
         }
 
         // Case `set_neighbour_rects_recomputes_hit_area`.
@@ -417,18 +418,18 @@ mod tests {
                 Rect::new(608.0, 0.0, 1208.0, 400.0),
             );
             let r0 = h.get_rect();
-            // Gap centre (600 + 608) / 2 = 604; hit area extends 8 px each
-            // side → x0=596, x1=612.
-            assert!((r0.x0 - 596.0).abs() < 0.1);
-            assert!((r0.x1 - 612.0).abs() < 0.1);
+            // Gap centre (600 + 608) / 2 = 604; hit area extends 10 px each
+            // side (half the gap plus one grab zone) → x0=594, x1=614.
+            assert!((r0.x0 - 594.0).abs() < 0.1);
+            assert!((r0.x1 - 614.0).abs() < 0.1);
 
             h.set_neighbour_rects(
                 Rect::new(100.0, 0.0, 700.0, 400.0),
                 Rect::new(708.0, 0.0, 1308.0, 400.0),
             );
             let r1 = h.get_rect();
-            assert!((r1.x0 - 696.0).abs() < 0.1);
-            assert!((r1.x1 - 712.0).abs() < 0.1);
+            assert!((r1.x0 - 694.0).abs() < 0.1);
+            assert!((r1.x1 - 714.0).abs() < 0.1);
         }
     }
 
@@ -451,7 +452,7 @@ mod tests {
             let (min, max) = bounds();
             let (l, r) = ResizeHandle::compute_widths(400.0, 600.0, -500.0, min, max);
             assert_eq!(l, min, "left pinned at the strip's min");
-            assert_eq!(r, 700.0, "right absorbs only the actual movement (100)");
+            assert_eq!(r, 1000.0 - min, "right absorbs only the actual movement");
             assert_eq!(l + r, 400.0 + 600.0, "pair sum is preserved");
         }
 
@@ -461,7 +462,7 @@ mod tests {
             let (min, max) = bounds();
             let (l, r) = ResizeHandle::compute_widths(600.0, 400.0, 500.0, min, max);
             assert_eq!(r, min, "right pinned at the strip's min");
-            assert_eq!(l, 700.0, "left absorbs the actual movement (100)");
+            assert_eq!(l, 1000.0 - min, "left absorbs the actual movement");
             assert_eq!(l + r, 600.0 + 400.0, "pair sum is preserved");
         }
 
@@ -506,6 +507,31 @@ mod tests {
                 1450.0,
                 "the infinite strip grows by the drag delta"
             );
+        }
+
+        // Case `shift_resize_is_zero_sum_and_plain_resize_moves_only_one_edge`.
+        {
+            let (min, max) = bounds();
+            // Shift: what the left window gains the right one loses.
+            let (l, r) = ResizeHandle::compute_widths(800.0, 700.0, 120.0, min, max);
+            assert_eq!((l, r), (920.0, 580.0));
+            assert_eq!(l + r, 1500.0);
+            // No shift: only the dragged window changes, the strip grows.
+            let (l, r) = ResizeHandle::compute_independent_widths(800.0, 700.0, 120.0, min, max);
+            assert_eq!((l, r), (920.0, 700.0));
+        }
+
+        // Case `windows_can_be_wider_than_the_strip_and_narrower_than_a_share`.
+        {
+            let (min, max) = bounds();
+            let (l, _) = ResizeHandle::compute_independent_widths(1000.0, 700.0, 3000.0, min, max);
+            assert_eq!(
+                l, 4000.0,
+                "past the 2000 px strip: no ceiling at the display"
+            );
+            let (l, _) = ResizeHandle::compute_independent_widths(1000.0, 700.0, -990.0, min, max);
+            assert_eq!(l, min, "only the floor stops a narrow window");
+            assert!(min < 0.1 * USABLE, "the floor is not a share of the strip");
         }
 
         // Case `independent_resize_clamps_only_the_resized_group`.

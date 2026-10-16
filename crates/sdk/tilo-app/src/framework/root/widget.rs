@@ -117,6 +117,9 @@ pub(crate) trait RootPublishes {
 /// The [`SearchSource`] part of a root.
 pub(crate) trait RootSearch {
     fn search_providers(&self) -> Vec<Box<dyn ui_core::search::SearchProvider>>;
+    fn search_provider_descriptors(
+        &self,
+    ) -> Vec<ui_core::search::capability::SearchProviderDescriptor>;
     fn activate_search_result(
         &mut self,
         action_id: &str,
@@ -364,6 +367,12 @@ impl PublishesResources for RootWidget {
 impl SearchSource for RootWidget {
     fn search_providers(&self) -> Vec<Box<dyn ui_core::search::SearchProvider>> {
         self.0.search_providers()
+    }
+
+    fn search_provider_descriptors(
+        &self,
+    ) -> Vec<ui_core::search::capability::SearchProviderDescriptor> {
+        self.0.search_provider_descriptors()
     }
 
     fn activate_search_result(

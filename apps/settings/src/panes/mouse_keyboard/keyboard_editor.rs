@@ -1,10 +1,10 @@
 //! Configured sources are the selection model; discovery only supplies edit scopes.
 
 use super::*;
+use crate::widgets::{
+    Item, SettingsSection, StatusTone, block_section, note, status_pill, untitled,
+};
 use settings_store::keyboard_sources::{ALL, KeyboardProfile, OSK, SourceOptions};
-use ui::reorder::DropPlacement;
-use ui::tilo_resource;
-use ui::widget::{ListRow, VirtualList};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum SourceView {
@@ -114,7 +114,10 @@ pub(super) fn scopes(
         return vec![(OSK.into(), t("a11y-osk"))];
     }
     if !osk && keyboards.len() == 1 {
-        return keyboards;
+        // The only keyboard edits the shared sources: a list of its own
+        // would override them invisibly, since no selector names it.
+        let title = keyboards.pop().map(|(_, title)| title).unwrap_or_default();
+        return vec![(ALL.into(), title)];
     }
     if !osk && keyboards.is_empty() {
         return vec![(ALL.into(), t("input-scope-all"))];
@@ -127,10 +130,62 @@ pub(super) fn scopes(
     result
 }
 
+/// Attached physical keyboards that type their own sources instead of the
+/// shared ones, with their titles, in key order.
+pub(super) fn keyboards_with_own_sources(
+    snapshot: Option<&InputHardwareSnapshot>,
+    input: &InputPrefs,
+) -> Vec<(String, String)> {
+    let Some(snapshot) = snapshot else {
+        return Vec::new();
+    };
+    let mut keyboards: Vec<_> = snapshot
+        .of_kind(InputDeviceKind::Keyboard)
+        .into_iter()
+        .filter(|device| {
+            !matches!(device.key.as_str(), ALL | OSK)
+                && input.keyboard_assignments.contains_key(&device.key)
+        })
+        .map(|device| (device.key.clone(), device_title(device)))
+        .collect();
+    keyboards.sort_by(|a, b| a.0.cmp(&b.0));
+    keyboards.dedup_by(|a, b| a.0 == b.0);
+    keyboards
+}
+
+/// An edit of the shared sources must be what an attached keyboard types
+/// when that keyboard is not offered for editing on its own: its retained
+/// list would otherwise keep overriding the edit with nothing on screen
+/// saying so. Disconnected keyboards keep their lists.
+fn drop_hidden_assignments(input: &mut InputPrefs, area: &InputArea) {
+    let offered = area.keyboard_scopes();
+    for (key, _) in keyboards_with_own_sources(area.devices().as_ref(), input) {
+        if !offered.iter().any(|(scope, _)| scope == &key) {
+            input.keyboard_assignments.remove(&key);
+        }
+    }
+}
+
+/// Make one keyboard type the shared sources again.
+fn use_shared_sources(app: &SettingsApp, scope: &str) -> EffectAnswer {
+    let settings = app.host().settings::<InputPrefs>();
+    let mut input = settings.get();
+    if matches!(scope, ALL | OSK) || input.keyboard_assignments.remove(scope).is_none() {
+        return Err(t("input-error-keyboard-shared"));
+    }
+    settings
+        .set(&input)
+        .map(|()| Effected::done())
+        .map_err(|error| error.to_string())
+}
+
 pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Option<EffectAnswer> {
     let area = app.input();
     if matches!(operation, InputEffect::InspectKeyboardSources) {
         return Some(Ok(inspect_sources(app)));
+    }
+    if let InputEffect::UseSharedSources { scope } = operation {
+        return Some(use_shared_sources(app, scope));
     }
     let mut editor = area.editor.get();
     let input = app.host().settings::<InputPrefs>().get();
@@ -230,7 +285,9 @@ fn inspect_sources(app: &SettingsApp) -> Effected {
         .into_iter()
         .map(|(id, label)| {
             let profile = area.profile(&input, &id);
-            serde_json::json!({"id": id, "label": label, "sources": profile.sources, "active": profile.active})
+            let own = !matches!(id.as_str(), ALL | OSK)
+                && input.keyboard_assignments.contains_key(&id);
+            serde_json::json!({"id": id, "label": label, "sources": profile.sources, "active": profile.active, "own": own})
         })
         .collect();
     let editor = area.editor.get();
@@ -341,10 +398,24 @@ pub(super) fn apply_scoped(
     {
         return apply(input, operation, area.catalog());
     }
+    if editor.selected.is_some()
+        && matches!(
+            operation,
+            InputEffect::SetActiveSource { .. }
+                | InputEffect::AddSource { .. }
+                | InputEffect::ReplaceSource { .. }
+                | InputEffect::RemoveSource { .. }
+        )
+    {
+        let mut cleared = editor.clone();
+        cleared.selected = None;
+        area.editor.set(cleared);
+    }
     let source_action = matches!(
         operation,
         InputEffect::SetActiveSource { .. }
             | InputEffect::AddSource { .. }
+            | InputEffect::ReplaceSource { .. }
             | InputEffect::MoveSourceUp { .. }
             | InputEffect::MoveSourceDown { .. }
             | InputEffect::RemoveSource { .. }
@@ -387,6 +458,7 @@ pub(super) fn apply_scoped(
     if editor.scope == ALL {
         input.keyboard_layouts.clone_from(&profile.sources);
         input.keyboard_layout.clone_from(&profile.active);
+        drop_hidden_assignments(input, area);
     }
     input.keyboard_assignments.insert(editor.scope, profile);
     Ok(())
@@ -483,6 +555,25 @@ fn mutate_sources(
             }
             profile.active.clone_from(&source);
             profile.sources.push(source);
+        }
+        InputEffect::ReplaceSource { from, source } => {
+            let index = position(&from, profile)?;
+            if from == source {
+                return Ok(());
+            }
+            if !available(area, profile, scope)
+                .iter()
+                .any(|entry| entry.id == source)
+            {
+                return Err(t("input-error-source-add"));
+            }
+            if let Some(slot) = profile.sources.get_mut(index) {
+                slot.clone_from(&source);
+            }
+            profile.options.remove(&from);
+            if profile.active == from {
+                profile.active = source;
+            }
         }
         InputEffect::SetActiveSource { source } => {
             position(&source, profile)?;
@@ -598,74 +689,220 @@ impl MouseKeyboardPane {
         }
     }
 
-    fn source_list(&self, profile: &KeyboardProfile) -> El {
-        let cx = self.cx.clone();
-        let selected = self.selected_source();
-        let active = profile.active.clone();
-        let mut selection = ui::selection::KeySelection::new();
-        selection.select_only(selected.clone());
-        let labels: HashMap<_, _> = profile
+    /// One row per layout for a keyboard that types several: its name (and
+    /// whether it is the one in use) with, on the trailing edge, buttons to
+    /// use it, move it in the switching order and remove it.
+    fn source_items(&self, profile: &KeyboardProfile) -> Vec<Item> {
+        let small = ui::widget::ControlSize::Small;
+        let last = profile.sources.len().saturating_sub(1);
+        profile
             .sources
             .iter()
-            .map(|id| (id.clone(), self.source_name(id)))
-            .collect();
-        let list = VirtualList::from_items(
-            profile.sources.clone(),
-            self.source_row_height,
-            String::clone,
-            move |id, _, _| {
-                let mut row = ListRow::new(
-                    format!("input.source.{id}"),
-                    labels.get(id).cloned().unwrap_or_else(|| id.clone()),
-                )
-                .selected(id == &selected);
-                if id == &active {
-                    row = row.value(t("input-sources-active"));
+            .enumerate()
+            .map(|(index, id)| {
+                let mut controls = Row::new()
+                    .no_wrap()
+                    .with_align_items(taffy::AlignItems::Center)
+                    .with_rhythm(ui::tokens::Rhythm::Related);
+                if id != &profile.active {
+                    controls = controls.push(Box::new(
+                        self.cx.bind_invocation(
+                            Button::new(&format!("input.source.use.{id}"), &t("input-source-use"))
+                                .control_size(small),
+                            InputEffect::SetActiveSource { source: id.clone() },
+                        ),
+                    ));
                 }
-                Box::new(row)
-            },
-        );
-        let Ok(list) = list else {
-            return error_caption(&t("input-sources-unavailable"));
-        };
-        let on_select = cx.clone();
-        let on_activate = cx.clone();
-        Box::new(
-            list.with_id("input.sources.list")
-                .with_accessible_name(t("input-sources-title"))
-                .with_semantic_key(String::clone)
-                .with_selection(selection)
-                .with_viewport_height(
-                    f32::from(u16::try_from(profile.sources.len()).unwrap_or(4))
-                        * self.source_row_height,
-                )
-                .on_select(move |source, selected| {
-                    if selected {
-                        on_select.invoke(InputEffect::SelectConfiguredSource { source });
-                    }
-                })
-                .on_activate(move |source| {
-                    on_activate.invoke(InputEffect::SelectConfiguredSource { source });
-                })
-                .with_reorder(
-                    |_, source, target| {
-                        source != &target.key && target.placement != DropPlacement::Inside
-                    },
-                    move |_, drop| {
-                        cx.invoke(InputEffect::ReorderSource {
-                            source: drop.source,
-                            target: drop.target.key,
-                            after: drop.target.placement == DropPlacement::After,
-                        });
-                        false
-                    },
-                ),
-        )
+                let neighbour = |offset: isize| {
+                    index
+                        .checked_add_signed(offset)
+                        .and_then(|at| profile.sources.get(at))
+                        .cloned()
+                };
+                for (offset, icon, key, name) in [
+                    (-1, ui::icons::Icon::ArrowUp, "up", "input-sources-move-up"),
+                    (
+                        1,
+                        ui::icons::Icon::ArrowDown,
+                        "down",
+                        "input-sources-move-down",
+                    ),
+                ] {
+                    let target = neighbour(offset);
+                    controls = controls.push(Box::new(
+                        self.cx.bind_invocation(
+                            Button::icon_only(
+                                &format!("input.source.move-{key}.{id}"),
+                                icon,
+                                &t(name),
+                            )
+                            .control_size(small)
+                            .with_enabled(target.is_some()),
+                            InputEffect::ReorderSource {
+                                source: id.clone(),
+                                target: target.unwrap_or_default(),
+                                after: offset > 0,
+                            },
+                        ),
+                    ));
+                }
+                controls = controls.push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::icon_only(
+                            &format!("input.source.remove.{id}"),
+                            ui::icons::Icon::Trash2,
+                            &t("input-sources-remove"),
+                        )
+                        .control_size(small)
+                        .with_enabled(last > 0),
+                        InputEffect::RemoveSource { source: id.clone() },
+                    ),
+                ));
+                let name = self.source_name(id);
+                if id == &profile.active {
+                    setting_row_described(&name, &t("input-preview-in-use"), Box::new(controls))
+                } else {
+                    setting_row(&name, Box::new(controls))
+                }
+            })
+            .collect()
     }
 
-    pub(super) fn keyboard_editor_card(&self) -> El {
+    /// The Keyboard page, top to bottom: what the keyboard types (a preview
+    /// of the layout in use, with a warning when the keyboard types
+    /// something else), the layouts, and the typing options.
+    pub(super) fn keyboard_page(&self) -> Vec<SettingsSection> {
         let profile = self.editor_profile();
-        let selected = self.selected_source();
+        let shown = self.selected_source();
+        let osk = self.editor.get().scope == OSK;
+        let mut page = Vec::new();
+        let map = if osk {
+            None
+        } else {
+            self.keyboard_preview(&shown).ok()
+        };
+        if let Some(map) = &map
+            && shown == profile.active
+            && map.live_agrees() == Some(false)
+        {
+            page.push(self.layout_mismatch_section(&profile));
+        }
+        page.push(self.layout_preview_section(&shown, &profile, map));
+        page.push(self.layouts_section(&profile));
+        if !osk {
+            page.push(self.keyboard_options_section(&shown));
+        }
+        page
+    }
+
+    /// The keyboard types a layout other than the one configured: say so,
+    /// and offer to apply the configured one.
+    fn layout_mismatch_section(&self, profile: &KeyboardProfile) -> SettingsSection {
+        let name = self.source_name(&profile.active);
+        untitled(rows(vec![setting_row_described(
+            &t("input-mismatch-title"),
+            &t_args("input-mismatch-detail", &[("name", ArgValue::from(name))]),
+            Box::new(self.cx.bind_invocation(
+                Button::new("input.keyboard.apply", &t("input-mismatch-apply")),
+                InputEffect::SetActiveSource {
+                    source: profile.active.clone(),
+                },
+            )),
+        )]))
+    }
+
+    /// The layout in use, drawn as its real keycaps, one layer at a time.
+    fn layout_preview_section(
+        &self,
+        shown: &str,
+        profile: &KeyboardProfile,
+        map: Option<ui::KeyboardMap>,
+    ) -> SettingsSection {
+        let name = self.source_name(shown);
+        let in_use = shown == profile.active;
+        let mut head = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center)
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .push(Box::new(
+                Text::new(&name).with_role(ui::tokens::TextRole::Title),
+            ))
+            .push(Box::new(Spacer::new()));
+        head = head.push(status_pill(
+            &t(if in_use {
+                "input-preview-in-use"
+            } else {
+                "input-preview-previewing"
+            }),
+            if in_use {
+                StatusTone::Success
+            } else {
+                StatusTone::Neutral
+            },
+        ));
+        let mut body = ui::widget::Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .push(Box::new(head));
+        if self.editor.get().scope == OSK {
+            body = body
+                .push(Box::new(touch_preview(shown, name)))
+                .push(caption(&t("input-osk-preview-description")));
+            return block_section(Box::new(body));
+        }
+        match map {
+            Some(map) => {
+                let levels = map.level_count().clamp(1, 4);
+                let level = self.last.keyboard_preview_level.min(levels - 1);
+                let layers = ui::widget::ToggleGroup::new(
+                    (0..levels)
+                        .map(|index| {
+                            ui::widget::Segment::new(t(layer_key(index)))
+                                .short(t(&format!("{}-short", layer_key(index))))
+                        })
+                        .collect(),
+                    level,
+                )
+                .with_id("input.map.level")
+                .with_accessible_name(t("input-map-level"));
+                let layers = self.cx.bind(
+                    layers,
+                    effect(InputEffect::SET_PREVIEW_LEVEL).map(|index: usize| index.to_string()),
+                );
+                let live = self.editor.get().view == SourceView::Live;
+                let map = if live || self.last.keyboard_preview.is_some() {
+                    map.with_inspected_key(&self.last.keyboard_inspected_key)
+                } else {
+                    map
+                }
+                .with_live_layout(live)
+                .with_single_level(level);
+                body = body.push(Box::new(map));
+                if live {
+                    // Asked for by automation or a person: what the seat
+                    // really types, not the configured layout.
+                    body = body
+                        .push(caption(&t("input-map-live-description")))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("input.map.configured", &t("input-map-configured")),
+                            InputEffect::PreviewLayout {
+                                source: shown.to_owned(),
+                            },
+                        )));
+                } else {
+                    body = body.push(Box::new(layers));
+                }
+            }
+            None => body = body.push(error_caption(&t("input-map-unavailable"))),
+        }
+        block_section(Box::new(body))
+    }
+
+    /// The configured layouts: one row for a single layout, a reorderable
+    /// list for several, and an inline searchable chooser to add another.
+    fn layouts_section(&self, profile: &KeyboardProfile) -> SettingsSection {
+        let scope = self.editor.get().scope;
         let mut content = Vec::new();
         if self.scopes.len() > 1 {
             content.push(setting_row(
@@ -673,106 +910,123 @@ impl MouseKeyboardPane {
                 Box::new(self.cx.bind(
                     id_dropdown(
                         self.scopes.clone(),
-                        &self.editor.get().scope,
+                        &scope,
                         "input.keyboard.scope",
                         &t("input-keyboard-scope"),
                     ),
                     effect(InputEffect::SELECT_KEYBOARD_SCOPE),
                 )),
             ));
-            if self.editor.get().scope == ALL {
-                content.push(caption(&t("input-scope-inheritance")));
+            if scope == ALL {
+                content.push(note(&t("input-scope-inheritance")));
             }
         }
-        content.push(caption(&t("input-sources-selection-description")));
-        content.push(self.source_list(&profile));
-        let add = Box::new(self.cx.bind_invocation(
-            Button::new("input.sources.add", &t("input-source-add-short")),
-            InputEffect::OpenSourcePicker,
-        ));
-        let index = profile
-            .sources
-            .iter()
-            .position(|source| source == &selected)
-            .unwrap_or(0);
-        let mut controls = Row::new();
-        if let Some(target) = index
-            .checked_sub(1)
-            .and_then(|index| profile.sources.get(index))
-        {
-            controls = controls.push(Box::new(self.cx.bind_invocation(
-                Button::new("input.source.move-up", &t("input-sources-move-up")),
-                InputEffect::ReorderSource {
-                    source: selected.clone(),
-                    target: target.clone(),
-                    after: false,
-                },
-            )));
+        if scope == ALL {
+            content.extend(self.own_source_rows());
         }
-        if let Some(target) = index
-            .checked_add(1)
-            .and_then(|index| profile.sources.get(index))
-        {
-            controls = controls.push(Box::new(self.cx.bind_invocation(
-                Button::new("input.source.move-down", &t("input-sources-move-down")),
-                InputEffect::ReorderSource {
-                    source: selected.clone(),
-                    target: target.clone(),
-                    after: true,
-                },
-            )));
+        let area = self.catalog_area();
+        let choices: Vec<(String, String)> = available(&area, profile, &scope)
+            .into_iter()
+            .map(|entry| (entry.id, entry.label))
+            .collect();
+        if self.catalog_error.is_some() && scope != OSK {
+            content.push(note(&t("input-sources-unavailable")));
         }
-        controls = controls.push(Box::new(
-            self.cx.bind_invocation(
-                Button::new("input.source.activate", &t("input-source-activate"))
-                    .with_enabled(selected != profile.active),
-                InputEffect::SetActiveSource {
-                    source: selected.clone(),
-                },
-            ),
-        ));
-        controls = controls.push(Box::new(
-            self.cx.bind_invocation(
-                Button::new("input.source.remove", &t("input-sources-remove"))
-                    .with_enabled(profile.sources.len() > 1),
-                InputEffect::RemoveSource {
-                    source: selected.clone(),
-                },
-            ),
-        ));
-        content.push(Box::new(controls));
-        content.extend(self.selected_source_preview(&selected));
-        if self.editor.get().scope != OSK {
-            content.push(self.source_options_card(&selected));
+        if let [only] = profile.sources.as_slice() {
+            // One layout is one row: its name, to change in place.
+            let mut options = choices.clone();
+            options.insert(0, (only.clone(), self.source_name(only)));
+            let from = only.clone();
+            content.push(setting_row(
+                &t("input-source-layout"),
+                Box::new(
+                    self.cx.bind(
+                        id_dropdown(
+                            options,
+                            only,
+                            "input.source.replace",
+                            &t("input-source-layout"),
+                        ),
+                        effect(InputEffect::REPLACE_SOURCE)
+                            .map(move |source: String| (from.clone(), source)),
+                    ),
+                ),
+            ));
+        } else {
+            content.extend(self.source_items(profile));
         }
-        crate::widgets::card_with_action(&t("input-sources-title"), add, rows(content))
+        if choices.is_empty() {
+            content.push(note(&t("input-sources-full")));
+        } else {
+            content.push(setting_row(
+                &t("input-source-add-title"),
+                Box::new(
+                    self.cx.bind(
+                        id_dropdown(
+                            choices,
+                            "",
+                            "input.source.add_picker",
+                            &t("input-source-add-title"),
+                        )
+                        .with_placeholder(&t("input-source-add-placeholder")),
+                        effect(InputEffect::ADD_SOURCE),
+                    ),
+                ),
+            ));
+        }
+        card(&t("input-layouts-title"), rows(content))
     }
 
-    fn source_options_card(&self, selected: &str) -> El {
-        let open = self.editor.get().options_open;
-        let button = self.cx.bind_invocation(
-            Button::new(
-                "input.source.options",
-                &t(if open {
-                    "input-source-hide"
-                } else {
-                    "input-source-show"
-                }),
-            ),
-            InputEffect::SetSourceOptionsVisible { visible: !open },
-        );
-        crate::widgets::card_with_action(
-            &t("input-source-options"),
-            Box::new(button),
-            rows(if open {
-                self.selected_source_options(selected)
-            } else {
-                Vec::new()
-            }),
-        )
+    /// What the page needs of the catalogue to offer layouts to add.
+    fn catalog_area(&self) -> InputArea {
+        InputArea {
+            catalog: SourceCatalog::ready(self.catalog.clone(), self.catalog_error.clone()),
+            live: std::cell::Cell::new(false),
+            devices: std::rc::Rc::new(RefCell::new((None, None))),
+            editor: self.editor.clone(),
+            osk_always: false,
+            document: self.cx.storage().settings_document().clone(),
+        }
     }
 
-    fn selected_source_options(&self, source: &str) -> Vec<El> {
+    /// Typing options, flat: the physical model, the compose and Caps Lock
+    /// keys, how held keys repeat, and a field to try them in.
+    fn keyboard_options_section(&self, shown: &str) -> SettingsSection {
+        let mut items = self.selected_source_options(shown);
+        items.push(self.key_repeat_row());
+        items.push(field_row(
+            &t("input-test-typing"),
+            Box::new(
+                TextInput::local()
+                    .with_id("input.test-typing")
+                    .with_placeholder(t("input-test-typing-placeholder")),
+            ),
+        ));
+        card(&t("input-keyboard-title"), rows(items))
+    }
+
+    /// One row per attached keyboard whose own list overrides the shared
+    /// sources, so what that keyboard types is never a surprise.
+    fn own_source_rows(&self) -> Vec<Item> {
+        let snapshot = self.hardware.borrow().1.clone();
+        keyboards_with_own_sources(snapshot.as_ref(), &self.last)
+            .into_iter()
+            .map(|(scope, title)| {
+                setting_row(
+                    &t_args("input-scope-own", &[("name", ArgValue::from(title))]),
+                    Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("input.keyboard.shared.{scope}"),
+                            &t("input-scope-use-shared"),
+                        ),
+                        InputEffect::UseSharedSources { scope },
+                    )),
+                )
+            })
+            .collect()
+    }
+
+    fn selected_source_options(&self, source: &str) -> Vec<Item> {
         let input = self.preview_input(source);
         vec![
             setting_row(
@@ -792,91 +1046,48 @@ impl MouseKeyboardPane {
                     effect(InputEffect::SET_KEYBOARD_MODEL),
                 )),
             ),
-            self.cx.row(t("input-compose-key")).choice_effect(
-                compose_options(),
-                &ui::LocalState::new(compose_shown(compose_english(input.compose_key.as_deref()))),
-                effect(InputEffect::SET_COMPOSE_KEY).map(|shown: String| {
-                    compose_from_label(&shown)
-                        .and_then(StoredKeyChoice::as_stored)
-                        .unwrap_or(COMPOSE_DISABLED)
-                        .to_owned()
-                }),
-            ),
-            self.cx.row(t("input-caps-lock-key")).choice_effect(
-                caps_lock_options(),
-                &ui::LocalState::new(caps_lock_shown(caps_lock_label(input.caps_lock.as_deref()))),
-                effect(InputEffect::SET_CAPS_LOCK).map(|shown: String| {
-                    caps_lock_from_label(&shown)
-                        .and_then(StoredKeyChoice::as_stored)
-                        .unwrap_or(CAPS_LOCK_UNCHANGED)
-                        .to_owned()
-                }),
-            ),
+            self.cx
+                .row(t("input-compose-key"))
+                .id("input.compose_key")
+                .choice_effect(
+                    compose_options(),
+                    &ui::LocalState::new(compose_shown(compose_english(
+                        input.compose_key.as_deref(),
+                    ))),
+                    effect(InputEffect::SET_COMPOSE_KEY).map(|shown: String| {
+                        compose_from_label(&shown)
+                            .and_then(StoredKeyChoice::as_stored)
+                            .unwrap_or(COMPOSE_DISABLED)
+                            .to_owned()
+                    }),
+                ),
+            self.cx
+                .row(t("input-caps-lock-key"))
+                .id("input.caps_lock")
+                .choice_effect(
+                    caps_lock_options(),
+                    &ui::LocalState::new(caps_lock_shown(caps_lock_label(
+                        input.caps_lock.as_deref(),
+                    ))),
+                    effect(InputEffect::SET_CAPS_LOCK).map(|shown: String| {
+                        caps_lock_from_label(&shown)
+                            .and_then(StoredKeyChoice::as_stored)
+                            .unwrap_or(CAPS_LOCK_UNCHANGED)
+                            .to_owned()
+                    }),
+                ),
         ]
     }
+}
 
-    fn selected_source_preview(&self, source: &str) -> Vec<El> {
-        if self.editor.get().scope == OSK {
-            return vec![
-                Box::new(touch_preview(source, self.source_name(source))),
-                caption(&t("input-osk-preview-description")),
-            ];
-        }
-        match self.keyboard_preview(source) {
-            Ok(map) => self.keyboard_inspection_controls(map),
-            Err(_) => vec![error_caption(&t("input-map-unavailable"))],
-        }
-    }
-
-    pub(super) fn keyboard_add_screen(&self) -> El {
-        let profile = self.editor_profile();
-        let scope = self.editor.get().scope;
-        let area = InputArea {
-            catalog: SourceCatalog::ready(self.catalog.clone(), self.catalog_error.clone()),
-            live: std::cell::Cell::new(false),
-            devices: std::rc::Rc::new(RefCell::new((None, None))),
-            editor: self.editor.clone(),
-            osk_always: false,
-            document: self.cx.storage().settings_document().clone(),
-        };
-        let mut content = vec![Box::new(self.cx.bind_invocation(
-            Button::new("input.sources.back", &t("input-sources-back")),
-            InputEffect::CloseSourcePicker,
-        )) as El];
-        if scope != OSK && self.catalog_error.is_some() {
-            content.push(error_caption(&t("input-sources-unavailable")));
-        }
-        let choices = available(&area, &profile, &scope)
-            .into_iter()
-            .map(|entry| (entry.id, entry.label))
-            .collect();
-        content.push(setting_row(
-            &t("input-sources-choose"),
-            Box::new(self.cx.bind(
-                id_dropdown(
-                    choices,
-                    self.editor.get().pending.as_deref().unwrap_or(""),
-                    "input.source.add_picker",
-                    &t("input-sources-choose"),
-                ),
-                effect(InputEffect::CHOOSE_SOURCE_TO_ADD),
-            )),
-        ));
-        if let Some(source) = self.editor.get().pending {
-            content.extend(self.selected_source_preview(&source));
-        }
-        content.push(Box::new(
-            self.cx.bind_invocation(
-                Button::new("input.sources.confirm", &t("input-source-add-short"))
-                    .with_enabled(self.editor.get().pending.is_some()),
-                InputEffect::ConfirmSourceToAdd,
-            ),
-        ));
-        content.push(Box::new(self.cx.bind_invocation(
-            Button::new("input.sources.cancel", &t("input-sources-cancel")),
-            InputEffect::CloseSourcePicker,
-        )));
-        card(&t("input-source-add-title"), rows(content))
+/// The name of a modifier layer: XKB levels run base, Shift, `AltGr`,
+/// Shift + `AltGr`.
+fn layer_key(level: usize) -> &'static str {
+    match level {
+        0 => "input-layer-base",
+        1 => "input-layer-shift",
+        2 => "input-layer-altgr",
+        _ => "input-layer-shift-altgr",
     }
 }
 
@@ -1003,12 +1214,7 @@ mod tests {
         })
         .unwrap();
         app.harness().resize(viewport).unwrap();
-        let address = crate::categories::Category::MouseKeyboard;
-        app.effect_on(
-            &crate::effects::pane_row_id(address),
-            &crate::effects::open_pane(address),
-        )
-        .unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Keyboard);
         app.settle();
         app
     }
@@ -1043,34 +1249,20 @@ mod tests {
         input.keyboard_layouts = vec!["us".into(), "de".into()];
         app.settings::<InputPrefs>().set(&input).unwrap();
         app.settle();
-        let target = app.harness().targets()["input.source.de"].center();
+        let target = app.harness().targets()["input.source.use.de"].center();
         app.harness()
             .touch(1, TouchPhase::Started, target.x, target.y);
         app.harness()
             .touch(1, TouchPhase::Cancelled, target.x, target.y);
         app.settle();
         assert_eq!(app.settings::<InputPrefs>().get(), input);
-        app.harness().tap_named("input.source.de").unwrap();
+        app.harness().tap_named("input.source.use.de").unwrap();
         app.settle();
-        let result = app
-            .effect(&SettingsEffect::from(InputEffect::InspectKeyboardSources))
-            .unwrap()
-            .value
-            .unwrap();
-        assert_eq!(result["selected"], "de");
-        assert_eq!(app.settings::<InputPrefs>().get().keyboard_layout, "us");
-        app.harness().tap_named("input.source.move-up").unwrap();
-        app.settle();
+        assert_eq!(app.settings::<InputPrefs>().get().keyboard_layout, "de");
         assert_eq!(
             app.settings::<InputPrefs>().get().keyboard_layouts,
-            ["de", "us"]
+            ["us", "de"]
         );
-        assert_eq!(app.settings::<InputPrefs>().get().keyboard_layout, "us");
-        let before = app.settings::<InputPrefs>().get();
-        app.harness().tap_named("input.sources.add").unwrap();
-        app.settle();
-        perform(&mut app, InputEffect::CloseSourcePicker);
-        assert_eq!(app.settings::<InputPrefs>().get(), before);
     }
 
     #[test]
@@ -1180,8 +1372,9 @@ mod tests {
                 .iter()
                 .map(|entry| entry.0.as_str())
                 .collect::<Vec<_>>(),
-            ["keyboard-0"]
+            [ALL]
         );
+        assert_eq!(scopes(Some(&snapshot(1, false)), false)[0].1, "Keyboard");
         assert_eq!(
             scopes(Some(&snapshot(2, false)), false)
                 .iter()
@@ -1291,18 +1484,24 @@ mod tests {
                 matches!(scenario, "keyboard-many" | "keyboard-touch")
             );
             if scenario == "keyboard-single" {
-                let from = targets["input.source.fr"];
-                let to = targets["input.source.us"];
-                app.harness().drag_at(
-                    (from.center().x, from.center().y),
-                    (to.center().x, to.y0 + 2.0),
-                );
-                app.settle();
-                let profile =
-                    app.settings::<InputPrefs>().get().keyboard_assignments["fixture-input-0"]
-                        .clone();
-                assert_eq!(profile.sources, ["fr", "us", "de"]);
-                assert_eq!(profile.active, "us");
+                // The page is rebuilt after the captures above; press once it
+                // has settled, and again only if that press found it still
+                // settling.
+                for _ in 0..3 {
+                    app.harness().relayout();
+                    app.settle();
+                    if app.settings::<InputPrefs>().get().keyboard_layouts == ["us", "fr", "de"] {
+                        break;
+                    }
+                    app.harness()
+                        .click_named("input.source.move-up.fr")
+                        .unwrap();
+                    app.settle();
+                }
+                let stored = app.settings::<InputPrefs>().get();
+                assert_eq!(stored.keyboard_layouts, ["us", "fr", "de"]);
+                assert_eq!(stored.keyboard_layout, "us");
+                assert!(!stored.keyboard_assignments.contains_key("fixture-input-0"));
                 app.harness().render_png(&directory.join("reordered.png"));
             }
             if matches!(scenario, "keyboard-many" | "keyboard-touch") {
@@ -1318,14 +1517,124 @@ mod tests {
                 app.harness()
                     .render_png(&directory.join("osk-selected.png"));
             }
-            perform(&mut app, InputEffect::OpenSourcePicker);
-            app.harness().render_png(&directory.join("add.png"));
-            assert!(!app.harness().targets().contains_key("input.sources.list"));
-            perform(&mut app, InputEffect::CloseSourcePicker);
-            assert!(app.harness().targets().contains_key("input.sources.list"));
+            if scenario == "keyboard-single" {
+                assert!(
+                    app.harness()
+                        .targets()
+                        .contains_key("input.source.add_picker")
+                );
+            }
             assert!(app.harness().component_contract_violations().is_empty());
         }
     }
+    fn fork(sources: &[&str]) -> KeyboardProfile {
+        KeyboardProfile {
+            sources: sources.iter().map(|source| (*source).into()).collect(),
+            active: sources[0].into(),
+            options: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn the_only_keyboard_edits_the_shared_sources_and_loses_its_hidden_list() {
+        let mut app = fixture_app("keyboard-single", (1200, 900));
+        let mut input = app.settings::<InputPrefs>().get();
+        input
+            .keyboard_assignments
+            .insert("fixture-input-0".into(), fork(&["us"]));
+        app.settings::<InputPrefs>().set(&input).unwrap();
+        app.settle();
+        // What the built-in keyboard types differs from the shared list: say so.
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key("input.keyboard.shared.fixture-input-0")
+        );
+        perform(
+            &mut app,
+            InputEffect::AddSource {
+                source: "de".into(),
+            },
+        );
+        perform(
+            &mut app,
+            InputEffect::SetActiveSource {
+                source: "de".into(),
+            },
+        );
+        let stored = app.settings::<InputPrefs>().get();
+        assert_eq!(stored.keyboard_layout, "de");
+        assert!(stored.keyboard_layouts.contains(&"de".to_string()));
+        assert!(!stored.keyboard_assignments.contains_key("fixture-input-0"));
+        assert_eq!(
+            settings_store::keyboard_sources::effective(&stored.rich_input(), "fixture-input-0")
+                .keyboard_layout,
+            "de",
+            "the keyboard types what the page edited"
+        );
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key("input.keyboard.shared.fixture-input-0")
+        );
+    }
+
+    #[test]
+    fn a_keyboard_with_its_own_list_is_shown_and_can_use_the_shared_one() {
+        let mut app = fixture_app("keyboard-many", (1200, 900));
+        let mut input = app.settings::<InputPrefs>().get();
+        input
+            .keyboard_assignments
+            .insert("fixture-input-1".into(), fork(&["fr"]));
+        app.settings::<InputPrefs>().set(&input).unwrap();
+        app.settle();
+        let result = app
+            .effect(&SettingsEffect::from(InputEffect::InspectKeyboardSources))
+            .unwrap()
+            .value
+            .unwrap();
+        let own = |id: &str| {
+            result["scopes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|scope| scope["id"] == id)
+                .unwrap()["own"]
+                .clone()
+        };
+        assert_eq!(own("fixture-input-1"), true);
+        assert_eq!(own("fixture-input-0"), false);
+        // A shared edit leaves a keyboard offered on its own alone.
+        perform(
+            &mut app,
+            InputEffect::AddSource {
+                source: "de".into(),
+            },
+        );
+        assert!(
+            app.settings::<InputPrefs>()
+                .get()
+                .keyboard_assignments
+                .contains_key("fixture-input-1")
+        );
+        app.harness()
+            .click_named("input.keyboard.shared.fixture-input-1")
+            .unwrap();
+        app.settle();
+        assert!(
+            !app.settings::<InputPrefs>()
+                .get()
+                .keyboard_assignments
+                .contains_key("fixture-input-1")
+        );
+        assert!(
+            app.effect(&SettingsEffect::from(InputEffect::UseSharedSources {
+                scope: "fixture-input-1".into()
+            }))
+            .is_err()
+        );
+    }
+
     #[test]
     fn keyboard_editor_hotplug_preserves_assignments_and_reconnects_by_identity() {
         let mut app = fixture_app("keyboard-many", (1200, 900));

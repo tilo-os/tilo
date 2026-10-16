@@ -241,9 +241,13 @@ fn freedesktop_notify(connection: &Connection, app: &str, n: &Notification) -> z
         .ok()
         .and_then(|ids| ids.get(&n.tag).copied())
         .unwrap_or(0);
-    let hints: HashMap<&str, Value<'_>> = HashMap::new();
+    let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
+    // The specification has no warning level; only an error is critical.
+    if n.severity == crate::Severity::Error {
+        hints.insert("urgency", Value::U8(2));
+    }
     let actions: Vec<&str> = if n.activation.is_some() {
-        vec![DEFAULT_ACTION, "Open"]
+        vec![DEFAULT_ACTION, n.action.as_deref().unwrap_or("Open")]
     } else {
         Vec::new()
     };

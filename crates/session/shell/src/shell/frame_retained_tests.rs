@@ -795,6 +795,7 @@ fn foreign_pixel_replacement_uses_bounded_damage_and_matches_dense_gpu_pixels() 
     foreign_replacement_pixel_oracle(false, ui::widget::WindowWidth::Narrow, true);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn imported_foreign_pixel_replacement_uses_bounded_damage_and_matches_dense_gpu_pixels() {
     foreign_replacement_pixel_oracle(true, ui::widget::WindowWidth::Narrow, true);
@@ -870,7 +871,10 @@ fn foreign_replacement_pixel_oracle(
         .map(|rect| u64::from(rect.width) * u64::from(rect.height))
         .sum();
     assert_eq!(
-        dirty_pixels * 2 < u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+        crate::shell::render::paint::damage_is_profitable(
+            dirty_pixels,
+            u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+        ),
         expect_sparse,
         "the ordinary width must exercise the unchanged sparse admission boundary"
     );
@@ -911,6 +915,15 @@ fn foreign_damage_fixture(
     window_width: ui::widget::WindowWidth,
     surface: u64,
 ) -> (PopulatedShellFixture, (u32, u32)) {
+    foreign_damage_fixture_on(window_width, surface, (NATIVE_WIDTH, NATIVE_HEIGHT))
+}
+
+/// [`foreign_damage_fixture`] on a desktop of `output` pixels.
+fn foreign_damage_fixture_on(
+    window_width: ui::widget::WindowWidth,
+    surface: u64,
+    output: (u32, u32),
+) -> (PopulatedShellFixture, (u32, u32)) {
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
     let workspace = tree
         .desktop
@@ -925,11 +938,8 @@ fn foreign_damage_fixture(
     let tab = group.active_tab;
     group.width = window_width;
     tree.seed_doc_from_cache();
-    let mut fixture = PopulatedShellFixture::with_tree(
-        (NATIVE_WIDTH, NATIVE_HEIGHT),
-        Theme::dark().with_reduce_motion(true),
-        tree,
-    );
+    let mut fixture =
+        PopulatedShellFixture::with_tree(output, Theme::dark().with_reduce_motion(true), tree);
     let store = crate::shell::foreign::store();
     store.note_adopted(surface);
     fixture.with_chrome(|chrome| {
@@ -962,6 +972,13 @@ fn publish_foreign_fixture_frame(
     importing_bridge: Option<&VelloDrmBridge>,
 ) {
     let store = crate::shell::foreign::store();
+    // Importing a GPU frame goes through the Linux dmabuf capture path.
+    #[cfg(not(target_os = "linux"))]
+    assert!(
+        importing_bridge.is_none(),
+        "importing a GPU frame needs Linux"
+    );
+    #[cfg(target_os = "linux")]
     if let Some(bridge) = importing_bridge {
         let (device, queue) = bridge.gpu();
         let frame = crate::shell::gpu_frames::frame_for_test(
@@ -987,14 +1004,14 @@ fn publish_foreign_fixture_frame(
                 .is_empty(),
             "the real owned GPU frame must carry no CPU pixel blob"
         );
-    } else {
-        store.publish_rgba(
-            surface,
-            &texel.repeat(size.0 as usize * size.1 as usize),
-            size.0,
-            size.1,
-        );
+        return;
     }
+    store.publish_rgba(
+        surface,
+        &texel.repeat(size.0 as usize * size.1 as usize),
+        size.0,
+        size.1,
+    );
 }
 
 fn assert_foreign_metadata_is_strict(
@@ -1110,6 +1127,9 @@ fn foreign_filter_settings(frame: &FrameBuilder) -> ForeignFilterSettings {
     ForeignFilterSettings(previous)
 }
 
+// Exact client damage is published through the Linux capture seam
+// (`publish_damaged_rgba_for_test`).
+#[cfg(target_os = "linux")]
 #[test]
 fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels() {
     for (imported, density) in [(false, 1), (false, 2), (true, 1), (true, 2)] {
@@ -1117,8 +1137,16 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
         let mut clock = tilo_test_env::ScopedEnv::new();
         clock.set("TILO_CLOCK", "09:41");
         let surface = 8_493_206 + u64::from(imported) * 2 + u64::from(density == 2);
-        let (mut fixture, logical_size) =
-            foreign_damage_fixture(ui::widget::WindowWidth::Wide, surface);
+        // A little short of native height, so the tile stays at most 2048 px
+        // tall: the renderer's 8192 px image atlas keeps a window's previous
+        // frame resident while its next one arrives, and two 2x frames of a
+        // taller tile cannot be stacked in it, so the new one would be
+        // omitted (an atlas budget, not the damage tracking under test).
+        let (mut fixture, logical_size) = foreign_damage_fixture_on(
+            ui::widget::WindowWidth::Wide,
+            surface,
+            (NATIVE_WIDTH, NATIVE_HEIGHT - 32),
+        );
         // Native HiDPI clients render two buffer pixels per logical pixel.
         // The oracle must prove real filtered GPU output at both densities.
         let size = (logical_size.0 * density, logical_size.1 * density);
@@ -1180,9 +1208,18 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
             .map(|r| u64::from(r.width) * u64::from(r.height))
             .sum();
         assert!(
-            dirty_pixels * 2 < u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+            crate::shell::render::paint::damage_is_profitable(
+                dirty_pixels,
+                u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+            ),
             "a wide tile's two small edits must exercise sparse admission"
         );
+        // A fresh dense oracle: its image atlas keeps the previous frame
+        // resident for two passes, and at density 2 this 3456x2056 tile's
+        // 6912x4112 buffer cannot share the 8192 px atlas with its own
+        // predecessor, so a reused oracle would omit the new frame and
+        // compare against a blank tile rather than against the truth.
+        oracle = bridge();
         paint_retained_and_compare(
             &mut retained,
             &mut oracle,
@@ -1201,6 +1238,100 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
         assert_foreign_pixel(&mut oracle, &changed, placement.center(), [0, 0, 255]);
         crate::shell::foreign::store().forget(surface);
     }
+}
+
+/// A client that damages one text line (a typed character in a terminal)
+/// repaints only that line of the output: the frame's damage is the line's
+/// rows across the tile, the retained render takes the sparse path and writes
+/// no pixel outside them, and the result matches a dense render of the scene.
+#[cfg(target_os = "linux")]
+#[test]
+fn one_line_of_client_damage_repaints_only_that_line() {
+    let _ambient = DenyAmbientStarts::new();
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let surface = 8_493_301;
+    let (mut fixture, size) = foreign_damage_fixture(ui::widget::WindowWidth::Narrow, surface);
+    let mut retained = bridge();
+    let mut oracle = bridge();
+    let mut pixels = [32, 32, 32, 255].repeat(size.0 as usize * size.1 as usize);
+    let store = crate::shell::foreign::store();
+    store.publish_rgba(surface, &pixels, size.0, size.1);
+    let first = fixture.paint_with_damage();
+    paint_retained_and_compare(&mut retained, &mut oracle, &first, "the empty grid");
+    // One line of a text grid, 20 buffer rows, across the whole buffer.
+    let line = Rect::new(0.0, 100.0, f64::from(size.0), 120.0);
+    for y in line.y0 as usize..line.y1 as usize {
+        for x in 0..size.0 as usize {
+            let index = (y * size.0 as usize + x) * 4;
+            pixels[index..index + 4].copy_from_slice(&[224, 224, 224, 255]);
+        }
+    }
+    store.publish_damaged_rgba_for_test(surface, &pixels, size, vec![line]);
+    let typed = fixture.paint_with_damage();
+    let mounted = fixture.foreign_surface_rect(surface).expect("mounted");
+    let placement = fixture
+        .layout_rect_to_scene(mounted)
+        .expect("scene placement");
+    let scale_y = placement.height() / f64::from(size.1);
+    let line_top = placement.y0 + line.y0 * scale_y;
+    let line_bottom = placement.y0 + line.y1 * scale_y;
+    // A filtered image's damage reaches one pixel past the changed texels,
+    // and is repainted in whole 16-pixel tiles, Vello's fine tile.
+    let tile = 16.0;
+    let (rows_top, rows_bottom) = (
+        ((line_top - 1.0) / tile).floor() * tile,
+        ((line_bottom + 1.0) / tile).ceil() * tile,
+    );
+    let (columns_left, columns_right) = (
+        ((placement.x0 - 1.0) / tile).floor() * tile,
+        ((placement.x1 + 1.0) / tile).ceil() * tile,
+    );
+    let damage = typed
+        .damage_regions
+        .as_ref()
+        .expect("a one-line commit keeps bounded damage");
+    assert!(!damage.is_empty(), "the typed line must be repainted");
+    for rect in damage {
+        assert!(
+            f64::from(rect.y) >= rows_top && f64::from(rect.y + rect.height) <= rows_bottom,
+            "damage {rect:?} reaches outside the tile rows {rows_top}..{rows_bottom} of the \
+             typed line {line_top}..{line_bottom}"
+        );
+        assert!(
+            f64::from(rect.x) >= columns_left && f64::from(rect.x + rect.width) <= columns_right,
+            "damage {rect:?} reaches outside the tile {placement:?}"
+        );
+    }
+    let damaged: u64 = damage
+        .iter()
+        .map(|rect| u64::from(rect.width) * u64::from(rect.height))
+        .sum();
+    let line_pixels = ((rows_bottom - rows_top) * (columns_right - columns_left)) as u64;
+    assert!(
+        damaged <= line_pixels,
+        "{damaged} damaged pixels for a line of at most {line_pixels}"
+    );
+    paint_retained_and_compare(&mut retained, &mut oracle, &typed, "one typed line");
+    assert!(
+        retained.last_sparse_render_attempts() >= 1,
+        "a one-line commit renders through the sparse path, not the whole output"
+    );
+    let stats = retained
+        .last_sparse_render_stats()
+        .expect("the sparse render reports what it wrote");
+    assert!(
+        stats.written_pixels <= damaged,
+        "the sparse render wrote {} pixels for {damaged} damaged",
+        stats.written_pixels
+    );
+    assert_foreign_pixel(
+        &mut oracle,
+        &typed,
+        Point::new(placement.center().x, f64::midpoint(line_top, line_bottom)),
+        [224, 224, 224],
+    );
+    store.forget(surface);
 }
 
 #[cfg(target_os = "linux")]
@@ -1374,6 +1505,7 @@ fn assert_notes_startup_saved_of(frame: &mut PopulatedShellFixture, surfaces: us
 
 /// The strips layers of two frames hold the same drawings: what no strip
 /// carries, and every strip in canvas coordinates.
+#[cfg(target_os = "linux")]
 fn strips_drawn_alike(a: &FrameCache, b: &FrameCache) -> bool {
     a.layers.workspace.encoding_eq(&b.layers.workspace)
         && a.layers.strips.len() == b.layers.strips.len()
@@ -1469,6 +1601,7 @@ fn a_cpu_presenter_rounds_strip_layout_and_retains_the_same_screen() {
     assert_eq!(frame.host().strip_scroll_offsets()[0].1, 120.5);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same_screen() {
     const SIZE: (u32, u32) = (1280, 720);
@@ -2102,6 +2235,66 @@ fn a_strip_pan_composited_from_layers_matches_a_full_render_in_every_theme() {
         scale: 1.0,
         strips: 1,
     });
+}
+
+/// Pulling the strip past its start rides the docked wheel in from the
+/// screen edge, and its disc keeps going left of its slot to the edge of the
+/// screen. Composited from layers, the wheel's sprite used to stop at the
+/// slot, so the rubber band showed the disc cut off in a hard vertical edge.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rubber_band_past_the_strip_start_composited_from_layers_matches_a_full_render() {
+    let desktop = PanDesktop {
+        name: "left overpull",
+        panel: (1280, 720),
+        scale: 1.0,
+        strips: 1,
+    };
+    let size = desktop.panel;
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let mut frame = pan_fixture(desktop, Theme::dark());
+    frame.set_strip_pan_presenter(false, true);
+    let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
+    let mut layered = gpu_target(size);
+    let mut dense = gpu_target(size);
+    frame.host_mut().update_active_strip_pan(0.0, true);
+    let mut travel = 0.0;
+    let mut composited = 0;
+    for step in 0..12 {
+        travel -= 37.3;
+        frame.host_mut().update_active_strip_pan(travel, false);
+        frame.relayout();
+        let painted = frame.paint_with_damage();
+        let label = format!("left overpull, step {step}");
+        if present(&mut layered, &painted, &label).is_some() {
+            composited += 1;
+        }
+        let shown = layered.read_rgba_for_test();
+        let full = render_whole(&mut dense, &painted.scene, painted.revision, &label);
+        let apart = pixels_apart(&shown, &full, size.0);
+        assert!(
+            apart.len() <= OFFSET_PIXELS,
+            "{label}: {} pixels differ from a full render (first {:?}); the wheel layer \
+             does not hold the disc the rubber band exposes",
+            apart.len(),
+            &apart[..apart.len().min(16)]
+        );
+    }
+    assert!(
+        frame
+            .host()
+            .strip_scroll_offsets()
+            .iter()
+            .any(|&(_, scroll, _)| scroll < -100.0),
+        "fixture: the pan pulled the strip well past its start: {:?}",
+        frame.host().strip_scroll_offsets()
+    );
+    assert!(
+        composited >= 8,
+        "the rubber band came as layers ({composited} of 12)"
+    );
 }
 
 /// A 1920×1080 panel at 150 %: the desktop is laid out at 1280×720 and a
@@ -3228,9 +3421,10 @@ fn assert_change_repaints_under(
         embedded_damage(frame)
     );
     paint_retained_and_compare(&mut retained, &mut dense, &changed, label);
-    // Damage over half the output renders whole, as the presenter does.
+    // Damage the presenter finds unprofitable renders whole.
     assert!(
-        pixels * 2 >= output || retained.last_sparse_render_attempts() >= 1,
+        !crate::shell::render::paint::damage_is_profitable(pixels, output)
+            || retained.last_sparse_render_attempts() >= 1,
         "{label}: the change must exercise the production sparse render path"
     );
     damage
@@ -3481,6 +3675,104 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
             "{label}: the keys reached the note's text: {before:?} -> {after:?}"
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_typing_update_in_one_window_is_bounded_by_the_window_and_admitted_sparse() {
+    let (mut frame, _clock) = desktop_in(Theme::dark());
+    let label = "typing in a note, bounded by its window";
+    let title = open_a_note(&mut frame, label);
+    if !with_notes_on_screen(&frame, |_, notes| notes.main_title_editing_for_test()) {
+        point_at(&mut frame, title);
+        press(&mut frame, winit::event::MouseButton::Left);
+        settle(&mut frame, 2);
+    }
+    let body = with_notes_on_screen(&frame, |rect, notes| {
+        let panel = notes.main_panel_mut();
+        let title = panel.title_rect_for_test();
+        let line = Point::new(title.x0 + 24.0, panel.body_top_for_test() + 12.0);
+        Point::new(rect.x0 + line.x, rect.y0 + line.y)
+    });
+    point_at(&mut frame, body);
+    press(&mut frame, winit::event::MouseButton::Left);
+    settle(&mut frame, 3);
+    type_text(&mut frame, "The quick brown fox ");
+    settle(&mut frame, 3);
+    let layout_rect = with_notes_on_screen(&frame, |rect, _| rect);
+    let window_rect = frame
+        .layout_rect_to_scene(layout_rect)
+        .expect("the window is on the output");
+    let damage = assert_change_repaints_under(&mut frame, label, 100, |frame| {
+        type_text(frame, "j");
+        frame.relayout();
+    });
+    // The window's own tile, plus the tile rounding and shadow around it, and nothing else.
+    let fringe = 64.0;
+    for rect in &damage {
+        let region = Rect::new(
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.x + rect.width),
+            f64::from(rect.y + rect.height),
+        );
+        assert!(
+            region.x0 >= window_rect.x0 - fringe
+                && region.y0 >= window_rect.y0 - fringe
+                && region.x1 <= window_rect.x1 + fringe
+                && region.y1 <= window_rect.y1 + fringe,
+            "{label}: damage {region:?} leaves the window {window_rect:?}"
+        );
+    }
+    // Notes rebuilds its widget tree per key and reports its whole tile, so the damage is the
+    // window (87% of this 4K fixture, which Notes nearly fills); the presenter's gate decides
+    // admission and `assert_change_repaints_under` compared the pixels with a dense render.
+}
+
+#[test]
+fn a_blurred_surface_joins_only_the_damage_its_blur_can_see() {
+    use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+    let (frame, _clock) = desktop_in(Theme::dark());
+    let blurred = |bounds: Rect| RecordedBackdrop {
+        image: ImageData {
+            data: Blob::new(Arc::new(vec![0, 0, 0, 255])),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width: 1,
+            height: 1,
+        },
+        bounds,
+        blur_px: 20.0,
+        layer: 0,
+        below: Scene::new(),
+        ground: Color::BLACK,
+    };
+    let caret = FineDamageRect {
+        x: 1_000,
+        y: 1_000,
+        width: 16,
+        height: 32,
+    };
+    let near = blurred(Rect::new(1_020.0, 1_000.0, 1_400.0, 1_300.0));
+    let far = blurred(Rect::new(2_000.0, 100.0, 3_000.0, 600.0));
+    let nowhere = blurred(Rect::new(9_000.0, 9_000.0, 9_500.0, 9_500.0));
+    let regions = frame
+        .with_backdrop_damage(Some(vec![caret]), &[near.clone(), far, nowhere])
+        .expect("a blurred surface far from the damage keeps it sparse");
+    let near_bounds = frame
+        .native_damage_rect(Some(near.bounds))
+        .expect("on the output");
+    assert_eq!(
+        regions,
+        vec![caret, near_bounds],
+        "only the surface whose blur reaches the caret is repainted, and one on no display is not"
+    );
+    assert_eq!(
+        frame.with_backdrop_damage(Some(Vec::new()), std::slice::from_ref(&near)),
+        Some(Vec::new()),
+        "an unchanged frame stays unchanged"
+    );
+    assert_eq!(frame.with_backdrop_damage(None, &[near]), None);
 }
 
 /// Moving focus to the other strip changes no geometry: the old and new

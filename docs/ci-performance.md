@@ -4,7 +4,9 @@ Current deployment and measured startup results are recorded in the
 [emergency runbook](ci-emergency-relief.md). CI has three complementary paths:
 
 - `check.yml` uses one x86-64 shard for targeted push/PR feedback. It checks all
-  targets in the affected reverse-dependency closure, while linking and running
+  targets in the affected reverse-dependency closure (normal and build
+  dependencies transitively; a dev-dependency adds only the package whose own
+  tests use it, since its library is unchanged), while linking and running
   tests for directly changed packages plus `collab-types`, `pkg`, and `qdoc`.
   Repository-wide build inputs and unmapped workspace paths retain full-workspace
   check/test selection. Manual dispatch and the explicit desktop release branch
@@ -87,14 +89,25 @@ aggregate requires the job exactly when the selector does.
 
 When the selection includes a browser crate (one built on `wasm-bindgen`; the
 web core depends on the toolkit and every app of its collection, so every
-change to the SDK crates beneath them), a separate `wasm` job type-checks the
-selected browser crates for `wasm32-unknown-unknown` with `-D warnings`, then
-runs `tools/ci/check-wasm.sh`: each wasm32 build with the packages and
-features its build script uses (the web desktop with every web app, the page
-runtime, the registry verifier), code the per-crate check does not compile. Native jobs compile neither code gated to wasm32 nor the browser's
-view of modules gated away from it. It is a type check, not a build: linking
-needs wasm-bindgen and binaryen. The aggregate requires the job exactly when
+change to the SDK crates beneath them), a separate `wasm` job runs `tools/ci/check-wasm.sh`: clippy with
+`-D warnings` over the selected browser crates for `wasm32-unknown-unknown`,
+then over each wasm32 build with the packages and features its build script
+uses (the web desktop with every web app, the page runtime, the image compute
+worker), code the per-crate lint does not compile. Native jobs compile neither
+code gated to wasm32 nor the browser's view of modules gated away from it. It
+is a lint, not a build: linking needs wasm-bindgen and binaryen. The aggregate requires the job exactly when
 the selector does.
+
+Vendored crates that carry Tilo patches (`VENDORED_TEST_CRATES` in
+`tools/ci/affected_packages.py`; today the Automerge fork) are path
+dependencies outside the workspace, so the shards build them but never run
+their own tests. A change to one of their declared paths selects a separate
+`vendored` job, which runs `tools/ci/test-vendored-crates.sh`: each crate's
+own `cargo test`, as its own workspace, from a copy of the workspace lock so
+it is tested at the versions Tilo ships. Nothing else selects it, not even a
+push to main; `ci-nightly.yml` runs every crate, catching what a lock or
+toolchain change does to them. The aggregate requires the job exactly when the
+selector does.
 
 Check scheduling lives in `tools/ci/affected_packages.py`; app releases share
 only the Git and Cargo graph helpers in `tools/ci/workspace_graph.py`. Changing
@@ -109,6 +122,17 @@ lockfile records are propagated through the old and new locked graphs (which
 cover every feature, target and dependency kind); workspace packages whose own
 record changed or that depend directly on a changed external record are tested,
 and every package the change reaches is checked with its reverse dependencies.
+The lockfile records no dependency kinds, but Cargo locks only the members'
+dev-dependencies, so a third-party edge is always normal or build and a member's
+edge takes its kind from the member's manifest (`cargo metadata --no-deps`). The
+checks therefore follow the path-dependency rule: a member whose normal or build
+dependencies reach a changed record is checked with its reverse dependencies, a
+member reaching it only through dev-dependencies is checked and tested alone, and
+the cargo-hakari package (`workspace-hack`, never named in code) passes nothing on
+to the members that depend on it. A git or patched-path record added or removed,
+or a third-party crate that gains or drops an edge to an unchanged package (it
+may change that package's features for other members), keeps the kind-blind
+propagation.
 In the root manifest, `[workspace] members` edits select the added members and
 the dependants of removed ones, and `[workspace.dependencies]` edits select the
 members using those dependencies. Everything else (lints, profiles, patches,

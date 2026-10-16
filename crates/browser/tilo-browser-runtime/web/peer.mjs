@@ -29,8 +29,11 @@ import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
+import {memberText, objectText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
+import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {decodableCodecs} from './legacy-windows.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
 
 export {
@@ -42,6 +45,23 @@ export {
 export {joinViaHost, listedWorkspaces, spectate, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
+/** What this page's WebCodecs decodes, probed once. */
+let probed;
+const probedCodecs = () => (probed ??= decodableCodecs());
+
+/**
+ * The stored `{cert, hostCert}` JSON with the peer's start fields (the
+ * person's name, whether it only watches) added, edited as text: certificate
+ * timestamps are nanoseconds, beyond what a JavaScript number holds exactly,
+ * and a parsed and re-serialized copy no longer matches its signature.
+ */
+export function withStartFields(certified, fields) {
+  const added = Object.entries(fields)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `,${JSON.stringify(key)}:${JSON.stringify(value)}`)
+    .join('');
+  return added ? certified.replace(/\}\s*$/, `${added}}`) : certified;
+}
 /** A member's cursor colour, from its device key: the same on every page. */
 const COLORS = ['#e5484d', '#30a46c', '#0090ff', '#f76b15', '#8e4ec6', '#12a594', '#d6409f', '#ffc53d'];
 export function colorOf(publisher) {
@@ -73,6 +93,37 @@ const PEER_RECORD = 'peer-record';
 /** The profile an identity keeps for one host: its device key, certificate
  * and documents there. */
 export const identityProfile = (identity, origin) => `tilo-identity:${identity.userPublicKey}@${new URL(origin).host}`;
+
+/** The namespace of a profile's storage its peer keeps its certificate,
+ * record (outbox, synced documents) and channel state in, until the host at
+ * the profile's origin is set up again. */
+export const PROFILE_DEVICE = 'tilo-browser-device';
+/** Which namespace each profile keeps its peer in now (`localStorage`):
+ * absent for a profile still on `PROFILE_DEVICE`. */
+const PROFILE_DEVICES = 'tilo-profile-devices';
+const readProfileDevices = namespaces => {
+  try {
+    const all = JSON.parse(namespaces?.getItem(PROFILE_DEVICES) ?? '{}');
+    return all && typeof all === 'object' && !Array.isArray(all) ? all : {};
+  } catch { return {}; }
+};
+/** The namespace `profile`'s peer keeps its state in now. */
+export function profileDevice(profile, namespaces = globalThis.localStorage) {
+  const device = readProfileDevices(namespaces)[profile];
+  return typeof device === 'string' && device ? device : PROFILE_DEVICE;
+}
+function keepProfileDevice(profile, device, namespaces) {
+  const all = readProfileDevices(namespaces);
+  all[profile] = device;
+  namespaces?.setItem(PROFILE_DEVICES, JSON.stringify(all));
+}
+/** The namespace a profile keeps a host's state in once that host replaced
+ * the one it kept state for: named after the host's device key, so it never
+ * shares a record with another host's. */
+const hostNamespace = hostCert => {
+  const key = hexKey(hostCert?.device_public_key);
+  return /^[0-9a-f]{64}$/.test(key) ? `${PROFILE_DEVICE}:${key}` : undefined;
+};
 /** The wasm runtime, loaded through the page host. */
 const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
 /** Whether a stored `{cert}` expires within a day (a page holding the root
@@ -178,9 +229,15 @@ export function liveEndpoints(origin, host = {}) {
  * under its own namespace (`tilo_relay_protocol::web::agent_publisher`),
  * with an agent participant. The grant is asked for once `ready` resolves:
  * the room refuses it until it admitted the device.
+ *
+ * With each grant the person's layer tells the host which video codecs the
+ * page decodes (`decodable`, `peer.legacyCodecs`), so the room's sessions
+ * stream legacy windows in one this page plays.
  */
 export function createLiveLayer(peer, runtime, room, {
   origin, endpoint = new URL(LIVE_PATH, origin).href, carriers, participant, agent, ready = Promise.resolve(),
+  watching = false,
+  decodable = probedCodecs,
   now = () => performance.now(), wallNow = () => Date.now(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
@@ -215,8 +272,10 @@ export function createLiveLayer(peer, runtime, room, {
       if (frame && !stopped && session === current && memberEpochs.get(from) === epoch) handle(frame);
     }, () => {});
   };
+  // A page that only watches receives the members' presence and previews
+  // and publishes none: the host grants it the live plane to receive only.
   const publishSealed = (bytes, publish) => {
-    if (!session) return false;
+    if (!session || watching) return false;
     const current = session;
     void sealed(bytes).then(frame => { if (frame && session === current) publish(current, frame); });
     return true;
@@ -356,18 +415,21 @@ export function createLiveLayer(peer, runtime, room, {
         endpoint,
         authorization: unhex(grant.token),
         namespace: [LIVE_ROOT, grant.room, grant.publisher],
-        directions: {publish: true, subscribe: true},
+        directions: {publish: !watching, subscribe: true},
       });
       if (stopped) { opened.close(); return; }
       session = opened;
       publisherId = grant.publisher;
       retry = 0;
       setState('live');
+      advertiseCodecs();
       session.watchMembers({onMember: (from, active) => {
         if (!stopped && session === opened) onMember(from, active);
       }});
-      if (participant) publisher.update({participant: {kind: agent === undefined ? 'person' : 'agent', activity: null, ...participant}});
-      publisher.start();
+      if (!watching) {
+        if (participant) publisher.update({participant: {kind: agent === undefined ? 'person' : 'agent', activity: null, ...participant}});
+        publisher.start();
+      }
       const renewIn = Math.max(1000, grant.expiresAtNs / 1e6 - wallNow() - GRANT_RENEW_MS);
       renewTimer = setTimer(() => rotate(), renewIn);
       Promise.resolve(session.closed).then(() => { if (session === opened) lost(); }, () => { if (session === opened) lost(); });
@@ -378,6 +440,14 @@ export function createLiveLayer(peer, runtime, room, {
       retry += 1;
       renewTimer = setTimer(() => connect(), delay);
     }
+  }
+  /** Tell the host what this page decodes; a host that predates codec
+   * adverts, or one that is unreachable now, counts the page as H.264 only. */
+  function advertiseCodecs() {
+    if (agent !== undefined || typeof peer.legacyCodecs !== 'function') return;
+    Promise.resolve().then(decodable)
+      .then(codecs => stopped ? false : peer.legacyCodecs(room, JSON.stringify(codecs)))
+      .catch(() => {});
   }
   function dropSession() {
     publisher.pause();
@@ -436,7 +506,7 @@ export function createLiveLayer(peer, runtime, room, {
         (current, frame) => current.publishOps(track, frame));
     },
     endPreview(record) {
-      if (!session) return;
+      if (!session || watching) return;
       const track = runtime.liveRecordTrack(JSON.stringify(record));
       const current = session;
       void sealed(runtime.encodeLivePreviewEnd(JSON.stringify(record))).then(frame => {
@@ -552,7 +622,8 @@ export function createLiveLayer(peer, runtime, room, {
  *                               vault (`channel-vault.mjs`); defaults to the
  *                               device custody's IndexedDB
  * @param options.displayName    the person's name for history and presence
- * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec)
+ * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec);
+ *                               defaults to the page host's (`desktop`'s)
  * @param options.fetch          defaults to `globalThis.fetch`
  * @param options.liveCarriers   defaults to WebTransport with HTTPS fallback
  * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
@@ -561,13 +632,18 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.identity       an unlocked root (`root-identity.mjs`): the
  *                               page certifies its own device with it, no
  *                               approver; `userPublicKey` defaults to its key,
- *                               `profile` to one per identity, `custody` to
- *                               that profile's device key and `runtime` to
- *                               the page host's
+ *                               `profile` to one per identity and `custody` to
+ *                               that profile's device key
  *                               (without one, `custody` defaults to `profile`'s
  *                               device key, certified by an approver)
  * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
  *                               certified with elsewhere (`joinWorkspace`)
+ * @param options.watching       `true`: the page only watches `room`, as a
+ *                               public room's spectator (`spectate`). It
+ *                               reads the room and what its members seal,
+ *                               with keys the room's steward hands it, and
+ *                               writes nothing: no channel access request,
+ *                               live join, presence, voice or `here`.
  */
 export async function connectPeer(options) {
   const {identity, custody, origin, store, profile} = options;
@@ -607,25 +683,32 @@ export async function withCustody(custody, connecting, signal) {
 
 async function connect({
   origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity, deviceCertificate,
-  profile, device = 'tilo-browser-device', displayName = '', vaultStorage,
+  profile, device, displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
-  voice: voiceOptions = {}, requireExistingCertificate = false,
+  voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
+  watching = false,
 }) {
+  if (watching) voiceOptions = false;
   userPublicKey ??= identity?.userPublicKey;
+  // Only a peer in its profile's own namespace moves to a fresh one when the
+  // host at its origin was set up again; a caller's store or namespace stays.
+  const ownNamespace = device === undefined && !store;
   if (identity && userPublicKey !== identity.userPublicKey) {
     throw new TypeError('userPublicKey must be the unlocked identity\'s');
   }
   if (identity) {
     if (!store) profile ??= identityProfile(identity, origin);
     custody ??= await openDeviceCustody({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
-    runtime ??= await pageRuntime(desktop);
   }
+  // A page may start connecting while its runtime still loads.
+  runtime ??= await pageRuntime(desktop);
   if (!origin || !userPublicKey || !custody || !(store || profile) || !runtime) {
     throw new TypeError('origin, userPublicKey, custody, store or profile, and runtime are required');
   }
   signal?.throwIfAborted();
   const surfaceModule = async () => desktop ?? await import('./host.mjs');
   let storage;
+  device ??= profile ? profileDevice(profile, namespaces) : PROFILE_DEVICE;
   if (profile) {
     const surface = await surfaceModule();
     if (typeof surface.openProfileStorage !== 'function') throw new Error('profile storage is unavailable');
@@ -633,9 +716,8 @@ async function connect({
     store ??= profileStore(runtime, profile, device);
   }
   // Seals the channel state the runtime keeps in the profile's storage.
-  const channelVault = storage
-    ? await openChannelVault({profile: `${profile}/${device}`, userPublicKey, storage: vaultStorage ?? idbStorage()})
-    : undefined;
+  const vaultOf = () => openChannelVault({profile: `${profile}/${device}`, userPublicKey, storage: vaultStorage ?? idbStorage()});
+  let channelVault = storage ? await vaultOf() : undefined;
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
   const custodyKeyHex = () => [...(custodyForWasm.publicKey ?? [])].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -725,7 +807,8 @@ async function connect({
   const reportStorage = error => {
     try { peer?.reportFailure(undefined, undefined, storageFailureCode(error), 'Changes could not be saved on this device.'); } catch {}
   };
-  const unsubscribeStorage = storage?.subscribe?.(status => { if (status.persistence === 'failed') reportStorage(status.error); });
+  const watchStorage = () => storage?.subscribe?.(status => { if (status.persistence === 'failed') reportStorage(status.error); });
+  let unsubscribeStorage = watchStorage();
   function observeSurface(entry, status) {
     if (status.phase === 'closed') { dropSurface(entry); return; }
     if (Number.isSafeInteger(status.gpuGeneration)) entry.generation = status.gpuGeneration;
@@ -800,16 +883,50 @@ async function connect({
     await admitted;
   }
 
+  /** Move this peer onto a fresh namespace of its profile for the host
+   * `hostCert`, the one that just admitted this device. What the profile
+   * kept for the previous host (its certificate, record, outbox and
+   * documents) stays in its own namespace, untouched and never opened for
+   * this host. */
+  async function adoptHost(hostCert) {
+    const fresh = hostNamespace(hostCert);
+    if (!ownNamespace || !storage || !fresh || fresh === device) throw new AdmissionError('host-changed', HOST_CHANGED);
+    unsubscribeStorage?.();
+    const previous = storage;
+    storage = undefined;
+    await previous.release();
+    const surface = await surfaceModule();
+    storage = await surface.openProfileStorage(profile, fresh);
+    device = fresh;
+    store = profileStore(runtime, profile, device);
+    channelVault = await vaultOf();
+    unsubscribeStorage = watchStorage();
+    keepProfileDevice(profile, device, namespaces);
+  }
+
   async function certificate() {
     if (requireExistingCertificate && deviceCertificate) throw Error('Resource links require a previously certified device');
-    if (deviceCertificate) {
-      await store.put(CERTIFICATE, deviceCertificate);
-      deviceCertificate = undefined;
-    }
-    const existing = await store.get(CERTIFICATE);
+    let existing = await store.get(CERTIFICATE);
     if (requireExistingCertificate) {
       if (!existing) throw Error('Sign in on this browser and obtain admission before opening a resource link');
       return existing; // Host checks expiry/revocation; never renew or pair implicitly.
+    }
+    const admitted = deviceCertificate;
+    deviceCertificate = undefined;
+    const answering = admitted ? JSON.parse(admitted).hostCert : host.hostCert;
+    if (existing && !sameHost(JSON.parse(existing).hostCert, answering)) {
+      // What this browser kept was certified by, and its record is pinned
+      // to, another host than the one answering at this origin now (it was
+      // set up again). Kept state is never handed to it, nor renewed for it.
+      // Only a device that host has just admitted (an invitation redeemed,
+      // its door, a pairing) goes on, in a namespace of its own.
+      if (!admitted) throw new AdmissionError('host-changed', HOST_CHANGED);
+      await adoptHost(answering);
+      existing = undefined;
+    }
+    if (admitted) {
+      await store.put(CERTIFICATE, admitted);
+      return admitted;
     }
     if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
@@ -820,10 +937,18 @@ async function connect({
   }
 
   async function start() {
-    const certified = JSON.parse(await certificate());
+    // Kept as text: the peer starts from the exact certificate, whose
+    // nanosecond timestamps a JavaScript number would round.
+    const certified = await certificate();
+    if (!sameHost(JSON.parse(certified).hostCert, host.hostCert)) {
+      // Certified by another host than the one answering at this origin
+      // now: that host would refuse the session, and the state kept for the
+      // other one is never handed to it.
+      throw new AdmissionError('host-changed', HOST_CHANGED);
+    }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      JSON.stringify({cert: certified.cert, hostCert: certified.hostCert, displayName}),
+      withStartFields(certified, {displayName, watching}),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),
@@ -835,7 +960,7 @@ async function connect({
     if (room) {
       peer.joinRoom(room);
       if (liveEnabled) {
-        live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, participant: {
+        live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, watching, participant: {
           kind: 'person', label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex()), activity: null,
         }});
       }
@@ -855,7 +980,7 @@ async function connect({
     let layer = agentLayers.get(agent);
     if (!layer && live) {
       layer = createLiveLayer(peer, runtime, room, {
-        origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, agent,
+        origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, agent, watching,
         participant: {label: agent.slice(0, 32), color: colorOf(`agent:${agent}`)},
       });
       agentLayers.set(agent, layer);
@@ -962,6 +1087,20 @@ async function connect({
     legacyInput(publisher, surface, events) {
       if (!room || !peer) return Promise.resolve(false);
       return peer.legacyInput(room, publisher, surface, JSON.stringify(events));
+    },
+    /** This person as their presence names them: `{label, color}`. */
+    get participant() {
+      return {label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex())};
+    },
+    /** Post this person's name, the window they focus (tab id, hex, or
+     * null) and their own recent steps (`[{id, action, resource, app,
+     * at_ms}]`, titles only) to the host; resolves to who is here:
+     * `[{device, user, label, window, status, recent, sources, generated,
+     * updated_ms}]`. */
+    async here(window, actions = []) {
+      // A watching page is not listed: it would only post for itself.
+      if (!room || !peer || watching) return [];
+      return JSON.parse(await peer.here(room, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
     },
     /** The device (hex) of the session the node runs beside the host (the
      * one that opens the node's legacy apps), or `null`. */
@@ -1070,7 +1209,8 @@ async function connect({
           else if (current.phase === 'failed') finish(new Error(current.error ?? 'the host refused this device'));
         };
         if (signal?.aborted) { abort(); return; }
-        timer = setTimeout(() => finish(new Error('Room admission timed out')), timeoutMs);
+        // Not a refusal: the host has not answered yet.
+        timer = setTimeout(() => finish(new DOMException('Room admission timed out', 'TimeoutError')), timeoutMs);
         listeners.add(check); pendingRecordWaits.add(finish);
         signal?.addEventListener('abort', abort, {once: true});
         check(snapshot);
@@ -1128,14 +1268,19 @@ async function connect({
       }
       if (request?.kind === 'reauthenticate') {
         if (requireExistingCertificate) throw Error('Sign in through the identity flow before reopening this resource');
+        // What the page learnt of the host at load may be stale (a new
+        // certificate). A host set up again is not certified for here: the
+        // record is pinned to the one before, so that is the page's to offer
+        // (`joinViaHost`), with the kept certificate left as it is.
+        const answering = JSON.parse(await runtime.hostInfo(post));
+        const kept = await store.get(CERTIFICATE);
+        if (kept && !sameHost(JSON.parse(kept).hostCert, answering.hostCert)) throw new AdmissionError('host-changed', HOST_CHANGED);
         voice?.reset();
         stopLive();
         peer.dispose();
         resetReady();
         await store.delete(CERTIFICATE);
-        // The host may be another one now (a new certificate, a new user
-        // root): what the page learnt of it at load is stale too.
-        host = JSON.parse(await runtime.hostInfo(post));
+        host = answering;
         carriers = carriersFor(host);
         await start();
         return {operationId: 'reauthenticate'};
@@ -1148,6 +1293,25 @@ async function connect({
   };
   return certifiedPeer;
 }
+
+/** What a person is told when the host at an origin is no longer the one
+ * this browser's kept state belongs to. */
+export const HOST_CHANGED = 'This workspace’s host was set up again and is no longer the one this browser kept your work for, so Tilo did not open it. Ask the workspace’s owner what happened.';
+/** What a person is asked when they may join a host that was set up again
+ * through its door (`joinViaHost`'s `confirmRejoin`). */
+export const REJOIN_CHANGED_HOST = 'This workspace’s host was set up again. Join it again as yourself? Changes this browser had not sent to the old host stay on this device.';
+/** What a person is told when they chose not to join it again. */
+export const NOT_REJOINED = 'This workspace’s host was set up again, and you did not join it again. Reload the page to join it as yourself.';
+/** Whether two host certificates name the same host (its person and device),
+ * as the peer's saved record pins it; unknown when either is missing. */
+const sameHost = (kept, current) => !kept || !current
+  || (hexKey(kept.user_public_key) === hexKey(current.user_public_key)
+    && hexKey(kept.device_public_key) === hexKey(current.device_public_key));
+
+/** What a person is told when the host will not honour an invitation. */
+export const UNUSABLE_INVITATION = 'This invitation can’t be used: it was used already, expired or was withdrawn. Ask whoever sent it for a new one.';
+/** What a person is told when the host refuses to admit them with one. */
+export const REFUSED_JOIN = 'The workspace did not let you in. If someone sent you an invitation, ask them for a new one.';
 
 const invitationBytes = invitation => {
   if (typeof invitation !== 'string') return Uint8Array.from(invitation);
@@ -1164,7 +1328,12 @@ const invitationBytes = invitation => {
 export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: fetcher} = {}) {
   runtime ??= await pageRuntime();
   const reply = JSON.parse(await runtime.inspectInvitation(httpsPost(relayUrl, fetcher), invitationBytes(invitation)));
-  if (reply.kind !== 'invitation') throw new Error(reply.reason ?? 'This invitation offers nothing here');
+  if (reply.kind !== 'invitation') {
+    // The host read the invitation and will not honour it: spent, expired,
+    // withdrawn or not its own. Its reason is for the console.
+    console.warn('invitation refused:', reply.reason ?? reply.kind);
+    throw new AdmissionError('invitation-unusable', UNUSABLE_INVITATION);
+  }
   return {
     workspaceName: reply.name, role: reply.role.toLowerCase(), room: reply.room, workspaceId: reply.workspaceId,
     expiresAtNs: reply.expiresAtNs, inviter: reply.inviter ?? undefined,
@@ -1222,6 +1391,42 @@ export async function joinWorkspace(options) {
   return withCustody(own, () => join({...options, identity, profile, custody: own}), options.signal);
 }
 
+/**
+ * The certificate (`{cert, hostCert}` JSON) this profile's device already
+ * holds from the host answering at `post`, as the person `identity`, or
+ * `null`. A room keeps the certificate of every device it admitted, also
+ * once its person left (removed, or pruned after an absence), and admits
+ * that device again only under the same certificate: a device that holds
+ * one asks under it rather than certify itself anew. Read from `store`, else
+ * from the namespace the profile keeps its peer in now.
+ */
+async function keptDeviceCertificate({runtime, profile, store, desktop, namespaces = globalThis.localStorage, custody, identity, host}) {
+  let opened;
+  try {
+    if (!store) {
+      const surface = desktop ?? await import('./host.mjs');
+      if (!profile || typeof surface.openProfileStorage !== 'function') return null;
+      const device = profileDevice(profile, namespaces);
+      opened = await surface.openProfileStorage(profile, device);
+      store = profileStore(runtime, profile, device);
+    }
+    const kept = await store.get(CERTIFICATE);
+    const cert = kept ? JSON.parse(kept)?.cert : undefined;
+    const keptHost = kept ? JSON.parse(kept)?.hostCert : undefined;
+    const ours = cert && hexKey(cert.device_public_key) === hexKey(custody.publicKey)
+      && hexKey(cert.user_public_key) === identity.userPublicKey;
+    // Only one this host certified and pinned: a host set up again is
+    // never handed what was kept for the one before it.
+    const here = keptHost && host?.hostCert && sameHost(keptHost, host.hostCert);
+    return ours && here && !expiresWithinADay(kept) ? kept : null;
+  } catch (error) {
+    console.warn('join: the device\'s certificate could not be read', error);
+    return null;
+  } finally {
+    await opened?.release?.();
+  }
+}
+
 async function join({
   origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress, pollMs = 2000,
   admissionToken, runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, certified, ...connectOptions
@@ -1252,9 +1457,15 @@ async function join({
   signal?.throwIfAborted();
   onProgress?.({phase: 'asking'});
   const token = admissionToken ? new TextEncoder().encode(admissionToken) : undefined;
-  const asked = JSON.parse(certified
-    ? await runtime.askToJoinAs(post, bytes, certified, custodyForWasm, requestId, fitDisplayName(displayName || label), token)
-    : await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId, fitDisplayName(displayName || label), fitDisplayName(label), token));
+  const hostText = await runtime.hostInfo(post);
+  const host = JSON.parse(hostText);
+  const kept = certified ? null : await keptDeviceCertificate({runtime, profile, store: connectOptions.store,
+    desktop: connectOptions.desktop, namespaces: connectOptions.namespaces, custody: custodyForWasm, identity, host});
+  const held = certified ?? kept;
+  const askedText = held
+    ? await runtime.askToJoinAs(post, bytes, held, custodyForWasm, requestId, fitDisplayName(displayName || label), token)
+    : await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId, fitDisplayName(displayName || label), fitDisplayName(label), token);
+  const asked = JSON.parse(askedText);
   let reply = asked.reply;
   const device = hexOf(asked.cert.device_public_key);
   while (reply.kind === 'waiting') {
@@ -1267,14 +1478,18 @@ async function join({
   }
   if (reply.kind !== 'admitted') {
     forget();
-    throw new Error(reply.kind === 'declined' ? 'The owner declined the request' : (reply.reason ?? 'The host refused the request'));
+    if (reply.kind === 'declined') throw new AdmissionError('refused', 'The workspace owner declined your request to join');
+    console.warn('join refused:', reply.reason ?? reply.kind);
+    throw new AdmissionError('refused', REFUSED_JOIN);
   }
   forget();
   onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
-  const host = JSON.parse(await runtime.hostInfo(post));
   return connect({
     ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, room: reply.room, label, displayName, custody, runtime, signal,
     profile: connectOptions.store ? undefined : profile,
-    fetch: fetcher, deviceCertificate: JSON.stringify({cert: asked.cert, hostCert: host.hostCert}),
+    // Certificates go on as the text they were kept or written as: their
+    // nanosecond timestamps exceed what a JavaScript number holds exactly
+    // (json-text.mjs).
+    fetch: fetcher, deviceCertificate: kept ?? objectText({cert: memberText(askedText, 'cert'), hostCert: memberText(hostText, 'hostCert')}),
   });
 }

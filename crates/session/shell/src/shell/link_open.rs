@@ -27,6 +27,7 @@ pub use reveal::{LinkDoor, PUBLISH_TIMEOUT, Reveal, UNAVAILABLE, reveal, view_in
 
 use crate::shell::state::WorkspaceTreeHandle;
 use tilo_action_broker::collab_broker::{AppActionBroker, WeakAppActionBroker};
+use tilo_lock::RwLockRecover as _;
 
 /// Where Tilo's public web entry serves links. Hosts announce their own
 /// entries in their catalogue locators; those join this list once the
@@ -249,9 +250,7 @@ static SESSION_BROKER: RwLock<Option<WeakAppActionBroker>> = RwLock::new(None);
 
 /// Let links reveal through `broker`, the session's current action broker.
 pub fn attach_broker(broker: &AppActionBroker) {
-    *SESSION_BROKER
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(broker.downgrade());
+    *SESSION_BROKER.write_recover() = Some(broker.downgrade());
 }
 
 /// [`LinkDoor`] over the session's action broker, admitting this device's
@@ -261,8 +260,7 @@ pub struct SessionDoor;
 impl LinkDoor for SessionDoor {
     fn session(&self, room: &str) -> Result<(Arc<dyn ActionHost + Send + Sync>, Caller), String> {
         let broker = SESSION_BROKER
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_recover()
             .clone()
             .ok_or("the session's action broker is not running yet")?
             .upgrade()?;

@@ -43,6 +43,28 @@ jobs:
             cargo +nightly-2026-08-25 fuzz run "$target" -- -max_total_time=900 -timeout=10
           done
 
+  # Vendored crates that carry Tilo patches are path dependencies outside the
+  # workspace, so `complete` builds them but never runs their own tests.
+  # Pull requests run them when their files change; this run catches what a
+  # workspace lock or toolchain change does to them.
+  vendored:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 45
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Test every vendored crate with its own suite
+        run: bash tools/ci/test-vendored-crates.sh
+
   # Formatting has its own job. As a step ahead of the tests, one unformatted
   # file stopped every test, check and certification from running, so a
   # formatting slip hid all real results for as long as it stayed on main.
@@ -131,6 +153,10 @@ jobs:
       # and the launcher's bus-filter tests (xdg-dbus-proxy).
       - name: Ensure session-bus test tools
         run: bash tools/ci/ensure-session-bus-tools.sh
+
+      # And for the X11 bridge the shell's X11 clipboard and focus tests drive.
+      - name: Ensure X11 bridge test tools
+        run: bash tools/ci/ensure-x11-bridge-tools.sh
 
       # Pinned/older builders may predate native PDF capture coverage. Stage
       # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
@@ -254,7 +280,7 @@ jobs:
 
       # Ignored tests whose requirement this runner meets: the shell ones
       # spawn a real headless compositor (llvmpipe), format-host needs the
-      # Markdown codec built as a wasm32-wasip2 component. FUSE-only ignored
+      # Markdown codec built as a wasm32-unknown-unknown provider. FUSE-only ignored
       # tests run in ci-filesystem.yml. Newly enabled: a failure is listed in the
       # job summary but does not fail the run until the lane has passed here.
       - name: Run ignored tests this runner supports
@@ -262,17 +288,38 @@ jobs:
         continue-on-error: true
         env:
           IGNORED_FILTER: >-
-            (package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(session_lock_e2e::))) or
+            (package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(headless_examples_smoke::mcp_live_proof_drives_a_compositor_over_mcp) or test(session_lock_e2e::))) or
             (package(format-host) and binary(integration))
         run: |
-          rustup target add wasm32-wasip2
-          cargo build --locked --release --target wasm32-wasip2 \
-            --manifest-path crates/doc/tilo-doc-codec-markdown-wasm/Cargo.toml
+          rustup target add wasm32-unknown-unknown
+          crates/doc/tilo-doc-codec-markdown-wasm/build.sh
           bash tools/ci/measure.sh "nightly ignored tests" -- \
             bash scripts/ci-run.sh "cargo nextest --run-ignored only" -- \
             bash tools/with-test-environment.sh \
             cargo nextest run --workspace --locked --profile ci --run-ignored only \
             --test-threads 1 -E "$IGNORED_FILTER"
+
+      # agent-seats-proof.py drives two concurrent MCP sessions through the compositor's
+      # `agent-control` feature, which the workspace build leaves off: rebuild the shell with it
+      # and the terminal the proof opens in each agent's strip, then run just that proof.
+      - name: Run the agent seats proof
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        continue-on-error: true
+        run: |
+          # Keep the ignored-tests report: this run writes the same junit.xml.
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/ignored.xml
+          fi
+          cargo build --locked -p terminal --bin terminal
+          TILO_TERMINAL_BINARY="$PWD/target/debug/terminal" \
+          bash tools/ci/measure.sh "nightly agent seats proof" -- \
+            bash scripts/ci-run.sh "cargo nextest agent seats" -- \
+            bash tools/with-test-environment.sh \
+            cargo nextest run -p shell --features agent-control --locked --profile ci \
+            --run-ignored only --test-threads 1 \
+            -E 'test(headless_examples_smoke::agent_seats_proof_keeps_two_agents_apart)'
+          mv target/nextest/ci/junit.xml target/ci/junit/agent-seats.xml
 
       - name: Report ignored tests
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}

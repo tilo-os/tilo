@@ -186,6 +186,16 @@ pub struct SiteStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
+    /// A DevTools command for extension management: the engine allows only
+    /// the `Extensions` domain and what reading an extension's service worker
+    /// needs. The reply is a [`WebViewEvent::DevToolsResult`] with the same
+    /// `request_id`. `session` addresses an attached service-worker target.
+    DevTools {
+        request_id: u32,
+        method: String,
+        params: serde_json::Value,
+        session: Option<String>,
+    },
     Credentials(CredentialRequest),
     SetSiteExceptions(Vec<String>),
     RequestSiteStatus {
@@ -371,6 +381,13 @@ pub enum WebViewCommand {
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    /// The reply to a [`WebViewCommand::DevTools`]: the JSON `result` when
+    /// `ok`, otherwise the JSON `error` (or a message).
+    DevToolsResult {
+        request_id: u32,
+        ok: bool,
+        body: String,
+    },
     CredentialResult(CredentialReply),
     SiteStatus(SiteStatus),
     SiteResult {
@@ -663,62 +680,3 @@ pub trait WebViewEngine: Send + Sync {
 
 /// Shared engine handle, as stored by the widget and the host app.
 pub type SharedEngine = Arc<dyn WebViewEngine>;
-
-/// Normalise user-typed address-bar input into a loadable URL: pass
-/// through explicit schemes, otherwise treat input with spaces or
-/// without dots as a search query and everything else as an `https://`
-/// host.
-pub fn normalise_url(input: &str) -> String {
-    let trimmed = input.trim();
-    if trimmed.starts_with("http://")
-        || trimmed.starts_with("https://")
-        || trimmed.starts_with("file://")
-        || trimmed.starts_with("about:")
-    {
-        return trimmed.to_string();
-    }
-    let looks_like_host =
-        !trimmed.contains(' ') && (trimmed.contains('.') || trimmed.starts_with("localhost"));
-    if looks_like_host {
-        format!("https://{trimmed}")
-    } else {
-        format!(
-            "https://duckduckgo.com/?q={}",
-            form_urlencoded::byte_serialize(trimmed.as_bytes()).collect::<String>()
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalise_keeps_schemes_prepends_https_and_searches_queries() {
-        // phase: normalise_passes_through_schemes
-        {
-            assert_eq!(
-                normalise_url("https://example.org/a"),
-                "https://example.org/a"
-            );
-            assert_eq!(normalise_url("http://example.org"), "http://example.org");
-            assert_eq!(normalise_url("about:blank"), "about:blank");
-        }
-        // phase: normalise_prepends_https_for_hosts
-        {
-            assert_eq!(normalise_url("example.org"), "https://example.org");
-            assert_eq!(normalise_url("localhost:8080"), "https://localhost:8080");
-        }
-        // phase: normalise_searches_for_queries
-        {
-            assert_eq!(
-                normalise_url("rust webview"),
-                "https://duckduckgo.com/?q=rust+webview"
-            );
-            assert_eq!(
-                normalise_url("what is Tilo?"),
-                "https://duckduckgo.com/?q=what+is+Tilo%3F"
-            );
-        }
-    }
-}

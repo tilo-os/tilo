@@ -2,7 +2,9 @@
 //!
 //! Every socket protocol in the tree that sends discrete messages over a byte
 //! stream uses the same shape: a 4-byte unsigned length followed by that many
-//! payload bytes. This crate is the one implementation of that shape.
+//! payload bytes. This crate is the one implementation of that shape, and of
+//! its newline-delimited counterpart, [`read_line`], for text protocols that
+//! end each message with `\n`.
 //!
 //! A [`Framing`] names the two properties that differ between protocols and
 //! therefore must be chosen explicitly at every call site:
@@ -43,10 +45,14 @@ use std::io::{self, Read, Write};
 
 #[cfg(feature = "tokio")]
 mod async_io;
+mod line;
 mod reader;
 #[cfg(feature = "postcard")]
 mod value;
 
+pub use line::read_line;
+#[cfg(feature = "tokio")]
+pub use line::read_line_async;
 pub use reader::FrameReader;
 #[cfg(feature = "postcard")]
 pub use value::decode_value;

@@ -32,6 +32,9 @@ pub(crate) const REQUEST_FD: i32 = 3;
 pub(crate) const REPLY_FD: i32 = 4;
 /// How many recently consumed and shared states a worker remembers.
 const REMEMBERED_STATES: usize = 32;
+/// Most change hashes a load's reply carries: 8 MiB of them, well inside
+/// [`wire::MAX_REPLY_BYTES`].
+const MAX_LOADED_HASHES: usize = 256 * 1024;
 
 /// What bounds a worker's cache and lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,9 +289,14 @@ impl Cache {
             Request::Load { incoming } => {
                 self.rebuilt = true;
                 match engine::load(incoming) {
-                    Ok(doc) => {
+                    Ok(mut doc) => {
+                        let mut hashes = engine::document_change_hashes(incoming, &mut doc);
+                        if hashes.len() > MAX_LOADED_HASHES {
+                            // The caller computes them itself.
+                            hashes = Vec::new();
+                        }
                         self.keep(doc);
-                        Reply::Applied(Applied::Changed(true))
+                        Reply::Loaded(hashes)
                     }
                     Err(error) => invalid(error),
                 }

@@ -30,6 +30,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use tilo_lock::MutexRecover as _;
 
 /// Marks the legacy single-string invocation slot as carrying a canonical
 /// JSON argument object. The record-separator prefix cannot be produced by a
@@ -310,6 +311,32 @@ impl ActionParam {
         self
     }
 
+    /// Make this list parameter a list of content addresses, each one
+    /// content another action produced ([`Self::as_content`]), in order.
+    #[must_use]
+    pub fn as_content_list(mut self) -> Self {
+        self.ty = ParamType::Array;
+        self.schema = Some(std::sync::Arc::new(serde_json::json!({
+            "type": "array",
+            "items": { "type": "string", CONTENT_ANNOTATION: true },
+        })));
+        self
+    }
+
+    /// Whether this parameter takes a list of content
+    /// ([`Self::as_content_list`]).
+    #[must_use]
+    pub fn is_content_list(&self) -> bool {
+        self.ty == ParamType::Array
+            && self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get("items"))
+                .and_then(|items| items.get(CONTENT_ANNOTATION))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    }
+
     /// Whether this parameter takes content another action produced
     /// ([`Self::as_content`]).
     #[must_use]
@@ -532,6 +559,31 @@ impl ArgValue {
     }
 }
 
+/// How a value broke its parameter's declared range, as data: what a
+/// failure's [`details`](crate::ActionFailure::details) carry beside its
+/// message, so a caller corrects the call without reading the prose.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ArgViolation {
+    /// Below the schema's `minimum`.
+    Minimum { bound: serde_json::Value },
+    /// Above the schema's `maximum`.
+    Maximum { bound: serde_json::Value },
+}
+
+impl std::fmt::Display for ArgViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (side, bound) = match self {
+            Self::Minimum { bound } => ("least", bound),
+            Self::Maximum { bound } => ("most", bound),
+        };
+        match bound.as_f64() {
+            Some(bound) => write!(f, "must be at {side} {bound}"),
+            None => write!(f, "must be at {side} {bound}"),
+        }
+    }
+}
+
 /// Why a set of arguments does not satisfy an action's parameters.
 ///
 /// Each variant names the parameter, because a caller that cannot see the
@@ -540,6 +592,11 @@ impl ArgValue {
 pub enum ArgError {
     Missing {
         name: String,
+    },
+    /// A number outside the range the parameter's schema declares.
+    OutOfRange {
+        name: String,
+        violation: ArgViolation,
     },
     Unknown {
         name: String,
@@ -600,6 +657,9 @@ impl std::fmt::Display for ArgError {
             }
             ArgError::Constraint { name, reason } => {
                 write!(f, "argument `{name}` {reason}")
+            }
+            ArgError::OutOfRange { name, violation } => {
+                write!(f, "argument `{name}` {violation}")
             }
         }
     }
@@ -681,11 +741,15 @@ impl ActionArgs {
                 _ => {}
             }
             if let Some(schema) = &param.schema {
-                validate_schema(&value.to_json(), schema).map_err(|reason| {
-                    ArgError::Constraint {
+                check_schema(&value.to_json(), schema).map_err(|refusal| match refusal {
+                    SchemaRefusal::Bound(violation) => ArgError::OutOfRange {
+                        name: name.clone(),
+                        violation,
+                    },
+                    SchemaRefusal::Other(reason) => ArgError::Constraint {
                         name: name.clone(),
                         reason,
-                    }
+                    },
                 })?;
             }
             if !param.choices.is_empty() {
@@ -840,17 +904,15 @@ const COMPILED_PATTERNS: usize = 64;
 /// `pattern` compiled, from the cache when an earlier argument or schema
 /// already compiled it: every validated value used to compile its schema's
 /// pattern again.
-fn schema_pattern(pattern: &str) -> Result<regex::Regex, regex::Error> {
+fn schema_pattern(pattern: &str) -> Result<regex_lite::Regex, regex_lite::Error> {
     static COMPILED: std::sync::LazyLock<
-        std::sync::Mutex<std::collections::HashMap<String, regex::Regex>>,
+        std::sync::Mutex<std::collections::HashMap<String, regex_lite::Regex>>,
     > = std::sync::LazyLock::new(std::sync::Mutex::default);
-    let mut compiled = COMPILED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut compiled = COMPILED.lock_recover();
     if let Some(expression) = compiled.get(pattern) {
         return Ok(expression.clone());
     }
-    let expression = regex::Regex::new(pattern)?;
+    let expression = regex_lite::Regex::new(pattern)?;
     if compiled.len() >= COMPILED_PATTERNS {
         compiled.clear();
     }
@@ -952,8 +1014,48 @@ pub(crate) fn validate_schema(
     value: &serde_json::Value,
     schema: &serde_json::Value,
 ) -> Result<(), String> {
+    check_schema(value, schema).map_err(|refusal| refusal.to_string())
+}
+
+/// Why a value failed its schema: a numeric bound its top level declares,
+/// as data, or anything else, in words.
+enum SchemaRefusal {
+    Bound(ArgViolation),
+    Other(String),
+}
+
+impl From<String> for SchemaRefusal {
+    fn from(reason: String) -> Self {
+        Self::Other(reason)
+    }
+}
+
+impl From<ArgViolation> for SchemaRefusal {
+    fn from(violation: ArgViolation) -> Self {
+        Self::Bound(violation)
+    }
+}
+
+impl std::fmt::Display for SchemaRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bound(violation) => violation.fmt(f),
+            Self::Other(reason) => f.write_str(reason),
+        }
+    }
+}
+
+/// [`validate_schema`], keeping a refusal by the top level's own numeric
+/// bound as data. A bound nested inside is refused in words, as part of the
+/// property or item it bounds.
+fn check_schema(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), SchemaRefusal> {
     let Some(schema) = schema.as_object() else {
-        return Err("has a schema that is not an object".into());
+        return Err(SchemaRefusal::Other(
+            "has a schema that is not an object".into(),
+        ));
     };
     if let Some(alternatives) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
         validate_one_of(value, alternatives)?;
@@ -963,7 +1065,8 @@ pub(crate) fn validate_schema(
     validate_schema_number(value, schema)?;
     validate_schema_string(value, schema)?;
     validate_schema_array(value, schema)?;
-    validate_schema_object(value, schema)
+    validate_schema_object(value, schema)?;
+    Ok(())
 }
 
 /// Exactly one alternative must accept `value`. When none does, the refusal
@@ -1127,17 +1230,23 @@ fn validate_schema_equality(
 fn validate_schema_number(
     value: &serde_json::Value,
     schema: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(), String> {
+) -> Result<(), ArgViolation> {
     if let Some(number) = value.as_f64() {
-        if let Some(minimum) = schema.get("minimum").and_then(serde_json::Value::as_f64)
-            && number < minimum
+        if let Some(minimum) = schema
+            .get("minimum")
+            .filter(|minimum| minimum.as_f64().is_some_and(|minimum| number < minimum))
         {
-            return Err(format!("must be at least {minimum}"));
+            return Err(ArgViolation::Minimum {
+                bound: minimum.clone(),
+            });
         }
-        if let Some(maximum) = schema.get("maximum").and_then(serde_json::Value::as_f64)
-            && number > maximum
+        if let Some(maximum) = schema
+            .get("maximum")
+            .filter(|maximum| maximum.as_f64().is_some_and(|maximum| number > maximum))
         {
-            return Err(format!("must be at most {maximum}"));
+            return Err(ArgViolation::Maximum {
+                bound: maximum.clone(),
+            });
         }
     }
     Ok(())
@@ -1603,6 +1712,60 @@ mod rich_schema_tests {
         assert!(validate_schema(&json!(["a", 1]), &schema).is_err());
         assert!(validate_schema(&json!(["a", "x", "y"]), &schema).is_err());
         assert!(validate_schema_definition(&json!({"prefixItems": {}})).is_err());
+    }
+
+    /// A number outside its parameter's declared range is refused with the
+    /// bound as data, in the same words as before, and the door's failure
+    /// carries it as `details`. A bound nested in a property stays words.
+    #[test]
+    fn a_maximum_violation_carries_its_bound() {
+        let params = vec![
+            ActionParam::required("pageSize", ParamType::Integer, "Items")
+                .with_schema(json!({"type": "integer", "minimum": 1, "maximum": 64})),
+            ActionParam::optional("scale", ParamType::Number, "Zoom")
+                .with_schema(json!({"type": "number", "minimum": 0.5})),
+            ActionParam::optional("box", ParamType::Object, "Bounds").with_schema(json!({
+                "type": "object",
+                "properties": {"width": {"type": "integer", "maximum": 10}}
+            })),
+        ];
+        let bind = |arguments: serde_json::Value| {
+            ActionArgs::bind_json(&params, arguments.as_object().unwrap())
+        };
+        let refused = bind(json!({"pageSize": 200})).unwrap_err();
+        assert_eq!(
+            refused,
+            ArgError::OutOfRange {
+                name: "pageSize".into(),
+                violation: ArgViolation::Maximum { bound: json!(64) },
+            }
+        );
+        assert_eq!(
+            refused.to_string(),
+            "argument `pageSize` must be at most 64"
+        );
+        let door = crate::DoorError::from(refused);
+        assert_eq!(door.code(), "invalid_arguments");
+        assert_eq!(door.to_string(), "argument `pageSize` must be at most 64");
+        assert_eq!(
+            door.failure_details(),
+            Some(json!({"param": "pageSize", "violation": {"kind": "maximum", "bound": 64}}))
+        );
+
+        let refused = bind(json!({"pageSize": 1, "scale": 0.25})).unwrap_err();
+        assert_eq!(
+            refused,
+            ArgError::OutOfRange {
+                name: "scale".into(),
+                violation: ArgViolation::Minimum { bound: json!(0.5) },
+            }
+        );
+        assert_eq!(refused.to_string(), "argument `scale` must be at least 0.5");
+
+        let nested = bind(json!({"pageSize": 1, "box": {"width": 11}})).unwrap_err();
+        assert!(matches!(nested, ArgError::Constraint { .. }), "{nested:?}");
+        assert_eq!(crate::DoorError::from(nested).failure_details(), None);
+        assert!(bind(json!({"pageSize": 64, "scale": 0.5})).is_ok());
     }
 
     #[test]

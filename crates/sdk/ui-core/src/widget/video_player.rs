@@ -670,6 +670,27 @@ impl VideoPlayer {
         self.dirty = true;
     }
 
+    /// Attach the engine `build` makes, unless one is attached already, and
+    /// answer the attached one. For an app that shows a player long before it
+    /// plays anything, or never does: an engine's first construction starts
+    /// the decode backend (`GStreamer`'s init, plugin registry and playback
+    /// pipeline), which costs hundreds of milliseconds, so building it with
+    /// the window delays the window. The volume and mute already set on the
+    /// player carry over to the engine.
+    pub fn ensure_engine(
+        &mut self,
+        build: impl FnOnce() -> media::MediaEngine,
+    ) -> &mut media::MediaEngine {
+        let volume = self.effective_volume();
+        let engine = self.engine.get_or_insert_with(|| {
+            let mut engine = build();
+            engine.set_volume(volume);
+            engine
+        });
+        self.dirty = true;
+        engine
+    }
+
     /// So the host can `open` a source or drive collaborative transport
     /// (`apply_transport` / `transport_state`).
     pub fn engine_mut(&mut self) -> Option<&mut media::MediaEngine> {
@@ -1365,10 +1386,12 @@ impl VideoPlayer {
             &time_text,
             time_size,
             colors.text_dim,
-            translated(
-                transform,
-                time_x,
-                mid_y - f64::from(time_size) * f64::from(theme.text_scale) * 0.5,
+            transform.pre_translate(
+                (
+                    time_x,
+                    mid_y - f64::from(time_size) * f64::from(theme.text_scale) * 0.5,
+                )
+                    .into(),
             ),
             None,
         );
@@ -1650,7 +1673,7 @@ impl VideoPlayer {
                 scene,
                 &text,
                 ink_dim,
-                translated(transform, time_x0, top),
+                transform.pre_translate((time_x0, top).into()),
                 None,
                 &time.style,
             );
@@ -1929,7 +1952,7 @@ impl VideoPlayer {
                 scene,
                 t,
                 colors.text_dim,
-                translated(transform, x0 + pad, y + (row_h - f64::from(th)) * 0.5),
+                transform.pre_translate((x0 + pad, y + (row_h - f64::from(th)) * 0.5).into()),
                 None,
                 &title_style,
             );
@@ -2029,7 +2052,7 @@ impl VideoPlayer {
             scene,
             &s.name,
             colors.text_primary,
-            translated(transform, icon_r.x1 + 8.0, label_top),
+            transform.pre_translate((icon_r.x1 + 8.0, label_top).into()),
             None,
             &label_style,
         );
@@ -2055,10 +2078,8 @@ impl VideoPlayer {
                 scene,
                 &value,
                 tint,
-                translated(
-                    transform,
-                    x1 - pad - f64::from(vw),
-                    y + (row_h - f64::from(vh)) * 0.5,
+                transform.pre_translate(
+                    (x1 - pad - f64::from(vw), y + (row_h - f64::from(vh)) * 0.5).into(),
                 ),
                 None,
                 &label_style,
@@ -2097,7 +2118,7 @@ impl VideoPlayer {
             &name,
             13.0,
             colors.text_primary,
-            translated(transform, text_x, row_rect.y0 + 6.0),
+            transform.pre_translate((text_x, row_rect.y0 + 6.0).into()),
             None,
         );
         let value = setting_value(setting);
@@ -2111,7 +2132,7 @@ impl VideoPlayer {
                 &value,
                 12.0,
                 tint,
-                translated(transform, text_x, row_rect.y0 + row_h * 0.5),
+                transform.pre_translate((text_x, row_rect.y0 + row_h * 0.5).into()),
                 None,
             );
         }
@@ -2191,7 +2212,7 @@ impl VideoPlayer {
             scene,
             &label,
             tint,
-            translated(transform, x0 + indent, label_top),
+            transform.pre_translate((x0 + indent, label_top).into()),
             None,
             &label_style,
         );
@@ -2201,10 +2222,8 @@ impl VideoPlayer {
                 scene,
                 "✓",
                 accent,
-                translated(
-                    transform,
-                    x1 - pad - f64::from(cw),
-                    y + (row_h - f64::from(ch)) * 0.5,
+                transform.pre_translate(
+                    (x1 - pad - f64::from(cw), y + (row_h - f64::from(ch)) * 0.5).into(),
                 ),
                 None,
                 &label_style,
@@ -2265,19 +2284,6 @@ impl VideoPlayer {
             );
         }
     }
-}
-
-/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
-/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
-/// but composing two f64-based affine transforms cannot meaningfully
-/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
-/// for.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
-)]
-fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
-    transform * Affine::translate((dx, dy))
 }
 
 fn rgba_image(width: u32, height: u32, rgba: Arc<Vec<u8>>) -> PenikoImage {
@@ -2404,10 +2410,6 @@ impl Widget for VideoPlayer {
         self.paint(scene, transform, text_renderer, theme);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one widget event boundary must coordinate pointer, keyboard, transport, scrub, volume, settings, and overlay interaction without splitting event ordering"
-    )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -3211,6 +3213,32 @@ mod tests {
 
     use crate::synthetic_input::mouse_press;
     use crate::testing::dispatch;
+
+    #[test]
+    fn an_engine_attached_when_needed_keeps_the_players_volume_and_is_built_once() {
+        let mut vp = VideoPlayer::new();
+        vp.set_volume(0.3);
+        assert!(vp.engine().is_none(), "a new player starts no engine");
+        let mut built = 0;
+        vp.ensure_engine(|| {
+            built += 1;
+            media::MediaEngine::new_synthesized()
+        });
+        assert!((vp.engine().unwrap().volume() - 0.3).abs() < 1e-6);
+        vp.ensure_engine(|| {
+            built += 1;
+            media::MediaEngine::new_synthesized()
+        });
+        assert_eq!(built, 1, "an attached engine is kept");
+
+        let mut muted = VideoPlayer::new();
+        muted.toggle_mute();
+        let engine = muted.ensure_engine(media::MediaEngine::new_synthesized);
+        assert!(
+            engine.volume().abs() < 1e-6,
+            "a muted player's engine is silent"
+        );
+    }
 
     #[test]
     fn transport_keys_and_surface_clicks_drive_the_engine() {

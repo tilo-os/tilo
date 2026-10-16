@@ -33,66 +33,92 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
 use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::tokens::{Metrics, Spacing};
 use crate::widget::ButtonRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, Widget};
 
-pub const FOOTER_HEIGHT: f64 = 56.0;
-pub const HEADER_HEIGHT: f64 = 64.0;
-pub const ROW_HEIGHT: f64 = 28.0;
-/// The breadcrumb row sits one title line (`scale.base` at 1×, ~20 px)
-/// under the header inset.
-const CRUMB_ROW_OFFSET: f64 = 20.0;
-/// Height of a breadcrumb hit rect.
-const CRUMB_ROW_H: f64 = 18.0;
-/// Per-glyph width guess for a crumb that has not been measured yet (before
-/// the first paint); `measure_crumbs` records the real widths.
-const CRUMB_GLYPH_ESTIMATE: f64 = 7.5;
-
-/// Token-derived insets the picker lays out with. Resolved from the theme in
+/// Token-derived sizes the picker lays out with. Resolved from the theme in
 /// `build_layout` and refreshed at paint, cached because
 /// `apply_layout_helper` runs from event handlers and `set_rect` with no
 /// theme in hand; the draw path reads the same values, so layout and paint
-/// agree at every `ui_scale`.
+/// agree at every `ui_scale` and text scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PickerMetrics {
-    /// From the top edge to the title line and the up button (`s2`).
-    header_inset_y: f64,
-    /// Vertical inset of the Save-mode filename field inside its band (`s1`).
-    field_inset_y: f64,
-    /// Horizontal inset of text inside the filename field and filter chip,
-    /// and from a row's edge to its leading icon and on to the name (`s2`).
+    /// The dialog's outer padding and the gutter between its regions (`s4`).
+    pad: f64,
+    /// Between related controls: buttons, a label and its field (`s2`).
+    gap: f64,
+    /// Between the dialog's bands (`s3`).
+    section: f64,
+    /// One list or sidebar row (`nav_row_height`).
+    row_h: f64,
+    /// A button, field or path bar (`min_pointer_target`).
+    control_h: f64,
+    /// The heading's line box.
+    title_h: f64,
+    /// The column header's band: a caption line in an `s2` inset.
+    column_h: f64,
+    /// The places sidebar (`sidebar_width`, narrowed for a dialog).
+    sidebar_w: f64,
+    /// Below this dialog width the sidebar gives way to the list.
+    sidebar_min_dialog_w: f64,
+    icon_sm: f64,
+    icon_md: f64,
+    icon_lg: f64,
+    /// Horizontal inset of text inside a field, chip or row (`s2`).
     inset_x: f64,
-    /// The up button: a bar control wide (`bar_control_height`) and a large
-    /// glyph tall (`icon_lg`). Recorded (F4 r2): below the 32 px minimum
-    /// pointer target.
-    up_w: f64,
-    up_h: f64,
-    /// From a crumb's left edge to its first glyph (`s1`).
-    crumb_label_inset: f64,
-    /// Room a crumb reserves after its label for the chevron separator (`s3`).
+    /// The chevron between two breadcrumbs.
     crumb_separator_w: f64,
+    /// A breadcrumb's width before it has been measured.
+    crumb_glyph_estimate: f64,
+    /// The scroll thumb's thickness (`s1`).
+    scrollbar_w: f64,
+    /// A footer button is never narrower than this.
+    min_button_w: f64,
+    /// The Save field's label column.
+    name_label_w: f64,
+    /// The Size and Modified columns, and the list width that shows them.
+    size_w: f64,
+    date_w: f64,
+    columns_min_w: f64,
+    /// The type dropdown's width before its labels have been measured.
+    filter_w: f64,
 }
 
 impl PickerMetrics {
     fn from_theme(theme: &Theme) -> Self {
         let t = &theme.tokens;
-        Self::from_parts(&t.spacing, &t.metrics)
-    }
-
-    fn from_parts(spacing: &Spacing, metrics: &Metrics) -> Self {
+        let (sp, m) = (&t.spacing, &t.metrics);
+        let icon_lg = f64::from(m.icon_lg);
+        let line = |role: TextRole| {
+            f64::from(t.typography.size(role)) * f64::from(theme.text(role).line_height)
+        };
         Self {
-            header_inset_y: f64::from(spacing.s2),
-            field_inset_y: f64::from(spacing.s1),
-            inset_x: f64::from(spacing.s2),
-            up_w: f64::from(metrics.bar_control_height),
-            up_h: f64::from(metrics.icon_lg),
-            crumb_label_inset: f64::from(spacing.s1),
-            crumb_separator_w: f64::from(spacing.s3),
+            pad: f64::from(sp.s4),
+            gap: f64::from(sp.s2),
+            section: f64::from(sp.s3),
+            row_h: f64::from(m.nav_row_height),
+            control_h: f64::from(m.min_pointer_target),
+            title_h: line(TextRole::Heading),
+            column_h: line(TextRole::Caption) + 2.0 * f64::from(sp.s2),
+            sidebar_w: f64::from(m.sidebar_width) * 0.72,
+            sidebar_min_dialog_w: f64::from(m.panel_width_sheet) * 0.9,
+            icon_sm: f64::from(m.icon_sm),
+            icon_md: f64::from(m.icon_md),
+            icon_lg,
+            inset_x: f64::from(sp.s2),
+            crumb_separator_w: f64::from(m.icon_sm),
+            crumb_glyph_estimate: f64::from(t.typography.size(TextRole::Label)) * 0.6,
+            scrollbar_w: f64::from(sp.s1),
+            min_button_w: icon_lg * 4.0,
+            name_label_w: icon_lg * 3.5,
+            size_w: icon_lg * 3.5,
+            date_w: icon_lg * 6.5,
+            columns_min_w: icon_lg * 20.0,
+            filter_w: icon_lg * 8.0,
         }
     }
 }
@@ -101,20 +127,137 @@ impl Default for PickerMetrics {
     /// The unscaled reference values, for a picker laid out before it has
     /// seen a theme.
     fn default() -> Self {
-        Self::from_parts(&Spacing::BASE, &Metrics::BASE)
+        Self::from_theme(&Theme::dark())
     }
 }
-/// 0 in Open mode.
-const FILENAME_HEIGHT: f64 = 36.0;
-const PADDING: f64 = 12.0;
-const BUTTON_WIDTH: f64 = 96.0;
-const BUTTON_HEIGHT: f64 = 32.0;
-/// The replace prompt's card, at most; a narrow picker narrows it.
-const REPLACE_CARD_WIDTH: f64 = 440.0; // a dialog card's size, as the picker's own, not spacing
-const REPLACE_CARD_HEIGHT: f64 = 140.0; // a dialog card's size, not spacing
-/// What Replace does, under the replace prompt's question.
-const REPLACE_PROMPT_DETAIL: &str = "Replacing it overwrites its contents.";
-const BUTTON_GAP: f64 = 8.0;
+
+/// A shortcut in the sidebar: somewhere the person goes often, limited to
+/// what the caller's sandbox allows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Place {
+    /// Translation key of a well-known place; `None` shows `name` as is.
+    key: Option<&'static str>,
+    name: String,
+    path: PathBuf,
+    icon: Icon,
+}
+
+impl Place {
+    fn label(&self) -> String {
+        self.key.map_or_else(
+            || self.name.clone(),
+            |key| crate::i18n::widget_format(key, &[]),
+        )
+    }
+}
+
+/// Home, the usual folders under it, then every other accessible root (the
+/// workspace folders), each only if the caller may enter it.
+fn default_places(roots: &[PathBuf], home: Option<&Path>) -> Vec<Place> {
+    let allowed = |p: &Path| roots.iter().any(|root| p.starts_with(root));
+    let mut places: Vec<Place> = Vec::new();
+    if let Some(home) = home.filter(|h| h.is_absolute()).map(Path::to_path_buf) {
+        let well_known = [
+            (
+                None,
+                "widget-filepicker-place-home",
+                Icon::Home,
+                home.clone(),
+            ),
+            (
+                Some("Documents"),
+                "widget-filepicker-place-documents",
+                Icon::FileText,
+                home.join("Documents"),
+            ),
+            (
+                Some("Downloads"),
+                "widget-filepicker-place-downloads",
+                Icon::Download,
+                home.join("Downloads"),
+            ),
+            (
+                Some("Pictures"),
+                "widget-filepicker-place-pictures",
+                Icon::Image,
+                home.join("Pictures"),
+            ),
+            (
+                Some("Music"),
+                "widget-filepicker-place-music",
+                Icon::Music,
+                home.join("Music"),
+            ),
+            (
+                Some("Videos"),
+                "widget-filepicker-place-videos",
+                Icon::Video,
+                home.join("Videos"),
+            ),
+        ];
+        for (folder, key, icon, path) in well_known {
+            if folder.is_some() && !path.is_dir() {
+                continue;
+            }
+            if allowed(&path) {
+                places.push(Place {
+                    key: Some(key),
+                    name: String::new(),
+                    path,
+                    icon,
+                });
+            }
+        }
+    }
+    for root in roots {
+        if places.iter().any(|p| &p.path == root) {
+            continue;
+        }
+        let name = root.file_name().map_or_else(
+            || root.to_string_lossy().into_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        places.push(Place {
+            key: None,
+            name,
+            path: root.clone(),
+            icon: Icon::Folder,
+        });
+    }
+    places
+}
+
+/// The Fluent key of a toolkit message, resolved in the desktop's language.
+fn tr(key: &str) -> String {
+    crate::i18n::widget_format(key, &[])
+}
+
+/// Translation keys of the labels the footer buttons draw; a button label is
+/// a key, resolved when it is painted.
+const CANCEL_KEY: &str = "widget-filepicker-cancel";
+const REPLACE_KEY: &str = "widget-filepicker-replace";
+/// The label of [`FileFilter::all`], shown translated.
+const ALL_FILES_LABEL: &str = "All files";
+
+/// A logical size as the text renderer's width argument.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a width of a few hundred logical pixels fits f32 exactly enough for wrapping"
+)]
+fn px(width: f64) -> f32 {
+    width as f32
+}
+
+/// A `size`-square rect centred in `rect`.
+fn centered(rect: Rect, size: f64) -> Rect {
+    let c = rect.center();
+    Rect::new(
+        c.x - size / 2.0,
+        c.y - size / 2.0,
+        c.x + size / 2.0,
+        c.y + size / 2.0,
+    )
+}
 
 /// The file chooser is an immediate-mode modal, so its controls do not each
 /// have a retained Taffy node.  Keep their keyboard order in the toolkit's
@@ -123,6 +266,8 @@ const BUTTON_GAP: f64 = 8.0;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum PickerFocus {
     Up,
+    /// The places sidebar.
+    Places,
     List,
     Filter,
     Filename,
@@ -148,6 +293,7 @@ impl PickerFocus {
             Self::Confirm => 6,
             Self::KeepExisting => 7,
             Self::Replace => 8,
+            Self::Places => 10,
         }
     }
 
@@ -161,6 +307,7 @@ impl PickerFocus {
             6 => Some(Self::Confirm),
             7 => Some(Self::KeepExisting),
             8 => Some(Self::Replace),
+            10 => Some(Self::Places),
             _ => None,
         }
     }
@@ -185,7 +332,7 @@ impl FileFilter {
 
     pub fn all() -> Self {
         Self {
-            label: "All files".into(),
+            label: ALL_FILES_LABEL.into(),
             extensions: Vec::new(),
         }
     }
@@ -207,6 +354,10 @@ pub struct FilePickerEntry {
     pub path: PathBuf,
     /// Directories navigate on click; files select.
     pub is_dir: bool,
+    /// Bytes; `0` for a folder or when the size could not be read.
+    pub size: u64,
+    /// Last change, in seconds since the Unix epoch.
+    pub modified: Option<i64>,
 }
 
 /// Drained by the host via [`FilePicker::take_outcome`] once per frame;
@@ -260,7 +411,23 @@ pub struct FilePicker {
     /// picker that takes input.
     replace_prompt: Option<PathBuf>,
 
+    /// The sidebar's shortcuts, limited to what the sandbox allows.
+    places: Vec<Place>,
+    /// The sidebar row under the keyboard cursor.
+    place_cursor: Option<usize>,
+    hover_place: Option<usize>,
+    /// The type menu is open over its chip.
+    filter_open: bool,
+    filter_hover: Option<usize>,
+
     // Hit-test rects, recomputed on each `apply_layout` / `draw`.
+    place_rects: Vec<Rect>,
+    filter_menu_rect: Rect,
+    filter_rows: Vec<Rect>,
+    /// Cancel, confirm and Replace button widths, measured at paint.
+    button_w: [f64; 3],
+    /// The type dropdown chip's width, measured at paint.
+    filter_w: f64,
     open_rect: Rect,
     cancel_rect: Rect,
     up_rect: Rect,
@@ -314,7 +481,19 @@ impl FilePicker {
         } else {
             accessible_roots
         };
+        let places = default_places(&roots, None);
+        let metrics = PickerMetrics::default();
         let mut me = Self {
+            places,
+            place_cursor: None,
+            hover_place: None,
+            filter_open: false,
+            filter_hover: None,
+            place_rects: Vec::new(),
+            filter_menu_rect: Rect::ZERO,
+            filter_rows: Vec::new(),
+            button_w: [metrics.min_button_w; 3],
+            filter_w: metrics.filter_w,
             rect: Rect::ZERO,
             title: title.into(),
             mode: FilePickerMode::default(),
@@ -333,8 +512,8 @@ impl FilePicker {
             filename: TextInput::local()
                 .with_kind(crate::widget::TextInputKind::Name)
                 .with_plain_chrome()
-                .with_accessible_name("Filename")
-                .with_placeholder("Filename…"),
+                .with_accessible_name(tr("widget-filepicker-name-accessible"))
+                .with_placeholder(tr("widget-filepicker-name-placeholder")),
             first_visible: 0,
             pending_outcome: None,
             replace_prompt: None,
@@ -349,7 +528,7 @@ impl FilePicker {
             entry_rows: Vec::new(),
             crumb_rects: Vec::new(),
             crumb_widths: HashMap::new(),
-            metrics: PickerMetrics::default(),
+            metrics,
             last_cursor: Point::ZERO,
             last_click: None,
             hover_entry: None,
@@ -372,6 +551,17 @@ impl FilePicker {
         // reset the initial target from the listbox to Filename.
         self.focus = None;
         self.ensure_valid_focus();
+        self
+    }
+
+    /// The person's home folder, which puts Home and the usual folders under
+    /// it (Documents, Downloads, …) in the sidebar. Only those the caller's
+    /// sandbox allows are shown. The toolkit reads no environment, so the
+    /// host says where home is.
+    #[must_use]
+    pub fn with_home(mut self, home: Option<PathBuf>) -> Self {
+        self.places = default_places(&self.accessible_roots, home.as_deref());
+        self.place_cursor = None;
         self
     }
 
@@ -438,14 +628,15 @@ impl FilePicker {
     pub fn active_filter_label(&self) -> &str {
         self.filters
             .get(self.active_filter)
-            .map_or("All files", |f| f.label.as_str())
+            .map_or(ALL_FILES_LABEL, |f| f.label.as_str())
     }
 
-    /// Put `name` in the filename field with the caret after it, so typing
-    /// continues it.
+    /// Put `name` in the filename field with the name selected but not its
+    /// extension, so typing replaces the name and keeps the type.
     fn set_filename(&mut self, name: &str) {
         self.filename.set_text(name);
-        self.filename.set_cursor_pos(name.len());
+        let stem = name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len());
+        self.filename.set_selection(0, stem);
     }
 
     pub fn filename(&self) -> &str {
@@ -566,6 +757,7 @@ impl FilePicker {
             return;
         }
         self.current_dir = t;
+        self.filter_open = false;
         self.selection.clear();
         self.first_visible = 0;
         self.refresh_entries();
@@ -611,7 +803,16 @@ impl FilePicker {
                     continue;
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
-                self.entries.push(FilePickerEntry { name, path, is_dir });
+                let meta = entry.metadata().ok();
+                self.entries.push(FilePickerEntry {
+                    name,
+                    path,
+                    is_dir,
+                    size: meta.as_ref().map_or(0, |m| m.len()),
+                    modified: meta
+                        .and_then(|m| m.modified().ok())
+                        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).timestamp()),
+                });
             }
         }
         // Directories first, then files, each alphabetical.
@@ -623,28 +824,102 @@ impl FilePicker {
         self.ensure_valid_focus();
     }
 
+    /// Title, then the path bar, in the dialog's top band.
+    fn header_h(&self) -> f64 {
+        let m = self.metrics;
+        m.pad + m.title_h + m.gap + m.control_h + m.section
+    }
+
+    /// The Save name row (when there is one) and the button row.
+    fn footer_h(&self) -> f64 {
+        let m = self.metrics;
+        let buttons = 2.0 * m.pad + m.control_h;
+        if self.mode == FilePickerMode::Save {
+            buttons + m.control_h + m.section
+        } else {
+            buttons
+        }
+    }
+
+    /// Whether the places sidebar is drawn: there is somewhere to go and the
+    /// dialog is wide enough to keep a readable list beside it.
+    fn has_sidebar(&self) -> bool {
+        !self.places.is_empty() && self.rect.width() >= self.metrics.sidebar_min_dialog_w
+    }
+
+    fn sidebar_rect(&self) -> Rect {
+        let width = if self.has_sidebar() {
+            self.metrics.sidebar_w
+        } else {
+            0.0
+        };
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0 + self.header_h(),
+            self.rect.x0 + width,
+            self.rect.y1 - self.footer_h(),
+        )
+    }
+
+    fn content_x0(&self) -> f64 {
+        if self.has_sidebar() {
+            self.sidebar_rect().x1 + self.metrics.pad
+        } else {
+            self.rect.x0 + self.metrics.pad
+        }
+    }
+
+    /// The column headings' band.
+    fn columns_rect(&self) -> Rect {
+        let top = self.rect.y0 + self.header_h();
+        Rect::new(
+            self.content_x0(),
+            top,
+            self.rect.x1 - self.metrics.pad,
+            top + self.metrics.column_h,
+        )
+    }
+
+    /// The rows' area, under the column headings.
+    fn list_rect(&self) -> Rect {
+        let columns = self.columns_rect();
+        Rect::new(
+            columns.x0,
+            columns.y1,
+            columns.x1,
+            (self.rect.y1 - self.footer_h() - self.metrics.gap).max(columns.y1),
+        )
+    }
+
+    /// The path bar: breadcrumbs in a field, right of the up button.
+    fn path_rect(&self) -> Rect {
+        let m = self.metrics;
+        let y0 = self.rect.y0 + m.pad + m.title_h + m.gap;
+        Rect::new(
+            self.rect.x0 + m.pad + m.control_h + m.gap,
+            y0,
+            self.rect.x1 - m.pad,
+            y0 + m.control_h,
+        )
+    }
+
+    /// Which Name / Size / Modified columns the list is wide enough for.
+    fn shows_columns(&self) -> (bool, bool) {
+        let width = self.list_rect().width();
+        let m = self.metrics;
+        (width >= m.columns_min_w * 0.7, width >= m.columns_min_w)
+    }
+
     fn visible_rows(&self) -> usize {
-        let list_top = self.rect.y0 + HEADER_HEIGHT;
-        let list_bot = self.list_bottom();
-        let rows = ((list_bot - list_top) / ROW_HEIGHT).floor();
+        let rows = (self.list_rect().height() / self.metrics.row_h).floor();
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
-            reason = "rows is clamped into 0.0..=f64::from(u32::MAX) immediately above, so the \
+            reason = "rows is clamped into 0.0..=f64::from(u32::MAX) immediately below, so the \
                       conversion is provably exact"
         )]
         let rows = rows.clamp(0.0, f64::from(u32::MAX)) as usize;
         rows
-    }
-
-    /// Above the filename field in Save mode, above the buttons otherwise.
-    fn list_bottom(&self) -> f64 {
-        let extras = if self.mode == FilePickerMode::Save {
-            FILENAME_HEIGHT
-        } else {
-            0.0
-        };
-        self.rect.y1 - FOOTER_HEIGHT - extras
     }
 
     fn scroll_to(&mut self, i: usize) {
@@ -665,42 +940,50 @@ impl FilePicker {
     }
 
     pub fn apply_layout_helper(&mut self) {
-        let footer_top = self.rect.y1 - FOOTER_HEIGHT;
-        let by = footer_top + (FOOTER_HEIGHT - BUTTON_HEIGHT) / 2.0;
-        let by1 = by + BUTTON_HEIGHT;
-        let open_x1 = self.rect.x1 - PADDING;
-        let open_x0 = open_x1 - BUTTON_WIDTH;
-        let cancel_x1 = open_x0 - BUTTON_GAP;
-        let cancel_x0 = cancel_x1 - BUTTON_WIDTH;
-        self.open_rect = Rect::new(open_x0, by, open_x1, by1);
-        self.cancel_rect = Rect::new(cancel_x0, by, cancel_x1, by1);
-        self.filter_rect = Rect::new(
-            self.rect.x0 + PADDING,
-            by,
-            self.rect.x0 + PADDING + 160.0,
-            by1,
-        );
         let m = self.metrics;
-        let filename_top = self.rect.y1 - FOOTER_HEIGHT - FILENAME_HEIGHT;
-        self.filename_rect = Rect::new(
-            self.rect.x0 + PADDING,
-            filename_top + m.field_inset_y,
-            self.rect.x1 - PADDING,
-            filename_top + FILENAME_HEIGHT - m.field_inset_y,
-        );
-        self.filename.apply_layout_external(self.filename_rect);
+        let footer_top = self.rect.y1 - self.footer_h();
 
-        let up_x1 = self.rect.x1 - PADDING;
-        let up_x0 = up_x1 - m.up_w;
-        let up_top = self.rect.y0 + m.header_inset_y;
-        self.up_rect = Rect::new(up_x0, up_top, up_x1, up_top + m.up_h);
+        // Buttons: Cancel then the primary action, right-aligned, sized to
+        // their labels.
+        let row_y1 = self.rect.y1 - m.pad;
+        let row_y0 = row_y1 - m.control_h;
+        let open_x1 = self.rect.x1 - m.pad;
+        let open_x0 = open_x1 - self.button_w[1];
+        let cancel_x1 = open_x0 - m.gap;
+        let cancel_x0 = cancel_x1 - self.button_w[0];
+        self.open_rect = Rect::new(open_x0, row_y0, open_x1, row_y1);
+        self.cancel_rect = Rect::new(cancel_x0, row_y0, cancel_x1, row_y1);
+        let filter_x0 = self.rect.x0 + m.pad;
+        self.filter_rect = Rect::new(
+            filter_x0,
+            row_y0,
+            (filter_x0 + self.filter_w).min((cancel_x0 - m.gap).max(filter_x0)),
+            row_y1,
+        );
+        self.layout_filter_menu();
+
+        if self.mode == FilePickerMode::Save {
+            let field_y0 = footer_top + m.pad;
+            self.filename_rect = Rect::new(
+                self.rect.x0 + m.pad + m.name_label_w,
+                field_y0,
+                self.rect.x1 - m.pad,
+                field_y0 + m.control_h,
+            );
+            self.filename.apply_layout_external(self.filename_rect);
+        } else {
+            self.filename_rect = Rect::ZERO;
+        }
+
+        let up_x0 = self.rect.x0 + m.pad;
+        let up_y0 = self.rect.y0 + m.pad + m.title_h + m.gap;
+        self.up_rect = Rect::new(up_x0, up_y0, up_x0 + m.control_h, up_y0 + m.control_h);
 
         self.crumb_rects = self.compute_crumb_rects();
+        self.layout_places();
 
         self.clamp_scroll();
-        let list_top = self.rect.y0 + HEADER_HEIGHT;
-        let row_x0 = self.rect.x0 + PADDING;
-        let row_x1 = self.rect.x1 - PADDING;
+        let list = self.list_rect();
         let rows = self.visible_rows();
         self.entry_rows.clear();
         for vis in 0..rows {
@@ -715,31 +998,76 @@ impl FilePicker {
                 clippy::cast_precision_loss,
                 reason = "vis is a small on-screen row index"
             )]
-            let y0 = list_top + (vis as f64) * ROW_HEIGHT;
+            let y0 = list.y0 + (vis as f64) * m.row_h;
             self.entry_rows
-                .push((i, Rect::new(row_x0, y0, row_x1, y0 + ROW_HEIGHT)));
+                .push((i, Rect::new(list.x0, y0, list.x1, y0 + m.row_h)));
         }
         self.layout_replace_prompt();
         self.ensure_valid_focus();
     }
 
+    /// One sidebar row per place, top to bottom, as many as fit.
+    fn layout_places(&mut self) {
+        self.place_rects.clear();
+        if !self.has_sidebar() {
+            return;
+        }
+        let m = self.metrics;
+        let side = self.sidebar_rect();
+        let mut y = side.y0 + m.gap;
+        for _ in &self.places {
+            if y + m.row_h > side.y1 {
+                break;
+            }
+            self.place_rects
+                .push(Rect::new(side.x0 + m.gap, y, side.x1 - m.gap, y + m.row_h));
+            y += m.row_h;
+        }
+    }
+
+    /// The type menu opens upward from its chip: one row per filter.
+    fn layout_filter_menu(&mut self) {
+        let m = self.metrics;
+        self.filter_rows.clear();
+        let pad = m.gap / 2.0;
+        let width = self.filter_rect.width().max(m.filter_w);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a filter list is a handful of entries"
+        )]
+        let height = self.filters.len() as f64 * m.row_h + 2.0 * pad;
+        let x0 = self.filter_rect.x0;
+        let y1 = self.filter_rect.y0 - pad;
+        self.filter_menu_rect = Rect::new(x0, y1 - height, x0 + width, y1);
+        let mut y = self.filter_menu_rect.y0 + pad;
+        for _ in &self.filters {
+            self.filter_rows
+                .push(Rect::new(x0 + pad, y, x0 + width - pad, y + m.row_h));
+            y += m.row_h;
+        }
+    }
+
     /// The replace prompt: a card centred on the picker, its buttons in the
     /// footer's order (Cancel, then the action) at its bottom edge.
     fn layout_replace_prompt(&mut self) {
-        let w = REPLACE_CARD_WIDTH
-            .min(self.rect.width() - 2.0 * PADDING)
+        let m = self.metrics;
+        let w = (m.icon_lg * 20.0)
+            .min(self.rect.width() - 2.0 * m.pad)
             .max(0.0);
-        let h = REPLACE_CARD_HEIGHT.min(self.rect.height()).max(0.0);
+        let body_lines = 2.0 * m.row_h * 0.75;
+        let h = (2.0 * m.pad + m.title_h + m.gap + body_lines + m.section + m.control_h)
+            .min(self.rect.height())
+            .max(0.0);
         let x0 = self.rect.x0 + (self.rect.width() - w) / 2.0;
         let y0 = self.rect.y0 + (self.rect.height() - h) / 2.0;
         self.replace_card_rect = Rect::new(x0, y0, x0 + w, y0 + h);
-        let by1 = self.replace_card_rect.y1 - PADDING;
-        let by0 = by1 - BUTTON_HEIGHT;
-        let replace_x1 = self.replace_card_rect.x1 - PADDING;
-        let replace_x0 = replace_x1 - BUTTON_WIDTH;
-        let keep_x1 = replace_x0 - BUTTON_GAP;
+        let by1 = self.replace_card_rect.y1 - m.pad;
+        let by0 = by1 - m.control_h;
+        let replace_x1 = self.replace_card_rect.x1 - m.pad;
+        let replace_x0 = replace_x1 - self.button_w[2];
+        let keep_x1 = replace_x0 - m.gap;
         self.replace_rect = Rect::new(replace_x0, by0, replace_x1, by1);
-        self.keep_existing_rect = Rect::new(keep_x1 - BUTTON_WIDTH, by0, keep_x1, by1);
+        self.keep_existing_rect = Rect::new(keep_x1 - self.button_w[0], by0, keep_x1, by1);
     }
 
     /// Native dialog focus order, kept in one place so keyboard, AT focus
@@ -753,6 +1081,9 @@ impl FilePicker {
         let mut targets = Vec::with_capacity(6);
         if self.can_go_up() {
             targets.push(PickerFocus::Up);
+        }
+        if self.has_sidebar() {
+            targets.push(PickerFocus::Places);
         }
         if !self.entries.is_empty() {
             targets.push(PickerFocus::List);
@@ -791,7 +1122,13 @@ impl FilePicker {
                     .find(|target| *target == PickerFocus::Filename)
                     .or_else(|| targets.first().copied())
             } else {
-                targets.first().copied()
+                // Open dialogs start on the list so arrows and type-ahead
+                // work at once.
+                targets
+                    .iter()
+                    .copied()
+                    .find(|target| *target == PickerFocus::List)
+                    .or_else(|| targets.first().copied())
             };
         }
     }
@@ -867,6 +1204,9 @@ impl FilePicker {
         if self.can_go_up() {
             controls.push(PickerFocus::Up);
         }
+        if self.has_sidebar() {
+            controls.push(PickerFocus::Places);
+        }
         if !self.entries.is_empty() {
             controls.push(PickerFocus::List);
         }
@@ -880,13 +1220,71 @@ impl FilePicker {
         controls
     }
 
-    fn list_rect(&self) -> Rect {
-        Rect::new(
-            self.rect.x0 + PADDING,
-            self.rect.y0 + HEADER_HEIGHT,
-            self.rect.x1 - PADDING,
-            self.list_bottom(),
-        )
+    /// The place the current folder is inside, the deepest if several.
+    fn active_place(&self) -> Option<usize> {
+        self.places
+            .iter()
+            .enumerate()
+            .filter(|(_, place)| self.current_dir.starts_with(&place.path))
+            .max_by_key(|(_, place)| place.path.components().count())
+            .map(|(i, _)| i)
+    }
+
+    fn go_place(&mut self, index: usize) {
+        if let Some(path) = self.places.get(index).map(|p| p.path.clone()) {
+            self.place_cursor = Some(index);
+            self.navigate_to(path);
+        }
+    }
+
+    /// Arrow keys in the sidebar move through the places, entering each.
+    fn move_place(&mut self, delta: isize) {
+        let count = self.places.len();
+        if count == 0 {
+            return;
+        }
+        let from = self
+            .place_cursor
+            .or_else(|| self.active_place())
+            .unwrap_or(0);
+        let next = from
+            .saturating_add_signed(delta)
+            .min(count.saturating_sub(1));
+        self.go_place(next);
+    }
+
+    /// Choose filter `index` from the type menu.
+    pub fn set_filter(&mut self, index: usize) {
+        if index < self.filters.len() && index != self.active_filter {
+            self.active_filter = index;
+            self.selection.clear();
+            self.first_visible = 0;
+            self.refresh_entries();
+        }
+    }
+
+    fn toggle_filter_menu(&mut self) {
+        self.filter_open = !self.filter_open && self.filters.len() > 1;
+        self.filter_hover = self.filter_open.then_some(self.active_filter);
+    }
+
+    /// Keys while the type menu is open: it owns the keyboard until it closes.
+    fn on_filter_menu_key(&mut self, key: &winit::keyboard::Key) {
+        use winit::keyboard::{Key, NamedKey};
+        let last = self.filters.len().saturating_sub(1);
+        let at = self.filter_hover.unwrap_or(self.active_filter);
+        match key {
+            Key::Named(NamedKey::ArrowDown) => {
+                self.filter_hover = Some(at.saturating_add(1).min(last))
+            }
+            Key::Named(NamedKey::ArrowUp) => self.filter_hover = Some(at.saturating_sub(1)),
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                self.set_filter(at);
+                self.filter_open = false;
+            }
+            Key::Named(NamedKey::Escape | NamedKey::Tab) => self.filter_open = false,
+            _ => {}
+        }
     }
 
     fn activate_focus(&mut self) -> bool {
@@ -907,6 +1305,12 @@ impl FilePicker {
                 self.cycle_filter();
                 true
             }
+            Some(PickerFocus::Places) => {
+                if let Some(i) = self.place_cursor.or_else(|| self.active_place()) {
+                    self.go_place(i);
+                }
+                true
+            }
             Some(PickerFocus::List) => {
                 self.activate_selected_entry();
                 true
@@ -925,7 +1329,8 @@ impl FilePicker {
 
     /// Each segment maps a display label to the ancestor directory it
     /// navigates to. Only accessible ancestors get a segment, so the user
-    /// never sees one they can't navigate to.
+    /// never sees one they can't navigate to. A path too long for the bar
+    /// drops its leading segments; the current folder always shows.
     fn compute_crumb_rects(&self) -> Vec<(PathBuf, Rect)> {
         let mut segments: Vec<(String, PathBuf)> = Vec::new();
         let comps: Vec<_> = self.current_dir.components().collect();
@@ -946,35 +1351,53 @@ impl FilePicker {
         // its recorded width, anything else the per-glyph estimate until the
         // first paint measures it.
         let m = self.metrics;
-        let y0 = self.rect.y0 + m.header_inset_y + CRUMB_ROW_OFFSET;
-        let mut x = self.rect.x0 + PADDING;
+        let bar = self.path_rect();
+        let widths: Vec<f64> = segments
+            .iter()
+            .map(|(label, _)| {
+                // A breadcrumb label is one path component — far below f64's
+                // exact-integer range even for pathological path names.
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "label is a single path component's display text"
+                )]
+                let char_count = label.chars().count() as f64;
+                let text_w = self
+                    .crumb_widths
+                    .get(label)
+                    .copied()
+                    .unwrap_or(char_count * m.crumb_glyph_estimate);
+                text_w + m.crumb_separator_w + m.gap
+            })
+            .collect();
+        let avail = (bar.width() - m.inset_x).max(0.0);
+        let mut total: f64 = widths.iter().sum();
+        let mut first: usize = 0;
+        while total > avail && segments.len().saturating_sub(first) > 1 {
+            total -= widths.get(first).copied().unwrap_or(0.0);
+            first = first.saturating_add(1);
+        }
+        let mut x = bar.x0 + m.inset_x;
         let mut out = Vec::new();
-        for (label, target) in segments {
-            // A breadcrumb label is one path component — far below f64's
-            // exact-integer range even for pathological path names.
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "label is a single path component's display text"
-            )]
-            let char_count = label.chars().count() as f64;
-            let text_w = self
-                .crumb_widths
-                .get(&label)
-                .copied()
-                .unwrap_or(char_count * CRUMB_GLYPH_ESTIMATE);
-            let w = m.crumb_label_inset + text_w + m.crumb_separator_w;
-            out.push((target, Rect::new(x, y0, x + w, y0 + CRUMB_ROW_H)));
+        for ((_, target), w) in segments.into_iter().zip(widths).skip(first) {
+            let x1 = (x + w).min(bar.x1);
+            out.push((target, Rect::new(x, bar.y0, x1, bar.y1)));
             x += w;
         }
         out
     }
 
-    /// Measure every breadcrumb label with the renderer the frame draws with
-    /// and rebuild the crumb rects from those widths, so the hit rects match
-    /// the painted glyphs — and stay matched when an event handler rebuilds
-    /// the layout without a renderer. Runs once per paint.
-    fn measure_crumbs(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
-        let style = theme.text(TextRole::Caption);
+    /// Measure what has no size until text is shaped — every breadcrumb
+    /// label, the button labels and the type menu's widest entry — with the
+    /// renderer the frame draws with, and re-lay the picker out from those
+    /// widths. Hit rects therefore match the painted glyphs, and stay matched
+    /// when an event handler rebuilds the layout without a renderer. Runs once
+    /// per paint.
+    fn measure_text(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        let m = self.metrics;
+        let style = theme
+            .text(TextRole::Label)
+            .with_weight(crate::text_render::TextWeight::Medium);
         let labels: Vec<String> = (0..self.crumb_rects.len())
             .filter_map(|idx| self.crumb_label_for(idx))
             .collect();
@@ -987,8 +1410,62 @@ impl FilePicker {
                 changed = true;
             }
         }
+        let mut face = |label: &str, primary: bool| {
+            footer_button(Rect::ZERO, label, primary).intrinsic_width(text_renderer, theme)
+        };
+        let widths = [
+            face(CANCEL_KEY, false),
+            face(&self.confirm_key(), true),
+            face(REPLACE_KEY, false),
+        ]
+        .map(|w| w.max(m.min_button_w));
+        #[allow(
+            clippy::float_cmp,
+            reason = "cache key: relayout only when a measured width actually changed"
+        )]
+        let widths_changed = widths != self.button_w;
+        if widths_changed {
+            self.button_w = widths;
+            changed = true;
+        }
+        let chip = theme.text(TextRole::Body);
+        let widest = self
+            .filters
+            .iter()
+            .map(|f| {
+                let (w, _) = text_renderer.measure_style(&self.filter_display(f), None, &chip);
+                f64::from(w)
+            })
+            .fold(0.0_f64, f64::max);
+        let filter_w = (widest + 2.0 * m.inset_x + m.icon_sm + m.gap).max(m.min_button_w);
+        if (filter_w - self.filter_w).abs() > f64::EPSILON {
+            self.filter_w = filter_w;
+            changed = true;
+        }
         if changed {
-            self.crumb_rects = self.compute_crumb_rects();
+            self.apply_layout_helper();
+        }
+    }
+
+    /// The translation key (or the app's own wording) of the confirm button.
+    fn confirm_key(&self) -> String {
+        self.accept_label.clone().unwrap_or_else(|| {
+            match self.mode {
+                FilePickerMode::Open => "widget-filepicker-open",
+                FilePickerMode::Save => "widget-filepicker-save",
+                FilePickerMode::Directory => "widget-filepicker-choose-folder",
+            }
+            .to_string()
+        })
+    }
+
+    /// A filter's name as shown: the built-in "All files" follows the
+    /// desktop's language, a caller's own label is shown as given.
+    fn filter_display(&self, filter: &FileFilter) -> String {
+        if filter.extensions.is_empty() && filter.label == ALL_FILES_LABEL {
+            tr("widget-filepicker-all-files")
+        } else {
+            filter.label.clone()
         }
     }
 
@@ -1251,13 +1728,13 @@ impl Widget for FilePicker {
     ) {
         self.adopt_theme(theme);
         self.apply_layout_helper();
-        self.measure_crumbs(text_renderer, theme);
+        self.measure_text(text_renderer, theme);
         let tokens = &theme.tokens;
-        let radius = f64::from(tokens.radii.control);
+        // A floating dialog: the panel radius, the theme's elevation and the
+        // same ground and edge as every other panel (HIG §9.1/§9.2).
+        let radius = f64::from(tokens.radii.panel);
         let frame = RoundedRect::from_rect(self.rect, radius);
-        // Panel role (HIG §9.1): panel ground + the derived panel edge as
-        // a crisp 1 px inset stroke; the declared `border_standard` sat
-        // within rounding distance of `raised` on the dark preset.
+        crate::chrome::shell::panel_shadow(scene, transform, self.rect, radius, theme, 1.0);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1274,8 +1751,10 @@ impl Widget for FilePicker {
         );
 
         self.draw_header_and_breadcrumbs(scene, transform, text_renderer, theme);
+        self.draw_sidebar(scene, transform, text_renderer, theme);
         self.draw_entry_rows(scene, transform, text_renderer, theme);
         self.draw_footer(scene, transform, text_renderer, theme, presence);
+        self.draw_filter_menu(scene, transform, text_renderer, theme);
         self.draw_replace_prompt(scene, transform, text_renderer, theme);
     }
 
@@ -1351,110 +1830,144 @@ impl Widget for FilePicker {
                 .map_or(filename_cursor, |(start, end)| {
                     if start == filename_cursor { end } else { start }
                 });
-        let controls = self
-            .a11y_controls()
-            .into_iter()
-            .filter_map(|control| {
-                Some(match control {
-                    PickerFocus::Up => AccessNode::new(Role::Button)
-                        .with_name("Up")
-                        .with_key(control.id())
-                        .with_bounds(self.up_rect)
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .focused(self.has_keyboard_focus && self.focus == Some(control)),
-                        ),
-                    PickerFocus::List => {
-                        let total = self.entries.len();
-                        let rows = self
-                            .entry_rows
-                            .iter()
-                            .filter_map(|(index, rect)| {
-                                let entry = self.entries.get(*index)?;
-                                Some(
+        let controls =
+            self.a11y_controls()
+                .into_iter()
+                .filter_map(|control| {
+                    Some(match control {
+                        PickerFocus::Up => {
+                            AccessNode::new(Role::Button)
+                                .with_name(tr("widget-filepicker-up"))
+                                .with_key(control.id())
+                                .with_bounds(self.up_rect)
+                                .with_state(AccessState::new().focusable(true).focused(
+                                    self.has_keyboard_focus && self.focus == Some(control),
+                                ))
+                        }
+                        PickerFocus::List => {
+                            let total = self.entries.len();
+                            let rows = self
+                                .entry_rows
+                                .iter()
+                                .filter_map(|(index, rect)| {
+                                    let entry = self.entries.get(*index)?;
+                                    Some(
+                                        AccessNode::new(Role::ListItem)
+                                            .with_name(entry.name.clone())
+                                            .with_hashed_key(&entry.path)
+                                            .with_bounds(*rect)
+                                            .with_position(index.saturating_add(1), total)
+                                            .with_state(AccessState {
+                                                focusable: true,
+                                                focused: self.has_keyboard_focus
+                                                    && self.focus == Some(PickerFocus::List)
+                                                    && self.selection.primary().or_else(|| {
+                                                        self.entry_rows
+                                                            .first()
+                                                            .map(|(first, _)| *first)
+                                                    }) == Some(*index),
+                                                selected: self.selection.is_selected(*index),
+                                                expanded: entry.is_dir.then_some(false),
+                                                ..Default::default()
+                                            }),
+                                    )
+                                })
+                                .collect();
+                            AccessNode::new(Role::List)
+                                .with_name(tr(if self.mode == FilePickerMode::Directory {
+                                    "widget-filepicker-folders"
+                                } else {
+                                    "widget-filepicker-files"
+                                }))
+                                .with_key(control.id())
+                                .with_bounds(self.list_rect())
+                                .with_state(AccessState::new().focusable(true).focused(
+                                    self.has_keyboard_focus && self.focus == Some(control),
+                                ))
+                                .with_children(rows)
+                        }
+                        PickerFocus::Places => {
+                            let total = self.places.len();
+                            let active = self.active_place();
+                            let rows = self
+                                .places
+                                .iter()
+                                .enumerate()
+                                .zip(&self.place_rects)
+                                .map(|((index, place), rect)| {
                                     AccessNode::new(Role::ListItem)
-                                        .with_name(entry.name.clone())
-                                        .with_hashed_key(&entry.path)
+                                        .with_name(place.label())
+                                        .with_hashed_key(&place.path)
                                         .with_bounds(*rect)
                                         .with_position(index.saturating_add(1), total)
-                                        .with_state(AccessState {
-                                            focusable: true,
-                                            focused: self.has_keyboard_focus
-                                                && self.focus == Some(PickerFocus::List)
-                                                && self.selection.primary().or_else(|| {
-                                                    self.entry_rows.first().map(|(first, _)| *first)
-                                                }) == Some(*index),
-                                            selected: self.selection.is_selected(*index),
-                                            expanded: entry.is_dir.then_some(false),
-                                            ..Default::default()
-                                        }),
-                                )
-                            })
-                            .collect();
-                        AccessNode::new(Role::List)
-                            .with_name(if self.mode == FilePickerMode::Directory {
-                                "Folders"
-                            } else {
-                                "Files"
-                            })
-                            .with_key(control.id())
-                            .with_bounds(self.list_rect())
-                            .with_state(
-                                AccessState::new().focusable(true).focused(
+                                        .with_state(
+                                            AccessState::new()
+                                                .focusable(true)
+                                                .selected(active == Some(index)),
+                                        )
+                                })
+                                .collect();
+                            AccessNode::new(Role::List)
+                                .with_name(tr("widget-filepicker-places"))
+                                .with_key(control.id())
+                                .with_bounds(self.sidebar_rect())
+                                .with_state(AccessState::new().focusable(true).focused(
                                     self.has_keyboard_focus && self.focus == Some(control),
-                                ),
-                            )
-                            .with_children(rows)
-                    }
-                    PickerFocus::Filter => AccessNode::new(Role::ComboBox)
-                        .with_name("File type")
-                        .with_value(self.active_filter_label())
-                        .with_key(control.id())
-                        .with_bounds(self.filter_rect)
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .focused(self.has_keyboard_focus && self.focus == Some(control))
-                                .expanded(false),
-                        ),
-                    PickerFocus::Filename => AccessNode::new(Role::TextInput)
-                        .with_name("Filename")
-                        .with_value(self.filename().to_owned())
-                        .with_text_selection(filename_anchor, filename_cursor)
-                        .with_key(control.id())
-                        .with_bounds(self.filename_rect)
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .focused(self.has_keyboard_focus && self.focus == Some(control)),
-                        ),
-                    PickerFocus::Cancel | PickerFocus::Confirm => {
-                        let (label, rect, enabled) = if control == PickerFocus::Cancel {
-                            ("Cancel", self.cancel_rect, true)
-                        } else {
-                            (self.confirm_label(), self.open_rect, self.can_commit_open())
-                        };
-                        AccessNode::new(Role::Button)
-                            .with_name(label)
+                                ))
+                                .with_children(rows)
+                        }
+                        PickerFocus::Filter => AccessNode::new(Role::ComboBox)
+                            .with_name(tr("widget-filepicker-file-type"))
+                            .with_value(self.active_filter_label())
                             .with_key(control.id())
-                            .with_bounds(rect)
+                            .with_bounds(self.filter_rect)
                             .with_state(
                                 AccessState::new()
-                                    .focusable(enabled)
-                                    .focused(
-                                        enabled
-                                            && self.has_keyboard_focus
-                                            && self.focus == Some(control),
-                                    )
-                                    .disabled(!enabled),
-                            )
-                    }
-                    // Only on the replace prompt, which replaces this list.
-                    PickerFocus::KeepExisting | PickerFocus::Replace => return None,
+                                    .focusable(true)
+                                    .focused(self.has_keyboard_focus && self.focus == Some(control))
+                                    .expanded(self.filter_open),
+                            ),
+                        PickerFocus::Filename => {
+                            AccessNode::new(Role::TextInput)
+                                .with_name(tr("widget-filepicker-name-accessible"))
+                                .with_value(self.filename().to_owned())
+                                .with_text_selection(filename_anchor, filename_cursor)
+                                .with_key(control.id())
+                                .with_bounds(self.filename_rect)
+                                .with_state(AccessState::new().focusable(true).focused(
+                                    self.has_keyboard_focus && self.focus == Some(control),
+                                ))
+                        }
+                        PickerFocus::Cancel | PickerFocus::Confirm => {
+                            let (label, rect, enabled) = if control == PickerFocus::Cancel {
+                                (tr(CANCEL_KEY), self.cancel_rect, true)
+                            } else {
+                                (
+                                    tr(&self.confirm_key()),
+                                    self.open_rect,
+                                    self.can_commit_open(),
+                                )
+                            };
+                            AccessNode::new(Role::Button)
+                                .with_name(label)
+                                .with_key(control.id())
+                                .with_bounds(rect)
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(enabled)
+                                        .focused(
+                                            enabled
+                                                && self.has_keyboard_focus
+                                                && self.focus == Some(control),
+                                        )
+                                        .disabled(!enabled),
+                                )
+                        }
+                        // Only on the replace prompt, which replaces this list.
+                        PickerFocus::KeepExisting | PickerFocus::Replace => return None,
+                    })
                 })
-            })
-            .collect();
+                .collect();
         // The replace prompt is modal over the picker: the controls behind
         // it cannot be reached until it is answered.
         let controls = match self.replace_prompt_accessibility() {
@@ -1520,6 +2033,8 @@ impl Widget for FilePicker {
         let control = *self.a11y_controls().get(control_index)?;
         match (control, rest) {
             (PickerFocus::Up, []) => Some(self.up_rect),
+            (PickerFocus::Places, []) => Some(self.sidebar_rect()),
+            (PickerFocus::Places, [row_index]) => self.place_rects.get(*row_index).copied(),
             (PickerFocus::List, []) => Some(self.list_rect()),
             (PickerFocus::List, [row_index]) => {
                 self.entry_rows.get(*row_index).map(|(_, rect)| *rect)
@@ -1552,7 +2067,16 @@ impl Widget for FilePicker {
         if control == PickerFocus::Confirm && !self.can_commit_open() {
             return false;
         }
-        if control == PickerFocus::List {
+        if control == PickerFocus::Places {
+            if let [row_index] = rest {
+                if *row_index >= self.places.len() {
+                    return false;
+                }
+                self.place_cursor = Some(*row_index);
+            } else if !rest.is_empty() {
+                return false;
+            }
+        } else if control == PickerFocus::List {
             if let [row_index] = rest {
                 let Some((entry_index, _)) = self.entry_rows.get(*row_index) else {
                     return false;
@@ -1609,7 +2133,20 @@ impl Widget for FilePicker {
         else {
             return false;
         };
-        if control == PickerFocus::List {
+        if control == PickerFocus::Places {
+            if let [place_key] = rest {
+                let Some(index) = self
+                    .places
+                    .iter()
+                    .position(|place| hash_key(&place.path) == *place_key)
+                else {
+                    return false;
+                };
+                self.place_cursor = Some(index);
+            } else if !rest.is_empty() {
+                return false;
+            }
+        } else if control == PickerFocus::List {
             if let [entry_key] = rest {
                 let Some(index) = self
                     .entries
@@ -1675,10 +2212,11 @@ impl FilePicker {
         };
         Some(
             AccessNode::new(Role::Dialog)
-                .with_name(format!(
-                    "A file named \u{201c}{name}\u{201d} already exists here. Replace it?"
+                .with_name(crate::i18n::widget_format(
+                    "widget-filepicker-replace-question",
+                    &[("name", name.into())],
                 ))
-                .with_description(REPLACE_PROMPT_DETAIL)
+                .with_description(tr("widget-filepicker-replace-detail"))
                 .with_key(REPLACE_PROMPT_KEY)
                 .with_bounds(self.replace_card_rect)
                 .with_state(
@@ -1688,8 +2226,12 @@ impl FilePicker {
                         .focused(self.has_keyboard_focus),
                 )
                 .with_children(vec![
-                    button(PickerFocus::KeepExisting, "Cancel", self.keep_existing_rect),
-                    button(PickerFocus::Replace, "Replace", self.replace_rect),
+                    button(
+                        PickerFocus::KeepExisting,
+                        &tr(CANCEL_KEY),
+                        self.keep_existing_rect,
+                    ),
+                    button(PickerFocus::Replace, &tr(REPLACE_KEY), self.replace_rect),
                 ]),
         )
     }
@@ -1706,6 +2248,7 @@ impl FilePicker {
             return;
         };
         let tokens = &theme.tokens;
+        let m = self.metrics;
         let radius = f64::from(tokens.radii.panel);
         let frame = RoundedRect::from_rect(self.rect, radius);
         scene.push_layer(
@@ -1720,6 +2263,7 @@ impl FilePicker {
 
         let card = self.replace_card_rect;
         let card_shape = RoundedRect::from_rect(card, radius);
+        crate::chrome::shell::panel_shadow(scene, transform, card, radius, theme, 1.0);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1735,51 +2279,48 @@ impl FilePicker {
             &crate::surface::edge_outline(card, radius),
         );
 
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a card a few hundred logical pixels wide fits f32 exactly enough for wrapping"
-        )]
-        let text_w = (card.width() - 2.0 * PADDING).max(0.0) as f32;
+        let text_w = px((card.width() - 2.0 * m.pad).max(0.0));
         let heading_style = theme.text(TextRole::Heading);
-        let heading = format!("Replace \u{201c}{name}\u{201d}?");
+        let heading = crate::i18n::widget_format(
+            "widget-filepicker-replace-title",
+            &[("name", name.clone().into())],
+        );
         let (_, heading_h) = text_renderer.measure_style(&heading, Some(text_w), &heading_style);
         text_renderer.draw_style(
             scene,
             &heading,
             tokens.colors.text_primary,
-            transform.pre_translate(Vec2::new(card.x0 + PADDING, card.y0 + PADDING)),
+            transform.pre_translate(Vec2::new(card.x0 + m.pad, card.y0 + m.pad)),
             Some(text_w),
             &heading_style,
         );
-        let body_style = theme.text(TextRole::Body);
-        let body = format!(
-            "A file named \u{201c}{name}\u{201d} already exists here. {REPLACE_PROMPT_DETAIL}"
-        );
+        let body =
+            crate::i18n::widget_format("widget-filepicker-replace-body", &[("name", name.into())]);
         text_renderer.draw_style(
             scene,
             &body,
             tokens.colors.text_dim,
             transform.pre_translate(Vec2::new(
-                card.x0 + PADDING,
-                card.y0 + PADDING + f64::from(heading_h) + f64::from(tokens.spacing.s2),
+                card.x0 + m.pad,
+                card.y0 + m.pad + f64::from(heading_h) + m.gap,
             )),
             Some(text_w),
-            &body_style,
+            &theme.text(TextRole::Body),
         );
 
-        let keep = footer_button(self.keep_existing_rect, "Cancel", false)
+        let keep = footer_button(self.keep_existing_rect, CANCEL_KEY, false)
             .hovered(self.hover_prompt == Some(PickerFocus::KeepExisting))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::KeepExisting));
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &keep);
-        let replace = footer_button(self.replace_rect, "Replace", false)
+        let replace = footer_button(self.replace_rect, REPLACE_KEY, false)
             .role(ButtonRole::Destructive)
             .hovered(self.hover_prompt == Some(PickerFocus::Replace))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Replace));
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &replace);
     }
 
-    /// Title bar, up button and breadcrumb trail. Split out of `draw` to
-    /// keep that function readable.
+    /// Title, up button and the path bar's breadcrumbs. Split out of `draw`
+    /// to keep that function readable.
     fn draw_header_and_breadcrumbs(
         &self,
         scene: &mut Scene,
@@ -1788,89 +2329,102 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let title_style = tokens.typography.style(TextRole::Body);
+        let m = self.metrics;
         text_renderer.draw_style(
             scene,
             &self.title,
             tokens.colors.text_primary,
-            transform.pre_translate(Vec2::new(
-                self.rect.x0 + PADDING,
-                self.rect.y0 + self.metrics.header_inset_y,
-            )),
-            None,
-            &title_style,
+            transform.pre_translate(Vec2::new(self.rect.x0 + m.pad, self.rect.y0 + m.pad)),
+            Some((self.rect.width() - 2.0 * m.pad).max(0.0) as f32),
+            &theme.text(TextRole::Heading),
         );
-        if self.can_go_up() {
-            let up_hovered = self.up_rect.contains(self.last_cursor);
-            if up_hovered {
-                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.detail));
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    tokens.colors.intent.selection_hover,
-                    None,
-                    &s,
-                );
-            }
-            if self.has_keyboard_focus && self.focus == Some(PickerFocus::Up) {
-                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.detail));
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    tokens.colors.border_focus,
-                    None,
-                    &s,
-                );
-            }
-            let ix =
-                self.up_rect.x0 + (self.up_rect.width() - f64::from(tokens.metrics.icon_md)) / 2.0;
-            let iy =
-                self.up_rect.y0 + (self.up_rect.height() - f64::from(tokens.metrics.icon_md)) / 2.0;
-            let icon_rect = Rect::new(
-                ix,
-                iy,
-                ix + f64::from(tokens.metrics.icon_md),
-                iy + f64::from(tokens.metrics.icon_md),
-            );
-            draw_icon(
-                scene,
+
+        let can_up = self.can_go_up();
+        let up = self.up_rect;
+        let shape = RoundedRect::from_rect(up, f64::from(tokens.radii.control));
+        if can_up && up.contains(self.last_cursor) {
+            scene.fill(
+                Fill::NonZero,
                 transform,
-                icon_rect,
-                Icon::ArrowUp,
-                tokens.colors.text_primary,
-                LUCIDE_DEFAULT_STROKE_PX,
+                tokens.colors.intent.selection_hover,
+                None,
+                &shape,
             );
         }
-        let crumb_style = tokens.typography.style(TextRole::Caption);
+        if can_up && self.has_keyboard_focus && self.focus == Some(PickerFocus::Up) {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                tokens.colors.border_focus,
+                None,
+                &shape,
+            );
+        }
+        draw_icon(
+            scene,
+            transform,
+            centered(up, m.icon_md),
+            Icon::ArrowUp,
+            if can_up {
+                tokens.colors.text_primary
+            } else {
+                tokens.colors.text_dim
+            },
+            LUCIDE_DEFAULT_STROKE_PX,
+        );
+
+        // The path bar is a field-like well, so the crumbs read as a place
+        // rather than as loose text.
+        let bar = self.path_rect();
+        let well = RoundedRect::from_rect(bar, f64::from(tokens.radii.control));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.base,
+            None,
+            &well,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(tokens.colors.surfaces.base),
+            None,
+            &well,
+        );
+        let crumb_style = theme.text(TextRole::Label);
+        let current = crumb_style
+            .clone()
+            .with_weight(crate::text_render::TextWeight::Medium);
         let crumb_count = self.crumb_rects.len();
         for (idx, (_target, r)) in self.crumb_rects.iter().enumerate() {
             let label = self.crumb_label_for(idx).unwrap_or_default();
-            let hovered = r.contains(self.last_cursor);
-            let color = if hovered {
+            let is_current = idx.saturating_add(1) == crumb_count;
+            let color = if is_current || r.contains(self.last_cursor) {
                 tokens.colors.text_primary
             } else {
                 tokens.colors.text_dim
             };
+            let style = if is_current { &current } else { &crumb_style };
+            let (_, th) = text_renderer.measure_style(&label, None, style);
             text_renderer.draw_style(
                 scene,
                 &label,
                 color,
-                transform
-                    .pre_translate(Vec2::new(r.x0 + self.metrics.crumb_label_inset, r.y0 + 2.0)),
+                transform.pre_translate(Vec2::new(r.x0, r.center().y - f64::from(th) / 2.0)),
                 None,
-                &crumb_style,
+                style,
             );
-            if idx.saturating_add(1) < crumb_count {
-                let sep_rect = Rect::new(
-                    r.x1 - self.metrics.crumb_separator_w,
-                    r.y0,
-                    r.x1,
-                    r.y0 + f64::from(tokens.metrics.icon_sm),
+            if !is_current {
+                let sep = Rect::new(
+                    r.x1 - m.crumb_separator_w - m.gap / 2.0,
+                    r.center().y - m.icon_sm / 2.0,
+                    r.x1 - m.gap / 2.0,
+                    r.center().y + m.icon_sm / 2.0,
                 );
                 draw_icon(
                     scene,
                     transform,
-                    sep_rect,
+                    sep,
                     Icon::ChevronRight,
                     tokens.colors.text_dim,
                     LUCIDE_DEFAULT_STROKE_PX,
@@ -1879,8 +2433,105 @@ impl FilePicker {
         }
     }
 
-    /// The scrollable list of visible entry rows. Split out of `draw` to
-    /// keep that function readable.
+    /// The places sidebar: a quiet wash beside the list, one row per place.
+    fn draw_sidebar(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.has_sidebar() {
+            return;
+        }
+        let tokens = &theme.tokens;
+        let m = self.metrics;
+        let ground = crate::chrome::panel_ground(theme);
+        let side = self.sidebar_rect();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::tokens::Colors::hairline_on(ground, 10),
+            None,
+            &side,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::chrome::panel_border(theme),
+            None,
+            &Rect::new(side.x1 - 1.0, side.y0, side.x1, side.y1),
+        );
+        let style = theme.text(TextRole::Body);
+        let active = self.active_place();
+        for (i, rect) in self.place_rects.iter().enumerate() {
+            let Some(place) = self.places.get(i) else {
+                break;
+            };
+            let shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.control));
+            if active == Some(i) {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    tokens.colors.lift_on(ground, 1.0),
+                    None,
+                    &shape,
+                );
+            } else if self.hover_place == Some(i) {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    crate::tokens::Colors::hairline_on(ground, crate::chrome::HAIRLINE_ALPHA),
+                    None,
+                    &shape,
+                );
+            }
+            if self.has_keyboard_focus
+                && self.focus == Some(PickerFocus::Places)
+                && self.place_cursor == Some(i)
+            {
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    tokens.colors.border_focus,
+                    None,
+                    &shape,
+                );
+            }
+            let icon = Rect::new(
+                rect.x0 + m.inset_x,
+                rect.center().y - m.icon_md / 2.0,
+                rect.x0 + m.inset_x + m.icon_md,
+                rect.center().y + m.icon_md / 2.0,
+            );
+            draw_icon(
+                scene,
+                transform,
+                icon,
+                place.icon,
+                tokens.colors.text_dim,
+                LUCIDE_DEFAULT_STROKE_PX,
+            );
+            let x = icon.x1 + m.gap;
+            let label = text_renderer.elide_to_width_style(
+                &place.label(),
+                (rect.x1 - m.inset_x - x).max(0.0) as f32,
+                &style,
+            );
+            let (_, th) = text_renderer.measure_style(&label, None, &style);
+            text_renderer.draw_style(
+                scene,
+                &label,
+                tokens.colors.text_primary,
+                transform.pre_translate(Vec2::new(x, rect.center().y - f64::from(th) / 2.0)),
+                None,
+                &style,
+            );
+        }
+    }
+
+    /// The column headings and the visible entry rows, or the empty state.
+    /// Split out of `draw` to keep that function readable.
     fn draw_entry_rows(
         &self,
         scene: &mut Scene,
@@ -1889,29 +2540,100 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let row_style = tokens.typography.style(TextRole::Caption);
+        let m = self.metrics;
+        let ground = crate::chrome::panel_ground(theme);
+        let (show_size, show_date) = self.shows_columns();
+        let columns = self.columns_rect();
+        let list = self.list_rect();
+        let date_x0 = if show_date {
+            list.x1 - m.inset_x - m.date_w
+        } else {
+            list.x1
+        };
+        let size_x1 = if show_date {
+            date_x0 - m.pad
+        } else {
+            list.x1 - m.inset_x
+        };
+        let name_x0 = list.x0 + m.inset_x + m.icon_md + m.gap;
+        let name_x1 = if show_size {
+            size_x1 - m.size_w - m.gap
+        } else {
+            list.x1 - m.inset_x
+        };
+
+        // Column headings.
+        let head = theme.text(TextRole::Caption);
+        let head = head.with_weight(crate::text_render::TextWeight::Medium);
+        let head_y = columns.center().y;
+        let mut heading = |scene: &mut Scene, key: &str, x: f64, right: Option<f64>| {
+            let label = tr(key);
+            let (w, h) = text_renderer.measure_style(&label, None, &head);
+            let x = right.map_or(x, |r| r - f64::from(w));
+            text_renderer.draw_style(
+                scene,
+                &label,
+                tokens.colors.text_dim,
+                transform.pre_translate(Vec2::new(x, head_y - f64::from(h) / 2.0)),
+                None,
+                &head,
+            );
+        };
+        heading(scene, "widget-filepicker-column-name", name_x0, None);
+        if show_size {
+            heading(scene, "widget-filepicker-column-size", 0.0, Some(size_x1));
+        }
+        if show_date {
+            heading(scene, "widget-filepicker-column-modified", date_x0, None);
+        }
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::tokens::Colors::hairline_on(ground, crate::chrome::HAIRLINE_ALPHA),
+            None,
+            &Rect::new(columns.x0, columns.y1 - 1.0, columns.x1, columns.y1),
+        );
+
+        if self.entries.is_empty() {
+            let style = theme.text(TextRole::Body);
+            let message = tr("widget-filepicker-empty");
+            let (w, h) = text_renderer.measure_style(&message, None, &style);
+            text_renderer.draw_style(
+                scene,
+                &message,
+                tokens.colors.text_dim,
+                transform.pre_translate(Vec2::new(
+                    list.center().x - f64::from(w) / 2.0,
+                    list.center().y - f64::from(h) / 2.0,
+                )),
+                None,
+                &style,
+            );
+            return;
+        }
+
+        let name_style = theme.text(TextRole::Body);
+        let meta_style = theme
+            .text(TextRole::Label)
+            .with_kind(crate::text_render::TextKind::Numeric);
         for (i, rect) in &self.entry_rows {
             let i = *i;
             let is_selected = self.selection.is_selected(i);
             let is_hover = self.hover_entry == Some(i) && !is_selected;
             // HIG §9.3: an idle row is transparent and hover is a lift; only
             // the selected row carries a fill. The lift is a hairline wash
-            // measured against the panel ground the row sits on (a
-            // base-relative `Colors::lift` lands below `panel_ground` on the
-            // dark preset and would darken the hovered row). A `raised` idle
-            // fill was invisible on the old `raised` panel and read as a
-            // stack of bands once the panel took its own ground.
+            // measured against the panel ground the row sits on.
             let bg = if is_selected {
                 Some(tokens.colors.lift_on(tokens.colors.surfaces.overlay, 1.0))
             } else if is_hover {
                 Some(crate::tokens::Colors::hairline_on(
-                    crate::chrome::panel_ground(theme),
+                    ground,
                     crate::chrome::HAIRLINE_ALPHA,
                 ))
             } else {
                 None
             };
-            let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.detail));
+            let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.control));
             if let Some(bg) = bg {
                 scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
             }
@@ -1931,45 +2653,104 @@ impl FilePicker {
                     &row_shape,
                 );
             }
-
-            if let Some(entry) = self.entries.get(i) {
-                let fg = tokens.colors.text_primary;
-                let inset_x = self.metrics.inset_x;
-                let icon_y = rect.y0 + (ROW_HEIGHT - f64::from(tokens.metrics.icon_sm)) / 2.0;
-                let icon_rect = Rect::new(
-                    rect.x0 + inset_x,
-                    icon_y,
-                    rect.x0 + inset_x + f64::from(tokens.metrics.icon_sm),
-                    icon_y + f64::from(tokens.metrics.icon_sm),
-                );
-                draw_icon(
-                    scene,
-                    transform,
-                    icon_rect,
-                    icon_for_path(&entry.path, entry.is_dir),
-                    fg,
-                    LUCIDE_DEFAULT_STROKE_PX,
-                );
-                // Centre on the measured line, not the font size, so the
-                // name shares the icon's vertical centre.
-                let (_, name_h) = text_renderer.measure_style(&entry.name, None, &row_style);
+            let Some(entry) = self.entries.get(i) else {
+                continue;
+            };
+            let fg = tokens.colors.text_primary;
+            let icon_rect = Rect::new(
+                rect.x0 + m.inset_x,
+                rect.center().y - m.icon_md / 2.0,
+                rect.x0 + m.inset_x + m.icon_md,
+                rect.center().y + m.icon_md / 2.0,
+            );
+            draw_icon(
+                scene,
+                transform,
+                icon_rect,
+                icon_for_path(&entry.path, entry.is_dir),
+                if entry.is_dir {
+                    fg
+                } else {
+                    tokens.colors.text_dim
+                },
+                LUCIDE_DEFAULT_STROKE_PX,
+            );
+            let name = text_renderer.elide_to_width_style(
+                &entry.name,
+                px((name_x1 - name_x0).max(0.0)),
+                &name_style,
+            );
+            let (_, name_h) = text_renderer.measure_style(&name, None, &name_style);
+            text_renderer.draw_style(
+                scene,
+                &name,
+                fg,
+                transform.pre_translate(Vec2::new(
+                    name_x0,
+                    rect.center().y - f64::from(name_h) / 2.0,
+                )),
+                None,
+                &name_style,
+            );
+            let mut meta = |scene: &mut Scene, text: &str, x: f64, right: bool| {
+                let (w, h) = text_renderer.measure_style(text, None, &meta_style);
+                let x = if right { x - f64::from(w) } else { x };
                 text_renderer.draw_style(
                     scene,
-                    &entry.name,
-                    fg,
-                    transform.pre_translate(Vec2::new(
-                        rect.x0 + inset_x + f64::from(tokens.metrics.icon_sm) + inset_x,
-                        rect.y0 + (ROW_HEIGHT - f64::from(name_h)) / 2.0,
-                    )),
+                    text,
+                    tokens.colors.text_dim,
+                    transform.pre_translate(Vec2::new(x, rect.center().y - f64::from(h) / 2.0)),
                     None,
-                    &row_style,
+                    &meta_style,
+                );
+            };
+            if show_size && !entry.is_dir {
+                meta(scene, &crate::format::bytes_si(entry.size), size_x1, true);
+            }
+            if show_date && let Some(modified) = entry.modified {
+                let Some(when) = chrono::DateTime::from_timestamp(modified, 0)
+                    .map(|utc| utc.with_timezone(&chrono::Local))
+                else {
+                    continue;
+                };
+                meta(
+                    scene,
+                    &when.format("%Y-%m-%d %H:%M").to_string(),
+                    date_x0,
+                    false,
                 );
             }
         }
+
+        // A thin scroll thumb in the right margin when the folder overflows.
+        let rows = self.visible_rows();
+        let total = self.entries.len();
+        if total > rows && rows > 0 {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "entry counts are far below f64's exact-integer range"
+            )]
+            let (rows_f, total_f, first_f) = (rows as f64, total as f64, self.first_visible as f64);
+            let thumb_h = (list.height() * rows_f / total_f).max(m.row_h / 2.0);
+            let travel = (list.height() - thumb_h).max(0.0);
+            let max_first = (total_f - rows_f).max(1.0);
+            let y0 = list.y0 + travel * (first_f / max_first).clamp(0.0, 1.0);
+            let x = self.rect.x1 - m.pad / 2.0 - m.scrollbar_w / 2.0;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                crate::tokens::Colors::hairline_on(ground, 72),
+                None,
+                &RoundedRect::from_rect(
+                    Rect::new(x, y0, x + m.scrollbar_w, y0 + thumb_h),
+                    m.scrollbar_w / 2.0,
+                ),
+            );
+        }
     }
 
-    /// Save-mode filename field, filter chip and Cancel/Open(Save)
-    /// buttons. Split out of `draw` to keep that function readable.
+    /// The footer: Save's name row, the type dropdown and the Cancel and
+    /// confirm buttons. Split out of `draw` to keep that function readable.
     fn draw_footer(
         &mut self,
         scene: &mut Scene,
@@ -1978,24 +2759,127 @@ impl FilePicker {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let tokens = &theme.tokens;
-        let row_style = tokens.typography.style(TextRole::Body);
+        let m = self.metrics;
+        let ground = crate::chrome::panel_ground(theme);
+        let top = self.rect.y1 - self.footer_h();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::tokens::Colors::hairline_on(ground, crate::chrome::HAIRLINE_ALPHA),
+            None,
+            &Rect::new(self.rect.x0, top, self.rect.x1, top + 1.0),
+        );
         if self.mode == FilePickerMode::Save {
+            let label = tr("widget-filepicker-name-label");
+            let style = theme.text(TextRole::Label);
+            let (_, th) = text_renderer.measure_style(&label, None, &style);
+            text_renderer.draw_style(
+                scene,
+                &label,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate(Vec2::new(
+                    self.rect.x0 + m.pad,
+                    self.filename_rect.center().y - f64::from(th) / 2.0,
+                )),
+                None,
+                &style,
+            );
             self.draw_filename_field(scene, transform, text_renderer, theme, presence);
         }
         if self.mode != FilePickerMode::Directory && self.filters.len() > 1 {
-            self.draw_filter_chip(scene, transform, text_renderer, theme, &row_style);
+            self.draw_filter_chip(scene, transform, text_renderer, theme);
         }
 
-        let cancel = footer_button(self.cancel_rect, "Cancel", false)
+        let cancel = footer_button(self.cancel_rect, CANCEL_KEY, false)
             .hovered(self.hover_button == Some(0))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel));
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &cancel);
-        let confirm = footer_button(self.open_rect, self.confirm_label(), true)
+        let confirm_key = self.confirm_key();
+        let confirm = footer_button(self.open_rect, &confirm_key, true)
             .hovered(self.hover_button == Some(1))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm))
             .disabled(!self.can_commit_open());
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &confirm);
+    }
+
+    /// The open type menu, floating above its chip like any other menu.
+    fn draw_filter_menu(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.filter_open || self.replace_prompt.is_some() {
+            return;
+        }
+        let tokens = &theme.tokens;
+        let m = self.metrics;
+        let radius = f64::from(tokens.radii.control);
+        let menu = self.filter_menu_rect;
+        crate::chrome::shell::panel_shadow(scene, transform, menu, radius, theme, 1.0);
+        let shape = RoundedRect::from_rect(menu, radius);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::chrome::panel_ground(theme),
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::chrome::panel_border(theme),
+            None,
+            &shape,
+        );
+        let style = theme.text(TextRole::Body);
+        for (i, (filter, row)) in self.filters.iter().zip(&self.filter_rows).enumerate() {
+            let highlighted = self.filter_hover == Some(i);
+            if highlighted {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    tokens
+                        .colors
+                        .lift_on(crate::chrome::panel_ground(theme), 1.0),
+                    None,
+                    &RoundedRect::from_rect(*row, f64::from(tokens.radii.detail)),
+                );
+            }
+            let label = text_renderer.elide_to_width_style(
+                &self.filter_display(filter),
+                px((row.width() - 2.0 * m.inset_x - m.icon_sm - m.gap).max(0.0)),
+                &style,
+            );
+            let (_, th) = text_renderer.measure_style(&label, None, &style);
+            text_renderer.draw_style(
+                scene,
+                &label,
+                tokens.colors.text_primary,
+                transform.pre_translate(Vec2::new(
+                    row.x0 + m.inset_x,
+                    row.center().y - f64::from(th) / 2.0,
+                )),
+                None,
+                &style,
+            );
+            if i == self.active_filter {
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(
+                        row.x1 - m.inset_x - m.icon_sm,
+                        row.center().y - m.icon_sm / 2.0,
+                        row.x1 - m.inset_x,
+                        row.center().y + m.icon_sm / 2.0,
+                    ),
+                    Icon::Check,
+                    tokens.colors.text_primary,
+                    LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
+        }
     }
 
     /// Save-mode filename text field. Split out of `draw_footer` to keep
@@ -2050,20 +2934,19 @@ impl FilePicker {
         );
     }
 
-    /// Active-filter chip, shown only when there is more than one filter to
-    /// cycle through. Split out of `draw_footer` to keep that under the
-    /// line cap.
+    /// The type dropdown's chip: the active filter and a chevron, shown only
+    /// when there is more than one filter to choose from.
     fn draw_filter_chip(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        row_style: &TextStyle,
     ) {
         let tokens = &theme.tokens;
-        let hovered = self.filter_rect.contains(self.last_cursor);
-        let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.detail));
+        let m = self.metrics;
+        let hovered = self.filter_rect.contains(self.last_cursor) || self.filter_open;
+        let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.control));
         let fill = if hovered {
             tokens.colors.lift_on(tokens.colors.surfaces.raised, 0.5)
         } else {
@@ -2087,19 +2970,46 @@ impl FilePicker {
                 &s,
             );
         }
-        // Centre on the measured line, not the font size.
-        let (_, filter_h) =
-            text_renderer.measure_style(self.active_filter_label(), None, row_style);
+        let style = theme.text(TextRole::Body);
+        let chevron = Rect::new(
+            self.filter_rect.x1 - m.inset_x - m.icon_sm,
+            self.filter_rect.center().y - m.icon_sm / 2.0,
+            self.filter_rect.x1 - m.inset_x,
+            self.filter_rect.center().y + m.icon_sm / 2.0,
+        );
+        draw_icon(
+            scene,
+            transform,
+            chevron,
+            if self.filter_open {
+                Icon::ChevronUp
+            } else {
+                Icon::ChevronDown
+            },
+            tokens.colors.text_dim,
+            LUCIDE_DEFAULT_STROKE_PX,
+        );
+        let active = self
+            .filters
+            .get(self.active_filter)
+            .map(|f| self.filter_display(f))
+            .unwrap_or_default();
+        let label = text_renderer.elide_to_width_style(
+            &active,
+            px((chevron.x0 - m.gap - self.filter_rect.x0 - m.inset_x).max(0.0)),
+            &style,
+        );
+        let (_, th) = text_renderer.measure_style(&label, None, &style);
         text_renderer.draw_style(
             scene,
-            self.active_filter_label(),
+            &label,
             tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(
-                self.filter_rect.x0 + self.metrics.inset_x,
-                self.filter_rect.y0 + (self.filter_rect.height() - f64::from(filter_h)) / 2.0,
+                self.filter_rect.x0 + m.inset_x,
+                self.filter_rect.center().y - f64::from(th) / 2.0,
             )),
             None,
-            row_style,
+            &style,
         );
     }
 
@@ -2129,9 +3039,21 @@ impl FilePicker {
             .iter()
             .find(|(_, r)| r.contains(p))
             .map(|(i, _)| *i);
-        if new_button != self.hover_button || new_entry != self.hover_entry {
+        let new_place = self.place_rects.iter().position(|r| r.contains(p));
+        if self.filter_open
+            && let Some(row) = self.filter_rows.iter().position(|r| r.contains(p))
+            && self.filter_hover != Some(row)
+        {
+            self.filter_hover = Some(row);
+            *handled = true;
+        }
+        if new_button != self.hover_button
+            || new_entry != self.hover_entry
+            || new_place != self.hover_place
+        {
             self.hover_button = new_button;
             self.hover_entry = new_entry;
+            self.hover_place = new_place;
             *handled = true;
         }
     }
@@ -2141,7 +3063,7 @@ impl FilePicker {
     fn on_mouse_wheel(&mut self, delta: &winit::event::MouseScrollDelta, handled: &mut bool) {
         let dy = match delta {
             winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-            winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y / ROW_HEIGHT,
+            winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y / self.metrics.row_h,
         };
         // Wheel-up scrolls the list up (toward the start). `rows` is
         // clamped into 0.0..=f64::from(u32::MAX) immediately before each
@@ -2176,6 +3098,19 @@ impl FilePicker {
     /// `handle_event` to keep that function readable.
     fn on_left_click(&mut self, modifiers: winit::event::Modifiers, handled: &mut bool) {
         let p = self.last_cursor;
+        if self.filter_open {
+            self.filter_open = false;
+            if let Some(row) = self.filter_rows.iter().position(|r| r.contains(p)) {
+                self.set_filter(row);
+                *handled = true;
+                return;
+            }
+            // A press on the chip that opened the menu closes it.
+            if self.filter_rect.contains(p) {
+                *handled = true;
+                return;
+            }
+        }
         if self.cancel_rect.contains(p) {
             self.focus_control(PickerFocus::Cancel);
             self.click_cancel();
@@ -2199,7 +3134,13 @@ impl FilePicker {
             && self.filter_rect.contains(p)
         {
             self.focus_control(PickerFocus::Filter);
-            self.cycle_filter();
+            self.toggle_filter_menu();
+            *handled = true;
+            return;
+        }
+        if let Some(i) = self.place_rects.iter().position(|r| r.contains(p)) {
+            self.focus_control(PickerFocus::Places);
+            self.go_place(i);
             *handled = true;
             return;
         }
@@ -2239,9 +3180,22 @@ impl FilePicker {
         let shift = modifiers.state().shift_key();
         self.has_keyboard_focus = true;
         self.ensure_valid_focus();
+        if self.filter_open {
+            self.on_filter_menu_key(&ke.logical_key);
+            *handled = true;
+            return;
+        }
         match &ke.logical_key {
             Key::Named(NamedKey::Tab) => {
                 self.move_focus(shift);
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowDown) if self.focus == Some(PickerFocus::Places) => {
+                self.move_place(1);
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowUp) if self.focus == Some(PickerFocus::Places) => {
+                self.move_place(-1);
                 *handled = true;
             }
             Key::Named(NamedKey::Escape) => {
@@ -2261,7 +3215,12 @@ impl FilePicker {
                     Some(PickerFocus::Cancel) => self.click_cancel(),
                     Some(PickerFocus::Confirm) if self.can_commit_open() => self.click_open(),
                     Some(PickerFocus::Up) => self.go_up(),
-                    Some(PickerFocus::Filter) => self.cycle_filter(),
+                    Some(PickerFocus::Filter) => self.toggle_filter_menu(),
+                    Some(PickerFocus::Places) => {
+                        if let Some(i) = self.place_cursor.or_else(|| self.active_place()) {
+                            self.go_place(i);
+                        }
+                    }
                     Some(PickerFocus::List)
                         if matches!(ke.logical_key, Key::Named(NamedKey::Enter)) =>
                     {
@@ -2365,13 +3324,6 @@ impl FilePicker {
     }
 }
 
-// Standard immediate-mode paint-helper signature for this vello renderer
-// (scene + transform + text_renderer + theme, plus this draw's own
-// content); every parameter is independently load-bearing.
-#[allow(
-    clippy::fn_params_excessive_bools,
-    reason = "immediate-mode paint helper mirrors the canonical ButtonFace state"
-)]
 /// A footer button in the canonical immediate-mode button face, so the
 /// picker footer stays visually locked to the retained widget and every
 /// converted app. Callers add the hover, focus and disabled state.
@@ -3382,8 +4334,8 @@ mod tests {
         fn scrolling_windows_the_visible_rows() {
             let (_g, root) = temp_many(40);
             let mut picker = FilePicker::new("Open", &root, vec![root.clone()]);
-            // Short dialog: only a handful of rows fit.
-            picker.set_rect(Rect::new(0.0, 0.0, 400.0, 240.0));
+            // A modest dialog: only a handful of rows fit.
+            picker.set_rect(Rect::new(0.0, 0.0, 560.0, 420.0));
             assert!(picker.entry_rect(0).is_some());
             dispatch(&mut picker, &crate::synthetic_input::mouse_wheel(0.0, -5.0));
             assert!(picker.entry_rect(0).is_none(), "row 0 scrolled out of view");
@@ -3602,5 +4554,112 @@ mod tests {
         list_arrows_select_rows_and_enter_accepts_the_selected_file();
         keyboard_down_then_enter_enters_directory();
         type_ahead_jumps_to_matching_entry();
+    }
+
+    #[test]
+    fn the_redesigned_dialog_names_selects_and_navigates_by_token_sized_parts() {
+        fn save_preselects_the_name_without_its_extension() {
+            let (_g, root) = temp_tree();
+            let picker = FilePicker::new("Save", &root, vec![root.clone()])
+                .with_mode(FilePickerMode::Save)
+                .with_filename("report.final.pdf");
+            assert_eq!(
+                picker.filename.selection_range_public(),
+                Some((0, "report.final".len())),
+                "typing replaces the name and keeps the type"
+            );
+            let hidden = FilePicker::new("Save", &root, vec![root.clone()])
+                .with_mode(FilePickerMode::Save)
+                .with_filename(".bashrc");
+            assert_eq!(
+                hidden.filename.selection_range_public(),
+                Some((0, ".bashrc".len())),
+                "a dotfile has no extension to keep"
+            );
+        }
+
+        fn the_sidebar_lists_allowed_roots_and_a_click_enters_one() {
+            let (_g, root) = temp_tree();
+            let inner = root.join("docs");
+            fs::create_dir(&inner).unwrap();
+            let mut picker = FilePicker::new("Open", &root, vec![root.clone(), inner.clone()]);
+            picker.set_rect(Rect::new(0.0, 0.0, 900.0, 620.0));
+            assert!(picker.has_sidebar());
+            let at = picker
+                .places
+                .iter()
+                .position(|p| p.path == inner)
+                .expect("an accessible root is a place");
+            let rect = picker.place_rects[at];
+            dispatch(&mut picker, &cursor_at(rect.center()));
+            dispatch(&mut picker, &mouse_press());
+            assert_eq!(picker.current_dir(), inner);
+            assert_eq!(picker.active_place(), Some(at));
+
+            let mut narrow = FilePicker::new("Open", &root, vec![root.clone()]);
+            narrow.set_rect(Rect::new(0.0, 0.0, 420.0, 420.0));
+            assert!(!narrow.has_sidebar(), "a narrow dialog keeps the list");
+        }
+
+        fn the_type_menu_opens_picks_with_the_keyboard_and_closes() {
+            use winit::keyboard::NamedKey;
+            let (_g, root) = temp_tree();
+            let mut picker = FilePicker::new("Open", &root, vec![root.clone()])
+                .with_filters(vec![FileFilter::new("Images", &["png"]), FileFilter::all()]);
+            picker.set_rect(Rect::new(0.0, 0.0, 900.0, 620.0));
+            Widget::set_focus(&mut picker, true);
+            picker.focus_control(PickerFocus::Filter);
+            let expanded = |picker: &FilePicker| {
+                Widget::accessibility(picker)
+                    .expect("picker accessibility")
+                    .children
+                    .iter()
+                    .find(|node| node.key == Some(PickerFocus::Filter.id()))
+                    .expect("file type control")
+                    .state
+                    .expanded
+            };
+            assert_eq!(expanded(&picker), Some(false));
+            dispatch(&mut picker, &key_named(NamedKey::Enter));
+            assert!(picker.filter_open);
+            assert_eq!(expanded(&picker), Some(true));
+            dispatch(&mut picker, &key_named(NamedKey::ArrowDown));
+            dispatch(&mut picker, &key_named(NamedKey::Enter));
+            assert!(!picker.filter_open);
+            assert_eq!(expanded(&picker), Some(false));
+            assert_eq!(picker.active_filter_label(), "All files");
+            dispatch(&mut picker, &key_named(NamedKey::Enter));
+            dispatch(&mut picker, &key_named(NamedKey::Escape));
+            assert!(
+                !picker.filter_open && picker.outcome().is_none(),
+                "Escape closes the menu, not the dialog"
+            );
+        }
+
+        fn a_deep_path_keeps_the_current_folder_inside_the_path_bar() {
+            let (_g, root) = temp_tree();
+            let mut deep = root.clone();
+            for level in 0..9 {
+                deep.push(format!("a-rather-long-folder-name-{level}"));
+            }
+            fs::create_dir_all(&deep).unwrap();
+            let mut picker = FilePicker::new("Open", &deep, vec![root.clone()]);
+            picker.set_rect(Rect::new(0.0, 0.0, 560.0, 420.0));
+            let bar = picker.path_rect();
+            let last = picker.crumb_rects.last().expect("crumbs");
+            assert_eq!(last.0, deep, "the current folder always shows");
+            assert!(picker.crumb_rects.len() < 10, "leading segments drop out");
+            assert!(
+                picker
+                    .crumb_rects
+                    .iter()
+                    .all(|(_, r)| r.x1 <= bar.x1 + 1e-6)
+            );
+        }
+
+        save_preselects_the_name_without_its_extension();
+        the_sidebar_lists_allowed_roots_and_a_click_enters_one();
+        the_type_menu_opens_picks_with_the_keyboard_and_closes();
+        a_deep_path_keeps_the_current_folder_inside_the_path_bar();
     }
 }

@@ -1,4 +1,6 @@
 # Providers run without WASI; `format-provider-abi`'s `entropy` feature
-# supplies getrandom's backend from the host's `tilo_fp.fill_random` import.
+# supplies getrandom's backend from the host's `tilo_fp.fill_random` import,
+# and `tilo_no_js` keeps the platform crates' browser glue out: the host
+# offers no JavaScript imports.
 [target.wasm32-unknown-unknown]
-rustflags = ["--cfg", 'getrandom_backend="custom"']
+rustflags = ["--cfg", 'getrandom_backend="custom"', "--cfg", "tilo_no_js"]

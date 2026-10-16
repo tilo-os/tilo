@@ -7,6 +7,16 @@
 //! Portable code opens a [`Dir`](crate::Dir) instead.
 
 pub mod atomic;
+#[cfg(all(
+    feature = "watch",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+mod change_watch;
+#[cfg(all(
+    feature = "watch",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub use change_watch::{ChangeWatch, THREAD_NAME as CHANGE_WATCH_THREAD, watch_changes};
 pub mod bounded;
 pub mod identity;
 pub mod lock;

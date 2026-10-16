@@ -285,14 +285,25 @@ pub(crate) unsafe fn record_dispatched_action_bound(
             continue;
         }
         if let Some(binding) = bindings.binding_for(node) {
+            // Take the bracket first: it needs only the widget, and a sweep
+            // finds one on few nodes, if any. Opening the record frame of
+            // every bound node to find nothing was most of an idle frame.
             // SAFETY: the stable host topology supplies exclusive node access;
-            // metadata/lifetime checks precede delivery under its canonical Doc.
-            let drained = binding.with_record_frame(&mut state.doc, false, |doc, _| unsafe {
-                crate::bound_dispatch::mutate_bound_node(bindings, nodes, node, |widget| {
-                    binding.drain_widget_actions(widget, doc)
-                })
-            });
-            bound_changed |= matches!(drained, Ok(Ok(Ok(true))));
+            // admission and lifetime are checked before the widget is reached.
+            let taken = unsafe {
+                crate::bound_dispatch::mutate_bound_node(
+                    bindings,
+                    nodes,
+                    node,
+                    crate::bound_dispatch::TakenActionBracket::take,
+                )
+            };
+            if let Ok(Some(taken)) = taken {
+                let drained = binding.with_record_frame(&mut state.doc, false, |doc, _| {
+                    binding.drain_taken_actions(taken, doc)
+                });
+                bound_changed |= matches!(drained, Ok(Ok(true)));
+            }
         } else if bindings.legacy_for(node).is_some() {
             // SAFETY: the exact live map has exclusive ownership for this sweep.
             bound_changed |= unsafe {

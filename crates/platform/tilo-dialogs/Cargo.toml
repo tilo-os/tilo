@@ -34,6 +34,7 @@ libc.workspace = true
 # The session shell's chooser service speaks newline-delimited JSON.
 serde.workspace = true
 serde_json.workspace = true
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
 
 # The XDG Desktop Portal. Selected by target, not by a feature: every Linux
 # app chooses files through the portal, which is where the sandbox's

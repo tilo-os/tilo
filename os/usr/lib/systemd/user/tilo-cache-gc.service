@@ -1,0 +1,12 @@
+[Unit]
+Description=Remove your test fixture caches nothing has used lately
+
+[Service]
+Type=oneshot
+# Policy: ~/.config/tilo/cache-gc.toml, else /etc/tilo/cache-gc.toml. Without a
+# test cache (~/.cache/tilo/test-env) it does nothing and records nothing.
+ExecStart=/usr/bin/tilo os clean
+Nice=19
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+NoNewPrivileges=yes

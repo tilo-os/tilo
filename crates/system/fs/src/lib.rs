@@ -17,6 +17,8 @@ pub mod availability;
 #[cfg(feature = "filesystem")]
 mod blob_access;
 #[cfg(feature = "filesystem")]
+pub mod cache_policy;
+#[cfg(feature = "filesystem")]
 mod canonical_frame;
 #[cfg(feature = "filesystem")]
 pub mod caps_file;
@@ -98,6 +100,8 @@ pub mod record_transaction;
 #[cfg(feature = "filesystem")]
 pub mod replica_ack;
 #[cfg(feature = "filesystem")]
+pub mod replica_content;
+#[cfg(feature = "filesystem")]
 mod rich_metadata;
 #[cfg(feature = "filesystem")]
 pub mod share_authority;
@@ -137,7 +141,7 @@ pub mod workspace_authority;
 #[cfg(feature = "filesystem")]
 mod tests;
 
-// The qdoc conflict merge decodes peer versions in Automerge workers.
+// The tilo-doc conflict merge decodes peer versions in Automerge workers.
 #[cfg(test)]
 #[cfg(feature = "filesystem")]
 tilo_automerge_isolate::test_worker!();
@@ -227,7 +231,6 @@ pub use record_replication::{
 pub use record_repository::{
     MAX_RECORD_OPERATIONS, MAX_RECORD_VERSIONS, MAX_REPOSITORY_RECORDS, RecordRepository,
     RecordRepositoryError, RecordRepositoryKey, RecordTransactionCheckpoint,
-    RecordTransactionStatus,
 };
 #[cfg(feature = "filesystem")]
 pub use record_subscription::{

@@ -302,6 +302,8 @@ pub struct GroupRow {
     /// Transient: the promoted group leaves its lane's leading gutter to the
     /// workspace wheel, as a user maximize does; a client fullscreen covers it.
     promotion_keeps_gutter: bool,
+    /// A maximize can cover the gutter without hiding its Restore controls.
+    promotion_keeps_controls: bool,
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
@@ -358,6 +360,12 @@ pub struct GroupRow {
     /// Groups the last draw skipped as outside the row. They keep their
     /// dirty state, so cached scenes rebuild once they are painted again.
     culled_groups: Vec<u64>,
+    /// When the latest frame synced the groups, and which of them its draw
+    /// then left unpainted: a deadline of theirs that was due by then has
+    /// had its frame, and what is left of it is for their paint.
+    synced_at: Option<Instant>,
+    unpainted: Vec<u64>,
+    unpainted_since: Option<Instant>,
     /// While the lane being drawn is in canvas coordinates (a presenter
     /// keeps the strip): what of the canvas the screen shows this draw.
     /// `None` in screen space.
@@ -370,6 +378,71 @@ pub struct GroupRow {
     /// again while the strip pans ([`Self::draw_group_apart`]). Emptied once
     /// the row is drawn in screen space again.
     apart_drawings: Vec<ApartDrawing>,
+    /// While frames only move the strip drawn in screen space
+    /// ([`crate::retained_present::pan_replay`]): the last drawing of each
+    /// window at rest, which the next such frame replays where the window
+    /// is now ([`Self::draw_group_replaying`]). Any other frame empties it.
+    pan_drawings: Vec<ApartDrawing>,
+    /// Windows at rest the current draw drew or replayed: their drawings
+    /// are kept, every other one is dropped.
+    pan_kept: Vec<u64>,
+    /// Windows the last draw replayed. Like a culled window, each keeps its
+    /// state for its next real draw; unlike one, it was shown.
+    replayed_groups: Vec<u64>,
+    /// The theme [`Self::pan_drawings`] were drawn in.
+    pan_theme: Option<Theme>,
+    /// The frame ([`crate::retained_present::pan_frame`]) this row was last
+    /// drawn in.
+    pan_drawn_frame: Option<u64>,
+    /// Windows whose drawing cannot be kept (it carries a blurred material
+    /// or pixels living outside it) while frames only move: drawn plainly.
+    pan_unkept: Vec<u64>,
+    /// Windows that put anything on the top layer in the last frame
+    /// ([`Widget::draw_overlay`]): an open menu or popover may hang on
+    /// where the window's widgets last drew, so such a window is drawn,
+    /// never replayed.
+    overlay_groups: Vec<u64>,
+}
+
+/// What of a group at `rect` the draw viewport shows across, measured from
+/// the group's left edge and limited to the group, which is what its
+/// widgets cull against the viewport; `None` with no viewport (nothing is
+/// culled).
+fn seen_across(presence: &PresenceCtx, rect: Rect) -> Option<(f64, f64)> {
+    presence.viewport.get().map(|viewport| {
+        (
+            (viewport.x0 - rect.x0).max(0.0),
+            (viewport.x1 - rect.x0).min(rect.width()),
+        )
+    })
+}
+
+/// A group's drawing just made ([`GroupRow::record_group`]), not yet
+/// appended to the frame.
+struct GroupDrawing(ApartDrawing);
+
+impl GroupDrawing {
+    /// Append the drawing to `scene` as drawn, carrying the floating
+    /// surfaces drawn into it; returns how many it carried.
+    fn append_to(&self, scene: &mut Scene) -> usize {
+        let drawing = &self.0;
+        crate::scene_parts::append_with(
+            scene,
+            drawing.parts.as_ref(),
+            Some(Affine::IDENTITY),
+            |scene| crate::backdrop::append_nested(scene, &drawing.scene, Affine::IDENTITY),
+        )
+    }
+
+    /// The drawing, when it may be kept for a replay: one that carried a
+    /// blurred material (`carried` surfaces) is drawn every frame, since
+    /// replayed, the material would lose its backdrop. So is one that draws
+    /// pixels living outside it (a client's GPU buffer): those are valid
+    /// only for the frame that drew them, and a replay could read a buffer
+    /// its client already got back.
+    fn keep(self, carried: usize) -> Option<ApartDrawing> {
+        (carried == 0 && !draws_external_pixels(&self.0.scene)).then_some(self.0)
+    }
 }
 
 /// What of a strip drawn in canvas coordinates the screen shows this draw.
@@ -408,6 +481,10 @@ struct ApartDrawing {
     parts: Option<crate::scene_parts::SectionParts>,
     /// The drawing put a secret on screen; a replay notes it again.
     shows_secret: bool,
+    /// What of the group the drawing culled nothing in, across: the draw
+    /// viewport's `(x0, x1)` measured from the group's left edge. `None`
+    /// when nothing was culled. A replay must show no more of the group.
+    seen: Option<(f64, f64)>,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -573,9 +650,13 @@ impl Pan {
         if gr.width() <= 0.0 {
             return None;
         }
-        // Groups must clear the leading wheel-disc gutter on the left and
-        // the viewport's right edge on the right.
-        let left_bound = self.viewport.x0 + self.inset;
+        // A group needs to be on screen, flush with the viewport's edges.
+        // The wheel-disc gutter is canvas the strip pans *with*: every
+        // group already starts past it, so a group revealed at the left
+        // edge never overlaps the disc. Bounding at the gutter instead
+        // panned the leftmost group's reveal all the way home to scroll 0,
+        // dragging the workspace switcher back into view.
+        let left_bound = self.viewport.x0;
         let right_bound = self.viewport.x1;
         let mut sx = self.scroll_x;
         // An oversized group cannot fit; reveal its start consistently.
@@ -985,6 +1066,7 @@ impl GroupRow {
             leading_inset: 0.0,
             fullscreen_group: None,
             promotion_keeps_gutter: false,
+            promotion_keeps_controls: false,
             hidden: false,
             group_drag: None,
             touch_pan: None,
@@ -1003,9 +1085,19 @@ impl GroupRow {
             sibling_fade_hold: None,
             fade_hero: None,
             culled_groups: Vec::new(),
+            synced_at: None,
+            unpainted: Vec::new(),
+            unpainted_since: None,
             apart_window: None,
             apart_spans: Vec::new(),
             apart_drawings: Vec::new(),
+            pan_drawings: Vec::new(),
+            pan_kept: Vec::new(),
+            replayed_groups: Vec::new(),
+            pan_theme: None,
+            pan_drawn_frame: None,
+            overlay_groups: Vec::new(),
+            pan_unkept: Vec::new(),
         }
     }
 
@@ -1233,20 +1325,38 @@ impl GroupRow {
 
     /// Visible screen-space edge grip, using ordinary widget dispatch geometry.
     /// The viewport clips grips, and promoted or hidden groups have none.
-    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+    pub fn group_resize_rects(&self, group_id: u64) -> Vec<Rect> {
         if self.hidden {
-            return None;
+            return Vec::new();
         }
-        let (index, group) = self
+        let Some((index, group)) = self
             .groups
             .iter()
             .enumerate()
-            .find(|(_, group)| group.id == group_id)?;
+            .find(|(_, group)| group.id == group_id)
+        else {
+            return Vec::new();
+        };
         if self.layout_hides_group(index) || self.fullscreen_group == Some(group_id) {
-            return None;
+            return Vec::new();
         }
-        let rect = group.resize_grab_rect()?.intersect(self.rect);
-        (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
+        group
+            .resize_grab_rects()
+            .into_iter()
+            .map(|rect| rect.intersect(self.rect))
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .collect()
+    }
+
+    /// Whether `p` lies on any visible window's edge grip.
+    pub fn resize_grab_hit_at(&self, p: Point) -> bool {
+        !self.hidden
+            && self.rect.contains(p)
+            && self.groups.iter().enumerate().any(|(i, group)| {
+                !self.layout_hides_group(i)
+                    && self.fullscreen_group != Some(group.id)
+                    && group.resize_grab_hit(p)
+            })
     }
 
     /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
@@ -1255,6 +1365,15 @@ impl GroupRow {
     pub fn set_promotion_keeps_gutter(&mut self, keeps: bool) {
         if self.promotion_keeps_gutter != keeps {
             self.promotion_keeps_gutter = keeps;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Keep the maximized system controls even when the promoted group
+    /// covers its gutter. Client fullscreen leaves this off.
+    pub fn set_promotion_keeps_controls(&mut self, keeps: bool) {
+        if self.promotion_keeps_controls != keeps {
+            self.promotion_keeps_controls = keeps;
             self.structure_dirty = true;
         }
     }
@@ -1846,6 +1965,13 @@ impl GroupRow {
     /// How far the row is panned. On a partitioned strip, the leading
     /// lane's pan — the one the wheel disc rides along with; see
     /// [`Self::output_pan`] for any other display.
+    /// The farthest a direct pan can pull the strip past either end: the
+    /// rubber band's reach. Anything drawn beside the strip's ends and moved
+    /// with it (the docked wheel) has to cover this much more.
+    pub fn overpull_reach(&self) -> f64 {
+        self.leading_pan().viewport.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC
+    }
+
     pub fn scroll_x(&self) -> f64 {
         self.leading_pan().scroll_x
     }
@@ -1924,6 +2050,18 @@ impl GroupRow {
     /// furthest pan, in layout pixels.
     pub fn canvas_pad(&self) -> f64 {
         self.lane_canvas_pad(self.leading_pan())
+    }
+
+    /// A frame was presented: each group may step its width spring once
+    /// more. The token a step spends returns when the group is marked
+    /// drawn, but a host that presents frames without marking its content
+    /// drawn (the compositor) must say so here, or every width spring it
+    /// does not snap stops after its first step while its group keeps
+    /// asking for animation frames.
+    pub fn frame_presented(&mut self) {
+        for group in &mut self.groups {
+            group.frame_presented();
+        }
     }
 
     /// Have the parent's draw skip this row, recording only its transform,
@@ -2094,6 +2232,16 @@ impl GroupRow {
         settling
     }
 
+    /// Keep the strip where a person's pan left it when its geometry later
+    /// changes, as [`Self::pan_to`] does, instead of re-framing it onto the
+    /// nearest window edge, until focus next pans a window into view. A
+    /// wheel spin stops wherever its notches took the strip, often with
+    /// windows cut at both edges; a window's width changing by a pixel
+    /// moved it by up to a window.
+    pub fn hold_strip_pan(&mut self) {
+        self.pan_of_lane_mut(self.focus_lane).absolute = true;
+    }
+
     /// A group focused the same frame it was spliced in hasn't been
     /// through a layout pass yet, so its rect is degenerate and any pan
     /// on it is a no-op.
@@ -2233,9 +2381,37 @@ impl GroupRow {
         self.pans().iter().any(|pan| pan.snap_in_flight())
     }
 
+    /// A direct pan is under the fingers, or settling after them.
+    pub fn direct_pan_in_progress(&self) -> bool {
+        self.pans()
+            .iter()
+            .any(|pan| pan.strip_pan_origin.is_some() || pan.snap_in_flight())
+    }
+
     #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn set_scroll_x_for_test(&mut self, x: f64) {
         self.pan.scroll_x = x;
+    }
+
+    /// The groups presented as children ([`Widget::children_mut`]): none
+    /// while hidden, the promoted one while one is fullscreen or
+    /// maximized, otherwise all of them.
+    fn shown_group_indices(&self) -> Vec<usize> {
+        if self.hidden {
+            return Vec::new();
+        }
+        match self
+            .fullscreen_idx()
+            .or_else(|| self.groups.iter().position(|g| g.maximized))
+        {
+            Some(index) => vec![index],
+            None => (0..self.groups.len()).collect(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replayed_groups_for_test(&self) -> &[u64] {
+        &self.replayed_groups
     }
 
     #[cfg(test)]
@@ -3190,10 +3366,26 @@ impl Widget for GroupRow {
     fn modal_capture(&self) -> Option<Rect> {
         self.children().into_iter().find_map(Widget::modal_capture)
     }
+    /// A group the latest frame left unpainted (outside the row) had that
+    /// frame for every deadline due by its sync. One still pending waits for
+    /// the group's paint (a status pill that clears itself when drawn), which
+    /// only showing the group gives, so it must not wake the host on every
+    /// frame. Its later deadlines (an alarm, a poll) still wake it.
     fn next_wake_deadline(&self) -> Option<Instant> {
+        let served = |child: &dyn Widget, deadline: Instant| {
+            self.unpainted_since.is_some_and(|since| deadline <= since)
+                && self.groups.iter().any(|group| {
+                    self.unpainted.contains(&group.id)
+                        && std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(group), child)
+                })
+        };
         self.children()
             .into_iter()
-            .filter_map(Widget::next_wake_deadline)
+            .filter_map(|child| {
+                child
+                    .next_wake_deadline()
+                    .filter(|&deadline| !served(child, deadline))
+            })
             .min()
     }
 
@@ -3247,19 +3439,39 @@ impl Widget for GroupRow {
             .collect()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.hidden {
-            return vec![];
-        }
-        if let Some(index) = self
-            .fullscreen_idx()
-            .or_else(|| self.groups.iter().position(|g| g.maximized))
-        {
-            return vec![&mut self.groups[index]];
-        }
+        let shown = self.shown_group_indices();
         self.groups
             .iter_mut()
-            .map(|group| group as &mut dyn Widget)
+            .enumerate()
+            .filter(|(index, _)| shown.contains(index))
+            .map(|(_, group)| group as &mut dyn Widget)
             .collect()
+    }
+
+    /// Each window's top layer, in [`Self::children_mut`]'s order as the
+    /// default draws it, noting which windows put anything there
+    /// ([`Self::overlay_groups`]).
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        fn drawn(scene: &Scene) -> (usize, usize) {
+            let encoding = scene.encoding();
+            (encoding.path_tags.len(), encoding.draw_tags.len())
+        }
+        self.overlay_groups.clear();
+        for index in self.shown_group_indices() {
+            let before = drawn(scene);
+            let group = &mut self.groups[index];
+            group.draw_overlay(scene, transform, text_renderer, theme, presence);
+            if drawn(scene) != before {
+                self.overlay_groups.push(group.id);
+            }
+        }
     }
 
     // Read-only resource discovery follows retained owners, including inactive tabs.
@@ -3287,6 +3499,7 @@ impl Widget for GroupRow {
         Some(self)
     }
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.synced_at = Some(crate::time::now());
         for g in &mut self.groups {
             g.sync(state, root);
         }
@@ -3305,10 +3518,10 @@ impl Widget for GroupRow {
         any
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered build of the row: group nodes, handles, then either the single run or one run per lane"
-    )]
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3337,6 +3550,9 @@ impl Widget for GroupRow {
         for (i, group) in self.groups.iter_mut().enumerate() {
             group.set_reduce_motion(theme.reduce_motion);
             let lane = lane_of.get(i).copied().unwrap_or(0);
+            // No seam handle sits left of a lane's first group.
+            let prev_lane = i.checked_sub(1).and_then(|p| lane_of.get(p).copied());
+            group.set_leads_lane(prev_lane != Some(lane));
             let dest_fits = snap_lane.get(lane).copied().unwrap_or(false);
             if group.is_closing() && !theme.reduce_motion {
                 // A closing slot owns its width spring even when its destination
@@ -3369,6 +3585,13 @@ impl Widget for GroupRow {
         let usable_per_group = self.usable_per_group();
         for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
             g.set_strip_usable_px(usable);
+        }
+        for group in &mut self.groups {
+            group.set_fullscreen_presentation(
+                self.fullscreen_group == Some(group.id)
+                    && !self.promotion_keeps_gutter
+                    && !self.promotion_keeps_controls,
+            );
         }
         let group_nodes: Vec<NodeId> = self
             .groups
@@ -3759,13 +3982,32 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Drawings are replayed only into the frame right after the one
+        // that drew or replayed them, and only while frames only pan: any
+        // frame between may have changed a window.
+        let frame = crate::retained_present::pan_frame();
+        let consecutive = self
+            .pan_drawn_frame
+            .is_some_and(|last| last.wrapping_add(1) == frame);
+        self.pan_drawn_frame = Some(frame);
+        self.pan_kept.clear();
+        self.replayed_groups.clear();
+        let only_moved =
+            crate::retained_present::pan_frame_kind() != crate::retained_present::PanFrame::Drawn;
+        if !only_moved || !consecutive || self.pan_theme.as_ref() != Some(theme) {
+            self.pan_drawings.clear();
+            self.pan_unkept.clear();
+            self.pan_theme = only_moved.then(|| theme.clone());
+        }
         if self.drawn_apart {
             self.apart_transform = Some(transform);
+            self.pan_drawings.clear();
             return;
         }
         self.reduce_motion = theme.reduce_motion;
         self.sync_sibling_fade(theme);
         if self.external_navigation && self.hidden {
+            self.pan_drawings.clear();
             return;
         }
         self.scroll_dirty = false;
@@ -3867,6 +4109,12 @@ impl Widget for GroupRow {
             self.apart_drawings.clear();
             self.apart_spans.clear();
         }
+        // A window this frame did not draw or replay at rest may change
+        // before it is shown again, and a frame that is not only a pan may
+        // have changed any of them.
+        let kept = &self.pan_kept;
+        self.pan_drawings
+            .retain(|drawing| kept.contains(&drawing.id));
         self.draw_group_drag_preview(scene, transform, tr, theme, presence);
         self.draw_reorder_capsule(scene, transform, theme);
     }
@@ -4097,8 +4345,9 @@ impl Widget for GroupRow {
 
     fn mark_drawn(&mut self) {
         let culled = std::mem::take(&mut self.culled_groups);
+        let replayed = self.replayed_groups.clone();
         for group in &mut self.groups {
-            if culled.contains(&group.id) {
+            if culled.contains(&group.id) || replayed.contains(&group.id) {
                 group.next_frame();
             } else {
                 group.mark_drawn();
@@ -4107,6 +4356,8 @@ impl Widget for GroupRow {
         for handle in &mut self.handles {
             handle.mark_drawn();
         }
+        self.unpainted = culled;
+        self.unpainted_since = self.synced_at;
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -4339,7 +4590,27 @@ impl GroupRow {
                 {
                     self.draw_group_apart(i, window, scene, t, (tr, theme, presence));
                 }
-                _ => self.groups[i].draw(scene, t, tr, theme, presence),
+                // Only a group at rest in its slot, as above.
+                None if crate::retained_present::pan_replay()
+                    && !source_is_lifted
+                    && !fading_sibling
+                    && dx.abs() <= f64::EPSILON =>
+                {
+                    self.draw_group_replaying(i, scene, t, (tr, theme, presence));
+                }
+                _ => {
+                    // A frame that only moved but draws every window keeps
+                    // the drawings of the windows at rest it draws: nothing in
+                    // them changed.
+                    if crate::retained_present::pan_frame_kind()
+                        == crate::retained_present::PanFrame::Kept
+                        && dx.abs() <= f64::EPSILON
+                        && self.group_at_rest(i, now)
+                    {
+                        self.pan_kept.push(id);
+                    }
+                    self.groups[i].draw(scene, t, tr, theme, presence);
+                }
             }
             if source_is_lifted {
                 scene.pop_layer();
@@ -4445,39 +4716,134 @@ impl GroupRow {
             self.culled_groups.push(id);
             return;
         }
-        let mut local = kept
+        let local = kept
             .map(|index| self.apart_drawings.swap_remove(index).scene)
             .unwrap_or_default();
+        let drawing = self.record_group(i, local, transform, (tr, theme, presence));
+        let carried =
+            crate::scene_parts::part(scene, key, bounds, |scene| drawing.append_to(scene));
+        if let Some(drawing) = drawing.keep(carried) {
+            self.apart_drawings.push(drawing);
+        }
+    }
+
+    /// Draw group `i` on its own into `local`, a scene of its own that is
+    /// nested so floating chrome drawn into it waits for it, and keep what
+    /// a replay of the drawing needs.
+    fn record_group(
+        &mut self,
+        i: usize,
+        mut local: Scene,
+        transform: Affine,
+        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    ) -> GroupDrawing {
         local.reset();
         crate::backdrop::nest_scene(&local);
         let secrets = crate::secret_paint::SecretPaint::begin();
         let group = &mut self.groups[i];
+        let (id, rect) = (group.id, group.get_rect());
         let ((), parts) = crate::scene_parts::record(&mut local, |local| {
             group.draw(local, transform, tr, theme, presence);
         });
-        let shows_secret = secrets.finish();
-        // A drawing that carries a blurred material is drawn every frame:
-        // replayed, the material would lose its backdrop. So is one that
-        // draws pixels living outside it (a client's GPU buffer): those are
-        // valid only for the frame that drew them, and a replay could read a
-        // buffer its client already got back.
-        let carries_material = crate::scene_parts::part(scene, key, bounds, |scene| {
-            crate::scene_parts::append_with(
-                scene,
-                parts.as_ref(),
-                Some(Affine::IDENTITY),
-                |scene| crate::backdrop::append_nested(scene, &local, Affine::IDENTITY),
-            )
-        }) > 0;
-        if !carries_material && !draws_external_pixels(&local) {
-            self.apart_drawings.push(ApartDrawing {
-                id,
-                rect,
-                transform,
-                scene: local,
-                parts,
-                shows_secret,
-            });
+        GroupDrawing(ApartDrawing {
+            id,
+            rect,
+            transform,
+            scene: local,
+            parts,
+            shows_secret: secrets.finish(),
+            seen: seen_across(presence, rect),
+        })
+    }
+
+    /// Whether group `i` is at rest for a frame that only moves laid-out
+    /// content: not keyboard focused, nothing on the top layer last frame,
+    /// and no animation frame, unfinished visual work or due wake asked for.
+    /// Such a frame follows one in which nothing reached a widget, the
+    /// document, focus or presence, so only time could change the window,
+    /// and it asks for none. Its dirty flag is no sign either way: a widget
+    /// that does not track one reports itself dirty on every frame.
+    fn group_at_rest(&self, i: usize, now: Instant) -> bool {
+        let group = &self.groups[i];
+        !group.focused()
+            && !self.overlay_groups.contains(&group.id)
+            && !group.needs_animation_frame()
+            && !group.has_pending_visual_work()
+            && group
+                .next_wake_deadline()
+                .is_none_or(|deadline| deadline > now)
+    }
+
+    /// Draw group `i` of a strip drawn in screen space on a frame that only
+    /// moves laid-out content ([`crate::retained_present::pan_replay`]).
+    ///
+    /// A window at rest ([`Self::group_at_rest`]) whose last drawing was made
+    /// at its size, height and transform, in the frame just before, and
+    /// culled none of what the screen shows of it now, replays that drawing
+    /// moved by how far the strip panned since. Any other window at rest is
+    /// drawn, culled as on any frame, and its drawing kept. A window not at
+    /// rest, or whose drawing cannot be kept, is drawn as on any frame.
+    ///
+    /// What the window's widgets note while drawing still describes where it
+    /// was drawn; the host draws again before input or a semantics read
+    /// reaches them ([`crate::retained_present::PanReplay`]). Like a culled
+    /// window, a replayed one keeps its dirty state for its next real draw.
+    fn draw_group_replaying(
+        &mut self,
+        i: usize,
+        scene: &mut Scene,
+        transform: Affine,
+        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    ) {
+        let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
+        if !self.group_at_rest(i, crate::time::now()) || self.pan_unkept.contains(&id) {
+            self.groups[i].draw(scene, transform, tr, theme, presence);
+            return;
+        }
+        let kept = self
+            .pan_drawings
+            .iter()
+            .position(|drawing| drawing.id == id);
+        self.pan_kept.push(id);
+        // The drawing culled what its draw viewport did not show; the
+        // screen may show no more of the window now.
+        let shows = seen_across(presence, rect);
+        let covers = |seen: Option<(f64, f64)>| match (seen, shows) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(seen), Some(shows)) => {
+                shows.0 >= shows.1 || (seen.0 <= shows.0 && shows.1 <= seen.1)
+            }
+        };
+        if let Some(drawing) = kept.and_then(|index| self.pan_drawings.get(index))
+            && drawing.transform == transform
+            && drawing.rect.size() == rect.size()
+            && drawing.rect.y0.to_bits() == rect.y0.to_bits()
+            && covers(drawing.seen)
+        {
+            // The drawing's layout moved by `dx`; in the scene that is the
+            // same move through the draw transform.
+            let dx = rect.x0 - drawing.rect.x0;
+            let moved =
+                Affine::translate(transform * Point::new(dx, 0.0) - transform * Point::ORIGIN);
+            crate::scene_parts::append(scene, &drawing.scene, drawing.parts.as_ref(), Some(moved));
+            if drawing.shows_secret {
+                crate::secret_paint::note_secret_painted();
+            }
+            self.replayed_groups.push(id);
+            crate::retained_present::note_replayed();
+            return;
+        }
+        let local = kept
+            .map(|index| self.pan_drawings.swap_remove(index).scene)
+            .unwrap_or_default();
+        // Culled as on any frame: a window the pan brings further on screen
+        // is drawn again until it shows no more than a drawing of it saw.
+        let drawing = self.record_group(i, local, transform, (tr, theme, presence));
+        let carried = drawing.append_to(scene);
+        match drawing.keep(carried) {
+            Some(drawing) => self.pan_drawings.push(drawing),
+            None => self.pan_unkept.push(id),
         }
     }
 
@@ -4719,6 +5085,23 @@ impl GroupRow {
         // remembered cursor (or an active capture) before siblings. Keep every
         // sibling in the fallback order: synthetic and keyboard-adjacent test
         // paths can legitimately lack a preceding cursor move.
+        // Edge grips first, for every group: they overlay the windows' own
+        // content, so no group's tile may swallow the pointer before the group
+        // under it has seen it.
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+        ) {
+            for i in 0..self.groups.len() {
+                if self.layout_hides_group(i) {
+                    continue;
+                }
+                if self.groups[i].handle_edge_input(event, ctx.scale_factor, *ctx.modifiers) {
+                    *ctx.handled = true;
+                    return;
+                }
+            }
+        }
         let preferred = matches!(event, WindowEvent::MouseInput { .. }).then(|| {
             self.groups
                 .iter()
@@ -5670,6 +6053,200 @@ mod tests {
 
     fn make_row_with_groups(tab_specs: &[&[u64]]) -> GroupRow {
         make_row_with_groups_with_taffy(tab_specs).0
+    }
+
+    /// A row a host pans between frames, as the desktop surface pans its
+    /// shown strip for a wheel: begin, travel and end in one step.
+    struct PannedRow {
+        row: GroupRow,
+        travel: std::rc::Rc<std::cell::Cell<Option<f64>>>,
+    }
+
+    impl crate::widget::Decorator for PannedRow {
+        type Inner = GroupRow;
+        fn inner(&self) -> &GroupRow {
+            &self.row
+        }
+        fn inner_mut(&mut self) -> &mut GroupRow {
+            &mut self.row
+        }
+        fn needs_redraw(&self) -> bool {
+            self.travel.get().is_some() || self.row.needs_redraw()
+        }
+        fn update(&mut self, state: &crate::widget::AppModel, path: &ModelPath) -> bool {
+            if let Some(travel) = self.travel.take() {
+                self.row.begin_strip_pan();
+                assert!(self.row.update_strip_pan(travel), "the strip moves");
+                self.row.end_strip_pan(crate::time::now());
+            }
+            self.row.update(state, path)
+        }
+    }
+
+    /// A pan translates windows that are already laid out: the frame
+    /// re-applies positions, so hit-testing and culling follow, but solves
+    /// no size, and a strip of windows pans at the cost of moving them.
+    #[test]
+    fn a_strip_pan_re_applies_positions_without_measuring() {
+        let travel = std::rc::Rc::new(std::cell::Cell::new(None));
+        let groups = (1..=6).map(|id| make_group(id * 100, &[id])).collect();
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            PannedRow {
+                row: GroupRow::new(groups),
+                travel: std::rc::Rc::clone(&travel),
+            },
+            (1200, 800),
+            Theme::dark(),
+        );
+        for _ in 0..4 {
+            harness.relayout();
+        }
+        let row = |harness: &crate::headless::FrameHarness| {
+            let row = &harness.root::<PannedRow>().row;
+            (
+                row.scroll_x(),
+                row.groups[0].get_rect(),
+                row.pan_max_scroll_x(),
+            )
+        };
+        let (start, first, max) = row(&harness);
+        assert!(max > 300.0, "six windows overflow 1200 px: {max}");
+        let nodes = harness.layout_node_ids();
+
+        travel.set(Some(150.0));
+        assert!(harness.poll_frame().unwrap(), "a pan presents a frame");
+        let stats = harness.last_relayout();
+        assert!(!stats.rebuilt, "a pan keeps the composition: {stats:?}");
+        assert!(
+            !stats.measured,
+            "a pan solves no size: {stats:?}, asked by {:?}",
+            harness.layout_measure_requesters()
+        );
+        assert_eq!(harness.layout_node_ids(), nodes);
+        let (panned, moved, _) = row(&harness);
+        assert!((panned - start - 150.0).abs() < 1e-9, "{start} -> {panned}");
+        assert!(
+            (first.x0 - moved.x0 - 150.0).abs() < 1e-9,
+            "the windows are laid out where the strip panned to: {first:?} -> {moved:?}"
+        );
+        harness.verify_retained_geometry().unwrap();
+    }
+
+    /// An app whose wake deadline only its paint moves on, as a status pill
+    /// that clears itself once drawn after its linger.
+    struct PaintedDeadline {
+        deadline: std::rc::Rc<std::cell::Cell<Option<Instant>>>,
+        rect: Rect,
+    }
+
+    impl Widget for PaintedDeadline {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.fill_leaf(node_map, self)
+        }
+        crate::rect_geometry!();
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+            self.deadline.set(None);
+        }
+        fn next_wake_deadline(&self) -> Option<Instant> {
+            self.deadline.get()
+        }
+        fn name(&self) -> &'static str {
+            "PaintedDeadline"
+        }
+    }
+
+    impl crate::widget::AppWidget for PaintedDeadline {
+        fn uses_host_record(&self) -> bool {
+            false
+        }
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Painted deadline"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("P")
+        }
+    }
+
+    /// A window past the strip's edge is not painted, so a deadline only its
+    /// paint consumes stays due: once a frame has run for it, it must not
+    /// wake the host on every frame until the window is shown. Its later
+    /// deadlines still wake the host, and shown again it is painted.
+    #[test]
+    fn an_unpainted_window_does_not_keep_waking_the_host_for_its_paint() {
+        let deadline = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut groups: Vec<WindowGroup> = (1..=5).map(|id| make_group(id * 100, &[id])).collect();
+        groups.push(WindowGroup::new(
+            600,
+            vec![(
+                TabDescriptor::new(6, "T6"),
+                TileContent::App(Box::new(PaintedDeadline {
+                    deadline: std::rc::Rc::clone(&deadline),
+                    rect: Rect::ZERO,
+                })),
+            )],
+            6,
+            WindowWidth::Normal,
+        ));
+        let travel = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            PannedRow {
+                row: GroupRow::new(groups),
+                travel: std::rc::Rc::clone(&travel),
+            },
+            (1200, 800),
+            Theme::dark(),
+        );
+        for _ in 0..4 {
+            harness.relayout();
+        }
+        let due = |harness: &crate::headless::FrameHarness| {
+            harness
+                .frame_schedule()
+                .next_wake_deadline
+                .is_some_and(|at| at <= crate::time::now())
+        };
+
+        // Due while off screen: the host wakes once and the frame runs.
+        deadline.set(Some(crate::time::now()));
+        assert!(due(&harness), "a due deadline wakes the host");
+        assert!(harness.poll_frame().unwrap());
+        assert!(
+            deadline.get().is_some(),
+            "an off-screen window is not painted"
+        );
+        assert!(
+            !due(&harness),
+            "the deadline had its frame: no frame after frame"
+        );
+
+        // A later deadline of the same window still wakes the host.
+        let later = crate::time::now() + Duration::from_secs(60);
+        deadline.set(Some(later));
+        assert_eq!(harness.frame_schedule().next_wake_deadline, Some(later));
+
+        // Shown, the window is painted and its deadline consumed.
+        deadline.set(Some(crate::time::now()));
+        let max = harness.root::<PannedRow>().row.pan_max_scroll_x();
+        travel.set(Some(max));
+        assert!(harness.poll_frame().unwrap());
+        assert_eq!(deadline.get(), None, "the window shown is painted");
     }
 
     /// A closing window's fade rebuilds the row once per drawn frame. Asking
@@ -7324,6 +7901,122 @@ mod tests {
         );
     }
 
+    /// On frames that only pan a strip drawn in screen space, a window at
+    /// rest shows its last drawing moved by the pan instead of drawing again,
+    /// and the frame renders as one that drew every window does, in every
+    /// theme and at fractional pans. A keyboard-focused window draws; a
+    /// frame that is not only a pan draws every window and drops the
+    /// drawings, so the next pan frame replays nothing; a pan frame that
+    /// draws every window anyway keeps them.
+    #[test]
+    fn a_pan_frame_replays_windows_at_rest_and_renders_as_a_drawn_frame() {
+        use crate::offscreen::OffscreenRenderer;
+        use crate::retained_present::{PanFrame, PanReplay, take_replayed};
+        fn draw(row: &mut GroupRow, text: &mut TextRenderer, theme: &Theme, replay: bool) -> Scene {
+            draw_as(
+                row,
+                text,
+                theme,
+                if replay {
+                    PanFrame::Replayed
+                } else {
+                    PanFrame::Drawn
+                },
+            )
+        }
+        fn draw_as(
+            row: &mut GroupRow,
+            text: &mut TextRenderer,
+            theme: &Theme,
+            frame: PanFrame,
+        ) -> Scene {
+            thread_local! {
+                static FRAMES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+            }
+            let number = FRAMES.with(|frames| {
+                frames.set(frames.get().wrapping_add(1));
+                frames.get()
+            });
+            let _frame = PanReplay::begin(frame, number);
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::empty();
+            let previous = presence.push_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            row.draw(&mut scene, Affine::IDENTITY, text, theme, &presence);
+            presence.pop_viewport(previous);
+            row.mark_drawn();
+            scene
+        }
+        let text = &mut TextRenderer::new();
+        let mut renderer = OffscreenRenderer::new(800, 600);
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let mut row = strip_at(5, 800.0, 0.0, 400);
+            relayout_strip(&mut row, 800.0);
+            take_replayed();
+            let _ = draw(&mut row, text, &theme, true);
+            assert_eq!(take_replayed(), 0, "the first pan frame draws every window");
+            for scroll in [37.0, 210.5, 333.25, 0.0] {
+                row.set_scroll_x_for_test(scroll);
+                relayout_strip(&mut row, 800.0);
+                let replayed = draw(&mut row, text, &theme, true);
+                let windows = take_replayed();
+                assert!(windows > 0, "a pan to {scroll} replays the windows at rest");
+                assert_eq!(windows, row.replayed_groups_for_test().len());
+                // The same pan drawn by a frame that is not only a pan.
+                let drawn = draw(&mut row, text, &theme, false);
+                assert_eq!(
+                    take_replayed(),
+                    0,
+                    "a frame that is not only a pan draws every window"
+                );
+                let replayed = renderer.render(&replayed, vello::peniko::Color::BLACK);
+                let drawn = renderer.render(&drawn, vello::peniko::Color::BLACK);
+                assert_eq!(
+                    OffscreenRenderer::pixels_differing_beyond_aa(&replayed, &drawn),
+                    0,
+                    "a pan to {scroll} replayed renders as drawn"
+                );
+                // That frame dropped the drawings: the next pan frame draws.
+                let _ = draw(&mut row, text, &theme, true);
+                assert_eq!(
+                    take_replayed(),
+                    0,
+                    "drawings do not outlive a frame that is not only a pan"
+                );
+            }
+            // A keyboard-focused window is drawn on every frame.
+            let shown = row.onscreen_group_ids();
+            let focused = shown[0];
+            let index = row
+                .groups
+                .iter()
+                .position(|group| group.id == focused)
+                .unwrap();
+            let _ = row.groups[index].set_focused(true);
+            let _ = draw(&mut row, text, &theme, false);
+            let _ = draw(&mut row, text, &theme, true);
+            row.set_scroll_x_for_test(120.0);
+            relayout_strip(&mut row, 800.0);
+            let _ = draw(&mut row, text, &theme, true);
+            assert!(take_replayed() > 0);
+            assert!(
+                !row.replayed_groups_for_test().contains(&focused),
+                "the focused window draws: {:?}",
+                row.replayed_groups_for_test()
+            );
+            // A pan frame that draws every window keeps the drawings: the
+            // one after replays again.
+            let _ = draw_as(&mut row, text, &theme, PanFrame::Kept);
+            assert_eq!(take_replayed(), 0, "a kept frame draws every window");
+            row.set_scroll_x_for_test(140.0);
+            relayout_strip(&mut row, 800.0);
+            let _ = draw(&mut row, text, &theme, true);
+            assert!(
+                take_replayed() > 0,
+                "drawings outlive a pan frame that drew every window"
+            );
+        }
+    }
+
     /// Each window group of a strip drawn in canvas coordinates is a damage
     /// part of the strip's drawing: drawn again, panned (groups off screen
     /// replaying their drawings) or held still, the strip shows no damage,
@@ -7559,6 +8252,44 @@ mod tests {
         direct_pan_keeps_a_fifth_viewport_after_the_last_app();
         direct_pan_tracks_reversals_and_only_settles_elastic_overpull();
         direct_pan_overpull_has_diminishing_gain_and_returns_to_resting_end();
+    }
+
+    #[test]
+    fn revealing_a_half_visible_leftmost_group_pans_only_far_enough() {
+        // Viewport 0..1000 with the 96 px wheel-disc gutter, so the first
+        // group lies at canvas 96..696 and the second at 704..1304.
+        let pan = Pan {
+            viewport: Rect::new(0.0, 0.0, 1000.0, 600.0),
+            inset: 96.0,
+            scroll_x: 400.0,
+            content_w: 2400.0,
+            ..Pan::default()
+        };
+        // Scrolled 400, the first group sits at -304..296: half visible.
+        let leftmost = Rect::new(-304.0, 0.0, 296.0, 600.0);
+        let target = pan
+            .scroll_target_for(leftmost)
+            .expect("a cut group is revealed");
+        assert!(
+            (target - 96.0).abs() < 0.01,
+            "flush with the screen edge (scroll 96), not home (0) with the \
+             wheel disc back on screen: {target}"
+        );
+        // Fully visible already: nothing to do.
+        assert_eq!(
+            pan.scroll_target_for(Rect::new(10.0, 0.0, 610.0, 600.0)),
+            None
+        );
+        // The right edge is unchanged.
+        let target = pan
+            .scroll_target_for(Rect::new(
+                704.0 - 400.0 + 500.0,
+                0.0,
+                1404.0 - 400.0 + 500.0,
+                600.0,
+            ))
+            .expect("a group cut on the right is revealed");
+        assert!((target - 904.0).abs() < 0.01, "{target}");
     }
 
     #[test]

@@ -11,7 +11,7 @@ description = "Rasterizes a recorded vello scene on the CPU through vello_cpu, f
 [dependencies]
 vello_encoding.workspace = true
 vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "u8_pipeline", "multithreading"] }
-skrifa = { version = "0.42.1", default-features = false, features = ["std", "autohint_shaping"] }
+skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
 smallvec = "1.15.1"
 workspace-hack = { version = "0.1" }
 

@@ -50,7 +50,7 @@ fn main() {
     // identity.
     match identity::load() {
         Ok(id) => {
-            let hex = hex_encode(&id.group_public_key());
+            let hex = hex::encode(id.group_public_key());
             println!("  identity : connected (pubkey={hex})");
         }
         Err(NotAvailable::ServiceFdMissing) => {
@@ -124,22 +124,6 @@ fn main() {
     println!();
 
     println!("tilo-hello: done.");
-}
-
-/// Render a byte slice as lowercase hex. Used to print the loaded
-/// Ed25519 pubkey (32 bytes → 64 hex chars) — a maintainer grepping
-/// broker logs for a specific device's presence events wants the raw
-/// hex, not the base64 the wire uses.
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for b in bytes {
-        // Both indices are nibbles (0..=15) so they're always in bounds;
-        // `.get()` + a fallback avoids `indexing_slicing` without changing behaviour.
-        out.push(HEX.get((b >> 4) as usize).copied().unwrap_or(b'?') as char);
-        out.push(HEX.get((b & 0xF) as usize).copied().unwrap_or(b'?') as char);
-    }
-    out
 }
 
 fn report(name: &str, result: Result<(), NotAvailable>) {

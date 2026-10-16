@@ -163,7 +163,8 @@ pub use now_playing::{
 };
 pub use realtime::{
     CodecCapabilities, DecodeOutput, DecodedPicture, DecoderConfig, EncodedUnit, EncoderConfig,
-    InputFormat, InputFrame, RealtimeDecoder, RealtimeEncoder, RealtimeError, StreamColor,
+    InputFormat, InputFrame, PictureWake, RealtimeDecoder, RealtimeEncoder, RealtimeError,
+    StreamColor,
 };
 pub use ring::{PrefetchProgress, Prefetcher, RingBuffer};
 pub use session::{DEFAULT_FRAME_TIMEOUT, EngineSession, SessionPool};

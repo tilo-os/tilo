@@ -17,6 +17,7 @@ use std::time::Duration;
 use super::{PublishedAction, PublishedSurface};
 use crate::collab_broker::CrdtRoute;
 use crate::services::LaunchPlace;
+use tilo_lock::MutexRecover as _;
 
 /// Prefix of the provider token naming a retained launchable surface.
 const LAUNCHABLE_PROVIDER: &str = "launch";
@@ -62,6 +63,35 @@ pub(super) fn launch_permits() -> Arc<tokio::sync::Semaphore> {
 
 /// `(app_id, cluster_id, record_id)`: one retained surface.
 type SurfaceKey = (String, String, String);
+
+/// The record of a window rather than of something the person keeps: a
+/// window's scratch document (`tab:<id>`) or a record derived from one
+/// (`derived:default@tab:<id>`, Settings' page of that window). Answers the
+/// roles leading to the window and the window's id. The person's own base
+/// (tab 0) names no window.
+fn window_record(record_id: &str) -> Option<(&str, u64)> {
+    let mut rest = record_id;
+    while let Some(derived) = rest.strip_prefix("derived:") {
+        rest = derived.split_once('@')?.1;
+    }
+    let tab = rest.strip_prefix("tab:")?;
+    let tab = u64::from_str_radix(tab, 16).ok().filter(|tab| *tab != 0)?;
+    Some((record_id.strip_suffix(rest)?, tab))
+}
+
+/// Whether `retained` is an older window's record playing the same roles of
+/// the same app in the same room as `key`, which replaces it. Every window
+/// of such an app has a record of its own, and invoking a retained action
+/// opens a window anyway: keeping one per window ever opened grew the
+/// catalogue without bound (a Settings window retains some 900 actions).
+fn superseded_by(key: &SurfaceKey, retained: &SurfaceKey) -> bool {
+    key != retained
+        && key.0 == retained.0
+        && key.1 == retained.1
+        && window_record(&key.2)
+            .zip(window_record(&retained.2))
+            .is_some_and(|((roles, _), (retained_roles, _))| roles == retained_roles)
+}
 
 /// Starts `app_id` in a workspace in place of the host's launcher. Tests
 /// stand in for launching the installed app with one.
@@ -241,19 +271,12 @@ impl LaunchableCatalogue {
     /// `actor` just ran an action of `app_id` in `room`: that view is
     /// where it works now.
     pub(super) fn note_view(&self, room: &str, actor: &str, app_id: &str) {
-        self.views
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .note(room, actor, app_id);
+        self.views.lock_recover().note(room, actor, app_id);
     }
 
     /// The app whose view `actor` last worked in, in `room`.
     pub(super) fn view_of(&self, room: &str, actor: &str) -> Option<String> {
-        self.views
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .of(room, actor)
-            .map(str::to_owned)
+        self.views.lock_recover().of(room, actor).map(str::to_owned)
     }
 
     /// Load the catalogue saved at `path` and keep saving changes there. A
@@ -271,7 +294,17 @@ impl LaunchableCatalogue {
             return;
         };
         for (key, surface) in stored.into_iter().filter_map(StoredSurface::into_surface) {
-            // What an application published this session is newer.
+            // What an application published this session is newer, and so
+            // is a later window's record: window ids only grow.
+            let newer = surfaces.keys().any(|kept| {
+                superseded_by(kept, &key)
+                    && window_record(&kept.2).map(|(_, tab)| tab)
+                        > window_record(&key.2).map(|(_, tab)| tab)
+            });
+            if newer {
+                continue;
+            }
+            surfaces.retain(|kept, _| !superseded_by(&key, kept));
             surfaces.entry(key).or_insert(surface);
         }
         if let Ok(mut slot) = self.store.lock() {
@@ -335,6 +368,7 @@ impl LaunchableCatalogue {
         }) {
             false
         } else {
+            surfaces.retain(|retained, _| !superseded_by(&key, retained));
             surfaces.insert(
                 key,
                 PublishedSurface {
@@ -381,10 +415,7 @@ impl LaunchableCatalogue {
 
     /// The launcher standing in for the host's, if one was installed.
     pub(super) fn launcher(&self) -> Option<AppLauncher> {
-        self.launcher
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.launcher.lock_recover().clone()
     }
 
     pub(super) fn delivery_timeout(&self) -> Duration {
@@ -458,6 +489,95 @@ mod tests {
             ],
             live: true,
         }
+    }
+
+    /// `surface(7, room)` for the record `record`.
+    fn surface_of(room: &str, record: &str) -> PublishedSurface {
+        let mut surface = surface(7, room);
+        surface.route.record_id = record.into();
+        surface
+    }
+
+    fn retained_records(catalogue: &LaunchableCatalogue) -> Vec<(String, String)> {
+        let mut records = catalogue
+            .surfaces()
+            .into_iter()
+            .map(|surface| (surface.route.cluster_id, surface.route.record_id))
+            .collect::<Vec<_>>();
+        records.sort();
+        records
+    }
+
+    /// Each window of an app with a record per window (Settings) retains
+    /// the newest window's surface only, per room and role; the records a
+    /// person keeps (a document, the person's own base) each stay.
+    #[test]
+    fn a_window_record_replaces_an_older_windows_surface() {
+        let catalogue = LaunchableCatalogue::new();
+        let first = "derived:default@tab:0000000000000003";
+        let later = "derived:default@tab:0000000000000006";
+        catalogue.retain(&surface_of("room-a", first));
+        catalogue.retain(&surface_of("room-a", later));
+        catalogue.retain(&surface_of("room-a", "derived:notes@tab:0000000000000003"));
+        catalogue.retain(&surface_of("room-a", "tab:0000000000000004"));
+        catalogue.retain(&surface_of("room-a", "tab:0000000000000009"));
+        catalogue.retain(&surface_of(
+            "room-a",
+            "derived:default@tab:0000000000000000",
+        ));
+        catalogue.retain(&surface_of(
+            "room-a",
+            "uuid:7f9c8d63-0a43-4d0e-9a5b-0b6a6f2ff001",
+        ));
+        catalogue.retain(&surface_of(
+            "room-a",
+            "uuid:7f9c8d63-0a43-4d0e-9a5b-0b6a6f2ff002",
+        ));
+        catalogue.retain(&surface_of("room-b", first));
+        let room = |room: &str, record: &str| (room.to_owned(), record.to_owned());
+        assert_eq!(
+            retained_records(&catalogue),
+            [
+                room("room-a", "derived:default@tab:0000000000000000"),
+                room("room-a", later),
+                room("room-a", "derived:notes@tab:0000000000000003"),
+                room("room-a", "tab:0000000000000009"),
+                room("room-a", "uuid:7f9c8d63-0a43-4d0e-9a5b-0b6a6f2ff001"),
+                room("room-a", "uuid:7f9c8d63-0a43-4d0e-9a5b-0b6a6f2ff002"),
+                room("room-b", first),
+            ]
+        );
+    }
+
+    /// A catalogue saved with one surface per window ever opened loads with
+    /// the newest window's only.
+    #[test]
+    fn a_saved_catalogue_loads_the_newest_window_record_only() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("launchable.json");
+        let action = action("new-window", tilo_actions::ConfirmationPolicy::None);
+        let stored = [
+            "0000000000000009",
+            "0000000000000003",
+            "000000000000000f",
+            "0000000000000006",
+        ]
+        .map(|tab| StoredSurface {
+            app_id: APP.into(),
+            cluster_id: "room-a".into(),
+            record_id: format!("derived:default@tab:{tab}"),
+            actions: vec![action.clone()],
+        });
+        std::fs::write(&path, serde_json::to_vec(&stored).expect("encode")).expect("write");
+        let catalogue = LaunchableCatalogue::new();
+        catalogue.persist_at(&path);
+        assert_eq!(
+            retained_records(&catalogue),
+            [(
+                "room-a".to_owned(),
+                "derived:default@tab:000000000000000f".to_owned()
+            )]
+        );
     }
 
     fn workspace() -> Workspace {

@@ -38,7 +38,7 @@ min_delta = 0.0
 # Perf / scheduled (.forgejo/workflows/perf-scheduled.yml): one job per group,
 # selected by its `kpis` input; its `compare` job runs with the default lane.
 [lanes.perf-scheduled]
-groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting"]
+groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting", "browser", "stream"]
 
 # Dev / VM acceptance (.forgejo/workflows/vm-acceptance.yml): the installed
 # desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
@@ -550,7 +550,7 @@ min_delta = 1.0
 baseline_min_runs = 1
 source = "KPI: Workspace switch, dropped frames (compositor side, headless)"
 
-# Idle wakeups (crates/session/shell/tests/idle_wakeups.rs, #3973): a
+# Idle wakeups (crates/session/shell/examples/idle-wakeups.rs, #3973): a
 # headless dev build on the shared `runner` class with a signed-in desktop,
 # a restored Notes tab and a Terminal, left alone and sampled from /proc over
 # 60 s; context switches per second of every thread of the compositor's
@@ -1301,6 +1301,152 @@ p99_tolerance = 2.0
 min_delta = 40.0
 source = "framework-scaling focus, an agent call adding one item end to end, 2,500 items (reported)"
 
+# Notes input latency: the notes-latency example
+# (apps/notes/examples/notes-latency.rs) opens Notes over a 27-note,
+# 838-block notebook and sends each input through the host's input path,
+# through adapters.py notes-latency in the render job. `to_frame_ms` runs from
+# the input to the end of the host frame that shows it (input handling, sync,
+# layout, the scene and the accessibility walk), `to_raster_ms` on to GPU
+# completion of that frame's damage; every input is a sample, checked against
+# the editor's canonical body. On an M5 Max, release, 200 keys back to back:
+# to frame p50 4.2-5.4 ms typing, 4.8-5.3 Enter, 5.3-5.8 Backspace, 2.7-2.9
+# a wheel step and 4.7-5.2 opening a note; to raster 3-4 ms more on Metal.
+# The ceilings are the 60 Hz frame (16.7 ms): to frame at p99, to raster at
+# p50, since lavapipe rasterises on the shared runner's CPU. Reported, not
+# enforced; the relative rule catches regressions once three runs are stored.
+
+[kpi."render.notes_latency.type.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a typed character to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.type.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a typed character to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.enter.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, Enter splitting a block to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.enter.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, Enter splitting a block to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.backspace.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, Backspace joining a block to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.backspace.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, Backspace joining a block to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.scroll.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a 40 px wheel step in a 136-block note to the frame that shows it (reported)"
+
+[kpi."render.notes_latency.scroll.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a 40 px wheel step in a 136-block note to its frame rasterised (lavapipe; reported)"
+
+[kpi."render.notes_latency.open.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a note's open action to the frame that shows it bound, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.open.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a note's open action to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+# The pointer moving a few pixels over the long note, and a host frame with no
+# input at all (what a caret blink or another window's animation costs Notes).
+# An idle frame publishes no accessibility change and walks no widgets; on an
+# M5 Max, release, it is 0.25-0.28 ms to frame (0.64-0.66 ms while every frame
+# rebuilt the semantic tree), a pointer move 0.7 ms.
+
+[kpi."render.notes_latency.pointer.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+baseline_min_runs = 3
+source = "notes-latency, a pointer move over a 136-block note to the frame that shows it (reported)"
+
+[kpi."render.notes_latency.pointer.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a pointer move over a 136-block note to its frame rasterised (lavapipe; reported)"
+
+[kpi."render.notes_latency.idle.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.25
+baseline_min_runs = 3
+source = "notes-latency, a host frame with no input over a 136-block note, accessibility walk included (reported)"
+
+[kpi."render.notes_latency.idle.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+baseline_min_runs = 3
+source = "notes-latency, a host frame with no input over a 136-block note, rasterised where it changed (lavapipe; reported)"
+
 # The installed desktop: Dev / VM acceptance's nightly run on the newest
 # published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
 # (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish
@@ -1316,6 +1462,18 @@ unit = "s"
 max = 20.0
 min_delta = 1.0
 source = "os/tests/boot_performance_gate.sh budget under KVM (KPI target: 10 s on the reference laptop)"
+
+# The kernel's memory init: the silence in the kernel log that ends at SLUB's first line,
+# while the boot CPU alone hands every free page to the page allocator. With the
+# init_on_free=1 karg it also zeroed all of RAM there (6.0 s of a 7.8 s kernel phase in a
+# 4.5 GiB guest), which is why that karg is not in 01-hardening.toml. Without it the pass
+# only links pages into the free lists; the ceiling is reported, not enforced, and the
+# regression rule flags zeroing coming back while min_delta keeps scheduler noise out.
+[kpi."boot.kernel_meminit_s"]
+unit = "s"
+max = 1.0
+min_delta = 0.5
+source = "vm-acceptance R06 R06-dmesg.txt, KVM guest; scales with guest RAM"
 
 # Userspace start to greetd active, and the greeter's sign-in request to a desktop that
 # has presented its first frame and answers its control socket. Boot to a usable
@@ -1734,3 +1892,223 @@ unit = "usd"
 p50 = 0.001
 enforce = true
 source = "KPI: Relay cost per active collaborator-hour"
+
+# A public room host at 100 guests: crates/dev/room-load, three runs on
+# runner-large (perf-scheduled.yml, `hosting-room`; adapters.py room-load),
+# each run one sample. 100 is the largest room the capacity sweep of
+# 2026-10-14 (docs/benchmarks/room-host-capacity-2026-10.md, Perf / room host
+# capacity run 112979) admitted whole: there, 100 guests joined with join p99
+# 9.9 s and chat delivery p99 5.5 s, the host's process tree peaked at
+# 122 MiB and used 1.14 cores; past about 250 members joins time out at any
+# arrival rate. The ceilings are about twice those, with the relay CPU's
+# tolerances: join and delivery time at this size swing between runs (join
+# p99 5.7 s in the sweep's first run), and a guest that did not join fails
+# the adapter outright. Raise the point to 300 guests once the room admits
+# them.
+[kpi."hosting.room.join_p99_ms.g100"]
+unit = "ms"
+p50 = 20000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2000.0
+source = "room-load: guests' p99 time from /join to the room's Ready, per run"
+
+[kpi."hosting.room.chat_p99_ms.g100"]
+unit = "ms"
+p50 = 12000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "room-load: p99 delivery of chat changes sent while their receiver was in the room, per run"
+
+[kpi."hosting.room.rss_mib_peak.g100"]
+unit = "MiB"
+p50 = 250.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "room-load: peak proportional memory of the host's process tree (relay and Automerge workers)"
+
+[kpi."hosting.room.cpu_percent.g100"]
+unit = "percent"
+p50 = 250.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "room-load: the host's process tree's CPU during the hold, as a share of one core"
+
+# Browser runtime (scripts/perf/browser_qualification.mjs): the release
+# desktop bundle (build.sh --bundle desktop, the bytes web-entry.yml
+# publishes) in headless Chrome for Testing on the shared `runner` class, one
+# fresh-context round at 960x540. The runner has no GPU, and Chrome offers
+# WebGPU no CPU driver but its own SwiftShader (it renders its page on
+# lavapipe, but its WebGPU adapter stays SwiftShader). So these records are
+# compared only with each other and never quoted as hardware figures, and the
+# ceilings are reported, never enforced; the relative rule catches regressions
+# of the runtime's own work. They time the page's side of each step (a frame
+# presented is a frame submitted). SwiftShader takes tens of seconds for a
+# panned FHD frame on this runner and queues its work behind the page (a first
+# FHD round took 20 minutes, a second never finished in two hours), hence one
+# small round. The demo workload is left out (--demo-seconds 0), so its frame
+# rate and the 30 and 120 fps goals are judged where a GPU draws (a hardware qualification: --renderer gpu --enforce-goals,
+# docs/measurements/performance.md). The ceilings are the runtime's goals: a
+# window activated within 50 ms and first opened within 250 ms
+# (crates/browser/tilo-web-desktop/scripts/open-times.mjs), its own code
+# drawing within a second (the limit of an uninterrupted flow of thought); the
+# desktop's first frame within 2.5 s of navigation (the web's "good" Largest
+# Contentful Paint), which SwiftShader's pipeline compiles alone exceed; an
+# idle desktop presenting at most two frames a second (idle.mjs). Timing KPIs
+# need three stored runs before comparison, as the latency group's do:
+# wall-clock on the shared runner varies between nights on identical code.
+
+[kpi."browser.load.desktop_presented"]
+unit = "ms"
+p99 = 2500.0
+baseline_min_runs = 3
+source = "navigation to the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
+
+[kpi."browser.open.first_frame"]
+unit = "ms"
+p99 = 250.0
+baseline_min_runs = 3
+source = "launch command to the first frame presenting the new window, first open (headless, SwiftShader)"
+
+[kpi."browser.open.ready"]
+unit = "ms"
+p99 = 1000.0
+baseline_min_runs = 3
+source = "launch command to the first frame after the app's own code (its split-off module) is instantiated, first open (headless, SwiftShader)"
+
+[kpi."browser.activate.first_frame"]
+unit = "ms"
+p99 = 50.0
+baseline_min_runs = 3
+source = "select command to the first frame with the window active (headless, SwiftShader)"
+
+[kpi."browser.idle.presented_per_s"]
+unit = "per_s"
+max = 2.0
+min_delta = 0.5
+baseline_min_runs = 1
+source = "frames an idle desktop of the demo windows presents per second (headless, SwiftShader)"
+
+# A native window on the browser desktop
+# (scripts/perf/native_stream_qualification.mjs): a session's legacy window,
+# encoded by the production real-time encoder with the shell's legacy-share
+# configuration, through `tilo-relay dev`'s legacy-window bridge and live
+# plane, decoded with WebCodecs and drawn by the release desktop bundle in
+# headless Chrome for Testing on the shared `runner` class. The runner has no
+# GPU: the session encodes in software (30 fps, the shell's software ceiling),
+# Chrome decodes in software, and the desktop under the window draws on
+# SwiftShader. So these records are compared only with each other and never
+# quoted as hardware figures; a hardware encoder (60 fps), a hardware decoder
+# and a GPU desktop are a hardware qualification's (--renderer gpu
+# --enforce-goals, docs/measurements/performance.md). Every run is first
+# judged correct (no decoder error, no corrupt, misnamed or older picture, the
+# last frame shown, every press delivered) or it records nothing. SwiftShader
+# compiles the window tile's pipelines when the desktop first draws it, which
+# blocks the page for about 25 s on this runner: startup includes that, and
+# the frame KPIs are timed after a 30 s warm-up (--warm-up 30). The
+# ceilings are the harness's goals: the window's first picture within a second
+# of the session starting its stream (an uninterrupted flow of thought), a
+# frame on screen within 100 ms of its capture at p95, under 1 % of the frames
+# sent after the first picture never drawn, a click reaching the session
+# within 50 ms at p95 (it travels HTTPS, the host and the session's relay
+# connection, all on loopback here), and pictures arriving at the session's
+# software rate. Timing KPIs need three stored runs before comparison, as the
+# browser group's do.
+
+[kpi."stream.startup.first_picture"]
+unit = "ms"
+max = 1000.0
+baseline_min_runs = 3
+source = "the session starting its stream to the window's first picture on the desktop (software encode and decode, SwiftShader desktop)"
+
+[kpi."stream.frame.latency"]
+unit = "ms"
+p95 = 100.0
+baseline_min_runs = 3
+source = "a frame's capture at the session to its picture drawn by the page, per frame (software encode and decode)"
+
+[kpi."stream.frame.interval"]
+unit = "ms"
+p50 = 34.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "between consecutive new pictures the page draws while the window repaints at 30 fps (software encode and decode)"
+
+[kpi."stream.encode.frame"]
+unit = "ms"
+p95 = 33.3
+baseline_min_runs = 3
+source = "the production real-time encoder's time per 1280x720 frame, the shell's legacy-share configuration (software)"
+
+[kpi."stream.input.latency"]
+unit = "ms"
+p95 = 50.0
+baseline_min_runs = 3
+source = "a click on the window in the page to the press arriving at the session, through the host's input route"
+
+[kpi."stream.frame.missed"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+baseline_min_runs = 1
+source = "frames sent after the first picture that the page never drew"
+
+# The same window streamed in software VP9 (--codec vp9, vp9enc): what a
+# session with no H.264 encoder sends, a stock device being the normal case,
+# and what every browser decodes. Everything else is the H.264 records' (same
+# build, same Chrome, same job, after the H.264 run), and the series is its
+# own so neither codec's baseline judges the other's. The ceilings come from
+# the first run on this runner (October 2026: startup 8974 ms,
+# latency p95 27.8 ms, interval p50 33.4 ms, encode p95 13.8 ms, input p95
+# 40.3 ms, nothing missed) with headroom for the shared runner, not from
+# H.264's goals: they are SwiftShader and software-codec figures, never a
+# product or hardware figure. Startup is far over the 1 s goal on this runner
+# for both codecs (H.264's first picture took 4248 ms in the same run), so its
+# ceiling is the run's with headroom, not the goal; encode stays under the 33.3 ms a
+# 30 fps frame allows, as H.264's does; a frame is still one 30 fps interval
+# apart; frames missed is a delivery ceiling, as H.264's is.
+
+[kpi."stream.vp9.startup.first_picture"]
+unit = "ms"
+max = 13500.0
+baseline_min_runs = 3
+source = "the session starting its VP9 stream to the window's first picture on the desktop (software encode and decode, SwiftShader desktop)"
+
+[kpi."stream.vp9.frame.latency"]
+unit = "ms"
+p95 = 45.0
+baseline_min_runs = 3
+source = "a frame's capture at the session to its picture drawn by the page, per frame (software VP9 encode and decode)"
+
+[kpi."stream.vp9.frame.interval"]
+unit = "ms"
+p50 = 34.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "between consecutive new pictures the page draws while the window repaints at 30 fps (software VP9 encode and decode)"
+
+[kpi."stream.vp9.encode.frame"]
+unit = "ms"
+p95 = 25.0
+baseline_min_runs = 3
+source = "the production real-time encoder's time per 1280x720 VP9 frame (vp9enc, software), the shell's legacy-share configuration"
+
+[kpi."stream.vp9.input.latency"]
+unit = "ms"
+p95 = 60.0
+baseline_min_runs = 3
+source = "a click on the window in the page to the press arriving at a VP9-streaming session, through the host's input route"
+
+[kpi."stream.vp9.frame.missed"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+baseline_min_runs = 1
+source = "frames of the VP9 stream sent after the first picture that the page never drew"

@@ -1023,7 +1023,7 @@ impl ClocksApp {
         if live {
             let sink = activations.clone();
             let wake = ui::wake::WakeHandle::new();
-            ui::notify::set_activation_handler(move |uri| {
+            ui::notify::set_activation_handler("tilo-clocks", move |uri| {
                 if let Ok(mut pending) = sink.lock() {
                     pending.push(uri.to_owned());
                 }

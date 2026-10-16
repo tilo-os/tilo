@@ -65,17 +65,6 @@ fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
     ]
 }
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
-              or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 /// See [`translated`]: scaling about a pivot point is translate, scale,
 /// translate back — still the same plain f64 matrix math.
 #[allow(
@@ -199,7 +188,7 @@ struct OwnerTransitionError {
 impl Binding {
     fn settle_outgoing(&mut self) -> Option<crate::application::ComponentCloseReport> {
         // This comparison must not commit a local draft or advance any sibling.
-        if let Some((heads, 0)) = self.store.read(&self.live, super::settle_mark)
+        if let Some((heads, 0)) = self.store.read(&self.live, crate::doc::settle_mark)
             && self.settled_frontier.as_ref() == Some(&heads)
         {
             return None;
@@ -210,7 +199,7 @@ impl Binding {
         self.settled_frontier = self
             .store
             .read(&self.live, |doc| {
-                let (heads, pending) = super::settle_mark(doc);
+                let (heads, pending) = crate::doc::settle_mark(doc);
                 (pending == 0).then_some(heads)
             })
             .flatten();
@@ -249,6 +238,15 @@ impl Binding {
             self.settled_frontier = None;
         }
         Ok(self.live.clone())
+    }
+}
+
+/// What the tile shows while its record cannot be opened. A document the
+/// store is still opening on its own thread is not a failure.
+fn record_unavailable(error: &crate::record::RecordOpenError) -> String {
+    match error {
+        crate::record::RecordOpenError::Opening => "Opening the document".to_owned(),
+        other => format!("Document storage unavailable: {other}"),
     }
 }
 
@@ -324,6 +322,9 @@ pub struct TileHost {
     /// further right instead.
     content_shift: f64,
     pub focused: bool,
+    /// Last pointer position, so a button press (which carries none) can be
+    /// attributed to this tile or to a neighbour.
+    pointer: Option<Point>,
     /// Adjacent canvas windows own exactly their layout rectangle, including
     /// their border; neither outlines nor shadows may spill into a sibling.
     flush_edges: bool,
@@ -555,6 +556,7 @@ impl TileHost {
             rect: Rect::ZERO,
             content_shift: 0.0,
             focused: false,
+            pointer: None,
             flush_edges: false,
             spawned_at: None,
             opening_name: String::new(),
@@ -958,6 +960,22 @@ impl TileHost {
         self.custody_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
     }
 
+    /// Whether `event` is addressed to this tile: keys and IME go to the
+    /// focused tile, pointer events to the tile under the pointer.
+    fn event_is_for_this_tile(&self, event: &WindowEvent, scale_factor: f64) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => self.focused,
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. } => self.pointer.is_some_and(|p| self.rect.contains(p)),
+            WindowEvent::Touch(touch) => self.rect.contains(Point::new(
+                touch.location.x / scale_factor,
+                touch.location.y / scale_factor,
+            )),
+            _ => false,
+        }
+    }
+
     /// Typing may reach a live app that has no tab record yet. It must not
     /// bypass a renewed lifetime or admitted owner-bound custody.
     fn typing_may_bypass_missing_record(&self) -> bool {
@@ -1002,8 +1020,7 @@ impl TileHost {
         if let Err(error) = admit_record(&store, &tab, create) {
             if self.binding.is_some() && self.owner_bound_work {
                 self.pending_binding = Some(PendingBinding { store, tab, create });
-                self.record_transition_error =
-                    Some(format!("Document storage unavailable: {error}"));
+                self.record_transition_error = Some(record_unavailable(&error));
                 self.record_intent_transition_blocked = false;
                 return;
             }
@@ -1014,7 +1031,7 @@ impl TileHost {
             self.renew_history_lifetime();
             self.binding = None;
             self.pending_binding = Some(PendingBinding { store, tab, create });
-            self.record_error = Some(format!("Document storage unavailable: {error}"));
+            self.record_error = Some(record_unavailable(&error));
             return;
         }
         if self.binding.is_some()
@@ -1038,7 +1055,7 @@ impl TileHost {
         if let Err(error) = admit_record(&store, &tab, create) {
             self.binding = None;
             self.pending_binding = Some(PendingBinding { store, tab, create });
-            self.record_error = Some(format!("Document storage unavailable: {error}"));
+            self.record_error = Some(record_unavailable(&error));
             return;
         }
         self.pending_binding = None;
@@ -1065,7 +1082,7 @@ impl TileHost {
                 self.pending_binding = Some(pending);
                 // The tile shows the storage context; the caller gets the
                 // exact admission refusal.
-                let shown = format!("Document storage unavailable: {error}");
+                let shown = record_unavailable(&error);
                 if self.binding.is_some() {
                     self.record_transition_error = Some(shown);
                 } else {
@@ -1110,7 +1127,7 @@ impl TileHost {
         let changing_owner = match (&self.binding, &want) {
             (Some(binding), Some(want)) if want.id != binding.live => {
                 if let Err(error) = binding.store.open_existing_record_checked(want) {
-                    let shown = format!("Document storage unavailable: {error}");
+                    let shown = record_unavailable(&error);
                     if self.owner_bound_work {
                         self.record_transition_error = Some(shown);
                         self.record_intent_transition_blocked = true;
@@ -1149,7 +1166,7 @@ impl TileHost {
                 if !was_unavailable {
                     self.renew_history_lifetime();
                 }
-                self.record_error = Some(format!("Document storage unavailable: {error}"));
+                self.record_error = Some(record_unavailable(&error));
                 return Err(error.to_string());
             }
         };
@@ -1991,6 +2008,26 @@ impl Widget for TileHost {
         children
     }
 
+    /// The tile's own node fills the window whatever it shows, so a notice
+    /// or a stub has nothing to measure once laid out; app content and
+    /// History report their own.
+    fn is_layout_dirty(&self) -> bool {
+        if self.record_error.is_some() {
+            return true;
+        }
+        let mut has_children = false;
+        let mut dirty = false;
+        self.for_each_child(&mut |child| {
+            has_children = true;
+            dirty = dirty || child.is_layout_dirty();
+        });
+        if has_children {
+            dirty
+        } else {
+            self.rect == Rect::ZERO
+        }
+    }
+
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         let _running = self.running();
         if !self.history_lifetime.active.get()
@@ -2079,10 +2116,10 @@ impl Widget for TileHost {
             (Some(id), Some(store)) => {
                 let _ = store.with(&id, |doc| {
                     if let TileContent::App(app) = &mut self.content {
-                        let before = crate::widget::settle_mark(doc);
+                        let before = crate::doc::settle_mark(doc);
                         app.settle(&mut crate::widget::Edits::lend(doc), &ROOT);
                         // What it wrote shows in this same frame.
-                        if crate::widget::settle_mark(doc) != before {
+                        if crate::doc::settle_mark(doc) != before {
                             app.update(doc, &ROOT);
                             app.sync(doc, &ROOT);
                         }
@@ -2283,6 +2320,12 @@ impl Widget for TileHost {
         if *ctx.handled {
             return;
         }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Some(Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            ));
+        }
         let typing = matches!(
             event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
@@ -2296,13 +2339,15 @@ impl Widget for TileHost {
             // record was never bound. A renewed or closed owner must not.
             None
         } else {
-            *ctx.handled = true;
+            // Refuse what is meant for this tile; leave the rest for its
+            // neighbours (a loading window must not freeze the ones beside it).
+            *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
         };
         self.install_declared_history();
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         if self.record_error.is_some() && !(typing && self.typing_may_bypass_missing_record()) {
-            *ctx.handled = true;
+            *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
         }
         let TileContent::App(app) = &mut self.content else {
@@ -2601,6 +2646,16 @@ impl crate::search::capability::SearchSource for TileHost {
             _ => Vec::new(),
         }
     }
+    fn search_provider_descriptors(
+        &self,
+    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+        match &self.content {
+            TileContent::App(app) => {
+                crate::search::capability::search_provider_descriptors(app.as_ref())
+            }
+            _ => Vec::new(),
+        }
+    }
     fn activate_search_result(
         &mut self,
         action_id: &str,
@@ -2720,7 +2775,10 @@ impl TileHost {
         rect: Rect,
     ) {
         let (edge_width, edge_color) = if self.focused {
-            (FOCUS_EDGE_STROKE_WIDTH, theme.tokens.colors.border_focus)
+            (
+                FOCUS_EDGE_STROKE_WIDTH,
+                theme.tokens.colors.window_edge_focused(),
+            )
         } else {
             (EDGE_STROKE_WIDTH, theme.window_edge())
         };
@@ -2961,6 +3019,49 @@ fn draw_opening_card(
     name: &str,
     spinner: &mut Spinner,
 ) {
+    paint_opening_card(
+        scene,
+        transform,
+        tr,
+        theme,
+        presence,
+        rect,
+        OpeningCardText { name, status: "" },
+        Some(spinner),
+    );
+}
+
+/// The moving indicator [`paint_opening_card`] draws, at the tile's size.
+#[must_use]
+pub fn opening_card_spinner() -> Spinner {
+    Spinner::with_size(OPENING_SPINNER_PX_F32)
+}
+
+/// What the opening card says: the app's name, and a line under the
+/// indicator when the wait has something worth saying — an install under
+/// way, or a start taking longer than it should. An empty `status` draws
+/// exactly the card the tile shows for an arriving window, so handing over
+/// from one to the other changes nothing on screen.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OpeningCardText<'a> {
+    pub name: &'a str,
+    pub status: &'a str,
+}
+
+/// The opening card, for a place held before any window exists. Draws
+/// `spinner` in the indicator's place, or leaves that place to the caller
+/// (a measured wait shows a bar there instead). Returns the place.
+pub fn paint_opening_card(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    rect: Rect,
+    text: OpeningCardText<'_>,
+    spinner: Option<&mut Spinner>,
+) -> Rect {
+    let OpeningCardText { name, status } = text;
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
@@ -2983,19 +3084,37 @@ fn draw_opening_card(
             scene,
             name,
             on_card,
-            translated(transform, cx - f64::from(tw) / 2.0, y),
+            transform.pre_translate((cx - f64::from(tw) / 2.0, y).into()),
             None,
             &style,
         );
     }
     let top = y + f64::from(style.size) + OPENING_SPINNER_GAP;
-    spinner.set_rect(Rect::new(
+    let indicator = Rect::new(
         cx - OPENING_SPINNER_PX / 2.0,
         top,
         cx + OPENING_SPINNER_PX / 2.0,
         top + OPENING_SPINNER_PX,
-    ));
-    Widget::draw(spinner, scene, transform, tr, theme, presence);
+    );
+    if let Some(spinner) = spinner {
+        spinner.set_rect(indicator);
+        Widget::draw(spinner, scene, transform, tr, theme, presence);
+    }
+    if !status.is_empty() {
+        let style = theme.text(TextRole::Body);
+        let (tw, _) = tr.measure_style(status, None, &style);
+        tr.draw_style(
+            scene,
+            status,
+            theme.on_content().ink_dim,
+            transform.pre_translate(
+                (cx - f64::from(tw) / 2.0, indicator.y1 + OPENING_SPINNER_GAP).into(),
+            ),
+            None,
+            &style,
+        );
+    }
+    indicator
 }
 
 /// One function so the two callers (`Stub`, `Notice`) can't drift apart —
@@ -3196,7 +3315,12 @@ mod tests {
 
             for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
                 let name = theme.name.clone();
-                let focus = theme.tokens.colors.border_focus;
+                let focus = theme.tokens.colors.window_edge_focused();
+                assert_ne!(
+                    focus.to_rgba8().to_u32(),
+                    theme.tokens.colors.intent.you.to_rgba8().to_u32(),
+                    "{name}: window focus is neutral, not your colour"
+                );
                 let (fr, fg, fb) = {
                     let rgba = focus.to_rgba8();
                     (rgba.r, rgba.g, rgba.b)
@@ -3348,9 +3472,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("S")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     struct FloatingProbe {
@@ -3410,9 +3531,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("P")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     #[test]
@@ -3462,6 +3580,52 @@ mod tests {
                 .send(&mut host, &WindowEvent::Focused(true));
             assert_eq!(calls.get(), 0);
         }
+    }
+
+    #[test]
+    fn an_unresolved_tile_only_refuses_events_meant_for_it() {
+        use winit::event::ElementState;
+        use winit::keyboard::Key;
+        // A tile with no record (still restoring, or starting) refuses its
+        // own input, but must not swallow the pointer over a neighbour or keys
+        // for the focused window beside it.
+        let mut host = TileHost::new(TileContent::Stub {
+            kind: AppKind::Editor,
+            label: String::new(),
+        });
+        host.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        // A closed document owner leaves the record unresolvable.
+        host.history_lifetime.active.set(false);
+        let mut taffy = TaffyTree::new();
+        let mut node_map = std::collections::HashMap::new();
+        let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
+        let send = |host: &mut TileHost, event: &WindowEvent| {
+            crate::testing::Dispatch::new()
+                .layout(&taffy, node)
+                .send(host, event)
+                .handled
+        };
+        let key = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Character("a".into()),
+            None,
+            ElementState::Pressed,
+        ));
+        // Pointer outside: passes through, and so does the press after it.
+        assert!(!send(
+            &mut host,
+            &crate::synthetic_input::cursor_moved(250.0, 50.0)
+        ));
+        assert!(!send(&mut host, &crate::synthetic_input::mouse_press()));
+        // Pointer inside: refused.
+        assert!(send(
+            &mut host,
+            &crate::synthetic_input::cursor_moved(50.0, 50.0)
+        ));
+        assert!(send(&mut host, &crate::synthetic_input::mouse_press()));
+        // Keys: refused only while this tile is the focused one.
+        assert!(!send(&mut host, &key));
+        host.set_focused(true);
+        assert!(send(&mut host, &key));
     }
 
     fn tab_checkout(id: u64) -> RecordCheckout {
@@ -3811,9 +3975,6 @@ mod tests {
         }
         fn app_title(&self) -> &str {
             "Declared history probe"
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Glyph("H")
@@ -4195,9 +4356,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("E")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     /// Records the window a panic hook would name while it lays out.
@@ -4229,9 +4387,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("S")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 
@@ -4503,9 +4658,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("F")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     /// Module-scoped alongside [`FloodFill`] purely to keep its one test's
@@ -4555,9 +4707,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("F")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 
@@ -4624,9 +4773,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("S")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     /// A presented app that remembers the transform it was drawn with.
@@ -4671,9 +4817,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("T")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 

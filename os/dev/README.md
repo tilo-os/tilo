@@ -386,8 +386,13 @@ the target must contain the dev flavour and OpenSSH. A separate target may
 provide the installed-target bundle, a sealed board UKI, or one split kernel
 and initramfs. For the latter two forms, the installer projects an unsigned
 installed UKI from the exact selected CI kernel, initramfs and pinned hardware
-DTB. It verifies the installed OCI manifest, origin, composefs and bootc payload
-digest before adding the TILO_BOOT mount. A sealed target retains its original
+DTB. The live medium carries no UKI constructor: for a split kernel,
+`prepare-dev-installer-target.py --rpms-ref` builds the UKI on the runner with
+the boot adapter's `uki-tools` stage and ships it beside the OCI layout as
+`target-uki.efi`; the installer checks its kernel, initramfs and DTB against the
+selected image and writes only the installed command line into the room
+reserved for it. It verifies the installed OCI manifest, origin, composefs and
+bootc payload digest before adding the TILO_BOOT mount. A sealed target retains its original
 origin and loader entry; a split target changes only its boot representation.
 No OS rebuild, image commit or registry upload is involved. The signed release
 promotion path continues to require its prebuilt target bundle.

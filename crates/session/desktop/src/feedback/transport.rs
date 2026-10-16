@@ -4,11 +4,12 @@ use std::rc::Rc;
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination};
 use tilo_actions::remote::{Caller, CallerPrincipal};
 use tilo_app::feedback::{
     Error, FeedbackHost, MaskedScreenshot, Receipt, ReviewText, Submission, destination,
 };
-use ui::permissions::{ActionKind, Answer, PermissionContext, TreePath};
+use ui::permissions::{ActionKind, Actor, Answer, PermissionContext, Standing, TreePath};
 use ui::record::{RecordId, RecordStore};
 
 use super::{Destination, DurableStore, PrivateFeedback, StorageKey};
@@ -26,6 +27,68 @@ pub struct Enrollment {
 }
 
 impl Enrollment {
+    /// The enrollment the destination owner's `answer` grants: refused unless
+    /// it names exactly `destination`, `owner` and `reporter`, the identities
+    /// the transport already holds certificates for.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ReceiptMismatch`] for any other identity, and the decoding
+    /// error of a malformed standing or sandbox.
+    pub fn admitted(
+        answer: &FeedbackAnswer,
+        destination: &FeedbackDestination,
+        owner: &Identity,
+        reporter: &Identity,
+    ) -> Result<Self, Error> {
+        let admission = &answer.admission;
+        if admission.destination != *destination
+            || admission.owner_user != hex::encode(owner.user)
+            || admission.owner_device != hex::encode(owner.device)
+            || admission.reporter_user != hex::encode(reporter.user)
+            || admission.reporter_device != hex::encode(reporter.device)
+        {
+            return Err(Error::ReceiptMismatch);
+        }
+        let standing: Standing = serde_json::from_value(admission.standing.clone())?;
+        if standing.person != admission.reporter_user {
+            return Err(Error::ReceiptMismatch);
+        }
+        let room = destination.room.clone();
+        let caller = |identity: &Identity| {
+            Caller::authenticated(identity.user, identity.device).in_room(room.clone())
+        };
+        Ok(Self {
+            destination: Destination {
+                room: room.clone(),
+                provider: destination.provider.clone(),
+                channel: destination.channel.clone(),
+            },
+            owner: caller(owner),
+            reporter: caller(reporter),
+            permissions: PermissionContext::new(
+                Actor::person(standing.person.clone()).in_room(room),
+                serde_json::from_value(admission.sandbox.clone())?,
+                standing,
+            )
+            .at_unix_time(admission.unix_time),
+        })
+    }
+
+    /// The receipt `answer` carries for `submission`, when it verifies
+    /// against this enrollment.
+    #[must_use]
+    pub fn receipt_in(
+        &self,
+        answer: &FeedbackAnswer,
+        submission: &Submission,
+    ) -> Option<SignedReceipt> {
+        let bytes = serde_json::to_vec(answer.receipt.as_ref()?).ok()?;
+        let receipt = SignedReceipt::decode(&bytes).ok()?;
+        receipt.verify(submission, self).ok()?;
+        Some(receipt)
+    }
+
     fn pin(&self) -> Result<Pin, Error> {
         self.destination.validate()?;
         if self.owner.room() != Some(self.destination.room.as_str())
@@ -111,10 +174,11 @@ impl Enrollment {
     }
 }
 
+/// A certified person's user and device public keys.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Identity {
-    user: [u8; 32],
-    device: [u8; 32],
+pub struct Identity {
+    pub user: [u8; 32],
+    pub device: [u8; 32],
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

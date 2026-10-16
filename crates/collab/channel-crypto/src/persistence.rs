@@ -8,7 +8,6 @@
 //! ([`tilo_seal::Label::ChannelMlsState`]) holding the `OpenMLS` provider
 //! storage, signer, group id, epoch and the member's content keyring.
 
-use std::fs;
 use std::path::Path;
 
 use openmls::prelude::{GroupId, MlsGroup, SignatureScheme};
@@ -25,6 +24,14 @@ use crate::{ChannelGroup, Error, Result};
 
 const STATE_VERSION: u8 = 2;
 const MAX_SEALED_STATE: u64 = 64 * 1024 * 1024;
+
+/// The sealed state at `path`, refused beyond [`MAX_SEALED_STATE`].
+fn read_sealed(path: &Path) -> Result<Vec<u8>> {
+    let too_large = Error::InvalidState("sealed state exceeds 64 MiB".into());
+    tilo_files::native::bounded::read_or(path, MAX_SEALED_STATE, too_large)?
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound).into())
+}
+
 /// Record bound into every state envelope, so the file cannot be swapped
 /// with another sealed value under the same vault key.
 const STATE_RECORD: &[u8] = b"channel-crypto/member-state";
@@ -168,11 +175,7 @@ impl ChannelGroup {
     /// Returns an explicit authentication, decoding, consistency, or I/O
     /// error. It never substitutes a new group.
     pub fn load_sealed(path: &Path, key: &VaultKey) -> Result<Self> {
-        let metadata = fs::metadata(path)?;
-        if metadata.len() > MAX_SEALED_STATE {
-            return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
-        }
-        Self::open_sealed(&fs::read(path)?, key)
+        Self::open_sealed(&read_sealed(path)?, key)
     }
 
     /// Restore a group from what [`Self::seal`] produced, with the checks of
@@ -347,10 +350,7 @@ impl MemberRecord {
     }
 
     pub(crate) fn load_sealed(path: &Path, key: &VaultKey) -> Result<Self> {
-        if fs::metadata(path)?.len() > MAX_SEALED_STATE {
-            return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
-        }
-        Self::open_sealed(&fs::read(path)?, key)
+        Self::open_sealed(&read_sealed(path)?, key)
     }
 
     /// This record sealed under `key`, as [`Self::save_sealed`] writes it.

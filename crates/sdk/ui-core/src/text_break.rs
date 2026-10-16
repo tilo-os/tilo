@@ -64,17 +64,110 @@ pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
         let Some(word) = text.get(range.clone()) else {
             continue;
         };
-        let mut source = range.start;
-        let mut syllables = hypher::hyphenate(word, lang).peekable();
-        while let Some(syllable) = syllables.next() {
-            source = source.saturating_add(syllable.len());
-            if syllables.peek().is_some() {
-                breaks.push(source);
-            }
-        }
+        hyphenate(word, lang, &mut |end| {
+            breaks.push(range.start.saturating_add(end));
+        });
     }
     breaks
 }
+
+/// Calls `out` with the byte offset in `word` after each of its syllables
+/// but the last, by `lang`'s patterns.
+pub type Hyphenate = fn(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize));
+
+/// Hands over the patterns' [`Hyphenate`], for [`install_hyphenation`].
+pub type MakeHyphenation = fn() -> Hyphenate;
+
+/// TeX/Liang hyphenation by the patterns hypher embeds.
+#[must_use]
+pub fn builtin_hyphenation() -> Hyphenate {
+    fn by_patterns(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
+        let mut end = 0_usize;
+        let mut syllables = hypher::hyphenate(word, lang).peekable();
+        while let Some(syllable) = syllables.next() {
+            end = end.saturating_add(syllable.len());
+            if syllables.peek().is_some() {
+                out(end);
+            }
+        }
+    }
+    by_patterns
+}
+
+/// [`Hyphenate`] with the patterns in reach; no breaks while their code is
+/// still to come.
+fn hyphenate(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
+    if let Some(hyphenate) = hyphenation::patterns() {
+        hyphenate(word, lang, out);
+    }
+}
+
+#[cfg(not(feature = "lazy-hyphenation"))]
+mod hyphenation {
+    use super::Hyphenate;
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the lazy-hyphenation build has none until they are fetched"
+    )]
+    pub(super) fn patterns() -> Option<Hyphenate> {
+        Some(super::builtin_hyphenation())
+    }
+
+    /// How many times the patterns arrived: never, as they were always
+    /// there.
+    #[must_use]
+    pub fn hyphenation_generation() -> u64 {
+        0
+    }
+}
+
+/// The patterns are fetched the first time text is hyphenated: the program
+/// hands over a loader ([`defer_hyphenation`]) that fetches their code and
+/// passes back [`builtin_hyphenation`](super::builtin_hyphenation)
+/// ([`install_hyphenation`]). Until then text breaks between words only;
+/// layouts are made again once [`hyphenation_generation`] moved.
+#[cfg(feature = "lazy-hyphenation")]
+mod hyphenation {
+    use super::{Hyphenate, MakeHyphenation};
+    use crate::deferred::Deferred;
+
+    static PATTERNS: Deferred<Hyphenate> = Deferred::new();
+
+    /// The patterns, or `None` while their code is still to come (and then
+    /// fetched).
+    pub(super) fn patterns() -> Option<Hyphenate> {
+        PATTERNS.get()
+    }
+
+    /// Bumped when the patterns arrive: hyphenated layouts are made again
+    /// once this moved.
+    #[must_use]
+    pub fn hyphenation_generation() -> u64 {
+        PATTERNS.generation()
+    }
+
+    /// How the program fetches the patterns' code: `load` starts the fetch
+    /// and, once the code is in, calls [`install_hyphenation`] (or
+    /// [`hyphenation_load_failed`]).
+    pub fn defer_hyphenation(load: fn()) {
+        PATTERNS.defer(load);
+    }
+
+    /// The patterns' code is in: text is hyphenated from now on.
+    pub fn install_hyphenation(make: MakeHyphenation) {
+        PATTERNS.install(make());
+    }
+
+    /// The fetch failed: the next layout that hyphenates fetches again.
+    pub fn hyphenation_load_failed() {
+        PATTERNS.load_failed();
+    }
+}
+
+pub use hyphenation::hyphenation_generation;
+#[cfg(feature = "lazy-hyphenation")]
+pub use hyphenation::{defer_hyphenation, hyphenation_load_failed, install_hyphenation};
 
 pub(crate) const VIRTUAL_BREAK: char = '\u{200b}';
 
@@ -239,14 +332,12 @@ impl OffsetMap {
                 let Some(word) = text.get(range.clone()) else {
                     continue;
                 };
-                let mut source = range.start;
-                let mut syllables = hypher::hyphenate(word, lang).peekable();
-                while let Some(syllable) = syllables.next() {
-                    source = source.saturating_add(syllable.len());
-                    if syllables.peek().is_some() {
-                        insertions.push(VirtualInsertion { source, ch: hyphen });
-                    }
-                }
+                hyphenate(word, lang, &mut |end| {
+                    insertions.push(VirtualInsertion {
+                        source: range.start.saturating_add(end),
+                        ch: hyphen,
+                    });
+                });
             }
         }
         insertions.extend(

@@ -16,7 +16,7 @@
 //! pointer ([`clamp_pointer_to_outputs`]) and the surviving outputs' packing
 //! ([`layout`]) need computing explicitly.
 
-use settings_store::hardware::OutputMode;
+use settings_store::hardware::{OutputMode, OutputTransform};
 
 use crate::compositor::backend::OutputId;
 
@@ -99,6 +99,38 @@ pub fn retained_mode(
     let live = live?;
     let unrequested = intent == live.intent || (set_changed && intent.is_none());
     (unrequested && advertised.contains(&live.mode)).then_some(live.mode)
+}
+
+/// The scale and rotation a lit output is drawn at.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Presentation {
+    pub scale: f64,
+    pub transform: OutputTransform,
+}
+
+/// The scale and rotation a lit output keeps across a rescan, or `None` when
+/// configuration (or, failing that, the panel's density) decides them.
+///
+/// The same rule as [`retained_mode`], for the rest of what a display shows:
+/// a layout that names the output applies in full; when monitors came or
+/// went and the new set's remembered layout does not name it, the survivor
+/// keeps the scale and rotation it is shown at (`current`), so a 1.25x panel
+/// does not snap to 1x because its neighbour was unplugged. A rescan of the
+/// same set changes nothing (`kept` stays). Its position is not kept: the
+/// survivors are packed afresh, closing the hole the unplugged one left.
+pub fn retained_presentation(
+    current: Presentation,
+    kept: Option<Presentation>,
+    arranged: bool,
+    set_changed: bool,
+) -> Option<Presentation> {
+    if arranged {
+        None
+    } else if set_changed {
+        Some(current)
+    } else {
+        kept
+    }
 }
 
 /// Diff the live outputs against what the hardware now reports.
@@ -328,6 +360,37 @@ mod tests {
             retained_mode(Some(lit), Some(mode(1024, 768)), true, &advertised),
             None
         );
+    }
+
+    #[test]
+    fn a_survivor_of_a_shrunk_monitor_set_keeps_its_configured_scale() {
+        // Two outputs arranged in Settings, the 1280x800 one at 1.25x
+        // (1024x640 logical). Its neighbour is unplugged; the one-monitor
+        // set was never arranged, so nothing names its scale and a virtual
+        // connector reports no size to derive one from.
+        let shown = Presentation {
+            scale: 1.25,
+            transform: OutputTransform::Normal,
+        };
+        let kept = retained_presentation(shown, None, false, true);
+        assert_eq!(kept, Some(shown), "the survivor stays at 1.25x");
+        // Later rescans and relayouts of that same set keep it.
+        assert_eq!(retained_presentation(shown, kept, false, false), kept);
+        // A scale arranged for the new set — or chosen for it in Settings
+        // afterwards — applies instead.
+        assert_eq!(retained_presentation(shown, None, true, true), None);
+        assert_eq!(retained_presentation(shown, kept, true, false), None);
+        // Rotation is kept the same way.
+        let portrait = Presentation {
+            scale: 1.0,
+            transform: OutputTransform::Rotate90,
+        };
+        assert_eq!(
+            retained_presentation(portrait, None, false, true),
+            Some(portrait)
+        );
+        // An output never part of a changed set derives its own.
+        assert_eq!(retained_presentation(shown, None, false, false), None);
     }
 
     #[test]

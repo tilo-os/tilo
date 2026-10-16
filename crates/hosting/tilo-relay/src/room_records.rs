@@ -20,6 +20,7 @@ use tilo_clock::unix_now_ns;
 use crate::coedit::CoeditPayload;
 use crate::peer::WorkspaceRegistry;
 use crate::transport::Envelope;
+use tilo_lock::MutexRecover as _;
 
 /// One retained document body of a workspace, as its author signed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,9 +70,7 @@ struct Open {
 
 impl Inflight {
     fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Open>> {
-        self.open
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.open.lock_recover()
     }
 
     fn queue(self: &std::sync::Arc<Self>, workspace_id: u64) -> Ticket {
@@ -289,14 +288,39 @@ impl RoomRecords {
     ///
     /// Returns why the workspace is not hosted here or the change could not
     /// be queued.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the guard only lives for the lookup; the value kept is a clone"
-    )]
     pub(crate) async fn enqueue(
         &self,
         workspace_id: u64,
         commit: HostCommit,
+    ) -> Result<RoomAdmission, String> {
+        let reservation = self.reserve(workspace_id);
+        self.enqueue_reserved(workspace_id, commit, reservation)
+            .await
+    }
+
+    /// Hold a place for a host commit of `workspace_id` that is admitted
+    /// later, with [`Self::enqueue_reserved`]: from now on
+    /// [`Self::retained`] waits for it as for a commit already queued,
+    /// until it is durable or the reservation is dropped.
+    pub(crate) fn reserve(&self, workspace_id: u64) -> Reservation {
+        Reservation(self.inflight.queue(workspace_id))
+    }
+
+    /// [`Self::enqueue`] for a commit whose place `reservation` holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the workspace is not hosted here or the change could not
+    /// be queued.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard only lives for the lookup; the value kept is a clone"
+    )]
+    pub(crate) async fn enqueue_reserved(
+        &self,
+        workspace_id: u64,
+        commit: HostCommit,
+        reservation: Reservation,
     ) -> Result<RoomAdmission, String> {
         let payload = if commit.checkpoint {
             CoeditPayload::Checkpoint {
@@ -324,13 +348,16 @@ impl RoomRecords {
             delta,
             signature: [0; 64],
         };
-        let ticket = self.inflight.queue(workspace_id);
         let admission =
             crate::peer::enqueue_host_state(&ws, envelope, std::sync::Arc::clone(&self.metrics))
                 .await?;
         Ok(RoomAdmission {
             admission,
-            _ticket: ticket,
+            _ticket: reservation.0,
         })
     }
 }
+
+/// A host commit [`RoomRecords::retained`] already waits for, not yet in
+/// its workspace's order.
+pub(crate) struct Reservation(Ticket);

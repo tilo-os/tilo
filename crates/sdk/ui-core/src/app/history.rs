@@ -152,7 +152,9 @@ impl App {
     }
     pub(super) fn refresh_framework_history(&mut self, width: f64) {
         self.refresh_document_routes();
-        let status = self.document_sync_status().map(str::to_owned);
+        let status = self
+            .document_sync_status()
+            .map(std::borrow::Cow::into_owned);
         let nested = crate::history_mode::embedded::needs_refresh(
             self.root_widget.as_ref(),
             &self.state.doc,

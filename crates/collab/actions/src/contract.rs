@@ -140,6 +140,19 @@ fn edit_parts(
 /// knowing the app.
 pub const DOCUMENT_READ_TAG: &str = "read:document";
 
+/// [`ActionContract::tags`] entry of the action that opens the file its
+/// `path` parameter names in this app instance, reading it inside the app's
+/// sandbox. A caller that launched the app with a file opens it through
+/// this action, and only through an action that declares it: one taking a
+/// `path` for another purpose (importing an installer image, exporting)
+/// is never guessed from its name.
+pub const OPENS_PATH_TAG: &str = "open:path";
+
+/// Prefix of the [`ActionContract::tags`] entries naming the file
+/// extensions (lowercase, without the dot) an [`OPENS_PATH_TAG`] action
+/// opens: `open:path-ext:csv`. An opener naming none opens any file.
+pub const OPENS_PATH_EXTENSION_PREFIX: &str = "open:path-ext:";
+
 /// Facet the executor writes on a change made by a verb its app marks
 /// `#[action(incoming_message)]`: a message someone received. The
 /// `IncomingMessage` trigger fires on it without knowing the app's schema.
@@ -362,6 +375,84 @@ pub struct ActionContract {
     pub result: ResultSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// The action is heavy enough to run on another of the invoker's devices,
+    /// and how: see [`Offload`]. `None` (the default) runs it where it is
+    /// invoked, always.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offload: Option<Offload>,
+}
+
+/// Largest CPU time an [`Offload`] may declare: a compute job's ceiling.
+pub const MAX_OFFLOAD_CPU_TIME_MS: u64 = 5 * 60 * 1_000;
+/// Largest memory an [`Offload`] may declare: a compute job's ceiling.
+pub const MAX_OFFLOAD_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// Smallest memory an [`Offload`] may declare: a compute job's floor.
+pub const MIN_OFFLOAD_MEMORY_BYTES: u64 = 16 * 1024 * 1024;
+/// Largest output an [`Offload`] may declare: a compute job's ceiling.
+pub const MAX_OFFLOAD_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// How an offloadable action runs away from the device it was invoked on.
+///
+/// An offloadable action is a pure content transform: its inputs are
+/// content (files the invoker can read), its outputs are content, and the
+/// outputs are a function of the inputs alone, byte for byte, whichever
+/// device computes them. That is what lets the system run it on the
+/// invoker's best-placed device — placed by the workspace's relay, run as
+/// the signed package's catalogue entrypoint under that device's launcher
+/// sandbox — and hand back exactly what a local run returns. When no device
+/// is better placed, or the offload fails for any reason other than the
+/// action's own, it runs locally.
+///
+/// The declaration names a package and entrypoint and bounds the work. It
+/// grants nothing: the worker reads only the inputs the invoker hands it,
+/// and is admitted by the same rules as any compute job.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Offload {
+    /// The signed package whose catalogue entrypoint performs the transform.
+    pub app: String,
+    /// The package's catalogue (CLI) command that performs it.
+    pub entrypoint: String,
+    /// Whether it needs a GPU.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpu: bool,
+    /// CPU time ceiling, in milliseconds.
+    pub cpu_time_ms: u64,
+    /// Memory ceiling, in bytes. The inputs count against it.
+    pub memory_bytes: u64,
+    /// Ceiling on all outputs together, in bytes.
+    pub output_bytes: u64,
+}
+
+impl Offload {
+    /// Why this declaration could never be placed as a compute job, if it
+    /// could not.
+    #[must_use]
+    pub fn validate(&self) -> Vec<String> {
+        let identifier = |value: &str, max: usize| {
+            !value.is_empty()
+                && value.len() <= max
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':' | b'/')
+                })
+        };
+        let mut errors = Vec::new();
+        if !identifier(&self.app, 256) {
+            errors.push("offload app must be a package identifier".into());
+        }
+        if !identifier(&self.entrypoint, 128) {
+            errors.push("offload entrypoint must be a catalogue command".into());
+        }
+        if self.cpu_time_ms == 0 || self.cpu_time_ms > MAX_OFFLOAD_CPU_TIME_MS {
+            errors.push("offload cpu time is outside the compute bounds".into());
+        }
+        if !(MIN_OFFLOAD_MEMORY_BYTES..=MAX_OFFLOAD_MEMORY_BYTES).contains(&self.memory_bytes) {
+            errors.push("offload memory is outside the compute bounds".into());
+        }
+        if self.output_bytes == 0 || self.output_bytes > MAX_OFFLOAD_OUTPUT_BYTES {
+            errors.push("offload output is outside the compute bounds".into());
+        }
+        errors
+    }
 }
 
 impl Default for ActionContract {
@@ -377,6 +468,7 @@ impl Default for ActionContract {
             execution: ExecutionMode::Immediate,
             result: ResultSpec::None,
             tags: Vec::new(),
+            offload: None,
         }
     }
 }
@@ -426,6 +518,21 @@ impl ActionContract {
     /// [`DOCUMENT_READ_TAG`].
     pub fn reads_document(&self) -> bool {
         self.tags.iter().any(|tag| tag == DOCUMENT_READ_TAG)
+    }
+
+    /// Whether the action opens the file its `path` names. See
+    /// [`OPENS_PATH_TAG`].
+    pub fn opens_path(&self) -> bool {
+        self.tags.iter().any(|tag| tag == OPENS_PATH_TAG)
+    }
+
+    /// The file extensions an [`opens_path`](Self::opens_path) action is
+    /// declared for; none means any file. See
+    /// [`OPENS_PATH_EXTENSION_PREFIX`].
+    pub fn opened_extensions(&self) -> impl Iterator<Item = &str> {
+        self.tags
+            .iter()
+            .filter_map(|tag| tag.strip_prefix(OPENS_PATH_EXTENSION_PREFIX))
     }
 
     /// Whether the action's result carries content from outside the user's
@@ -540,6 +647,16 @@ impl ActionContract {
         if unique_tags.len() != self.tags.len() {
             errors.push("contract tags must be unique".into());
         }
+        if let Some(offload) = &self.offload {
+            errors.extend(offload.validate());
+            // A transform of content: it changes nothing where it runs.
+            if self.kind != ActionKind::Read {
+                errors.push("an offloadable action must be a read".into());
+            }
+            if self.tags.iter().any(|tag| tag == LOCAL_DEVICE_ONLY) {
+                errors.push("a local-device-only action cannot be offloaded".into());
+            }
+        }
         errors
     }
 }
@@ -614,5 +731,62 @@ mod tests {
         };
         assert!(nullable.validate(&text).is_ok());
         assert!(required.validate(&text).is_ok());
+    }
+
+    /// An offload declaration is additive on the wire, bounded like a
+    /// compute job, and only declarable on a read that may leave the device.
+    #[test]
+    fn offload_is_an_additive_bounded_declaration_on_reads() {
+        let local = ActionContract::view();
+        let json = serde_json::to_value(&local).unwrap();
+        assert!(json.get("offload").is_none(), "absent stays off the wire");
+        let old: ActionContract = serde_json::from_value(json).unwrap();
+        assert_eq!(old.offload, None);
+
+        let offload = Offload {
+            app: "so.tilo.thumbnails".into(),
+            entrypoint: "thumbnail-batch".into(),
+            gpu: false,
+            cpu_time_ms: 60_000,
+            memory_bytes: 512 * 1024 * 1024,
+            output_bytes: 8 * 1024 * 1024,
+        };
+        let heavy = ActionContract {
+            offload: Some(offload.clone()),
+            ..ActionContract::view()
+        };
+        assert!(heavy.validate_declaration().is_empty());
+        let round: ActionContract =
+            serde_json::from_value(serde_json::to_value(&heavy).unwrap()).unwrap();
+        assert_eq!(round, heavy);
+
+        let unbounded = ActionContract {
+            offload: Some(Offload {
+                cpu_time_ms: 0,
+                memory_bytes: MAX_OFFLOAD_MEMORY_BYTES + 1,
+                output_bytes: MAX_OFFLOAD_OUTPUT_BYTES + 1,
+                entrypoint: "rm -rf /".into(),
+                ..offload.clone()
+            }),
+            ..ActionContract::view()
+        };
+        assert_eq!(unbounded.validate_declaration().len(), 4);
+        let writes = ActionContract {
+            offload: Some(offload.clone()),
+            ..ActionContract::default()
+        };
+        assert_eq!(
+            writes.validate_declaration(),
+            vec!["an offloadable action must be a read".to_string()]
+        );
+        let pinned = ActionContract {
+            offload: Some(offload),
+            tags: vec![LOCAL_DEVICE_ONLY.into()],
+            ..ActionContract::view()
+        };
+        assert_eq!(
+            pinned.validate_declaration(),
+            vec!["a local-device-only action cannot be offloaded".to_string()]
+        );
     }
 }

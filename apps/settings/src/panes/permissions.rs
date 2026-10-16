@@ -17,11 +17,12 @@
 //! nothing. When there are no grants — a fresh session, or one where no app
 //! has been approved for anything — it shows an empty state.
 
-use ui::tokens::SpacingStep;
+use ui::tokens::Rhythm;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, cards, error_row, gap, rows, semantic_status_pill, value_row,
+    El, Item, SettingsSection, StatusTone, card, cards, error_row, note, row, rows,
+    semantic_status_pill, untitled, value_row,
 };
 use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
 use serde::Deserialize;
@@ -30,7 +31,7 @@ use std::time::Duration;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_actions::policy::{Grant, Level, Lifetime};
 use ui::tilo_resource;
-use ui::widget::{Button, Row, Spacer, Text, Widget};
+use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
 
 use crate::host::PaneCx;
 use crate::resource::Settings;
@@ -43,19 +44,42 @@ pub enum PermissionsEffect {
     /// Open the privacy settings of the workspace that owns the grants.
     #[effect(job, label = "Open workspace privacy")]
     OpenWorkspacePrivacy,
+    /// Let an application use the saved passwords and keys again, or stop it.
+    #[effect(
+        job,
+        idempotent,
+        device_only,
+        label = "Set an app's access to saved secrets"
+    )]
+    SetSecretsAccess {
+        #[param("The application identity the secret store recorded")]
+        app: String,
+        #[param("Whether the application may use saved secrets")]
+        allowed: bool,
+    },
+    /// Remove an application's saved secrets and its record.
+    #[effect(job, device_only, label = "Forget an app's saved secrets")]
+    ForgetSecrets {
+        #[param("The application identity the secret store recorded")]
+        app: String,
+    },
 }
 
 /// Answer `effect` by opening the tool it names.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "every area answers through the effect vocabulary's one signature"
-)]
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PermissionsEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     match effect {
+        PermissionsEffect::SetSecretsAccess { app, allowed } => {
+            let verb = if allowed { "allow" } else { "revoke" };
+            Ok(secret_command(cx, vec!["apps".into(), verb.into(), app]))
+        }
+        PermissionsEffect::ForgetSecrets { app } => Ok(secret_command(
+            cx,
+            vec!["apps".into(), "forget".into(), app],
+        )),
         PermissionsEffect::OpenWorkspacePrivacy => {
             if !app.host().reaches_devices() {
                 return Err("only a window someone uses opens workspace settings".into());
@@ -72,6 +96,97 @@ pub(crate) fn answer(
             ))
         }
     }
+}
+
+/// Tilo's Secret Service, which keeps the saved passwords and keys of every
+/// application and records which applications used it.
+const SECRET_SERVICE: &str = "/usr/bin/tilo-secret-service";
+
+fn secret_command(cx: &mut EffectCx<Settings, SettingsApp>, args: Vec<String>) -> Effected {
+    cx.thread(
+        move |_| {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            command_output(SECRET_SERVICE, &args).map(|_| ())
+        },
+        |_: &mut SettingsApp, done: Result<(), String>, _| done.map(|()| Effected::done()),
+    )
+}
+
+/// One application the secret store recorded, as `apps list --json` says it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+struct SecretApp {
+    id: String,
+    name: String,
+    access: String,
+    #[serde(default)]
+    uses: u64,
+    #[serde(default)]
+    items: u32,
+}
+
+fn parse_secret_apps(json: &str) -> Result<Vec<SecretApp>, String> {
+    serde_json::from_str(json).map_err(|error| error.to_string())
+}
+
+fn secret_apps() -> Result<Vec<SecretApp>, String> {
+    parse_secret_apps(&command_output(
+        SECRET_SERVICE,
+        &["apps", "list", "--json"],
+    )?)
+}
+
+/// The applications that use saved passwords and keys, each with the one
+/// control that matters: stop it, or let it back, or forget it entirely.
+/// Applications are named by what the system observed of them, never by a
+/// name they chose.
+fn secrets_card(cx: &PaneCx, apps: &Result<Vec<SecretApp>, String>) -> SettingsSection {
+    let title = t("perm-secrets-title");
+    let mut body: Vec<Item> = vec![note(&t("perm-secrets-intro"))];
+    match apps {
+        Err(_) => body.push(note(&t("perm-secrets-unavailable"))),
+        Ok(apps) if apps.is_empty() => body.push(note(&t("perm-secrets-none"))),
+        Ok(apps) => {
+            for app in apps {
+                let allowed = app.access == "allowed";
+                body.push(row(Box::new(Text::new(&app.name))));
+                body.push(note(&t_args(
+                    "perm-secrets-detail",
+                    &[
+                        ("id", ui::i18n::ArgValue::Text(app.id.clone())),
+                        ("items", ui::i18n::ArgValue::Number(f64::from(app.items))),
+                        (
+                            "uses",
+                            ui::i18n::ArgValue::Number(f64::from(
+                                u32::try_from(app.uses).unwrap_or(u32::MAX),
+                            )),
+                        ),
+                    ],
+                )));
+                let toggle = if allowed {
+                    t("perm-secrets-revoke")
+                } else {
+                    t("perm-secrets-allow")
+                };
+                body.push(row(Box::new(cx.bind_invocation(
+                    Button::new(&format!("secrets-access:{}", app.id), &toggle),
+                    PermissionsEffect::SetSecretsAccess {
+                        app: app.id.clone(),
+                        allowed: !allowed,
+                    },
+                ))));
+                body.push(row(Box::new(cx.bind_invocation(
+                    Button::new(
+                        &format!("secrets-forget:{}", app.id),
+                        &t("perm-secrets-forget"),
+                    ),
+                    PermissionsEffect::ForgetSecrets {
+                        app: app.id.clone(),
+                    },
+                ))));
+            }
+        }
+    }
+    card(&title, rows(body))
 }
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
@@ -434,10 +549,11 @@ fn grant_count(all: &[WsGrants]) -> usize {
 
 /// One capability line: a tinted kind pill, the detail, and a trailing
 /// lifetime chip. Read-only — no controls.
-fn cap_row(view: &CapView) -> El {
+fn cap_row(view: &CapView) -> Item {
     let kind = kind_shown(view.kind);
     let expiry = expiry_shown(view.expiry);
-    Box::new(
+    // why: kind pill + detail + lifetime chip is not a label/control pair.
+    row(Box::new(
         Row::new()
             .push(semantic_status_pill(&kind, view.tint.tone()))
             .push(Box::new(
@@ -447,19 +563,16 @@ fn cap_row(view: &CapView) -> El {
             ))
             .push(Box::new(Spacer::new()))
             .push(semantic_status_pill(&expiry, StatusTone::Neutral)),
-    )
+    ))
 }
 
 /// One app's block within a workspace card: the app id, then its grants.
-fn app_block(grants: &AppGrants) -> El {
-    let mut items: Vec<El> = Vec::new();
-    items.push(Box::new(
+fn app_block(grants: &AppGrants) -> Vec<Item> {
+    let mut items = vec![row(Box::new(
         Text::new(&grants.app).with_role(ui::TextRole::Body),
-    ));
-    for cap in &grants.caps {
-        items.push(cap_row(cap));
-    }
-    rows(items)
+    ))];
+    items.extend(grants.caps.iter().map(cap_row));
+    items
 }
 
 pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
@@ -468,10 +581,16 @@ pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
 
 /// Include the hosted disk-unlock model beside the device security summary.
 pub(crate) fn build_with_disk_unlock(cx: &PaneCx, disk_unlock: El) -> Box<dyn Widget> {
-    crate::widgets::rows(vec![build(cx), disk_unlock])
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_rhythm(Rhythm::Group)
+            .push(build(cx))
+            .push(disk_unlock),
+    )
 }
 
-fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
+fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> SettingsSection {
     let microphone_present = privacy.microphone_muted.is_some();
     let mute = match privacy.microphone_muted {
         Some(true) => t("perm-muted"),
@@ -494,9 +613,9 @@ fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
     )
 }
 
-fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> El {
-    let usage_rows: Vec<El> = if privacy.active_media.is_empty() {
-        vec![caption(&t("perm-no-active-use"))]
+fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> SettingsSection {
+    let usage_rows: Vec<Item> = if privacy.active_media.is_empty() {
+        vec![note(&t("perm-no-active-use"))]
     } else {
         privacy
             .active_media
@@ -513,7 +632,7 @@ fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> El {
     card(&t("perm-active-use"), rows(usage_rows))
 }
 
-fn device_security_card() -> El {
+fn device_security_card() -> SettingsSection {
     let security = device_security();
     card(
         &t("perm-device-security"),
@@ -527,7 +646,7 @@ fn device_security_card() -> El {
                     &t_args("perm-firewall-error", &[("error", error.as_str().into())]),
                 ),
             },
-            caption(&t("perm-security-caption")),
+            note(&t("perm-security-caption")),
         ]),
     )
 }
@@ -537,39 +656,36 @@ fn device_security_card() -> El {
 /// collaborators, roles, and app access belong to the workspace that owns
 /// them. Keeping the distinction in the first visible card prevents this
 /// cross-workspace overview from looking like an editor for every workspace.
-fn scope_card() -> El {
+fn scope_card() -> SettingsSection {
     card(
         &t("perm-this-device"),
-        rows(vec![Box::new(
-            Text::new(&t("perm-this-device-body")).with_role(ui::TextRole::Caption),
-        )]),
+        rows(vec![note(&t("perm-this-device-body"))]),
     )
 }
 
 /// Intro card: what these grants are and where they come from.
-fn workspace_grants_intro_card(cx: &PaneCx) -> El {
+fn workspace_grants_intro_card(cx: &PaneCx) -> SettingsSection {
     let open = t("perm-open-workspace");
     card(
         &t("perm-workspace-intro-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-workspace-intro-body")).with_role(ui::TextRole::Caption)),
-            Box::new(cx.bind_invocation(
+            note(&t("perm-workspace-intro-body")),
+            row(Box::new(cx.bind_invocation(
                 Button::new("open-workspace-privacy", &open),
                 PermissionsEffect::OpenWorkspacePrivacy,
-            )),
+            ))),
         ]),
     )
 }
 
 /// Empty state — a successfully loaded workspace record contains no
 /// app grants.
-fn no_workspace_grants_card() -> El {
+fn no_workspace_grants_card() -> SettingsSection {
     card(
         &t("perm-no-grants-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-no-grants-body")).with_role(ui::TextRole::Caption)),
-            gap(SpacingStep::S1),
-            caption(&t("perm-no-grants-caption")),
+            note(&t("perm-no-grants-body")),
+            note(&t("perm-no-grants-caption")),
         ]),
     )
 }
@@ -577,19 +693,19 @@ fn no_workspace_grants_card() -> El {
 /// Loading workspace state is distinct from successfully reading a workspace
 /// that has no app grants. A privacy surface must never turn an I/O or parse
 /// failure into a claim that access is absent.
-fn workspace_grants_unavailable_card() -> El {
+fn workspace_grants_unavailable_card() -> SettingsSection {
     card(
         &t("perm-unavailable-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-unavailable-body")).with_role(ui::TextRole::Caption)),
-            caption(&t("perm-unavailable-caption")),
+            note(&t("perm-unavailable-body")),
+            note(&t("perm-unavailable-caption")),
         ]),
     )
 }
 
 /// A quiet summary line above the per-workspace cards, followed by one card
 /// per workspace with a grant.
-fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usize) {
+fn push_workspace_grant_cards(panel: &mut Vec<SettingsSection>, all: &[WsGrants], total: usize) {
     let ws_n = all.len();
     let grants = i64::try_from(total).unwrap_or(i64::MAX);
     let workspaces = i64::try_from(ws_n).unwrap_or(i64::MAX);
@@ -597,21 +713,10 @@ fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usiz
         "perm-grants-summary",
         &[("grants", grants.into()), ("workspaces", workspaces.into())],
     );
-    panel.push(Box::new(
-        Text::new(&summary)
-            .with_role(ui::TextRole::Caption)
-            .dimmed(),
-    ));
+    panel.push(untitled(rows(vec![note(&summary)])));
 
     for ws in all {
-        let mut body: Vec<El> = Vec::new();
-        let last = ws.apps.len().saturating_sub(1);
-        for (i, app) in ws.apps.iter().enumerate() {
-            body.push(app_block(app));
-            if i != last {
-                body.push(gap(SpacingStep::S3));
-            }
-        }
+        let body: Vec<Item> = ws.apps.iter().flat_map(app_block).collect();
         let unnamed = t("perm-workspace-unnamed");
         let title = if ws.name.trim().is_empty() {
             unnamed
@@ -623,10 +728,10 @@ fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usiz
 }
 
 /// Where the compositor enforces the grants.
-fn enforcement_card() -> El {
+fn enforcement_card() -> SettingsSection {
     card(
         &t("perm-enforcement-title"),
-        rows(vec![caption(&t("perm-enforcement-caption"))]),
+        rows(vec![note(&t("perm-enforcement-caption"))]),
     )
 }
 
@@ -635,13 +740,14 @@ fn enforcement_card() -> El {
 fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
     let workspace_access = state_json.map(project).transpose();
 
-    let mut panel: Vec<El> = Vec::new();
+    let mut panel: Vec<SettingsSection> = Vec::new();
 
     let privacy = os_actions::get_privacy_status();
     panel.push(scope_card());
     panel.push(privacy_hardware_card(&privacy));
     panel.push(active_privacy_use_card(&privacy));
     panel.push(device_security_card());
+    panel.push(secrets_card(cx, &secret_apps()));
     panel.push(workspace_grants_intro_card(cx));
 
     match workspace_access {
@@ -668,6 +774,57 @@ mod tests {
     }
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use std::collections::HashMap;
+
+    #[test]
+    fn the_secret_store_listing_is_read_as_the_service_prints_it() {
+        let json = r#"[{"id":"binary:/usr/bin/chromium","name":"chromium","access":"allowed","first_seen":1,"last_used":2,"uses":9,"items":3},
+                       {"id":"local-process:/home/a/t","name":"t (not part of the system)","access":"revoked","uses":1,"items":0}]"#;
+        let apps = parse_secret_apps(json).unwrap();
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].items, 3);
+        assert_eq!(apps[1].access, "revoked");
+        assert!(parse_secret_apps("not json").is_err());
+        assert_eq!(parse_secret_apps("[]").unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn each_recorded_app_gets_a_stop_or_allow_control_and_a_forget_control() {
+        let apps = vec![
+            SecretApp {
+                id: "binary:/usr/bin/chromium".into(),
+                name: "chromium".into(),
+                access: "allowed".into(),
+                uses: 2,
+                items: 1,
+            },
+            SecretApp {
+                id: "sandbox:so.tilo.notes".into(),
+                name: "so.tilo.notes".into(),
+                access: "revoked".into(),
+                uses: 0,
+                items: 0,
+            },
+        ];
+        let mut card = cards(vec![secrets_card(&cx(), &Ok(apps))]);
+        build_layout_of(&mut card);
+        let mut labels = Vec::new();
+        button_labels(card.as_ref(), &mut labels);
+        assert_eq!(
+            labels,
+            vec![
+                t("perm-secrets-revoke"),
+                t("perm-secrets-forget"),
+                t("perm-secrets-allow"),
+                t("perm-secrets-forget")
+            ]
+        );
+        // A store that cannot be reached is said so, never shown as empty.
+        let mut unreachable = cards(vec![secrets_card(&cx(), &Err("no bus".into()))]);
+        build_layout_of(&mut unreachable);
+        let mut said = Vec::new();
+        text_labels(unreachable.as_ref(), &mut said);
+        assert!(said.contains(&t("perm-secrets-unavailable")));
+    }
 
     /// "Not active" is only said about a ruleset that was read and is empty.
     /// A ruleset this session may not read (nft needs privileges) and no
@@ -719,6 +876,28 @@ mod tests {
         );
         let caps = serde_json::to_string(&vec![cam, file]).unwrap();
         format!(r#"{{"workspaces":[{{"name":"Studio","sandbox":{caps}}}]}}"#)
+    }
+
+    fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
+        if w.name() == "Button"
+            && let Some(label) = w.accessibility().and_then(|node| node.name)
+        {
+            labels.push(label);
+        }
+        for c in w.children() {
+            button_labels(c, labels);
+        }
+    }
+
+    fn text_labels(w: &dyn Widget, labels: &mut Vec<String>) {
+        if w.name() == "Text"
+            && let Some(label) = w.accessibility().and_then(|node| node.name)
+        {
+            labels.push(label);
+        }
+        for c in w.children() {
+            text_labels(c, labels);
+        }
     }
 
     fn build_layout_of(pane: &mut Box<dyn Widget>) {
@@ -832,7 +1011,7 @@ mod tests {
                 "two pills per grant"
             );
             // Intro + one workspace + enforcement cards are all present.
-            assert!(count_named(pane.as_ref(), "Section") >= 3);
+            assert!(count_named(pane.as_ref(), "FormSection") >= 3);
         }
     }
 

@@ -20,12 +20,11 @@
 //! could otherwise harvest without ever calling `Print`. See
 //! `PrintBackend::prepare_print`.
 
+use super::reply::{Ended, Reply, Results, answer};
 #[cfg(target_os = "linux")]
 use crate::shell::state::Capability;
 #[cfg(target_os = "linux")]
 use crate::shell::state::GRANT_ONCE;
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::DispatchResult2;
 #[cfg(target_os = "linux")]
@@ -579,165 +578,159 @@ impl PrintBackend {
     /// network. An app that only ever calls `PreparePrint` would collect all
     /// of that without a prompt firing if submission were the only gate.
     /// Costs the honest app nothing: `flow::resolve` fast-paths a standing `Always` grant.
-    async fn prepare_print(
-        &self,
-        hdr: &Header<'_>,
-        request: PreparePrintRequest,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let PreparePrintRequest {
-            app_id,
-            parent_window,
-            title,
-            settings,
-            page_setup,
-        } = request;
-        tracing::debug!("Print.PreparePrint: app={app_id} title={title:?}");
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            tracing::warn!(app = %app_id, "Print.PreparePrint: unresolved portal caller");
-            return (2, HashMap::new());
-        };
-        if lockdown::current_policy().disable_printing {
-            return (1, HashMap::new());
-        }
-        let caller = auth.caller;
+    async fn prepare_print(&self, hdr: &Header<'_>, request: PreparePrintRequest) -> Reply {
+        answer(async move {
+            let PreparePrintRequest {
+                app_id,
+                parent_window,
+                title,
+                settings,
+                page_setup,
+            } = request;
+            tracing::debug!("Print.PreparePrint: app={app_id} title={title:?}");
+            let Ok(auth) = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window)).await
+            else {
+                tracing::warn!(app = %app_id, "Print.PreparePrint: unresolved portal caller");
+                return Err(Ended::Failed);
+            };
+            if lockdown::current_policy().disable_printing {
+                return Err(Ended::Cancelled);
+            }
+            let caller = auth.caller;
 
-        let outcome = flow::resolve(
-            &self.ctx,
-            caller.clone(),
-            CapabilityKind::Print,
-            Capability::Print { scope: GRANT_ONCE },
-        )
-        .await;
-        if !outcome.is_allowed() {
-            return (1, HashMap::new());
-        }
+            let outcome = flow::resolve(
+                &self.ctx,
+                caller.clone(),
+                CapabilityKind::Print,
+                Capability::Print { scope: GRANT_ONCE },
+            )
+            .await;
+            if !outcome.is_allowed() {
+                return Err(Ended::Cancelled);
+            }
 
-        let available = self.ctx.print_spooler.destinations_blocking().await;
-        let requested = opt_string(&settings, "printer");
-        let Some(destination) = choose_destination(&available, requested.as_deref()) else {
-            // No printers, or the app named one this machine doesn't have — both "other error" rather than a silent substitution.
-            tracing::debug!(
-                "Print.PreparePrint: no usable destination (requested {requested:?}, \
+            let available = self.ctx.print_spooler.destinations_blocking().await;
+            let requested = crate::portal::option::<String>(&settings, "printer");
+            let Some(destination) = choose_destination(&available, requested.as_deref()) else {
+                // No printers, or the app named one this machine doesn't have — both "other error" rather than a silent substitution.
+                tracing::debug!(
+                    "Print.PreparePrint: no usable destination (requested {requested:?}, \
                  {} available)",
-                available.len()
-            );
-            return (2, HashMap::new());
-        };
-        let copies = clamp_copies(opt_copies(&settings));
+                    available.len()
+                );
+                return Err(Ended::Failed);
+            };
+            let copies = clamp_copies(opt_copies(&settings));
 
-        let token = self.jobs.mint_token(PreparedJob {
-            caller,
-            destination: destination.clone(),
-            copies,
-            issued: Instant::now(),
-        });
-        if token == 0 {
-            return (2, HashMap::new());
-        }
+            let token = self.jobs.mint_token(PreparedJob {
+                caller,
+                destination: destination.clone(),
+                copies,
+                issued: Instant::now(),
+            });
+            if token == 0 {
+                return Err(Ended::Failed);
+            }
 
-        (0, prepare_results(&destination, copies, token, &page_setup))
+            Ok(prepare_results(&destination, copies, token, &page_setup))
+        })
+        .await
     }
 
     /// `Print` — hand over the bytes. `fd` is a descriptor the app chose;
     /// treat every property as a claim: read only after consent, only if a regular file, only up to [`MAX_SPOOL_BYTES`].
-    async fn print(
-        &self,
-        hdr: &Header<'_>,
-        request: PrintRequest,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let PrintRequest {
-            app_id,
-            parent_window,
-            title,
-            fd,
-            options,
-        } = request;
-        tracing::debug!("Print.Print: app={app_id} title={title:?}");
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            tracing::warn!(app = %app_id, "Print.Print: unresolved portal caller");
-            return (2, HashMap::new());
-        };
-        if lockdown::current_policy().disable_printing {
-            return (1, HashMap::new());
-        }
-        let caller = auth.caller;
+    async fn print(&self, hdr: &Header<'_>, request: PrintRequest) -> Reply {
+        answer(async move {
+            let PrintRequest {
+                app_id,
+                parent_window,
+                title,
+                fd,
+                options,
+            } = request;
+            tracing::debug!("Print.Print: app={app_id} title={title:?}");
+            let Ok(auth) = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window)).await
+            else {
+                tracing::warn!(app = %app_id, "Print.Print: unresolved portal caller");
+                return Err(Ended::Failed);
+            };
+            if lockdown::current_policy().disable_printing {
+                return Err(Ended::Cancelled);
+            }
+            let caller = auth.caller;
 
-        // Consent first — before we read a byte, so a denial costs the compositor nothing and touches nothing.
-        let outcome = flow::resolve(
-            &self.ctx,
-            caller.clone(),
-            CapabilityKind::Print,
-            Capability::Print { scope: GRANT_ONCE },
-        )
-        .await;
-        if !outcome.is_allowed() {
-            return (1, HashMap::new());
-        }
+            // Consent first — before we read a byte, so a denial costs the compositor nothing and touches nothing.
+            let outcome = flow::resolve(
+                &self.ctx,
+                caller.clone(),
+                CapabilityKind::Print,
+                Capability::Print { scope: GRANT_ONCE },
+            )
+            .await;
+            if !outcome.is_allowed() {
+                return Err(Ended::Cancelled);
+            }
 
-        // A token, if present, must redeem — unknown/expired/replayed/foreign
-        // is refused outright, not downgraded to "no token", since falling back to the default destination would let a replayed token still print.
-        let prepared = match opt_u32(&options, "token") {
-            None | Some(0) => None,
-            Some(token) => {
-                if let Some(job) = self.jobs.redeem_token(token, &caller) {
-                    Some(job)
+            // A token, if present, must redeem — unknown/expired/replayed/foreign
+            // is refused outright, not downgraded to "no token", since falling back to the default destination would let a replayed token still print.
+            let prepared = match crate::portal::option::<u32>(&options, "token") {
+                None | Some(0) => None,
+                Some(token) => {
+                    if let Some(job) = self.jobs.redeem_token(token, &caller) {
+                        Some(job)
+                    } else {
+                        tracing::warn!(
+                            app = %caller.app_id,
+                            "Print: refused an unknown, replayed or expired token"
+                        );
+                        return Err(Ended::Failed);
+                    }
+                }
+            };
+
+            let destination = if let Some(job) = prepared.as_ref() {
+                job.destination.clone()
+            } else {
+                let available = self.ctx.print_spooler.destinations_blocking().await;
+                if let Some(d) = available.first() {
+                    d.clone()
                 } else {
-                    tracing::warn!(
-                        app = %caller.app_id,
-                        "Print: refused an unknown, replayed or expired token"
-                    );
-                    return (2, HashMap::new());
+                    tracing::debug!("Print.Print: no destinations available");
+                    return Err(Ended::Failed);
+                }
+            };
+            let copies = prepared.as_ref().map_or(1, |j| j.copies);
+            let job_title = sanitise_title(&title);
+
+            let spooler = self.ctx.print_spooler.clone();
+            let submitted = tokio::task::spawn_blocking(move || -> Result<String, String> {
+                let document = spool_from_fd(fd)?;
+                spooler.submit(PrintJobRequest {
+                    caller,
+                    title: job_title,
+                    destination,
+                    copies,
+                    document,
+                })
+            })
+            .await;
+
+            match submitted {
+                Ok(Ok(job_id)) => {
+                    tracing::info!("Print.Print: submitted job {job_id}");
+                    Ok(Results::new())
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!("Print.Print: submission refused: {e}");
+                    Err(Ended::Failed)
+                }
+                Err(e) => {
+                    tracing::warn!("Print.Print: spool task failed: {e}");
+                    Err(Ended::Failed)
                 }
             }
-        };
-
-        let destination = if let Some(job) = prepared.as_ref() {
-            job.destination.clone()
-        } else {
-            let available = self.ctx.print_spooler.destinations_blocking().await;
-            if let Some(d) = available.first() {
-                d.clone()
-            } else {
-                tracing::debug!("Print.Print: no destinations available");
-                return (2, HashMap::new());
-            }
-        };
-        let copies = prepared.as_ref().map_or(1, |j| j.copies);
-        let job_title = sanitise_title(&title);
-
-        let spooler = self.ctx.print_spooler.clone();
-        let submitted = tokio::task::spawn_blocking(move || -> Result<String, String> {
-            let document = spool_from_fd(fd)?;
-            spooler.submit(PrintJobRequest {
-                caller,
-                title: job_title,
-                destination,
-                copies,
-                document,
-            })
         })
-        .await;
-
-        match submitted {
-            Ok(Ok(job_id)) => {
-                tracing::info!("Print.Print: submitted job {job_id}");
-                (0, HashMap::new())
-            }
-            Ok(Err(e)) => {
-                tracing::warn!("Print.Print: submission refused: {e}");
-                (2, HashMap::new())
-            }
-            Err(e) => {
-                tracing::warn!("Print.Print: spool task failed: {e}");
-                (2, HashMap::new())
-            }
-        }
+        .await
     }
 }
 
@@ -898,25 +891,16 @@ fn prepare_results(
     results
 }
 
-#[cfg(any(test, target_os = "linux"))]
-fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-    let v = options.get(key)?.try_clone().ok()?;
-    u32::try_from(v).ok()
-}
-
-#[cfg(any(test, target_os = "linux"))]
-fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    let v = options.get(key)?.try_clone().ok()?;
-    String::try_from(v).ok()
-}
-
 /// Copy count out of a `GtkPrintSettings`-shaped dict; GTK stores every setting as a string (`n-copies` arrives as `"3"`), but a real `u` is accepted too.
 #[cfg(any(test, target_os = "linux"))]
 fn opt_copies(settings: &HashMap<String, OwnedValue>) -> Option<u32> {
-    if let Some(n) = opt_u32(settings, "n-copies") {
+    if let Some(n) = crate::portal::option::<u32>(settings, "n-copies") {
         return Some(n);
     }
-    opt_string(settings, "n-copies")?.trim().parse::<u32>().ok()
+    crate::portal::option::<String>(settings, "n-copies")?
+        .trim()
+        .parse::<u32>()
+        .ok()
 }
 
 #[cfg(test)]

@@ -23,7 +23,7 @@ use crate::widget::Widget;
 use crate::widget::chart_data::{ChartLink, ChartNode};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, chart_leaf, handle_chart_event, moved_index,
+    ChartInspection, InteractiveChart, chart_leaf, draw_title, handle_chart_event,
 };
 
 fn polar(center: Point, radius: f64, angle: f64) -> Point {
@@ -153,19 +153,6 @@ impl ChordChart {
     }
     pub fn clear_inspection(&mut self) {
         self.inspection.clear();
-    }
-    fn inspection_anchor(&self, selection: &ChordSelection) -> Point {
-        let (center, inner, outer) = self.geometry();
-        match selection {
-            ChordSelection::Node(id) => self
-                .node_geometry
-                .iter()
-                .find(|node| node.id == *id)
-                .map_or(center, |node| {
-                    polar(center, inner.midpoint(outer), node.start.midpoint(node.end))
-                }),
-            ChordSelection::Link(_) => center,
-        }
     }
     fn geometry(&self) -> (Point, f64, f64) {
         let top = if self.title.is_empty() { 10.0 } else { 38.0 };
@@ -333,9 +320,8 @@ impl InteractiveChart for ChordChart {
         self.activated = Some(selection);
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self
-            .nodes
+    fn keyboard_items(&self) -> Vec<ChordSelection> {
+        self.nodes
             .iter()
             .map(|node| ChordSelection::Node(node.id.clone()))
             .chain(
@@ -344,18 +330,20 @@ impl InteractiveChart for ChordChart {
                     .filter(|link| link.value.is_finite() && link.value > 0.0)
                     .map(|link| ChordSelection::Link(link.id.clone())),
             )
-            .collect::<Vec<_>>();
-        let current = self
-            .inspection
-            .hovered
-            .as_ref()
-            .and_then(|selection| candidates.iter().position(|item| item == selection));
-        self.inspection.hovered = moved_index(current, candidates.len(), action)
-            .and_then(|index| candidates.get(index).cloned());
-        if let Some(selection) = self.inspection.hovered.as_ref() {
-            self.inspection.pointer = self.inspection_anchor(selection);
-        }
-        self.inspection.hovered.is_some()
+            .collect()
+    }
+    fn anchor(&self, selection: &ChordSelection) -> Option<Point> {
+        let (center, inner, outer) = self.geometry();
+        Some(match selection {
+            ChordSelection::Node(id) => self
+                .node_geometry
+                .iter()
+                .find(|node| node.id == *id)
+                .map_or(center, |node| {
+                    polar(center, inner.midpoint(outer), node.start.midpoint(node.end))
+                }),
+            ChordSelection::Link(_) => center,
+        })
     }
 }
 
@@ -374,16 +362,7 @@ impl Widget for ChordChart {
         _presence: &PresenceCtx,
     ) {
         self.measure_label_room(tr, theme);
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 7.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         let (center, inner, outer) = self.geometry();
         let index = self
             .nodes
@@ -516,11 +495,7 @@ impl Widget for ChordChart {
         if self.style.show_labels {
             self.draw_labels(scene, transform, tr, theme, center, outer);
         }
-        if self.inspection.keyboard
-            && let Some(selection) = self.inspection.hovered.as_ref()
-        {
-            self.inspection.pointer = self.inspection_anchor(selection);
-        }
+        self.follow_keyboard_anchor();
         if let Some(selection) = self
             .inspection
             .hovered

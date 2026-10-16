@@ -60,8 +60,7 @@ impl Mover<'_> {
         if path.parent() == Some(receiving.as_path()) {
             let directory = SecureNearbyDestination::open_beneath(&receiving, path)?;
             let metadata = directory.metadata()?;
-            // SAFETY: geteuid reads this process's effective user.
-            if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+            if !tilo_files::native::private::private_to_me(&metadata) {
                 return Err("clipboard recovery folder is not private".into());
             }
             return Ok(directory);

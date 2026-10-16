@@ -32,7 +32,9 @@ use crate::panes::appearance::{text_size_label, text_size_options};
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, caption, card, error_row, rows, setting_row, value_row};
+use crate::widgets::{
+    El, Item, SettingsSection, card, error_row, note, rows, setting_row, value_row,
+};
 
 fn executable_available(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
@@ -407,7 +409,7 @@ impl AccessibilityPane {
     }
 
     // --- Vision: high contrast, reduce motion, text size.
-    fn build_vision_card(&self) -> Box<dyn Widget> {
+    fn build_vision_card(&self) -> SettingsSection {
         let shown = &self.shown;
         card(
             &t("a11y-vision-title"),
@@ -463,7 +465,7 @@ impl AccessibilityPane {
     }
 
     // --- Pointer: mouse keys, large cursor + size.
-    fn build_pointer_card(&self) -> Box<dyn Widget> {
+    fn build_pointer_card(&self) -> SettingsSection {
         let shown = &self.shown;
         card(
             &t("a11y-pointer-title"),
@@ -473,7 +475,7 @@ impl AccessibilityPane {
                     .described(t("a11y-mouse-keys-desc"))
                     .id("a11y.mouse_keys")
                     .toggle(&shown.mouse_keys, AccessibilitySettings::paths().mouse_keys),
-                caption(&t("a11y-mouse-keys-caption")),
+                note(&t("a11y-mouse-keys-caption")),
                 self.cx
                     .row(t("a11y-large-cursor"))
                     .described(t("a11y-large-cursor-desc"))
@@ -512,7 +514,7 @@ impl AccessibilityPane {
     }
 
     // --- Typing.
-    fn build_typing_card(&self) -> Box<dyn Widget> {
+    fn build_typing_card(&self) -> SettingsSection {
         let shown = &self.shown;
         let osk_row = self
             .cx
@@ -600,9 +602,9 @@ impl AccessibilityPane {
     // Working cross-application assists stay writable here. Capabilities
     // without an apply path remain status rows below so Settings never
     // promises an inert preference.
-    fn build_advanced_card(&self) -> Box<dyn Widget> {
+    fn build_advanced_card(&self) -> SettingsSection {
         let shown = &self.shown;
-        let reader_rows = if let Some(backend) = self.speech {
+        let reader_rows: Vec<Item> = if let Some(backend) = self.speech {
             vec![
                 self.cx
                     .row(t("a11y-screen-reader"))
@@ -651,7 +653,7 @@ impl AccessibilityPane {
                             &t("a11y-dictation-language"),
                             self.dictation_language_choice(),
                         ),
-                        caption(&t("a11y-dictation-language-desc")),
+                        note(&t("a11y-dictation-language-desc")),
                         self.cx
                             .row(t("a11y-dictation-literal"))
                             .described(t("a11y-dictation-literal-desc"))
@@ -679,10 +681,10 @@ impl AccessibilityPane {
         )
     }
 
-    fn build_explainer_card() -> Box<dyn Widget> {
+    fn build_explainer_card() -> SettingsSection {
         card(
             &t("a11y-shared-title"),
-            rows(vec![caption(&t("a11y-shared-caption"))]),
+            rows(vec![note(&t("a11y-shared-caption"))]),
         )
     }
 

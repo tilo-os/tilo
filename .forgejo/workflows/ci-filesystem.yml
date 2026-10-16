@@ -1,4 +1,10 @@
-name: CI / filesystem contract
+name: CI / cloud sources
+
+# The cloud-source conformance suite against real servers run as job services,
+# and against live accounts on a schedule. The rest of the filesystem contract
+# (real FUSE, Files UX, the native data plane) are the real-fuse, files-ux and
+# native-tier1 checks in t.toml; these two jobs stay here because a t check
+# cannot start service containers or receive these test-account secrets yet.
 
 on:
   # Main runs the same selection, so main stays verified and its compiler
@@ -20,6 +26,8 @@ on:
       - "crates/hosting/tilo-relay-client/**"
       - "crates/hosting/tilo-relay-protocol/**"
       - "crates/hosting/tilo-relay/**"
+      - "crates/hosting/tilo-relay-shell/**"
+      - "crates/hosting/tilo-relay-store/**"
       - "crates/platform/tilo-media/**"
       - "crates/media/thumbnail/**"
       - "crates/packaging/launcher/**"
@@ -30,6 +38,8 @@ on:
       - "crates/runtime/tilo-runtime/src/standalone/files_tests.rs"
       - "crates/sdk/font-catalog/**"
       - "crates/platform/tilo-rt/**"
+      - "crates/platform/tilo-wake/**"
+      - "crates/platform/tilo-lock/**"
       - "crates/sdk/tilo-resource-macros/**"
       - "crates/sdk/tilo-resource/**"
       - "crates/sdk/ui-core/**"
@@ -54,6 +64,7 @@ on:
       - "crates/system/secret-vault/**"
       - "crates/system/settings-store/**"
       - "crates/platform/tilo-clock/**"
+      - "crates/platform/tilo-lock/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
       - "crates/system/tilo-nm/**"
@@ -73,7 +84,6 @@ on:
       - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
       - "os/containers/tilo-relay/**"
-      - "os/tests/tilo-session-lifecycle.sh"
       - "os/usr/lib/systemd/system/tilo-fs-replica.service"
       - "os/usr/lib/systemd/system/tilo-relay.service"
       - "os/usr/lib/systemd/user/tilo-fs-recipient.service"
@@ -82,9 +92,6 @@ on:
       - "os/usr/libexec/tilo-session"
       - "os/usr/share/wayland-sessions/shell*.desktop"
       - "scripts/ci-run.sh"
-      - "tools/ci/focused_test.py"
-      - "tools/ci/native-stores.sh"
-      - "tools/native-tier1.sh"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/workflows/ci-filesystem.yml"
       - ".forgejo/workflows/resolve-builder.yml"
@@ -108,6 +115,8 @@ on:
       - "crates/hosting/tilo-relay-client/**"
       - "crates/hosting/tilo-relay-protocol/**"
       - "crates/hosting/tilo-relay/**"
+      - "crates/hosting/tilo-relay-shell/**"
+      - "crates/hosting/tilo-relay-store/**"
       - "crates/platform/tilo-media/**"
       - "crates/media/thumbnail/**"
       - "crates/packaging/launcher/**"
@@ -118,6 +127,8 @@ on:
       - "crates/runtime/tilo-runtime/src/standalone/files_tests.rs"
       - "crates/sdk/font-catalog/**"
       - "crates/platform/tilo-rt/**"
+      - "crates/platform/tilo-wake/**"
+      - "crates/platform/tilo-lock/**"
       - "crates/sdk/tilo-resource-macros/**"
       - "crates/sdk/tilo-resource/**"
       - "crates/sdk/ui-core/**"
@@ -142,6 +153,7 @@ on:
       - "crates/system/secret-vault/**"
       - "crates/system/settings-store/**"
       - "crates/platform/tilo-clock/**"
+      - "crates/platform/tilo-lock/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
       - "crates/system/tilo-nm/**"
@@ -161,7 +173,6 @@ on:
       - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
       - "os/containers/tilo-relay/**"
-      - "os/tests/tilo-session-lifecycle.sh"
       - "os/usr/lib/systemd/system/tilo-fs-replica.service"
       - "os/usr/lib/systemd/system/tilo-relay.service"
       - "os/usr/lib/systemd/user/tilo-fs-recipient.service"
@@ -170,9 +181,6 @@ on:
       - "os/usr/libexec/tilo-session"
       - "os/usr/share/wayland-sessions/shell*.desktop"
       - "scripts/ci-run.sh"
-      - "tools/ci/focused_test.py"
-      - "tools/ci/native-stores.sh"
-      - "tools/native-tier1.sh"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/workflows/ci-filesystem.yml"
       - ".forgejo/workflows/resolve-builder.yml"
@@ -187,10 +195,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The same Cargo environment as check.yml's x86 test shards (asserted by
-  # tools/tests/test_ci_filesystem_workflow.py). The compiler cache keys every
-  # unit by all CARGO_* variables, and this workflow never runs on main, so it
-  # only reuses compiler outputs that main's check runs store.
   CARGO_BUILD_JOBS: "8"
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
@@ -202,123 +206,11 @@ env:
   # codegen, and different pixels, from nightly and local builds.
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
-  TILO_FS_FUSE_REQUIRED: "1"
-  TILO_REQUIRE_FUSE: "1"
 
 jobs:
   builder:
     uses: ./.forgejo/workflows/resolve-builder.yml
     secrets: inherit
-
-  real-fuse:
-    needs: builder
-    runs-on: runner
-    timeout-minutes: 60
-    container:
-      image: ${{ needs.builder.outputs.image }}
-      options: --device /dev/fuse --cap-add SYS_ADMIN
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Prepare verified fonts for offline builds
-        uses: ./.forgejo/actions/prepare-font-assets
-
-      - name: Require a real kernel FUSE environment
-        run: bash scripts/ci-fuse-preflight.sh
-
-      - name: Enforce graphical-session and verified-identity lifecycle
-        run: bash os/tests/tilo-session-lifecycle.sh
-
-      # Uses two `tilo-enroll` processes over the LAN UDP path, then dials
-      # the transferred home-peer registration after the approving process has
-      # exited. Keep this on the privileged/FUSE runner: it is the closest CI
-      # analogue of the image's host networking and ownership boundary.
-      - name: Enforce ordinary-device enrollment and offline-owner continuity
-        run: >-
-          bash scripts/ci-run.sh "ordinary device enrollment acceptance" --
-          cargo test --locked -p tilo-relay --test it
-          personal_device_process::ordinary_device_enrollment_survives_approver_offline_with_home_peer_route
-          -- --nocapture --test-threads=1
-
-      - name: Enforce polkit helper ownership and enrollment routing
-        run: >-
-          bash scripts/ci-run.sh "privileged personal enrollment helper acceptance" --
-          cargo test --locked -p tilo-relay --test it
-          personal_device_process::privileged_helper_preserves_user_owned_personal_device_projection
-          -- --ignored --nocapture --test-threads=1
-
-      - name: Run the complete kernel-path filesystem contract
-        run: >-
-          bash scripts/ci-run.sh "real FUSE integration" --
-          cargo test --locked -p tilo-fs --test integration_test -- --nocapture --test-threads=1
-
-      - name: Mount the standalone runtime's workspace and fall back to its folder
-        run: >-
-          bash scripts/ci-run.sh "standalone runtime workspace mount" --
-          cargo test --locked -p tilo-runtime --lib standalone::files -- --nocapture --test-threads=1
-
-      - name: Mount a cloud account through the kernel and write back
-        run: >-
-          bash scripts/ci-run.sh "cloud account mount" --
-          cargo test --locked -p tilo-fs --test cloud_mount -- --nocapture --test-threads=1
-
-      - name: Run the separate-process exact-share and injected-clock lifecycle
-        run: >-
-          bash scripts/ci-run.sh "real FUSE exact-share lifecycle" --
-          cargo test --locked -p tilo-fs --test exact_share_process_fuse -- --nocapture --test-threads=1
-
-      - name: Enforce deterministic partition and multi-writer convergence
-        run: >-
-          bash scripts/ci-run.sh "collaborative-files partition matrix" --
-          cargo test --locked -p tilo-fs --test collab_release_matrix -- --nocapture --test-threads=1
-
-      - name: Exercise Files against a live collaborative mount
-        run: >-
-          bash scripts/ci-run.sh "Files live collaborative mount" --
-          cargo test --locked -p file-explorer --test live_collaborative_mount -- --nocapture --test-threads=1
-
-      - name: Enforce named delivery and governed identity
-        run: |
-          bash scripts/ci-run.sh "authenticated named-share delivery" -- cargo test --locked -p tilo-fs named_share_delivery --lib -- --nocapture
-          bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p fs-protocol share_control --lib -- --nocapture
-          bash scripts/ci-run.sh "governed identity projection schema" -- cargo test --locked -p tilo-user-identity projection --lib -- --nocapture
-          bash scripts/ci-run.sh "governed room identity projection" -- cargo test --locked -p shell root_signed_governance_projects_identity_and_additive_revocation --lib -- --nocapture
-
-      - name: Enforce skew, read-only and atomic-recovery boundaries
-        run: |
-          bash scripts/ci-run.sh "replica receipt clock skew" -- cargo test --locked -p tilo-fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture
-          bash scripts/ci-run.sh "authenticated read-only writer denial" -- cargo test --locked -p tilo-fs sync::tests::namespace_documents_reach_only_entitled_peers_and_readers_cannot_author --lib -- --nocapture
-          SOURCE_SHA="$(git rev-parse HEAD)" PACKAGE=tilo-fs TEST_TARGET= OPERATION=test-lib \
-            TEST_NAME=fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions \
-            bash scripts/ci-run.sh "Keep Both all-phase restart recovery" -- python3 -I tools/ci/focused_test.py run --root .
-
-      - name: Reject corrupted collaborative state and prove legacy name migration
-        run: |
-          bash scripts/ci-run.sh "collaborative-files corruption matrix" -- cargo test --locked -p tilo-fs --test corruption_matrix -- --nocapture --test-threads=1
-          bash scripts/ci-run.sh "bounded durable backup policy" -- cargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture
-          # An absent libtest filter succeeds with zero tests. The focused runner
-          # resolves these exact names and requires one executed pass per case.
-          TEST_NAMES='[
-            "record_repository::tests::signed_transactions_merges_and_batches_project_whole_and_survive_restart",
-            "record_repository::tests::a_received_changeset_applies_whole_or_not_at_all",
-            "durable_backup::tests::backups_retain_generations_and_recover_from_the_newest_valid_one"
-          ]' SOURCE_SHA="$(git rev-parse HEAD)" PACKAGE=tilo-fs TEST_TARGET= OPERATION=test-lib \
-            bash scripts/ci-run.sh "signed repository known-good recovery and tamper refusal" -- python3 -I tools/ci/focused_test.py run --root .
-          bash scripts/ci-run.sh "legacy byte-name migration" -- cargo test --locked -p tilo-fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture
-          bash scripts/ci-run.sh "history ancestry corruption refusal" -- cargo test --locked -p tilo-fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture
-          bash scripts/ci-run.sh "transaction journal partial-batch refusal" -- cargo test --locked -p tilo-fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture
-          bash scripts/ci-run.sh "transaction coordinator recovery" -- cargo test --locked -p tilo-fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture
-          bash scripts/ci-run.sh "availability receipt tamper refusal" -- cargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture
-
-      - name: Enforce deterministic collaborative-files performance SLOs
-        env:
-          TILO_FS_PERF_GATE: "1"
-        run: >-
-          bash scripts/ci-run.sh "collaborative-files performance gate" --
-          cargo test --locked -p tilo-fs --test performance_gate -- --nocapture --test-threads=1
 
   # The cloud-source conformance suite against real, self-hosted servers:
   # Apache mod_dav and the official Nextcloud image, as job services. The
@@ -329,8 +221,6 @@ jobs:
     runs-on: runner
     timeout-minutes: 30
     env:
-      TILO_FS_FUSE_REQUIRED: "0"
-      TILO_REQUIRE_FUSE: "0"
       TILO_REQUIRE_CLOUD_SERVERS: "1"
       TILO_TEST_WEBDAV_URL: http://webdav/
       TILO_TEST_WEBDAV_USER: ada
@@ -391,8 +281,6 @@ jobs:
     runs-on: runner
     timeout-minutes: 30
     env:
-      TILO_FS_FUSE_REQUIRED: "0"
-      TILO_REQUIRE_FUSE: "0"
       TILO_LIVE_WEBDAV_URL: ${{ secrets.TILO_LIVE_WEBDAV_URL }}
       TILO_LIVE_WEBDAV_USER: ${{ secrets.TILO_LIVE_WEBDAV_USER }}
       TILO_LIVE_WEBDAV_PASSWORD: ${{ secrets.TILO_LIVE_WEBDAV_PASSWORD }}
@@ -423,72 +311,3 @@ jobs:
   # CONFIG_FANOTIFY_ACCESS_PERMISSIONS. The job stays skipped, instead of
   # queueing forever, until a `runner-native-storage` pool exists and
   # TILO_NATIVE_STORAGE_RUNNER is set to true.
-  native-tier1:
-    needs: builder
-    if: vars.TILO_NATIVE_STORAGE_RUNNER == 'true'
-    runs-on: runner-native-storage
-    timeout-minutes: 60
-    env:
-      TILO_FS_FUSE_REQUIRED: "0"
-      TILO_REQUIRE_FUSE: "0"
-    container:
-      image: ${{ needs.builder.outputs.image }}
-      # Privilege applies inside the disposable guest only: loop devices,
-      # Btrfs mounts, fanotify filesystem marks and pre-content groups.
-      options: --privileged
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Ensure store and scenario tools
-        run: |
-          missing=()
-          command -v mkfs.btrfs >/dev/null || missing+=(btrfs-progs)
-          command -v losetup >/dev/null || missing+=(util-linux)
-          command -v sqlite3 >/dev/null || missing+=(sqlite)
-          command -v git >/dev/null || missing+=(git-core)
-          if [ "${#missing[@]}" -gt 0 ]; then dnf install -y "${missing[@]}"; fi
-
-      # The job container's /dev is a static tmpfs with no udev, so loop
-      # nodes never appear; the guest kernel's devtmpfs has them.
-      - name: Expose kernel block device nodes
-        run: |
-          modprobe loop 2>/dev/null || true
-          if [ ! -e /dev/loop-control ]; then
-            mount -t devtmpfs devtmpfs /dev
-            mkdir -p /dev/pts /dev/shm
-            [ "$(stat -f -c %T /dev/pts)" = devpts ] || mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
-            mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777 tmpfs /dev/shm
-          fi
-          test -c /dev/loop-control
-          uname -r
-
-      - name: Run the native data plane acceptance suites
-        env:
-          TILO_NATIVE_TIER1_DIR: ${{ runner.temp }}/native-tier1
-        run: >-
-          bash scripts/ci-run.sh "native Tier 1 acceptance" --
-          tools/native-tier1.sh --nocapture
-
-  files-ux:
-    needs: builder
-    runs-on: runner
-    timeout-minutes: 30
-    env:
-      TILO_FS_FUSE_REQUIRED: "0"
-      TILO_REQUIRE_FUSE: "0"
-    container:
-      image: ${{ needs.builder.outputs.image }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Enforce Files collaboration UX in a fresh overlay
-        run: >-
-          bash scripts/ci-run.sh "Files collaboration UX" --
-          cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1
-

@@ -67,6 +67,13 @@ GC = ["-Wl,--gc-sections"]
 # The crates only proc macros use, by their v0-mangled crate roots, and the
 # zvariant_utils module that links them in.
 COMPILE_TIME_ONLY = re.compile(r"C(?:s[0-9A-Za-z]*_)?(?:3syn|11proc_macro2|5quote)|14zvariant_utils6macros")
+# The crate a v0 symbol of a generic instance ends with: the crate that
+# instantiated it (`...8grow_oneCs<hash>_11proc_macro2`). With shared
+# generics that crate is where dependants link the instance from: rustc
+# picks, among the upstream crates that export one, the one with the lowest
+# crate id, which can be a compile-time-only crate. Such an instance belongs
+# to `alloc` (or wherever its path starts), not to that crate.
+CRATE_ROOT = re.compile(r"C(?:s[0-9A-Za-z]*_)?([0-9]+)")
 NM_BATCH = 64
 PROGRAM = "runtime-dylib-lazy-link"
 
@@ -566,6 +573,22 @@ def compile_objects(compiler: str, arch: str, libraries: list[Library], stubs: l
     return [str(path) for path in objects]
 
 
+def compile_time_only(line: str) -> bool:
+    """Whether a version-script line exports an item of a compile-time-only crate.
+
+    A generic instance that only names such a crate as the crate that
+    instantiated it is someone else's item: dependants are compiled to link
+    it from this library, so it stays exported.
+    """
+    symbol = line.strip().removesuffix(";")
+    for root in CRATE_ROOT.finditer(symbol):
+        # A crate root whose name runs exactly to the end of the symbol.
+        if len(symbol) - root.end() == int(root.group(1)):
+            symbol = symbol[: root.start()]
+            break
+    return bool(COMPILE_TIME_ONLY.search(symbol))
+
+
 def narrow_exports(arguments: list[str]) -> int:
     """Leave the compile-time-only crates out of rustc's export list; how many were left out."""
     removed = 0
@@ -575,7 +598,7 @@ def narrow_exports(arguments: list[str]) -> int:
                 continue
             script = pathlib.Path(option.removeprefix("--version-script="))
             lines = script.read_text(encoding="utf-8").splitlines(keepends=True)
-            kept = [line for line in lines if not COMPILE_TIME_ONLY.search(line)]
+            kept = [line for line in lines if not compile_time_only(line)]
             removed += len(lines) - len(kept)
             script.write_text("".join(kept), encoding="utf-8")
     return removed

@@ -12,6 +12,8 @@ VM_ONLY_PATHS = (
     'etc/systemd/system/multi-user.target.wants/tilo-device-admin.service',
     'usr/lib/systemd/system/tilo-vm-restore.service',
     'etc/systemd/system/multi-user.target.wants/tilo-vm-restore.service',
+    'usr/lib/systemd/system/tilo-vm-reconcile-image.service',
+    'etc/systemd/system/sysinit.target.wants/tilo-vm-reconcile-image.service',
     'usr/lib/systemd/system/tilo-vm-session@.service',
     'usr/lib/udev/rules.d/72-vkms-seat.rules', 'usr/lib/udev/rules.d/73-uinput-seat.rules',
     'usr/lib/modprobe.d/tilo-vm-vkms.conf', 'usr/lib/modules-load.d/tilo-vm.conf',

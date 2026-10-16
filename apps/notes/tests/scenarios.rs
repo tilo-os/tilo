@@ -146,6 +146,14 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
                 .ok_or_else(|| format!("block {} has no rendered bounds", block.id))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let marks_another = observed(driver, |node| {
+        node.role == ui::a11y::Role::TreeItem
+            && node.state.selected
+            && node.name.as_deref() != Some(title)
+    });
+    if marks_another {
+        return Err(format!("the page tree marks a note other than {title:?}"));
+    }
     if reached(driver, scenario, blocks, &rects) {
         Ok(())
     } else {
@@ -411,7 +419,16 @@ fn reached(
             node.name.as_deref() == Some("Reference 28") && node.bounds.is_some()
         }),
         Some("status") => observed(driver, |node| node.name.as_deref() == Some("Saved")),
-        Some("saving") => observed(driver, |node| node.name.as_deref() == Some("Saving…")),
+        Some("saving" | "save_retrying") => {
+            observed(driver, |node| node.name.as_deref() == Some("Saving…"))
+        }
+        Some("save_not_saved") => observed(driver, |node| {
+            node.name.as_deref() == Some("Not saved")
+                && node
+                    .children
+                    .iter()
+                    .any(|child| child.name.as_deref() == Some("Try again"))
+        }),
         Some("save_error") => observed(driver, |node| node.name.as_deref() == Some("Save failed")),
         Some("import_success") => {
             !blocks.iter().any(|block| {

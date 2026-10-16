@@ -124,6 +124,7 @@ pub struct PasswordsSurface {
     pending: Option<String>,
     settled_layouts: u32,
     last_window: vello::kurbo::Rect,
+    acknowledger: ui::widget::acknowledgement::Acknowledger,
 }
 
 impl PasswordsSurface {
@@ -156,6 +157,7 @@ impl PasswordsSurface {
             pending: None,
             settled_layouts: 0,
             last_window: vello::kurbo::Rect::ZERO,
+            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
         };
         surface.settle();
         surface
@@ -205,6 +207,13 @@ impl PasswordsSurface {
         &self.shell
     }
 
+    #[cfg(test)]
+    pub(crate) fn acknowledgement(&self) -> Option<String> {
+        self.acknowledger
+            .current(ui::time::now())
+            .map(|ack| ack.text().to_owned())
+    }
+
     /// Apply what controls asked for, then bring the window in step: the
     /// content page, the overview, its title, the front pane, the notice and
     /// the search index.
@@ -220,7 +229,7 @@ impl PasswordsSurface {
             }
         }
         self.core.borrow_mut().expire();
-        let (page, list, screen, title, front, toast) = {
+        let (page, list, screen, title, front, toast, saved) = {
             let mut core = self.core.borrow_mut();
             (
                 core.page_revision,
@@ -229,10 +238,17 @@ impl PasswordsSurface {
                 core.filter.label().to_owned(),
                 core.show_pane.take(),
                 core.toast.take(),
+                core.saved.take(),
             )
         };
         if let Some(message) = toast {
             self.shell.toast(message, ToastKind::Info);
+        }
+        if let Some(item) = saved {
+            self.acknowledger.say(crate::CATALOG.t_args(
+                "passwords-saved-item",
+                &[("item", ui::i18n::ArgValue::Text(item))],
+            ));
         }
         if self.built_page != Some(page) {
             self.built_page = Some(page);
@@ -450,6 +466,21 @@ impl ui::widget::Decorator for PasswordsSurface {
         presence: &PresenceCtx,
     ) {
         Widget::draw_overlay(&mut self.shell, scene, transform, text, theme, presence);
+        let now = ui::time::now();
+        if let Some(ack) = self.acknowledger.current(now) {
+            let alpha = ack.alpha_at(now, theme.reduce_motion);
+            ack.draw(scene, transform, text, theme, self.last_window, alpha);
+        }
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let mut node = Widget::accessibility(&self.shell)?;
+        node.children.extend(
+            self.acknowledger
+                .current(ui::time::now())
+                .map(|ack| ack.accessibility()),
+        );
+        Some(node)
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -465,7 +496,9 @@ impl ui::widget::Decorator for PasswordsSurface {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.pending.is_some() || Widget::needs_animation_frame(&self.shell)
+        self.pending.is_some()
+            || self.acknowledger.current(ui::time::now()).is_some()
+            || Widget::needs_animation_frame(&self.shell)
     }
 
     fn needs_redraw(&self) -> bool {

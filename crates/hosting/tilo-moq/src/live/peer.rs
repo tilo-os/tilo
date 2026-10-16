@@ -20,7 +20,8 @@ pub struct Peer {
     pub incoming: moq_net::origin::Producer,
     outgoing: moq_net::origin::Producer,
     namespace: Option<String>,
-    broadcast: Option<moq_net::broadcast::Producer>,
+    /// Kept so the namespace broadcast stays announced while the peer lives.
+    _broadcast: Option<moq_net::broadcast::Producer>,
     presence: Option<moq_net::track::Producer>,
     records: HashMap<String, (moq_net::broadcast::Producer, moq_net::track::Producer)>,
     _origins: [carrier::OriginTask; 2],
@@ -184,20 +185,6 @@ impl Peer {
         }
     }
 
-    /// Stop publishing: the namespace broadcast and every record end.
-    pub fn unpublish(&mut self) {
-        for (_, (broadcast, track)) in self.records.drain() {
-            let _ = track.finish();
-            broadcast.finish();
-        }
-        if let Some(presence) = self.presence.take() {
-            let _ = presence.finish();
-        }
-        if let Some(broadcast) = self.broadcast.take() {
-            broadcast.finish();
-        }
-    }
-
     /// The egress broadcast of a room member, once the relay announces it.
     pub async fn member(&self, namespace: &str) -> Option<moq_net::broadcast::Consumer> {
         self.incoming
@@ -230,7 +217,7 @@ impl Pending {
             incoming: self.incoming,
             outgoing: self.outgoing,
             namespace: self.namespace,
-            broadcast: self.broadcast,
+            _broadcast: self.broadcast,
             presence: self.presence,
             records: HashMap::new(),
             _origins: self.origins,

@@ -14,6 +14,7 @@ name = "tilo-greeter"
 path = "src/main.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Mirrors the dep set used by the in-tree `ui`-based apps
 # (file-explorer / terminal): the toolkit plus the trait crates its
 # `Widget` impls reference directly.
@@ -39,6 +40,7 @@ chrono = { workspace = true, features = ["clock", "std"] }
 # Battery level and charging state for the status corner, read from sysfs.
 tilo-power-mgmt = { path = "../../system/power", default-features = false }
 workspace-hack = { version = "0.1" }
+tilo-paths.workspace = true
 
 [dev-dependencies]
 tilo-test-env = { path = "../../dev/test-env" }

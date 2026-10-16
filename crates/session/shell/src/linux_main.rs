@@ -1,13 +1,11 @@
 //! Compositor binary entry point.
 //!
-//! Picks a [`Mode`] from `--mode`, then delegates to the matching
-//! `compositor::*::run` function. [`Mode::Native`] is the default (real
-//! smithay server, vello+wgpu winit backend); [`Mode::Hosted`] is an
-//! explicit dev opt-in (`--mode hosted`) for the legacy winit-hosted path.
+//! Runs the compositor (`compositor::native::run`): a real smithay server
+//! painted through vello+wgpu on the backend `--backend` names.
 //!
-//! Side-channel modes are resolved before `parse_mode`: a removed run mode
-//! (`--portal-server-only`) is refused with exit code 2 before any setup, so a
-//! stale unit fails loudly instead of starting a compositor; `--firstboot-only`
+//! Side-channel modes are resolved first: a removed run mode
+//! (`--portal-server-only`, `--mode hosted`) is refused with exit code 2 before
+//! any setup, so a stale unit fails loudly instead of starting a compositor; `--firstboot-only`
 //! runs machine setup and exits, while the host-session `--firstboot` hook
 //! performs that idempotent setup and continues into the compositor.
 
@@ -20,8 +18,7 @@
     )
 )]
 
-use shell::compositor::hosted::HostedOptions;
-use shell::compositor::{self, Mode};
+use shell::compositor;
 use shell::firstboot;
 use shell::shell::identity_provisioning;
 
@@ -92,16 +89,15 @@ enum ExistingIdentityFailureAction {
 /// Decide how startup handles a failure while checking an *existing* identity.
 ///
 /// An unavailable keyring and malformed or mismatched persisted identity
-/// artifacts both require an explicit owner recovery ceremony in native mode.
+/// artifacts both require an explicit owner recovery ceremony in the compositor.
 /// They must never be interpreted as permission to create a replacement
 /// identity. Errors which do not prove an invalid stored identity (such as
 /// permission or storage failures) remain fail-closed.
 fn existing_identity_failure_action(
     provision_requested: bool,
-    mode: Mode,
     error: &std::io::Error,
 ) -> ExistingIdentityFailureAction {
-    if provision_requested || mode == Mode::Hosted {
+    if provision_requested {
         return ExistingIdentityFailureAction::FailClosed;
     }
 
@@ -168,11 +164,7 @@ fn verify_existing_identity(
     if let Err(error) = verify_existing_identity_with_retry(|| {
         firstboot::ensure_collaboration_identity(identity_dir, &paths)
     }) {
-        match existing_identity_failure_action(
-            provision_requested,
-            compositor::parse_mode_from_args(),
-            &error,
-        ) {
+        match existing_identity_failure_action(provision_requested, &error) {
             ExistingIdentityFailureAction::EnterTrustedRecovery => {
                 // An existing schema-2 record remains the person's
                 // identity even when its key is unavailable or its
@@ -188,10 +180,6 @@ fn verify_existing_identity(
             ExistingIdentityFailureAction::FailClosed => {
                 if provision_requested {
                     tracing::error!("could not provision collaboration identity: {error}");
-                } else if compositor::parse_mode_from_args() == Mode::Hosted {
-                    tracing::error!(
-                        "hosted mode cannot recover an existing identity; start a native Tilo session to unlock or restore it: {error}"
-                    );
                 } else {
                     tracing::error!("Tilo identity chain is incomplete or invalid: {error}");
                 }
@@ -234,13 +222,6 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                         std::process::ExitCode::FAILURE
                     }
                 });
-            }
-            if compositor::parse_mode_from_args() == Mode::Hosted {
-                tracing::error!(
-                    path = %store.path().display(),
-                    "hosted mode cannot create the first identity; start a native Tilo session once to complete setup"
-                );
-                return Some(std::process::ExitCode::FAILURE);
             }
             tracing::info!(
                 "no Tilo identity found at {}; native compositor chrome will run {} setup",
@@ -478,6 +459,20 @@ pub fn run() -> std::process::ExitCode {
     tilo_startup_metrics::init();
     let _startup_dump = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("main-start");
+    // The compositor is the session's most latency-critical process: ask for
+    // its scope to be protected and start boosting the focused app. Both are
+    // asynchronous and cost nothing when no user or system manager answers.
+    if !early_args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--firstboot-only" | "--provision-identity" | "--verify-collaboration-identity"
+        )
+    }) {
+        ::launcher::priority::protect_session();
+        ::launcher::priority::enable_focus_boost();
+        // Input is dispatched on this thread's main loop, not its own thread.
+        ::launcher::priority::request_main_loop_nice(::launcher::priority::MAIN_LOOP_NICE);
+    }
 
     // The shell's copy and every toolkit widget it draws, in the desktop's
     // language.
@@ -552,10 +547,15 @@ pub fn run() -> std::process::ExitCode {
 
     // RUST_LOG as `fmt::init` reads it, with the per-launch timing lines kept:
     // the open-latency gate reads them from the session log.
+    // Before anything logs: a failed write to stderr (the session's flight
+    // recorder) must never panic the compositor.
+    shell::stderr_guard::install();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(
             tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
         ))
+        // Its fallback for a failed write is `eprintln!`, which panics.
+        .log_internal_errors(false)
         .init();
     shell::crash_log::install("tilo shell panic");
     // After the crash log: a panic outside a helper's panic boundary still
@@ -625,22 +625,12 @@ pub fn run() -> std::process::ExitCode {
     // in, and before the compositor's first read.
     install_session_settings();
 
-    let enable_peer_sync = compositor::parse_peer_sync_from_args();
-    let enable_portals = compositor::parse_portals_from_args();
-    match compositor::parse_mode_from_args() {
-        Mode::Hosted => compositor::hosted::run_with_full_options(HostedOptions {
-            enable_peer_sync,
-            enable_portals,
-        }),
-        // Native mode serves portals unconditionally — the shipped session runs
-        // `shell --backend drm` with no flags, so gating file open/save behind
-        // an opt-in flag meant no working file dialog. `--enable-portals` is still accepted for existing units/scripts.
-        Mode::Native => {
-            let _ = enable_portals;
-            tilo_startup_metrics::mark("compositor-native-run-start");
-            compositor::native::run();
-        }
-    }
+    // The compositor serves portals unconditionally — the shipped session runs
+    // `shell --backend drm` with no flags, so gating file open/save behind an
+    // opt-in flag meant no working file dialog. `--enable-portals` is still
+    // accepted, and ignored, for existing units and scripts.
+    tilo_startup_metrics::mark("compositor-native-run-start");
+    compositor::native::run();
     // Layout changes are saved on a background thread; the process must not
     // exit ahead of them.
     shell::shell::persist::wait_for_saves_within(std::time::Duration::from_secs(10));
@@ -678,7 +668,6 @@ mod tests {
         assert_eq!(ask(&["--backend", "drm"]), None);
         assert_eq!(ask(&["--version", "--backend"]), None);
     }
-    use shell::compositor::Mode;
     use std::io;
 
     #[test]
@@ -692,20 +681,16 @@ mod tests {
             let unavailable_keyring = io::Error::from_raw_os_error(libc::ENOKEY);
 
             assert_eq!(
-                existing_identity_failure_action(false, Mode::Native, &invalid_cert),
+                existing_identity_failure_action(false, &invalid_cert),
                 ExistingIdentityFailureAction::EnterTrustedRecovery,
             );
             assert_eq!(
-                existing_identity_failure_action(false, Mode::Native, &unavailable_keyring),
+                existing_identity_failure_action(false, &unavailable_keyring),
                 ExistingIdentityFailureAction::FailClosed,
                 "transient keyring unavailability must not be presented as identity corruption",
             );
             assert_eq!(
-                existing_identity_failure_action(false, Mode::Hosted, &invalid_cert),
-                ExistingIdentityFailureAction::FailClosed,
-            );
-            assert_eq!(
-                existing_identity_failure_action(true, Mode::Native, &invalid_cert),
+                existing_identity_failure_action(true, &invalid_cert),
                 ExistingIdentityFailureAction::FailClosed,
             );
         }
@@ -716,7 +701,7 @@ mod tests {
                 "identity directory is not private",
             );
             assert_eq!(
-                existing_identity_failure_action(false, Mode::Native, &permission_denied),
+                existing_identity_failure_action(false, &permission_denied),
                 ExistingIdentityFailureAction::FailClosed,
             );
         }

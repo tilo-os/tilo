@@ -15,6 +15,9 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Hooks a host's own tests use (`TerminalWidget::attach_input_probe`) in an
+# optimised profile, where debug assertions are off.
+test-support = []
 
 [dependencies]
 tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"] }

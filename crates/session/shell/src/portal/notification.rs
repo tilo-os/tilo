@@ -12,8 +12,6 @@ use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
-#[cfg(target_os = "linux")]
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -252,21 +250,15 @@ impl NotificationBackend {
         self.portal.clone()
     }
 
-    fn string_field(notification: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-        notification
-            .get(key)
-            .and_then(|value| value.try_clone().ok())
-            .and_then(|value| String::try_from(value).ok())
-    }
-
     /// The portal's `sound` is `"default"`, `"silent"` or a sound the app
     /// supplies; the shell plays its own theme cue for anything but silence,
     /// chosen by the notification's `category`.
     fn sound(
         notification: &HashMap<String, OwnedValue>,
     ) -> Option<settings_store::system_sounds::SystemSoundEvent> {
-        let silent = Self::string_field(notification, "sound").as_deref() == Some("silent");
-        let category = Self::string_field(notification, "category");
+        let silent =
+            crate::portal::option::<String>(&notification, "sound").as_deref() == Some("silent");
+        let category = crate::portal::option::<String>(&notification, "category");
         (!silent).then(|| {
             settings_store::system_sounds::SystemSoundEvent::for_notification_category(
                 category.as_deref(),
@@ -275,7 +267,7 @@ impl NotificationBackend {
     }
 
     fn urgency(notification: &HashMap<String, OwnedValue>) -> u8 {
-        match Self::string_field(notification, "priority").as_deref() {
+        match crate::portal::option::<String>(&notification, "priority").as_deref() {
             Some("low") => 0,
             Some("high" | "urgent") => 2,
             _ => 1,
@@ -284,11 +276,8 @@ impl NotificationBackend {
 
     #[cfg(target_os = "linux")]
     fn display_timeout(notification: &HashMap<String, OwnedValue>) -> i32 {
-        let hints = notification
-            .get("display-hint")
-            .and_then(|value| value.try_clone().ok())
-            .and_then(|value| Vec::<String>::try_from(value).ok())
-            .unwrap_or_default();
+        let hints =
+            crate::portal::option::<Vec<String>>(notification, "display-hint").unwrap_or_default();
         if hints.iter().any(|hint| hint == "persistent") {
             0
         } else {
@@ -298,8 +287,8 @@ impl NotificationBackend {
 
     #[cfg(target_os = "linux")]
     fn body(notification: &HashMap<String, OwnedValue>) -> String {
-        let plain = Self::string_field(notification, "body").unwrap_or_default();
-        let markup = Self::string_field(notification, "markup-body");
+        let plain = crate::portal::option::<String>(&notification, "body").unwrap_or_default();
+        let markup = crate::portal::option::<String>(&notification, "markup-body");
         truncate_chars(
             &markup.map_or(plain, |markup| markup_to_plain_text(&markup)),
             MAX_BODY_CHARS,
@@ -313,25 +302,24 @@ impl NotificationBackend {
         let mut rendered = Vec::new();
         let mut specs = HashMap::new();
 
-        if let Some(action) =
-            Self::string_field(notification, "default-action").filter(|action| valid_action(action))
+        if let Some(action) = crate::portal::option::<String>(&notification, "default-action")
+            .filter(|action| valid_action(action))
         {
             let target = clone_field(notification, "default-action-target");
             specs.insert(action.clone(), ActionSpec { target });
             rendered.push((action, crate::shell::i18n::t("portal-notification-open")));
         }
 
-        let buttons = notification
-            .get("buttons")
-            .and_then(|value| value.try_clone().ok())
-            .and_then(|value| Vec::<HashMap<String, OwnedValue>>::try_from(value).ok())
-            .unwrap_or_default();
+        let buttons =
+            crate::portal::option::<Vec<HashMap<String, OwnedValue>>>(notification, "buttons")
+                .unwrap_or_default();
         for button in buttons.into_iter().take(MAX_BUTTONS) {
-            let Some(action) = Self::string_field(&button, "action").filter(|v| valid_action(v))
+            let Some(action) =
+                crate::portal::option::<String>(&button, "action").filter(|v| valid_action(v))
             else {
                 continue;
             };
-            let Some(label) = Self::string_field(&button, "label")
+            let Some(label) = crate::portal::option::<String>(&button, "label")
                 .filter(|label| !label.is_empty())
                 .map(|label| truncate_chars(&label, 80))
             else {
@@ -359,8 +347,7 @@ impl NotificationBackend {
         id: String,
         notification: HashMap<String, OwnedValue>,
     ) {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
+        let Ok(auth) = authenticate_call(&self.ctx, &hdr, &app_id, None).await else {
             return;
         };
         if id.is_empty() || id.len() > 255 || id.chars().any(char::is_control) {
@@ -381,7 +368,7 @@ impl NotificationBackend {
             dbus_id,
             app_name,
             summary: truncate_chars(
-                &Self::string_field(&notification, "title").unwrap_or_default(),
+                &crate::portal::option::<String>(&notification, "title").unwrap_or_default(),
                 MAX_TITLE_CHARS,
             ),
             body: Self::body(&notification),
@@ -391,6 +378,7 @@ impl NotificationBackend {
             caller: Some(auth.caller),
             badge_count: None,
             contact_endpoint: None,
+            sender_name: None,
             sound: Self::sound(&notification),
         });
     }
@@ -402,8 +390,7 @@ impl NotificationBackend {
         app_id: String,
         id: String,
     ) {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        if authenticate_call(&self.ctx, sender.as_ref(), &app_id, None)
+        if authenticate_call(&self.ctx, &hdr, &app_id, None)
             .await
             .is_err()
         {

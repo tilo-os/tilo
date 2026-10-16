@@ -90,7 +90,11 @@ def main():
     status = browser.returncode
     quiesce()
     browser.wait()  # Record the root's completion after waitpid reaped it.
-    return 0 if stopping or status == 0 else 1
+    if stopping or status == 0:
+        return 0
+    # The browser ended on its own and badly; say how for whoever reads why.
+    print(f'owned browser exited on its own with status {status}', file=sys.stderr, flush=True)
+    return 1
 
 
 if __name__ == '__main__':

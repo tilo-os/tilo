@@ -38,6 +38,14 @@ pub const BOOKKEEPING_PREFIX: &str = "tilo:";
 pub const MAX_CHECKPOINT_NAME: usize = 80;
 /// The group kind of an agent connection's invocations.
 pub const AGENT_RUN: &str = "agent-run";
+/// The group kind of a workspace task's invocations: an agent working a
+/// native task stamps its steps with the task, so that is the run undo names.
+pub const TASK_RUN: &str = "task";
+
+/// Whether a group of this kind is a run that undo can name.
+fn names_a_run(kind: &str) -> bool {
+    kind == AGENT_RUN || kind == TASK_RUN
+}
 
 /// Whose steps an undo or redo takes back.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,7 +89,11 @@ impl Scope {
             .and_then(|context| context.group.as_ref())
             .filter(|group| group.kind == AGENT_RUN);
         match self {
-            Self::Run(id) => run.is_some_and(|group| &group.id == id),
+            // A named run may be a task as well as an agent connection; the
+            // person's own scopes below still leave only agent runs out.
+            Self::Run(id) => context
+                .and_then(|context| context.group.as_ref())
+                .is_some_and(|group| names_a_run(&group.kind) && &group.id == id),
             Self::Invoker(actor) => {
                 run.is_none()
                     && context
@@ -129,7 +141,7 @@ fn runs_in_effect(doc: &mut AutoCommit, scope: &Scope) -> Vec<RunInEffect> {
             .context
             .as_ref()
             .and_then(|context| context.group.as_ref())
-            .filter(|group| group.kind == AGENT_RUN)
+            .filter(|group| names_a_run(&group.kind))
         else {
             continue;
         };

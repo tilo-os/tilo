@@ -10,7 +10,6 @@ use launcher::owned_service::ServiceCancellation;
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    path::PathBuf,
     rc::Rc,
     sync::{Mutex, mpsc},
     time::Duration,
@@ -317,9 +316,7 @@ impl Actor {
             let identity = apps
                 .native_messaging_identity(owner)
                 .map_err(|_| SendError::Revoked)?;
-            let root = std::env::var_os("XDG_RUNTIME_DIR")
-                .map(PathBuf::from)
-                .ok_or(SendError::Unavailable)?;
+            let root = tilo_paths::xdg::runtime_dir().ok_or(SendError::Unavailable)?;
             let cancellation =
                 ServiceCancellation::for_owner(Arc::downgrade(&apps.messaging_lifetime));
             let original = identity.clone();
@@ -589,9 +586,7 @@ impl Actor {
         let domain = serde_json::to_vec(&identity.owner).map_err(|_| SendError::Unavailable)?;
         drop(identity);
         let private = root.join(blake3::hash(&domain).to_hex().as_str());
-        let runtime_root = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .ok_or(SendError::Unavailable)?;
+        let runtime_root = tilo_paths::xdg::runtime_dir().ok_or(SendError::Unavailable)?;
         let cancellation = ServiceCancellation::for_owner(Arc::downgrade(&apps.messaging_lifetime));
         let executor = runtime().map_err(|_| SendError::Unavailable)?;
         let signal_account = linked

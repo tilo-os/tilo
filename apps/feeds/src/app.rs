@@ -670,7 +670,6 @@ impl Core {
         let known = self.store.folders.ids().cloned().collect();
         self.awaited.push(Awaited::Folder(name.to_owned(), known));
         self.perform(doc, Library::NEW_FOLDER.with(name));
-        self.set_toast(format!("Created folder {name}"));
     }
 
     /// Start a refresh of every subscription. Only enqueues on the worker:
@@ -1166,7 +1165,6 @@ impl Core {
                 doc,
                 Library::paths().feeds.item(feed_id).title.replace(name),
             );
-            self.set_toast("Feed renamed");
         }
     }
 
@@ -1802,7 +1800,8 @@ impl FeedsApp {
 
     /// A refresh of every feed partway through: some done, some updated,
     /// one failed.
-    pub fn force_refresh_in_progress(&mut self) {
+    #[cfg(test)]
+    pub(crate) fn force_refresh_in_progress(&self) {
         let mut core = self.core.borrow_mut();
         let total = core.store.feeds.len();
         let done = total.div_ceil(2).saturating_sub(1);

@@ -344,7 +344,7 @@ impl Workbook {
     /// cannot happen on this single-threaded, synchronous API.
     #[allow(
         clippy::needless_pass_by_value,
-        reason = "pub API used outside qdoc (fs::docstore); signature change out of scope for this crate-only pass"
+        reason = "pub API used outside tilo-doc (fs::docstore); signature change out of scope for this crate-only pass"
     )]
     #[allow(
         clippy::unwrap_used,

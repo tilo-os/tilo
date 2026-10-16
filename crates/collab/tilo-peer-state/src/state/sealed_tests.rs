@@ -79,7 +79,7 @@ fn held(peer: &StatePeer) -> Vec<SignedOp> {
         record: RECORD.into(),
     }]
         .sealed
-        .clone()
+        .to_vec()
 }
 
 #[test]
@@ -219,7 +219,7 @@ fn a_full_sealed_history_refuses_rather_than_evicts() {
         record: RECORD.into(),
     };
     let first = held(&host)[0].clone();
-    host.core.documents.get_mut(&route).unwrap().sealed = vec![first; MAX_SEALED_OPS];
+    host.core.documents.get_mut(&route).unwrap().sealed = vec![first; MAX_SEALED_OPS].into();
     assert!(
         host.receive_from(origin(&b), sealed(&host, &b, 2, b"one more"), now)
             .unwrap_err()
@@ -267,7 +267,7 @@ fn a_tampered_stored_sealed_history_refuses_to_restore() {
     let mut op = held(&host)[0].clone();
     op.encryption = None;
     collab_types::sign_op(&mut op, &b).unwrap();
-    cleartext.core.documents.get_mut(&route).unwrap().sealed = vec![op];
+    cleartext.core.documents.get_mut(&route).unwrap().sealed = vec![op].into();
     assert!(
         restore(&cleartext, now).is_err(),
         "sealed history cannot carry plaintext"
@@ -494,27 +494,30 @@ fn a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it() {
         .unwrap();
     assert!(
         member
+            .outbox()
             .lookup_retained_local_document(&write, author)
             .unwrap()
             .is_some()
     );
     assert!(
         !member
+            .outbox()
             .retained_local_document_retired(&write, author)
             .unwrap(),
         "only the governor's signed watermark retires it"
     );
     let later = now.checked_add(Duration::from_secs(600)).unwrap();
-    let queue = member
-        .reconcile_local_outbox(std::slice::from_ref(&write), &b, later)
+    let projection = member
+        .outbox_mut()
+        .reconcile_local_recovery_projection(std::slice::from_ref(&write), None, &[], &b, later)
         .unwrap();
-    assert_eq!(
-        queue.len(),
-        1,
+    assert!(
+        projection.is_empty(),
         "a sealed write is never re-signed by a replica without its key"
     );
     assert!(
         member
+            .outbox()
             .reserve_local_recovery(std::slice::from_ref(&write), None, author)
             .unwrap()
             .entries()

@@ -282,9 +282,14 @@ pub trait Model: Sized + 'static {
     /// The field edits that turn `self` into `after`, at `path` below the
     /// record: what a surface that edited a local copy submits. The default
     /// sets the value whole when it changed; containers and records edit
-    /// only what differs, item by item and field by field.
+    /// only what differs, item by item and field by field. A value that
+    /// would store as it is ([`Self::stores_as`]) is compared in memory,
+    /// without turning either side into JSON.
     #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        if after.stores_as(self) {
+            return;
+        }
         let value = after.to_json();
         if self.to_json() != value {
             out.push(crate::Edit::new(path.to_vec(), EditOp::Set { value }));
@@ -948,7 +953,10 @@ macro_rules! __table_functions {
 /// Implements [`Model`] (and [`Settable`]) for serde types stored whole as
 /// one JSON string, last writer wins: values with no meaningful concurrent
 /// merge (a tone curve, a keyframe track). The types need `Serialize`,
-/// `Deserialize` and `Default` (the value of an absent slot).
+/// `Deserialize`, `Default` (the value of an absent slot) and `PartialEq`
+/// holding only between values of equal JSON forms, as a derived one does:
+/// the edits between two copies compare each value in memory, and serialise
+/// only the ones that differ.
 #[macro_export]
 macro_rules! json_model {
     ($($ty:ty),* $(,)?) => {$(
@@ -959,7 +967,7 @@ macro_rules! json_model {
             const NULLABLE: bool = true;
             // Run by one set of functions for every value stored as JSON text.
             const TABLE: &'static $crate::table::ModelTable =
-                &$crate::table::ModelTable::of_json(&$crate::table::JsonOf::<$ty>::PLAIN);
+                &$crate::table::ModelTable::of_json(&$crate::table::JsonOf::<$ty>::COMPARED);
             $crate::__table_functions!();
             fn missing() -> ::core::result::Result<Self, $crate::ModelError> {
                 ::core::result::Result::Ok(<Self as ::core::default::Default>::default())

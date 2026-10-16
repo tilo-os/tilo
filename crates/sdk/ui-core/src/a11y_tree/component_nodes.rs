@@ -45,6 +45,9 @@ pub(super) struct ComponentNodes {
     pub(super) prompted: PromptedMap,
     pub(super) bound_actions: BoundActions,
     pub(super) duplicate_ids: Vec<SemanticId>,
+    /// The nodes built when these were built, or last updated.
+    #[cfg(any(test, feature = "test-support"))]
+    built: usize,
 }
 
 impl ComponentNodes {
@@ -61,6 +64,8 @@ impl ComponentNodes {
             prompted: HashMap::new(),
             bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            built: 0,
         };
         let mut order = Vec::new();
         if let Some(forest) = component.shared_forest() {
@@ -103,6 +108,12 @@ impl ComponentNodes {
 
     pub(super) fn roots(&self) -> &[SemanticId] {
         &self.roots
+    }
+
+    /// The nodes built when these were built, or last updated.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn built_for_test(&self) -> usize {
+        self.built
     }
 
     /// The nodes in reading order.
@@ -188,6 +199,10 @@ impl ComponentNodes {
         // The nodes built from here on carry the binding the component
         // hands over now, as a rebuild's would.
         self.binding = component.binding.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.built = 0;
+        }
 
         let mut delta = TreeDelta::default();
         let mut removed_nodes = HashMap::with_capacity(removed_ids.len());
@@ -197,6 +212,16 @@ impl ComponentNodes {
             }
         }
         for ((last, next), id) in heads.into_iter().zip(head_ids) {
+            // A head republished with what its node shows unchanged (a
+            // record's root, whose actions are minted afresh with every
+            // revision while a keystroke changes its body) keeps its node
+            // and its actions' targets; only its children may move.
+            if self.keeps_node_of(&id, next.head()) {
+                if self.keep_head(&id, last, next) {
+                    delta.updated.push(id);
+                }
+                continue;
+            }
             let Some(mut old) = self.remove_node(&id) else {
                 continue;
             };
@@ -268,6 +293,68 @@ impl ComponentNodes {
             })
     }
 
+    /// Whether node `id` is the node `head` builds but for its children:
+    /// the same label and the same actions, compared without building them.
+    /// Its actions' bound targets are then the ones a rebuild records too:
+    /// they come from the resource's id, each action's id and the
+    /// component's identity alone.
+    fn keeps_node_of(&self, id: &SemanticId, head: &Resource) -> bool {
+        let Some(node) = self.nodes.get(id) else {
+            return false;
+        };
+        let kept = node.name.as_deref() == Some(head.label.as_str())
+            && node.actions.len() == head.actions.len()
+            && node
+                .actions
+                .iter()
+                .zip(&head.actions)
+                .all(|(action, spec)| exports_spec(action, spec));
+        #[cfg(debug_assertions)]
+        if kept {
+            let mut prompted = HashMap::new();
+            let actions = resource_actions(id, head, None, &mut prompted, None);
+            let fresh =
+                resource_semantic_node(id.clone(), head, actions, node.children.clone(), false);
+            debug_assert!(
+                fresh == *node,
+                "resource node {id:?} kept with a head that builds another node"
+            );
+        }
+        kept
+    }
+
+    /// Keep node `id` for `next`, whose head builds it ([`Self::keeps_node_of`]),
+    /// with `next`'s children and its prompted actions' builders, as a
+    /// rebuild records them. Returns whether its children changed.
+    fn keep_head(&mut self, id: &SemanticId, last: &SharedResource, next: &SharedResource) -> bool {
+        for spec in &next.head().actions {
+            if let ActionInput::Prompted { build, .. } = &spec.input {
+                self.prompted
+                    .insert((id.clone(), spec.id.clone()), build.clone());
+            }
+        }
+        if last.children().ptr_eq(next.children()) {
+            return false;
+        }
+        let Some(old_children) = self.nodes.get(id).map(|node| &node.children) else {
+            return false;
+        };
+        if self.same_child_ids(old_children, next.children()) {
+            return false;
+        }
+        let children = next
+            .children()
+            .iter()
+            .map(|child| self.id_of(child))
+            .collect::<Vec<_>>();
+        let Some(node) = self.nodes.get_mut(id) else {
+            return false;
+        };
+        let changed = node.children != children;
+        node.children = children;
+        changed
+    }
+
     /// Remove node `id` and its actions' targets.
     fn remove_node(&mut self, id: &SemanticId) -> Option<SemanticNode> {
         let node = self.nodes.remove(id)?;
@@ -286,6 +373,10 @@ impl ComponentNodes {
         head: &Resource,
         children: Vec<SemanticId>,
     ) -> SemanticNode {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.built = self.built.saturating_add(1);
+        }
         let actions = resource_actions(
             &id,
             head,
@@ -311,6 +402,10 @@ impl ComponentNodes {
         order: &mut Vec<SemanticId>,
     ) -> SemanticId {
         let id = self.id_of(resource);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.built = self.built.saturating_add(1);
+        }
         // Actions before children, as the full walk records them.
         let actions = resource_actions(
             &id,
@@ -330,6 +425,10 @@ impl ComponentNodes {
 
     fn insert_plain(&mut self, resource: &Resource, order: &mut Vec<SemanticId>) -> SemanticId {
         let id = bound_resource_id(&self.binding, resource.id.as_str());
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.built = self.built.saturating_add(1);
+        }
         let actions = resource_actions(
             &id,
             resource,
@@ -418,6 +517,35 @@ pub(super) fn resource_semantic_node(
         widget_taffy_id: None,
         semantic_target: None,
     }
+}
+
+/// Whether `action` is the affordance `spec` exports on its resource's
+/// node ([`resource_action`]): the same id, label and input. A deferred
+/// action's address is its resource's id and its own, both the same here.
+fn exports_spec(action: &SemanticAction, spec: &ActionSpec) -> bool {
+    let same_input = match (&action.kind, &spec.input) {
+        (SemanticActionKind::App(encoded), ActionInput::Immediate(next)) => {
+            encoded == next.as_ref()
+        }
+        (SemanticActionKind::AppDeferred { .. }, ActionInput::Deferred { .. }) => true,
+        (
+            SemanticActionKind::AppPrompted {
+                prompt,
+                placeholder,
+                collects,
+            },
+            ActionInput::Prompted {
+                prompt: next_prompt,
+                placeholder: next_placeholder,
+                collects: next_collects,
+                ..
+            },
+        ) => prompt == next_prompt && placeholder == next_placeholder && collects == next_collects,
+        _ => false,
+    };
+    // The action is named by the spec's id.
+    let named = action.name == spec.id;
+    same_input && named && action.label == spec.label
 }
 
 fn resource_action(

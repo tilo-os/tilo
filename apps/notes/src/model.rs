@@ -8,6 +8,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use tilo_document::{ChangeCursor, RichTextState};
+use ui::tilo_resource::{Bytes, Map};
 use uuid::Uuid;
 
 use crate::notebook::{Notebook, page_of};
@@ -52,13 +54,20 @@ pub struct WorkspaceData {
 }
 
 /// The workspace the window shows, with the runtime queries the UI needs.
+///
+/// It keeps what it read of the notebook, never the notebook itself: the
+/// framework updates a state no one else holds in place, and copies every
+/// note of one a window still holds before each change.
 #[derive(Clone, Debug, Default)]
 pub struct Workspace {
     pub data: WorkspaceData,
-    /// The record this workspace shows.
-    pub notebook: Rc<Notebook>,
+    /// The pictures the notes show, by the digest their bodies name them by.
+    pub images: Map<Bytes>,
     /// What every note says.
     pub bodies: std::sync::Arc<crate::actions::Bodies>,
+    /// Where each note's body history stood when `bodies` read it; `None`
+    /// for a note whose body is not stored yet.
+    pub body_cursors: Rc<HashMap<PageId, Option<ChangeCursor>>>,
     /// The notes whose bodies changed since the workspace this one was made
     /// after ([`Self::of`]); every note for a first projection.
     pub changed: Vec<PageId>,
@@ -72,7 +81,7 @@ impl Workspace {
     /// The workspace showing `notebook`, after `previous`: a note whose body
     /// did not change keeps what `previous` read of it.
     #[must_use]
-    pub fn of(notebook: Rc<Notebook>, previous: &Self) -> Self {
+    pub fn of(notebook: &Notebook, previous: &Self) -> Self {
         let mut ids = std::collections::HashSet::new();
         let mut pages = Vec::with_capacity(notebook.pages.len());
         for (id, page) in notebook.pages.iter() {
@@ -129,26 +138,9 @@ impl Workspace {
             .collect();
         tag_assignments.sort_by_key(|edge| (edge.page, edge.tag));
         tag_assignments.dedup();
-        let mut changed = Vec::new();
-        let bodies = pages
-            .iter()
-            .filter_map(|meta| {
-                let page = notebook.pages.get(&crate::notebook::page_id(meta.id))?;
-                let unchanged = previous
-                    .notebook
-                    .pages
-                    .get(&crate::notebook::page_id(meta.id))
-                    .is_some_and(|before| before.body == page.body);
-                let blocks = match previous.bodies.get(&meta.id) {
-                    Some(blocks) if unchanged => blocks.clone(),
-                    _ => {
-                        changed.push(meta.id);
-                        crate::actions::stored_blocks(page)
-                    }
-                };
-                Some((meta.id, blocks))
-            })
-            .collect();
+        let (bodies, body_cursors, changed) = project_bodies(notebook, &pages, previous);
+        // A pointer per few dozen pictures: the copy shares the notebook's.
+        let images = notebook.images.clone();
         Self {
             data: WorkspaceData {
                 pages,
@@ -156,8 +148,9 @@ impl Workspace {
                 tags,
                 tag_assignments,
             },
-            notebook,
+            images,
             bodies: std::sync::Arc::new(bodies),
+            body_cursors: Rc::new(body_cursors),
             changed,
         }
     }
@@ -191,13 +184,9 @@ impl Workspace {
             .find(|tag| tag.name.to_lowercase() == name)
     }
 
-    /// Note `page`'s body as the rich text it is.
-    pub fn body_state(&self, page: PageId) -> Option<&tilo_document::RichTextState> {
-        self.notebook
-            .pages
-            .get(&crate::notebook::page_id(page))?
-            .body
-            .state()
+    /// Whether note `page` has its body stored in the record yet.
+    pub fn has_stored_body(&self, page: PageId) -> bool {
+        self.body_cursors.get(&page).is_some_and(Option::is_some)
     }
 
     pub fn tags_for_page(&self, page: PageId) -> Vec<&TagMeta> {
@@ -275,6 +264,53 @@ impl Workspace {
     }
 }
 
+/// What every note in `pages` says, read from `notebook` after `previous`,
+/// with where each body's history stood and the notes whose blocks changed.
+fn project_bodies(
+    notebook: &Notebook,
+    pages: &[PageMeta],
+    previous: &Workspace,
+) -> (
+    crate::actions::Bodies,
+    HashMap<PageId, Option<ChangeCursor>>,
+    Vec<PageId>,
+) {
+    let mut changed = Vec::new();
+    let mut cursors = HashMap::with_capacity(pages.len());
+    let bodies = pages
+        .iter()
+        .filter_map(|meta| {
+            let page = notebook.pages.get(&crate::notebook::page_id(meta.id))?;
+            let cursor = page.body.state().map(RichTextState::change_cursor);
+            cursors.insert(meta.id, cursor);
+            let before = previous.bodies.get(&meta.id);
+            // A body whose change cursor stands where it stood is the
+            // body `previous` read: no paragraph of it changed, came,
+            // went or moved. Any other is read, and kept as before when
+            // it reads the same.
+            let blocks = match before {
+                Some(blocks)
+                    if cursor.is_some() && previous.body_cursors.get(&meta.id) == Some(&cursor) =>
+                {
+                    std::sync::Arc::clone(blocks)
+                }
+                _ => {
+                    let read = crate::actions::stored_blocks(page);
+                    match before {
+                        Some(blocks) if **blocks == *read => std::sync::Arc::clone(blocks),
+                        _ => {
+                            changed.push(meta.id);
+                            read.into()
+                        }
+                    }
+                }
+            };
+            Some((meta.id, blocks))
+        })
+        .collect();
+    (bodies, cursors, changed)
+}
+
 /// Whether `page`'s chain of parents comes back to itself.
 fn in_cycle(parents: &HashMap<PageId, Option<PageId>>, page: PageId) -> bool {
     let mut current = parents.get(&page).copied().flatten();
@@ -286,4 +322,71 @@ fn in_cycle(parents: &HashMap<PageId, Option<PageId>>, page: PageId) -> bool {
         }
     }
     current.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tilo_document::RichTextAction;
+    use tilo_document::action::RegionKind;
+    use ui::tilo_resource::{Invoke, Replica};
+    use ui::widget::BlockContent;
+
+    use super::{PageId, Workspace};
+    use crate::actions;
+    use crate::notebook::Notebook;
+
+    fn note(notebook: &mut Replica<Notebook>, title: &str, text: &str) -> PageId {
+        let page = PageId::new_v4();
+        notebook
+            .apply_action(&actions::create_page_action(page, None, title))
+            .unwrap();
+        let blocks = [BlockContent::paragraph("", text)];
+        notebook
+            .apply(Invoke::apply(&actions::write_body_action(page, &blocks)).unwrap())
+            .unwrap();
+        page
+    }
+
+    /// A projection after an edit re-reads only the edited note: the others
+    /// keep the blocks the last projection read, shared rather than copied,
+    /// whether the notebook was kept current in place or read afresh.
+    #[test]
+    fn projection_rereads_only_the_note_that_changed() {
+        let mut notebook = Replica::<Notebook>::new();
+        let kept = note(&mut notebook, "Kept", "Unchanged words");
+        let edited = note(&mut notebook, "Edited", "Before");
+        let first = Workspace::of(&notebook.live().unwrap().clone(), &Workspace::default());
+        assert_eq!(
+            first.changed.len(),
+            2,
+            "a first projection reads every note"
+        );
+
+        let splice = RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: first.bodies[&edited][0].id.clone(),
+            at: 0,
+            del: 0,
+            ins: "Now ".into(),
+        };
+        notebook
+            .apply(Invoke::apply(&actions::edit_body_action(edited, &splice)).unwrap())
+            .unwrap();
+        let live = Workspace::of(&notebook.live().unwrap().clone(), &first);
+        assert_eq!(live.changed, vec![edited]);
+        assert_eq!(live.bodies[&edited][0].text, "Now Before");
+        assert!(Arc::ptr_eq(&live.bodies[&kept], &first.bodies[&kept]));
+
+        let fresh = Workspace::of(&notebook.state().unwrap(), &live);
+        assert!(
+            fresh.changed.is_empty(),
+            "a fresh read of the same notes changes none"
+        );
+        for page in [kept, edited] {
+            assert!(Arc::ptr_eq(&fresh.bodies[&page], &live.bodies[&page]));
+        }
+        assert!(fresh.has_stored_body(edited));
+    }
 }

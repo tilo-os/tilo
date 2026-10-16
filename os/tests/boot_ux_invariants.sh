@@ -65,8 +65,9 @@ for arg in quiet splash plymouth.ignore-serial-consoles loglevel=3 systemd.show_
   }
 done
 
-mkdir -p "$root/target"
-tmp="$(mktemp -d "$root/target/boot-ux.XXXXXX")"
+scratch="${CARGO_TARGET_DIR:-$root/target}"
+mkdir -p "$scratch"
+tmp="$(mktemp -d "$scratch/boot-ux.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 python3 "$root/os/dev/make-boot-splash.py" "$tmp/splash.bmp"
 python3 "$root/os/dev/make-plymouth-assets.py" "$tmp/plymouth"

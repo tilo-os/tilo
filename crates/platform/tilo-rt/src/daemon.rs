@@ -8,6 +8,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use tokio::runtime::Runtime;
 
 use crate::{Error, pool};
+use tilo_lock::MutexRecover as _;
 
 /// Builder for a service's runtime. Start with [`daemon()`].
 #[derive(Clone, Debug)]
@@ -121,14 +122,14 @@ impl ParkedWorkers {
         if COUNTED.with(|counted| counted.replace(true)) {
             return;
         }
-        let mut count = self.count.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut count = self.count.lock_recover();
         *count = count.saturating_add(1);
         drop(count);
         self.changed.notify_all();
     }
 
     fn wait_for(&self, workers: usize) {
-        let count = self.count.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = self.count.lock_recover();
         drop(
             self.changed
                 .wait_while(count, |count| *count < workers)

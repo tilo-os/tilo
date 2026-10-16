@@ -1,0 +1,49 @@
+#!/usr/bin/bash
+# tilo-esp-mount DEVICE WHERE
+#
+# Mount the ESP at WHERE so that everyone sees it read-only while its FAT
+# superblock stays writable. Started by tilo-esp-mount.service, which
+# tilo-esp-generator writes on an installed system (see there for why).
+#
+# Why not simply `mount -o ro`: that makes the superblock read-only, and bootc
+# mounts the same ESP itself, read-write, to stage an update or switch images.
+# A second read-write mount of a read-only vfat superblock fails with EBUSY, so
+# every update would fail. A read-only bind of a read-write superblock gives
+# both: writes through WHERE fail with EROFS, bootc's own mount works, and the
+# services that must write (systemd-bless-boot, tilo-esp-write@) remount WHERE
+# writable in their private mount namespace, as they do on the sealed disk.
+#
+# The superblock is first mounted at a root-only staging directory, bound from
+# there read-only, and the staging mount removed: WHERE is never writable.
+set -euo pipefail
+
+die() { printf 'tilo-esp-mount: %s\n' "$*" >&2; exit 1; }
+
+[ $# -eq 2 ] || die "usage: tilo-esp-mount DEVICE WHERE"
+dev="$1" where="$2"
+stage_root="${TILO_ESP_MOUNT_STAGE:-/run/tilo-esp-mount}"
+opts=nosuid,nodev,noexec
+
+if mountpoint -q "$where"; then
+  printf 'tilo-esp-mount: %s is already a mount point; leaving it\n' "$where" >&2
+  exit 0
+fi
+[ -d "$where" ] || die "$where does not exist (on an installed system the installer makes /boot/efi on TILO_BOOT)"
+[ -e "$dev" ] || die "the boot loader's ESP $dev is not present"
+
+install -d -m 0700 "$stage_root"
+stage="$(mktemp -d "$stage_root/esp.XXXXXX")"
+cleanup() {
+  mountpoint -q "$stage" && umount "$stage"
+  rmdir "$stage" "$stage_root" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+mount -t vfat -o "rw,$opts,umask=0077" "$dev" "$stage"
+mount --bind -o "ro,$opts" "$stage" "$where"
+# A bind that silently came up writable is the one outcome that must not stand.
+if ! findmnt -n -o OPTIONS --mountpoint "$where" | tr , '\n' | grep -qx ro; then
+  umount "$where" || true
+  die "$where came up writable; unmounted it"
+fi
+printf 'tilo-esp-mount: %s read-only at %s\n' "$dev" "$where" >&2

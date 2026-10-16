@@ -5,6 +5,7 @@
 //! fixed-argv systemd user service. No subcommand accepts a URL, command, tag,
 //! model path, or arbitrary process argument.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
@@ -13,13 +14,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use agent_provider_config::local::LocalEndpoint;
+use agent_provider_config::local::snapshot::{
+    AcceleratorSetup, AcceleratorSetupState, HardwareFit, HardwareRecommendation,
+    InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
+    LocalModelSnapshot,
+};
 use agent_provider_config::local::{
     Accelerator, HardwareSnapshot, LocalModelRelease, LocalModelStatus, RuntimeDecision,
     RuntimeKind, select_runtime_for_model,
 };
 use clap::{Parser, Subcommand};
 use local_model_service::catalog::CatalogPayload;
+use local_model_service::run_observation::{Observed, RunCheckpoint, RuntimeSample};
 use local_model_service::supervision::SystemdSupervisor;
 use local_model_service::{
     HttpsTransport, LocalModelService, ServiceError, SignedRuntime, user_model_root,
@@ -151,115 +157,16 @@ struct RpcResponse {
     error: Option<String>,
 }
 
-// The JSON contract is intentionally duplicated rather than importing the
-// Settings application: this CLI remains service-only, but its schema exactly
-// matches Settings' `LocalModelSnapshot` deserialization contract.
+/// What `snapshot` answers: the snapshot Settings reads, with what the
+/// service observed of its runtimes.
 #[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum HardwareFit {
-    Excellent,
-    Good,
-    Tight,
-    Unsupported,
-}
-#[derive(Serialize)]
-struct HardwareRecommendation {
-    fit: HardwareFit,
-    memory_gib: u16,
-    accelerator: String,
-    accelerator_memory_gib: Option<u16>,
-    free_storage_gib: Option<u16>,
-    reason: String,
-}
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each flag is an independent signed declaration in the catalog wire format"
-)]
-#[derive(Clone, Serialize)]
-struct LocalModelPackage {
-    id: String,
-    name: String,
-    description: String,
-    source: String,
-    revision: String,
-    license: String,
-    license_url: String,
-    download_bytes: u64,
-    installed_bytes: u64,
-    vision: bool,
-    face_recognition: bool,
-    /// Runs inside the process that uses it: nothing to start or stop.
-    in_process: bool,
-    segmentation: bool,
-}
-#[derive(Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum LocalModelPhase {
-    Downloading {
-        downloaded_bytes: u64,
-        total_bytes: u64,
-    },
-    Installing {
-        percent: Option<u8>,
-        message: String,
-    },
-    Ready {
-        running: bool,
-        endpoint: Option<LocalEndpoint>,
-    },
-    Error {
-        message: String,
-    },
-}
-#[derive(Serialize)]
-struct InstalledLocalModel {
-    package: LocalModelPackage,
-    phase: LocalModelPhase,
-}
-/// A signed in-process model, offered whether or not it is installed;
-/// `phase` is absent until the person sets it up.
-#[derive(Serialize)]
-struct InProcessLocalModel {
-    package: LocalModelPackage,
-    phase: Option<LocalModelPhase>,
-}
-#[derive(Clone, Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum AcceleratorSetupState {
-    Available,
-    Queued,
-    Staging,
-    RestartRequired,
-    Active,
-    Error { message: String },
-}
-#[derive(Serialize)]
-struct AcceleratorSetup {
-    boot_pack_id: String,
-    status: AcceleratorSetupState,
-}
-#[derive(Serialize)]
-struct LocalModelSnapshot {
-    hardware: HardwareRecommendation,
-    recommendation: Option<LocalModelPackage>,
-    /// Installed runtime-served models.
-    models: Vec<InstalledLocalModel>,
-    /// Every catalog model that runs in-process, with its install state.
-    in_process: Vec<InProcessLocalModel>,
-    accelerator_setup: Option<AcceleratorSetup>,
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    runtime_observations: std::collections::BTreeMap<
-        String,
-        local_model_service::run_observation::Observed<
-            local_model_service::run_observation::RuntimeSample,
-        >,
-    >,
+struct ServiceSnapshot {
+    #[serde(flatten)]
+    snapshot: LocalModelSnapshot,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    runtime_observations: BTreeMap<String, Observed<RuntimeSample>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    retained_run_observations: Option<
-        local_model_service::run_observation::Observed<
-            Vec<local_model_service::run_observation::RunCheckpoint>,
-        >,
-    >,
+    retained_run_observations: Option<Observed<Vec<RunCheckpoint>>>,
 }
 
 const SYSTEM_EXTENSION_SOCKET: &str = "/run/tilo/system-extension-api/request.sock";
@@ -879,7 +786,7 @@ fn same_user(stream: &UnixStream) -> bool {
     result == 0
         && usize::try_from(length).ok() == Some(std::mem::size_of::<libc::ucred>())
         // SAFETY: getsockopt succeeded and wrote the complete ucred buffer.
-        && unsafe { credentials.assume_init().uid } == unsafe { libc::geteuid() }
+        && unsafe { credentials.assume_init().uid } == rustix::process::geteuid().as_raw()
 }
 
 fn cli_for_rpc(action: RpcAction) -> Cli {
@@ -996,7 +903,7 @@ fn validate_developer_mode(cli: &Cli) -> Result<(), String> {
     let confined = service_fd().is_some()
         || std::env::var_os("TILO_APP_DIR").is_some()
         || unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) } != 0;
-    validate_developer_inputs(cli, unsafe { libc::geteuid() }, confined)
+    validate_developer_inputs(cli, rustix::process::geteuid().as_raw(), confined)
 }
 
 fn validate_developer_inputs(cli: &Cli, uid: u32, confined: bool) -> Result<(), String> {
@@ -1034,7 +941,7 @@ fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     // The model manager is deliberately a per-user service: Settings never
     // needs root or a writable image path to provision a model. Keep override
     // rejection when someone mistakenly elevates the normal user binary.
-    let elevated = unsafe { libc::geteuid() == 0 };
+    let elevated = rustix::process::geteuid().as_raw() == 0;
     if elevated && (cli.root.is_some() || cli.catalog.is_some() || cli.keys.is_some()) {
         return Err("path overrides are forbidden for the privileged model manager".into());
     }
@@ -1362,12 +1269,14 @@ fn local_snapshot(
                 })
         })
         .collect();
-    let payload = LocalModelSnapshot {
-        hardware: recommendation(&hardware, runtime, recommended.is_some()),
-        recommendation: recommended,
-        models,
-        in_process: in_process_models(&catalog.models, service.state()),
-        accelerator_setup: accelerator_setup_snapshot(),
+    let payload = ServiceSnapshot {
+        snapshot: LocalModelSnapshot {
+            hardware: recommendation(&hardware, runtime, recommended.is_some()),
+            recommendation: recommended,
+            models,
+            in_process: in_process_models(&catalog.models, service.state()),
+            accelerator_setup: accelerator_setup_snapshot(),
+        },
         runtime_observations: service.runtime_observations(),
         retained_run_observations: match local_model_service::run_observation::retained(root) {
             local_model_service::run_observation::Observed::Actual { value }
@@ -1480,7 +1389,7 @@ fn enqueue_worker(
         .arg(executable);
     // The transient worker retains the selected developer store only outside
     // elevated mode. Packaged Settings never supplies these overrides.
-    if unsafe { libc::geteuid() != 0 } {
+    if rustix::process::geteuid().as_raw() != 0 {
         command
             .arg("--root")
             .arg(root)
@@ -1521,7 +1430,7 @@ fn enqueue_start_worker(
         .arg(&unit)
         .arg("--")
         .arg(executable);
-    if unsafe { libc::geteuid() != 0 } {
+    if rustix::process::geteuid().as_raw() != 0 {
         command
             .arg("--root")
             .arg(root)
@@ -1546,7 +1455,7 @@ fn enqueue_start_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_provider_config::local::RuntimeKind;
+    use agent_provider_config::local::{LocalEndpoint, RuntimeKind};
 
     #[test]
     fn offline_developer_cli_requires_complete_unconfined_direct_mode() {
@@ -1704,17 +1613,19 @@ mod tests {
 
     #[test]
     fn snapshot_observation_fields_are_absent_for_legacy_empty_state() {
-        let payload = LocalModelSnapshot {
-            hardware: recommendation(
-                &HardwareSnapshot::default(),
-                Err("unavailable".into()),
-                false,
-            ),
-            recommendation: None,
-            models: Vec::new(),
-            in_process: Vec::new(),
-            accelerator_setup: None,
-            runtime_observations: std::collections::BTreeMap::new(),
+        let payload = ServiceSnapshot {
+            snapshot: LocalModelSnapshot {
+                hardware: recommendation(
+                    &HardwareSnapshot::default(),
+                    Err("unavailable".into()),
+                    false,
+                ),
+                recommendation: None,
+                models: Vec::new(),
+                in_process: Vec::new(),
+                accelerator_setup: None,
+            },
+            runtime_observations: BTreeMap::new(),
             retained_run_observations: None,
         };
         let wire = serde_json::to_value(payload).unwrap();
@@ -2090,7 +2001,7 @@ mod tests {
                 args: vec!["serve".into(), "/models/model".into()],
                 model_path: PathBuf::from("/home/ada/.local/share/tilo/models/sha256/abc"),
                 model_container_path: "/models/model".into(),
-                endpoint: agent_provider_config::local::LocalEndpoint { url: "http://127.0.0.1:9000/v1".into(), model_id: "tiny".into() },
+                endpoint: LocalEndpoint { url: "http://127.0.0.1:9000/v1".into(), model_id: "tiny".into() },
                 runtime_extension_id: "runtime".into(),
             };
             let argv = podman_vllm_argv(&command);

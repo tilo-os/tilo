@@ -16,6 +16,10 @@
 //!   grant with [`Custodian::seal_oauth`] and asks
 //!   [`Custodian::oauth_access_token`] for a current access token before
 //!   each `XOAUTH2` login; refresh and resealing happen here.
+//! - **The model gateway** asks [`Custodian::oauth_access_token_with_expiry`]
+//!   for Google Vertex AI requests, from a grant Settings sealed for one
+//!   agent model provider. That grant carries only the Google Cloud scope
+//!   ([`Capability::Models`]), apart from any Mail or Files grant.
 //! - **The daemon** reads one account's short-lived credential from the
 //!   handoff store ([`accounts::handoff`]) through
 //!   [`accounts::HandoffCredentialSource`]. When it is missing, due or
@@ -29,16 +33,9 @@
 //! to [`accounts::AccountSyncHealth::NeedsAuthentication`], which Settings
 //! shows as "Sign in again".
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod clients;
+#[cfg(feature = "custody")]
+pub mod cloud_projects;
 #[cfg(feature = "custody")]
 mod custodian;
 #[cfg(feature = "custody")]
@@ -52,8 +49,8 @@ pub mod storage;
 pub use clients::{ClientEntry, ClientTable, Scopes};
 #[cfg(feature = "custody")]
 pub use custodian::{
-    Custodian, CustodyError, SIGN_IN_TIMEOUT, icloud_apple_id, icloud_secret, is_cloud_type,
-    oauth_secret,
+    Custodian, CustodyError, GrantState, SIGN_IN_TIMEOUT, icloud_apple_id, icloud_secret,
+    is_cloud_type, oauth_secret,
 };
 pub use providers::{Capability, OAuthCloud, OAuthIssuer, OAuthUse};
 #[cfg(feature = "custody")]

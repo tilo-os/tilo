@@ -17,10 +17,10 @@ use tilo_action_broker::channel_encryption::{
 };
 use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
 use tilo_joined_room::testing::governor::TestGovernor;
+use tilo_owner_commit::CommitOperation;
 use tilo_peer_state::{
     StatePeer,
     join::{self, JoinTransportRequest, JoinTransportResponse, MemberRole},
-    owner_commit::CommitOperation,
 };
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -157,7 +157,7 @@ impl HostedRoom {
                     replication: tilo_relay::ReplicationIntent::FullWorkspace,
                     admitted_users: vec![],
                     shell_authority: Some(
-                        tilo_peer_state::retained_proof::RetentionAuthority::new(
+                        tilo_relay_protocol::retention::RetentionAuthority::new(
                             &room.to_string(),
                             governor.clone(),
                         )
@@ -255,8 +255,8 @@ impl HostedRoom {
         .await;
         for (bytes, kind) in &publications {
             let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-            let checkpoint = *kind == tilo_peer_state::transport::Retention::Checkpoint;
-            let (channel, _) = tilo_peer_state::transport::retention(&message, checkpoint).unwrap();
+            let checkpoint = *kind == neighbour_wire::Retention::Checkpoint;
+            let (channel, _) = neighbour_wire::retention(&message, checkpoint).unwrap();
             if checkpoint {
                 publisher.publish_checkpoint(channel, bytes.clone())
             } else {
@@ -959,7 +959,13 @@ impl ChannelDirectory for StewardDirectory {
         None
     }
 
-    fn allowed_devices(&self, room: RoomId, _now: u64) -> BTreeSet<collab_types::Ed25519PublicKey> {
+    fn allowed_devices(
+        &self,
+        room: RoomId,
+        _channel: collab_types::ChannelId,
+        _route: Option<&collab_types::ChannelRoute>,
+        _now: u64,
+    ) -> BTreeSet<collab_types::Ed25519PublicKey> {
         if room != self.room {
             return BTreeSet::new();
         }
@@ -1087,7 +1093,8 @@ impl tilo_action_broker::record_content::ContentShelf for Shelf {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
-    use tilo_action_broker::record_content::{PIECE_BYTES, content_hash};
+    use tilo_action_broker::record_content::PIECE_BYTES;
+    use tilo_content::hash_bytes;
     use tilo_peer_state::peer_handle;
 
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
@@ -1137,7 +1144,7 @@ async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
     let picture: Vec<u8> = (0..PIECE_BYTES + 5)
         .map(|index| u8::try_from(index % 241).unwrap())
         .collect();
-    let hash = content_hash(&picture);
+    let hash = hash_bytes(&picture);
     let mut arrivals = content.subscribe(&route);
     tilo_test_env::within("the runtime's request", async {
         loop {

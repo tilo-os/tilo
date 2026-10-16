@@ -18,6 +18,7 @@ use crate::session_runtime::Delivery;
 use crate::shell::media_keys::AudioControl;
 use crate::shell::osd::Osd;
 use crate::shell::status::StatusBridge;
+use tilo_lock::MutexRecover as _;
 
 /// What the writer drives. Production is [`SystemAudio`]; tests substitute a
 /// recorder that can block to show the keys never wait on it.
@@ -141,11 +142,7 @@ impl AudioWriter {
     }
 
     fn queue(&self, change: impl FnOnce(&mut Pending)) {
-        let mut pending = self
-            .shared
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut pending = self.shared.pending.lock_recover();
         change(&mut pending);
         drop(pending);
         self.shared.wake.notify_one();
@@ -200,10 +197,7 @@ struct Batch {
 fn run(shared: &Shared, backend: &mut impl AudioBackend, status: Option<&StatusBridge>) {
     loop {
         let batch = {
-            let pending = shared
-                .pending
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let pending = shared.pending.lock_recover();
             let mut pending = shared
                 .wake
                 .wait_while(pending, |pending| pending.is_idle() && !pending.closed)
