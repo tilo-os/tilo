@@ -107,7 +107,9 @@ def suite_checks(manifest: suites.Manifest) -> str:
 
 
 def goldens(image: str) -> str:
-    """The goldens family: the golden filter over the packages it names, in their image."""
+    """The goldens family: the golden filter over the packages it names, in their image. It stays
+    on x86_64, where the baselines were rendered: on aarch64 seven of them come out different
+    (nightly-arm64-goldens), so a result from there wouldn't stand for both."""
     sys.path.insert(0, str(ROOT / "tools/ci"))
     import nextest_filters
     golden = nextest_filters.filters()["GOLDEN_FILTER"]
@@ -129,7 +131,7 @@ def goldens(image: str) -> str:
 
 
 def arm64_goldens(image: str) -> str:
-    """The nightly goldens on aarch64, in the same image: the pixels match on both architectures."""
+    """The nightly goldens on aarch64, in the same image, to see where its pixels differ from x86_64's."""
     sys.path.insert(0, str(ROOT / "tools/ci"))
     import nextest_filters
     golden = nextest_filters.filters()["GOLDEN_FILTER"]
@@ -228,14 +230,15 @@ CARGO_CHECKS: dict[str, dict] = {
                                             "tilo-web-desktop", "tilo-browser-runtime", "tilo-browser-compute"},
         "tested": {"tilo-agent-participant"},
         "inputs": ["crates/platform/*/web/**", "apps/*/tilo-app.toml", "scripts/moq-browser/**",
-                   "tools/ci/**", "tools/web/**"],
+                   "tools/ci/prepare_sdk_moq.py", "tools/ci/ensure-browser-dependencies.sh", "tools/web/**"],
     },
     # The release desktop bundle and the image worker it qualifies.
     "sdk-web-size": {
         "packages": lambda packages, root: {"tilo-app-cli", "calculator", "tilo-web-desktop",
                                             "tilo-browser-runtime", "tilo-browser-compute"},
         "dev": False,
-        "inputs": ["apps/*/tilo-app.toml", "scripts/moq-browser/**", "tools/ci/**", "tools/web/**"],
+        "inputs": ["apps/*/tilo-app.toml", "scripts/moq-browser/**", "tools/ci/ensure-browser-dependencies.sh",
+                   "tools/web/**"],
     },
     # The FUSE tests of these packages, and the session lifecycle test, which
     # reads the OS image's units and the session scripts.
@@ -320,7 +323,7 @@ def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dic
 
 def generated(manifest: suites.Manifest) -> dict[str, str]:
     inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "clippy-package-inputs": inputs,
+    return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "clippy-package-inputs": inputs,
             "check-package-inputs": inputs, "suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
