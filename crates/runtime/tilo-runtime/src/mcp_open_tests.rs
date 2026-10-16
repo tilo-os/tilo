@@ -1199,21 +1199,27 @@ fn the_http_bridge_does_not_readmit_a_failed_text_handle_mutation() {
     use hyper::{HeaderMap, Method, StatusCode, header::HeaderValue};
 
     let host = FailingMutationHost::new(false);
-    let endpoint =
-        crate::mcp_http::Endpoint::new(host.clone(), "room".into(), "owner".into(), None, None);
+    let endpoint = crate::mcp_http::Endpoint::new(
+        host.clone(),
+        "room".into(),
+        "owner".into(),
+        Some("secret".into()),
+        None,
+    );
     run(async {
         let initialize = json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params": {
             "protocolVersion":"2025-06-18", "capabilities":{}, "clientInfo":{"name":"handle-test", "version":"1"}}});
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
         let opened = endpoint
             .dispatch(
                 &Method::POST,
                 "/mcp",
-                &HeaderMap::new(),
+                &headers,
                 initialize.to_string().as_bytes(),
             )
             .await;
         assert_eq!(opened.status(), StatusCode::OK);
-        let mut headers = HeaderMap::new();
         headers.insert(
             "mcp-session-id",
             HeaderValue::from_str(opened.headers()["mcp-session-id"].to_str().unwrap()).unwrap(),

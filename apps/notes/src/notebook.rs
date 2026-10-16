@@ -142,6 +142,8 @@ pub fn page_of(id: &Id) -> Option<PageId> {
 #[resource(
     kind = "notes.notebook",
     label = "Notebook",
+    version = 2,
+    migrate = crate::legacy::migrate,
     search = crate::search::entries,
     read_content_in_doc = Notebook::read_note,
     answer = Notebook::created_page,
