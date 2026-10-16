@@ -401,9 +401,10 @@ pub fn create_zip(paths: &[PathBuf], output: &Path) -> io::Result<()> {
             .file_name()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
         let archive_path = PathBuf::from(name);
-        if path.is_dir() {
+        let kind = path.symlink_metadata()?.file_type();
+        if kind.is_dir() {
             add_directory_tree(&mut zip, path, &archive_path, options)?;
-        } else if path.symlink_metadata()?.file_type().is_file() {
+        } else if kind.is_file() {
             add_zip_file(&mut zip, path, &archive_path, options)?;
         }
     }
@@ -454,6 +455,26 @@ fn add_zip_file<W: Write + Seek>(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_directory_symlinks_are_not_archived() {
+        let temp = tempfile::tempdir().unwrap();
+        let private = temp.path().join("private");
+        fs::create_dir(&private).unwrap();
+        fs::write(private.join("secret.txt"), b"not selected").unwrap();
+        let link = temp.path().join("shortcut");
+        std::os::unix::fs::symlink(&private, &link).unwrap();
+        let selected = temp.path().join("selected.txt");
+        fs::write(&selected, b"selected").unwrap();
+        let output = temp.path().join("selection.zip");
+
+        create_zip(&[link, selected], &output).unwrap();
+
+        let entries = list(&output).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, Path::new("selected.txt"));
+    }
 
     #[test]
     fn creating_zip_preserves_neighbours_and_occupied_output() {
