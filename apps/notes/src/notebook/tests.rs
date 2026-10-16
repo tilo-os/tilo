@@ -496,6 +496,38 @@ fn importing_a_formatted_link_preserves_label_text_and_marks_on_export() {
 }
 
 #[test]
+fn exporting_imported_links_preserves_shared_start_mark_nesting() {
+    for markdown in [
+        "[**Bold** normal](https://example.com)",
+        "[*Italic* normal](https://example.com)",
+        "[**Bold *nested* text** normal](https://example.com)",
+        "**[Bold](https://example.com) normal**",
+        "**[Bold](https://example.com)**",
+        "[normal **Bold**](https://example.com)",
+    ] {
+        let mut notebook = Replica::<Notebook>::new();
+        let id = Id::from(uuid::Uuid::new_v4().to_string());
+        apply(
+            &mut notebook,
+            Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
+                title: "Formatting".into(),
+                markdown: markdown.into(),
+                images: Vec::new(),
+                note: Some(id.clone()),
+            }),
+        )
+        .unwrap();
+        let workspace = crate::read::workspace(notebook.doc());
+        let exported = crate::actions::page_markdown(&workspace, uuid(&id));
+        assert_eq!(exported.trim_end(), markdown);
+        assert_eq!(
+            crate::markdown::parse(&exported),
+            crate::markdown::parse(markdown)
+        );
+    }
+}
+
+#[test]
 fn importing_a_link_keeps_balanced_parentheses_in_its_destination() {
     let mut notebook = Replica::<Notebook>::new();
     for url in [

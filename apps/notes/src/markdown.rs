@@ -598,20 +598,21 @@ fn priority(m: &Mark) -> u8 {
 ///
 /// Algorithm: walk `text` byte-by-byte; at each byte, open any mark
 /// span whose `range.start == i`, append the byte, then close any
-/// span whose `range.end == i+1`. Marks are emitted in this order
-/// (most-nested last on open, first on close): bold outermost, then
-/// italic, then code/link innermost.
+/// span whose `range.end == i+1`. At a shared start the longest span
+/// opens first, so contained formatting closes inside its parent. Equal
+/// spans use the canonical bold, italic, code/link priority.
 pub fn serialize_inline(text: &InlineText) -> String {
     let mut out = String::with_capacity(text.text.len() + text.marks.len() * 4);
     // For each byte position we maintain a stack of currently-open
     // marks (in order of opening). We open marks at their `start`
-    // byte (in priority order Bold → Italic → Code/Link) and close
+    // byte (longest first, then Bold → Italic → Code/Link) and close
     // them at their `end` byte in reverse order.
     let mut marks = text.marks.clone();
     marks.sort_by(|a, b| {
         a.range
             .start
             .cmp(&b.range.start)
+            .then_with(|| b.range.end.cmp(&a.range.end))
             .then_with(|| priority(&a.mark).cmp(&priority(&b.mark)))
     });
 
