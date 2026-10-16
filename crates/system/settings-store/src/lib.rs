@@ -233,13 +233,20 @@ fn unisolated_test_write(
 ///
 /// # Errors
 ///
-/// Returns an error if the document can't be serialised or written.
+/// Returns an error if an existing document can't be read, or the merged document can't
+/// be serialised or written. A missing file starts empty; malformed JSON is still repaired.
 pub fn update_section_at(
     path: &Path,
     name: &str,
     values: Map<String, Value>,
 ) -> std::io::Result<()> {
-    let mut doc = load_at(path);
+    // Forgiving reads are appropriate for display, but not for a merge: treating an
+    // unreadable document as empty would discard settings the writer could not observe.
+    let mut doc = match std::fs::read_to_string(path) {
+        Ok(text) => parse(&text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Map::new(),
+        Err(error) => return Err(error),
+    };
     merge_section(&mut doc, name, values);
     write_atomic(path, &Value::Object(doc))
 }
@@ -445,6 +452,35 @@ mod tests {
             assert_eq!(bool_at(&doc, "display", "hidpi"), Some(true));
             assert_eq!(bool_at(&doc, "display", "mode"), None);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_merge_refuses_unreadable_input_without_replacing_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // A symlink loop fails even for privileged test runners, unlike mode bits.
+        symlink("settings.json", &path).unwrap();
+        let read_error = std::fs::read_to_string(&path).unwrap_err();
+        let error = update_section_at(&path, "display", Map::new()).unwrap_err();
+        assert_eq!(error.raw_os_error(), read_error.raw_os_error());
+        assert_eq!(
+            std::fs::read_link(&path).unwrap(),
+            Path::new("settings.json")
+        );
+    }
+
+    #[test]
+    fn a_merge_does_not_replace_non_utf8_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let bytes = b"{\"region\":\"\xff\"}";
+        std::fs::write(&path, bytes).unwrap();
+        let error = update_section_at(&path, "display", Map::new()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 
     // Non-destructive writes
