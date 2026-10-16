@@ -22,6 +22,7 @@ on:
     branches: ["main"]
     paths:
       - "crates/hosting/tilo-room-service/**"
+      - "os/scripts/verify-no-cisco-openh264.sh"
       - ".forgejo/workflows/room-service-image.yml"
   workflow_dispatch: {}
 
@@ -93,7 +94,8 @@ jobs:
           crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/context/assets" --bundle desktop >/dev/null
           cp crates/hosting/tilo-room-service/web/* context/assets/
           cp crates/hosting/tilo-room-service/container/Containerfile \
-            crates/hosting/tilo-room-service/container/Containerfile.dockerignore context/
+            crates/hosting/tilo-room-service/container/Containerfile.dockerignore \
+            os/scripts/verify-no-cisco-openh264.sh context/
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: room-service-context

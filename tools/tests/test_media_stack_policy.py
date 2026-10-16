@@ -164,7 +164,89 @@ class CiscoOpenH264ImageTests(unittest.TestCase):
     def test_a_missing_environment_is_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stale = sorted(v.path for v in check_media_stack.stale_environments(Path(tmp)))
-        self.assertEqual(stale, sorted(check_media_stack.CISCO_ENVIRONMENTS))
+        self.assertEqual(stale, sorted([*check_media_stack.CISCO_ENVIRONMENTS,
+                                        *check_media_stack.LIVE_REPOSITORY_IMAGES]))
+
+
+class LiveRepositoryImageTests(unittest.TestCase):
+    IMAGE = "crates/hosting/tilo-room-service/container/Containerfile"
+    GATED = """
+    FROM registry.fedoraproject.org/fedora-minimal:44 AS runtime
+    RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify-no-cisco-openh264.sh,ro \\
+      rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo \\
+      && microdnf install -y gstreamer1 \\
+      && bash /run/tilo-verify-no-cisco-openh264.sh
+    COPY bin/ /usr/local/bin/
+    """
+
+    def found(self, text: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, self.IMAGE, text)
+            return [v.name for v in check_media_stack.live_repository_violations(root)]
+
+    def test_the_repositorys_live_repository_images_are_gated(self) -> None:
+        self.assertEqual(check_media_stack.live_repository_violations(ROOT), [])
+        for image in check_media_stack.LIVE_REPOSITORY_IMAGES:
+            with self.subTest(image=image):
+                text = (ROOT / image).read_text(encoding="utf-8")
+                self.assertTrue(check_media_stack.PACKAGE_INSTALL.search(text),
+                                "the image no longer installs packages; drop it from "
+                                "LIVE_REPOSITORY_IMAGES rather than keep a rule that observes nothing")
+
+    def test_a_removal_before_the_install_and_a_gate_after_it_pass(self) -> None:
+        self.assertEqual(self.found(self.GATED), [])
+        split = """
+        FROM fedora-bootc:44
+        RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo \\
+         && dnf install -y flatpak
+        COPY rootfs/ /
+        RUN --mount=type=bind,source=os/scripts/verify-no-cisco-openh264.sh,target=/run/v.sh,ro \\
+            true && bash /run/verify-no-cisco-openh264.sh && bootc container lint
+        """
+        self.assertEqual(self.found(split), [])
+
+    def test_installing_without_removing_the_repository_first_is_reported(self) -> None:
+        cases = {
+            "no removal": self.GATED.replace("rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo", "true"),
+            "removal after the install": """
+            FROM fedora:44
+            RUN dnf install -y flatpak && bash /run/verify-no-cisco-openh264.sh
+            RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo
+            """,
+            "removal in an earlier stage": """
+            FROM fedora:44 AS base
+            RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo
+            FROM fedora:44
+            RUN dnf install -y flatpak && bash /run/verify-no-cisco-openh264.sh
+            """,
+        }
+        for case, text in cases.items():
+            with self.subTest(case=case):
+                self.assertEqual(self.found(text), ["fedora-cisco-openh264"])
+
+    def test_installing_without_the_resolved_gate_afterwards_is_reported(self) -> None:
+        cases = {
+            "no gate": self.GATED.replace("\\\n      && bash /run/tilo-verify-no-cisco-openh264.sh", ""),
+            "gate before the last install": """
+            FROM fedora:44
+            RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo && bash /run/verify-no-cisco-openh264.sh
+            RUN dnf install -y flatpak
+            """,
+            "only the snapshot form": """
+            FROM fedora:44
+            RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo && dnf install -y flatpak \\
+             && bash /run/verify-no-cisco-openh264.sh --repo /repo
+            """,
+            "only in a comment": """
+            FROM fedora:44
+            RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo && dnf install -y flatpak
+            # RUN bash /run/verify-no-cisco-openh264.sh
+            """,
+        }
+        for case, text in cases.items():
+            with self.subTest(case=case):
+                self.assertEqual(self.found(text), ["verify-no-cisco-openh264"])
 
 
 if __name__ == "__main__":

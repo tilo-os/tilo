@@ -31,7 +31,10 @@ Resolution can still pull Cisco's `openh264` in transitively (with Fedora's
 `fedora-cisco-openh264` repository enabled it satisfies `libopenh264.so`
 ahead of the `noopenh264` stub), which only a resolved check sees:
 os/scripts/verify-no-cisco-openh264.sh gates the frozen RPM snapshot and the
-finished OS rootfs.
+finished OS rootfs. The shipped images that install from live Fedora
+repositories instead (`LIVE_REPOSITORY_IMAGES`) must, in their final stage,
+remove that repository before their first install and run the same gate
+after their last one.
 """
 
 from __future__ import annotations
@@ -67,6 +70,14 @@ CISCO_ENVIRONMENTS = {
     "dist/dev/Containerfile.fedora44": "the developer distrobox, built on the developer's own machine",
     "os/dev/legacy-vm-e2e.sh": "installs into the throwaway CI container of the legacy VM test",
 }
+# Shipped images whose final stage installs from live Fedora repositories
+# rather than the frozen snapshot. Every entry must exist.
+LIVE_REPOSITORY_IMAGES = {
+    "crates/hosting/tilo-room-service/container/Containerfile": "the room service, on fedora-minimal",
+    "os/Containerfile.legacy-guest": "the Linux legacy VM guest, on the mirrored fedora-bootc base",
+}
+CISCO_REPO_REMOVAL = f"rm -f /etc/yum.repos.d/{CISCO_REPO}.repo"
+RESOLVED_GATE = re.compile(r"\bbash\s+\S*verify-no-cisco-openh264\.sh(?!\s+--repo)")
 # A package name, or the start of an RPM file name (`openh264-2.6.0-...rpm`).
 CISCO_PACKAGE_TOKEN = re.compile(
     r"(?<![\w.+-])(" + "|".join(re.escape(name) for name in CISCO_PACKAGES) + r")(?=-\d|[^\w.+/-]|$)"
@@ -242,10 +253,55 @@ def image_violations(root: Path = ROOT) -> list[Violation]:
     return found
 
 
+def final_stage(lines: list[str]) -> list[str]:
+    starts = [index for index, line in enumerate(lines) if line.lstrip().upper().startswith("FROM ")]
+    return lines[starts[-1]:] if starts else lines
+
+
+def live_repository_violations(root: Path = ROOT) -> list[Violation]:
+    """Each live-repository image drops Cisco's repository and gates what it resolved."""
+    found = []
+    for shown in sorted(LIVE_REPOSITORY_IMAGES):
+        path = root / shown
+        if not path.is_file():
+            continue
+        stage = final_stage(logical_lines(path.read_text(encoding="utf-8", errors="replace")))
+        installs = [index for index, line in enumerate(stage) if PACKAGE_INSTALL.search(line)]
+        if not installs:
+            continue
+        removal = next((index for index, line in enumerate(stage) if CISCO_REPO_REMOVAL in line), None)
+        first = stage[installs[0]]
+        removed_first = removal is not None and (
+            removal < installs[0]
+            or (removal == installs[0] and first.index(CISCO_REPO_REMOVAL) < PACKAGE_INSTALL.search(first).start())
+        )
+        if not removed_first:
+            found.append(Violation(
+                shown, CISCO_REPO,
+                f"installs from live repositories without first running `{CISCO_REPO_REMOVAL}` "
+                "in the same stage"))
+        last = stage[installs[-1]]
+        gated = any(
+            RESOLVED_GATE.search(line)
+            and (index > installs[-1]
+                 or (index == installs[-1]
+                     and RESOLVED_GATE.search(line).start() > PACKAGE_INSTALL.search(last).start()))
+            for index, line in enumerate(stage)
+        )
+        if not gated:
+            found.append(Violation(
+                shown, "verify-no-cisco-openh264",
+                "does not run os/scripts/verify-no-cisco-openh264.sh on the finished rootfs "
+                "after its last package install"))
+    return found
+
+
 def stale_environments(root: Path = ROOT) -> list[Violation]:
     return [
-        Violation(path, path, "is named in CISCO_ENVIRONMENTS but does not exist")
-        for path in sorted(CISCO_ENVIRONMENTS)
+        Violation(path, path, f"is named in {table} but does not exist")
+        for table, paths in (("CISCO_ENVIRONMENTS", CISCO_ENVIRONMENTS),
+                             ("LIVE_REPOSITORY_IMAGES", LIVE_REPOSITORY_IMAGES))
+        for path in sorted(paths)
         if not (root / path).is_file()
     ]
 
@@ -255,6 +311,7 @@ def check(root: Path = ROOT) -> list[Violation]:
     for manifest in manifests(root):
         found.extend(manifest_violations(manifest, root))
     found.extend(image_violations(root))
+    found.extend(live_repository_violations(root))
     return found
 
 
