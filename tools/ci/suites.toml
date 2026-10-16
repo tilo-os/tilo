@@ -1166,9 +1166,13 @@ inputs = [
   # The search relevance table runs over every app's manifest and keywords.
   "apps/*/tilo-app.toml",
   "apps/*/search/*.ftl",
+  # The ask-agent chord's test finds the apps that share a selection in their
+  # sources and checks each manifest asks for the shell-ui service.
+  "apps/*.rs",
 ]
 readers = [
   "crates/session/shell/src/shell/search/relevance_tests.rs",
+  "crates/session/shell/src/shell/selection_agent.rs",
   "crates/session/shell/examples/files_clipboard_native.rs",
   "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
