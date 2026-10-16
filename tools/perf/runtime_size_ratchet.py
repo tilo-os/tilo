@@ -23,10 +23,11 @@ libraries every app loads with it, or in the closure of a built app that
 through `tools/ci/runtime-dylib-lazy-link.py`, which loads them on first use
 and records them in the `.tilo.lazy_needed` section; the gate reports those.
 
-Engines one app uses live in libraries of their own beside the runtime
+Engines a few apps use live in libraries of their own beside the runtime
 (crates/runtime/engines/). `measure --engine FILE` reports each one's
 numbers, fails when one does not link the runtime, and fails when an app of
-`apps_without_media` loads one at exec: an engine is loaded only by its app.
+`apps_without_media` loads one at exec: an engine is loaded only by its apps,
+and an app of that list that uses one is named in `[engine_users]`.
 
 Three gates, as for the per-app tapp budgets (tapp_size_ratchet.py):
 
@@ -206,6 +207,15 @@ class Budget:
     def apps_without_media(self) -> list[str]:
         values = self.data.get("apps_without_media", [])
         return [value for value in values if isinstance(value, str)] if isinstance(values, list) else []
+
+    @property
+    def engine_users(self) -> dict[str, list[str]]:
+        """The apps of apps_without_media that use each engine library, so may load it."""
+        table = self.data.get("engine_users", {})
+        if not isinstance(table, dict):
+            return {}
+        return {library: [app for app in apps if isinstance(app, str)]
+                for library, apps in table.items() if isinstance(apps, list)}
 
     @property
     def needed_absent(self) -> list[str]:
@@ -432,8 +442,9 @@ def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: l
             status = 1
             lines.append(f"error: {app}: {error}")
             continue
+        uses = {library for library, users in budget.engine_users.items() if app.name in users}
         checked, more = closure_lines(app, app_stats, budget, [path.parent, *directories],
-                                      frozenset(engine.name for engine in engines))
+                                      frozenset(engine.name for engine in engines) - uses)
         status |= checked
         lines += more
     return status, lines, stats
@@ -568,6 +579,13 @@ def shape_problems(budget: Budget) -> list[str]:
         values = tapp.ints(table) if isinstance(table, dict) else {}
         if set(values) != set(METRICS) or len(values) != len(table) or any(v <= 0 for v in values.values()):
             problems.append(f"[runtime.{arch}] needs a positive budget for each of {', '.join(METRICS)}")
+    users = budget.data.get("engine_users", {})
+    for library, apps in (users.items() if isinstance(users, dict) else [("", None)]):
+        if not (library.startswith("lib") and library.endswith(".so") and isinstance(apps, list) and apps
+                and all(app in budget.apps_without_media for app in apps)):
+            problems.append("[engine_users] maps an engine library (lib*.so) to the apps of "
+                            "apps_without_media that use it")
+            break
     return problems
 
 

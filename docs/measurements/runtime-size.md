@@ -60,17 +60,22 @@ fast quality) resolves the runtime with the default collection the way the
 release does and fails on either, and on a crate of an engine that has moved
 out.
 
-An engine one or two apps use moves out of the runtime into an engine library
+An engine a few apps use moves out of the runtime into an engine library
 of its own: a crate under `crates/runtime/engines/<name>/` that is a Rust
 `dylib` chained on the runtime (Typst: `libtilo_typst_engine.so` for Typst
 Editor; Spotify playback: `libtilo_spotify_engine.so` for Music; the wet-media
 simulation and subject mattes: `libtilo_paint_engine.so` for Canvas; the
 YouTube client, rustypipe with its QuickJS: `libtilo_youtube_engine.so` for
-Music and Tube). It is signed into the runtime bundle beside
-`libruntime_dylib.so`, so the runtime's id, signature and verity cover it, but
-only its apps name it `DT_NEEDED`; every other app no longer maps or relocates
-it. Two apps share one engine library rather than each carrying a copy in its
-tapp. The conventions the build relies on:
+Music and Tube; account custody with its OAuth client and cloud-storage
+providers, and the IMAP client: `libtilo_accounts_engine.so` for Mail,
+Settings and the Spotify engine; the time-zone database, chrono-tz:
+`libtilo_timezone_engine.so` for Calendar and Clocks; the contact directory:
+`libtilo_contact_directory_engine.so` for Contacts, Mail and Messages). It is
+signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's
+id, signature and verity cover it, but only its apps name it `DT_NEEDED`;
+every other app no longer maps or relocates it. Apps share one engine library
+rather than each carrying a copy in its tapp. The conventions the build
+relies on:
 
 - the package is `tilo-<name>-engine`, its library `tilo_<name>_engine`; every
   dependency sits behind a `thin` feature, so builds other than the thin one
@@ -83,14 +88,16 @@ tapp. The conventions the build relies on:
   runtime's link flags (`-C prefer-dynamic` is what lets one Rust dylib link
   another);
 - the app links the engine under a feature of its own (`runtime-engine` in
-  Typst Editor, Music, Canvas and Tube), named in `dist/apps/app-collections.toml`, the
+  Typst Editor, Music, Canvas, Tube, Mail, Settings, Calendar, Clocks,
+  Contacts and Messages), named in `dist/apps/app-collections.toml`, the
   Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
   links the engine's crates statically, as `tilo-app dev` does;
 - one app may not load two engine libraries that both carry a crate (rustc
   refuses a crate that shows up twice in a link); an engine whose crates
   overlap another's that its app always loads with it chains on that one
   instead (`tilo-spotify-engine` takes rand 0.9 and sha1 0.10, which librespot
-  shares with rustypipe, from the YouTube engine Music loads beside it);
+  shares with rustypipe, from the YouTube engine Music loads beside it, and
+  account custody, which Spotify's sign-in uses, from the accounts engine);
 - the engine's crates go into the surface check's `ENGINES`. They must also
   stay out of the workspace-hack, which is linked into the runtime: hakari
   lists a crate there when members build it with different feature sets, so
@@ -99,9 +106,14 @@ tapp. The conventions the build relies on:
   `.config/hakari.toml` instead fails `cargo hakari verify`.
 
 Release / apps reports each engine's bytes, relocations and dirtied pages
-beside the runtime's, fails when an app of `apps_without_media` loads one,
-renders Typst Editor through its engine, runs Music's Spotify engine
-(`music --probe-spotify-engine`, librespot's code without an account,
-network or audio device), and runs Canvas's and the YouTube client's engines
+beside the runtime's, fails when an app of `apps_without_media` loads one it
+does not use (`[engine_users]` in the budget names the ones those apps use:
+Clocks the time-zone database), renders Typst Editor through its engine, runs
+Music's Spotify engine (`music --probe-spotify-engine`, librespot's code
+without an account, network or audio device), and runs the other engines
 from each app that loads them (`canvas --probe-paint-engine`, `music` and
-`tube --probe-youtube-engine`), checking each app loads its engine itself.
+`tube --probe-youtube-engine`, `mail --probe-accounts-engine`, `calendar` and
+`clocks --probe-timezone-engine`, `contacts`, `mail` and
+`messages --probe-contact-directory-engine`), checking each app loads its
+engine itself. Settings, whose tapp stays as it is, has no probe; the trace of
+its start shows it loads the accounts engine itself.

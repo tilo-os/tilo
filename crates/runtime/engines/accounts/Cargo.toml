@@ -1,0 +1,54 @@
+[package]
+name = "tilo-accounts-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Online-account custody (OAuth, the cloud-storage providers' sign-in, iCloud sessions) and the IMAP client as an engine library beside the shared runtime: libtilo_accounts_engine.so, shipped in the runtime bundle and loaded only by Mail, Settings and Music's Spotify engine."
+
+# A runtime engine: code few apps need that no other app should map. It is a
+# Rust dylib chained on libruntime_dylib.so, built in the same Cargo graph as
+# the runtime and the apps (os/scripts/build-thin-apps.sh), shipped under the
+# runtime bundle's lib/ and named DT_NEEDED only by the apps that use it.
+#
+# Everything sits behind `thin`, which only that build enables (through the
+# apps' `runtime-engine` feature): a Rust dylib that links another Rust dylib
+# needs `-C prefer-dynamic`, which only tools/ci/rustc-thin-app-wrapper.sh
+# gives it. Any other build of this crate is an empty library.
+[lib]
+name = "tilo_accounts_engine"
+path = "src/lib.rs"
+crate-type = ["dylib"]
+
+# Built with every runtime, whichever apps a release selects: Cargo cannot
+# build this library without either a binary that needs it or `--lib` for
+# every app. build-thin-apps.sh runs it to prove the engine loads and runs
+# against the runtime it ships with.
+[[bin]]
+name = "tilo-accounts-engine-check"
+path = "src/check.rs"
+required-features = ["thin"]
+
+[features]
+thin = [
+    "dep:runtime-dylib",
+    "dep:account-custody",
+    "dep:tilo-oauth",
+    "dep:async-imap",
+    "dep:workspace-hack",
+]
+
+[dependencies]
+runtime-dylib = { path = "../../runtime-dylib", optional = true }
+# The features the runtime built them with, which Settings and Mail's `live`
+# build ask for: one copy of each in the thin graph, or the apps' symbols
+# would name a crate hash this library does not export.
+account-custody = { path = "../../../system/account-custody", optional = true }
+tilo-oauth = { path = "../../../system/tilo-oauth", optional = true }
+async-imap = { workspace = true, optional = true }
+# Optional like everything else: an empty build must not link the hack's whole
+# dependency set into a shared object.
+workspace-hack = { version = "0.1", optional = true }
+
+[lints]
+workspace = true

@@ -82,6 +82,23 @@ ENGINES = {
     "rquickjs": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "rquickjs-core": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
+    "tilo-accounts-engine": "the online-account engine library (libtilo_accounts_engine.so)",
+    "account-custody": "online-account custody, which Mail and Settings load from "
+                       "libtilo_accounts_engine.so",
+    "tilo-oauth": "the OAuth client under account-custody, in libtilo_accounts_engine.so",
+    "cloud-source-dropbox": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-gdrive": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-icloud": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-onedrive": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
+    "async-imap": "the IMAP client Mail and Settings load from libtilo_accounts_engine.so",
+    "imap-proto": "the IMAP parser under async-imap, in libtilo_accounts_engine.so",
+    "tilo-timezone-engine": "the time-zone database's engine library (libtilo_timezone_engine.so)",
+    "chrono-tz": "the time-zone database, which Calendar and Clocks load from "
+                 "libtilo_timezone_engine.so",
+    "tilo-contact-directory-engine": "the contact directory's engine library "
+                                     "(libtilo_contact_directory_engine.so)",
+    "tilo-contact-directory": "the contact directory, which Contacts, Mail and Messages load from "
+                              "libtilo_contact_directory_engine.so",
 }
 
 

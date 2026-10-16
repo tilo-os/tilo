@@ -80,6 +80,13 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # 119558): x86_64 151648352 bytes, 5152768 dirtied per process, 6439 symbol
 # relocations; aarch64 137517640, 4935680, 6470. The two engines are
 # 900880 + 2789552 bytes on x86_64 and 760616 + 2600216 on aarch64.
+
+# The apps of apps_without_media that use an engine library
+# (crates/runtime/engines/), by library: they load it at exec. Release / apps
+# fails when one of those apps loads any other engine.
+[engine_users]
+"libtilo_timezone_engine.so" = ["clocks"]
+
 [runtime.x86_64]
 bytes = 153223168
 relocation_bytes = 262144

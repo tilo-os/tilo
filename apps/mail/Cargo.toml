@@ -19,6 +19,8 @@ md-5.workspace = true
 fnv.workspace = true
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
+tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
 # Attachment export goes through the host FileChooser portal.  Mail must never
 # infer a writable Downloads path or grant itself broad filesystem authority.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -82,6 +84,15 @@ workspace-hack = { version = "0.1" }
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach account custody with the IMAP client, and the contact directory,
+# through their engine libraries in the runtime bundle
+# (libtilo_accounts_engine.so and libtilo_contact_directory_engine.so, under
+# crates/runtime/engines/) instead of the runtime. The release collection
+# enables it (dist/apps/app-collections.toml); a `thin` build without it
+# (`tilo-app dev`) links account-custody, async-imap and
+# tilo-contact-directory statically, because an engine library links only
+# through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-contact-directory-engine/thin"]
 # The default app includes the live account engine; it remains idle without a
 # configured account.
 default = ["live"]

@@ -36,6 +36,7 @@ thin = [
     "dep:tilo-spotify",
     "tilo-spotify/native",
     "tilo-youtube-engine/thin",
+    "tilo-accounts-engine/thin",
     "dep:workspace-hack",
 ]
 
@@ -47,6 +48,10 @@ tilo-spotify = { path = "../../../platform/tilo-spotify", optional = true }
 # would show up twice in Music's link. This library takes them from the
 # YouTube engine, chained on it as both are on the runtime.
 tilo-youtube-engine = { path = "../youtube", optional = true }
+# tilo-spotify signs in through account-custody, which Mail and Settings load
+# from the accounts engine: this library takes it from there rather than
+# carrying a second copy.
+tilo-accounts-engine = { path = "../accounts", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole
 # dependency set into a shared object.
 workspace-hack = { version = "0.1", optional = true }
