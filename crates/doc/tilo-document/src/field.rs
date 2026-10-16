@@ -111,6 +111,7 @@ impl Operations for RichText {
                 EditOp::Splice
             }
             RichTextAction::ReplaceSelection { .. }
+            | RichTextAction::ReplaceBlockRange { .. }
             | RichTextAction::ReplaceMatches { .. }
             | RichTextAction::PasteFragment { .. }
             | RichTextAction::ContinueParagraph { .. }

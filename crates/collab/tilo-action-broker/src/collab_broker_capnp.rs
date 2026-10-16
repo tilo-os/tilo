@@ -1770,6 +1770,7 @@ struct TaskRunEnvelope {
     task_id: String,
     title: String,
     instruction: Option<String>,
+    subject: Option<tilo_actions::SelectionSubject>,
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
@@ -6414,6 +6415,7 @@ impl CapnpBrokerState {
                     .and_then(|resource| resource.agent_request.as_ref())
                     .map_or_else(|| task.title.clone(), |request| request.instruction.clone()),
             ),
+            subject: task.subject.clone(),
             run_id,
             lease: lease.clone(),
             planning: match task.route {
@@ -12323,6 +12325,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 task_id: run.task_id,
                 title: run.title,
                 instruction: run.instruction,
+                subject: run.subject,
                 run_id: run.run_id,
                 lease: run.lease,
                 planning: run.planning,

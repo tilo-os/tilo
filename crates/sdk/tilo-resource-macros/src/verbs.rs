@@ -277,7 +277,9 @@ impl syn::parse::Parse for ParamOptions {
         }
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
-            if key == "content" || key == "flatten" || key == "place" {
+            // `place` alone is a flag; `place = "field"` names its collection.
+            let flag = key == "content" || key == "flatten" || key == "place";
+            if flag && !input.peek(Token![=]) {
                 if key == "content" {
                     options.content = true;
                 } else if key == "place" {
