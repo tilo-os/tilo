@@ -1582,6 +1582,15 @@ impl ShellDriver {
             "ws-settings-apps" => self.scene_ws_settings_apps(),
             "ws-settings-agents" => self.scene_ws_settings_agents(),
             "ws-settings-agent-access" => self.scene_ws_settings_agent_access(),
+            "ws-settings-agent-access-keyboard" => {
+                self.scene_ws_settings_agent_access();
+                self.fb.host_mut().focus_agent_access_for_shots(
+                    tilo_desktop::workspace_settings::agent_access::AccessFocus::Answers(
+                        tilo_action_policy::agent_answers::AnswerScope::app("so.tilo.mail"),
+                        tilo_action_policy::ActionKind::Undoable,
+                    ),
+                );
+            }
             "collaborators" => self.scene_collaborators(),
             "launchpad" => self.scene_launchpad(),
             "launchpad-notes-card" => self.scene_launchpad_notes_card(),
@@ -2898,6 +2907,7 @@ impl ShellDriver {
         "ws-settings-apps",
         "ws-settings-agents",
         "ws-settings-agent-access",
+        "ws-settings-agent-access-keyboard",
         "collaborators",
         "launchpad",
         "launchpad-notes-card",

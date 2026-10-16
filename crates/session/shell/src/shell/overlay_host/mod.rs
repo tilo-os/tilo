@@ -152,7 +152,8 @@ use tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc;
 use tilo_desktop::workspace_settings::EXPIRY_CHOICES;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
 use tilo_desktop::workspace_settings::overlay::{
-    EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
+    AgentAccessKey, EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey,
+    WorkspaceSettingsOverlay,
 };
 use ui::widget::ButtonRole;
 
@@ -10512,6 +10513,14 @@ impl ShellOverlayHost {
         st.bump();
     }
 
+    /// Give `focus` the keyboard in the agent access view, as Tab would.
+    pub fn focus_agent_access_for_shots(
+        &mut self,
+        focus: tilo_desktop::workspace_settings::agent_access::AccessFocus,
+    ) {
+        self.workspace_settings_overlay.focus_agent_access(focus);
+    }
+
     /// See [`Self::force_palette_settled`].
     /// Show `agent`'s answers in the Agents tab, with `open`'s expanded:
     /// what pressing its Review access and then an app does.
@@ -13120,6 +13129,23 @@ impl ShellOverlayHost {
             *ctx.handled = true;
             return true;
         }
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && self.overlay_flags().ws_settings
+            && self
+                .last_cursor
+                .is_some_and(|p| self.ws_settings_rect().contains(p))
+            && self.workspace_settings_overlay.reviewing_agent().is_some()
+        {
+            let dy: f64 = match *delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * 30.0,
+                winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
+            };
+            if self.workspace_settings_overlay.scroll_agent_access(dy) {
+                self.bump_chrome();
+            }
+            *ctx.handled = true;
+            return true;
+        }
         if is_absorbable_pointer
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
@@ -13450,6 +13476,45 @@ impl ShellOverlayHost {
         true
     }
 
+    /// The agent access view in Workspace Settings › Agents takes the
+    /// keyboard while it is shown: Tab and Shift+Tab walk its controls, Left
+    /// and Right change the focused answer, Enter or Space presses, and
+    /// Escape goes back to the roster. Other keys keep their usual routes.
+    fn handle_agent_access_keyboard(
+        &mut self,
+        logical_key: &Key,
+        shift_down: bool,
+        handled: &mut bool,
+    ) -> bool {
+        let on_agents = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.overlays.ws_settings && state.ws_settings_tab == WsTab::Agents
+        });
+        if !on_agents || self.workspace_settings_overlay.reviewing_agent().is_none() {
+            return false;
+        }
+        let key = match logical_key {
+            Key::Named(NamedKey::Tab) if shift_down => AgentAccessKey::Previous,
+            Key::Named(NamedKey::Tab | NamedKey::ArrowDown) => AgentAccessKey::Next,
+            Key::Named(NamedKey::ArrowUp) => AgentAccessKey::Previous,
+            Key::Named(NamedKey::ArrowLeft) => AgentAccessKey::Left,
+            Key::Named(NamedKey::ArrowRight) => AgentAccessKey::Right,
+            Key::Named(NamedKey::Enter | NamedKey::Space) => AgentAccessKey::Activate,
+            Key::Named(NamedKey::Escape) => AgentAccessKey::Back,
+            _ => return false,
+        };
+        if let Some(outcome) = self.workspace_settings_overlay.handle_agent_access_key(key) {
+            let is_owner = self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| is_active_workspace_owner(&chrome.borrow()));
+            self.apply_workspace_settings_outcome(outcome, is_owner);
+        }
+        self.bump_chrome();
+        *handled = true;
+        true
+    }
+
     /// Decide the global screenshot shortcut before any modal gets a chance
     /// to consume it.  This is intentionally a single policy point shared by
     /// the early modal gate and ordinary keyboard routing: otherwise Print
@@ -13635,6 +13700,9 @@ impl ShellOverlayHost {
             return true;
         }
         if self.handle_member_permission_sheet_keyboard(logical_key, handled) {
+            return true;
+        }
+        if self.handle_agent_access_keyboard(logical_key, shift_down, handled) {
             return true;
         }
         if self.overlay_flags().shortcut_help
