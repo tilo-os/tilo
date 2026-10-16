@@ -314,18 +314,19 @@ fn default_activation_refuses_unready_and_older_owners_without_starting_an_actio
     }
 }
 
-fn endpoint(host: StubHost, token: Option<&str>) -> Arc<Endpoint<StubHost>> {
+fn endpoint(host: StubHost) -> Arc<Endpoint<StubHost>> {
     Endpoint::new(
         host,
         "room".into(),
         "owner".into(),
-        token.map(str::to_owned),
+        Some("secret".into()),
         None,
     )
 }
 
-fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+fn bearer_headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
     let mut map = HeaderMap::new();
+    map.insert("authorization", HeaderValue::from_static("Bearer secret"));
     for (name, value) in pairs {
         map.insert(*name, HeaderValue::from_str(value).unwrap());
     }
@@ -346,7 +347,7 @@ async fn open(endpoint: &Arc<Endpoint<StubHost>>, client: &str) -> String {
         .dispatch(
             &Method::POST,
             "/mcp",
-            &HeaderMap::new(),
+            &bearer_headers(&[]),
             &initialize(client),
         )
         .await;
@@ -366,7 +367,7 @@ async fn invoke(endpoint: &Arc<Endpoint<StubHost>>, session: &str) -> Value {
         .dispatch(
             &Method::POST,
             "/mcp",
-            &headers(&[(SESSION_HEADER, session)]),
+            &bearer_headers(&[(SESSION_HEADER, session)]),
             call.to_string().as_bytes(),
         )
         .await;
@@ -376,14 +377,14 @@ async fn invoke(endpoint: &Arc<Endpoint<StubHost>>, session: &str) -> Value {
 
 #[test]
 fn health_answers_without_a_token() {
-    let endpoint = endpoint(StubHost::default(), Some("secret"));
+    let endpoint = endpoint(StubHost::default());
     let response = run(endpoint.dispatch(&Method::GET, "/health", &HeaderMap::new(), b""));
     assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[test]
 fn a_configured_token_is_required_for_mcp() {
-    let endpoint = endpoint(StubHost::default(), Some("secret"));
+    let endpoint = endpoint(StubHost::default());
     run(async {
         let refused = endpoint
             .dispatch(&Method::POST, "/mcp", &HeaderMap::new(), &initialize("a"))
@@ -393,7 +394,7 @@ fn a_configured_token_is_required_for_mcp() {
             .dispatch(
                 &Method::POST,
                 "/mcp",
-                &headers(&[("authorization", "Bearer nope")]),
+                &bearer_headers(&[("authorization", "Bearer nope")]),
                 &initialize("a"),
             )
             .await;
@@ -402,7 +403,7 @@ fn a_configured_token_is_required_for_mcp() {
             .dispatch(
                 &Method::POST,
                 "/mcp",
-                &headers(&[("authorization", "Bearer secret")]),
+                &bearer_headers(&[("authorization", "Bearer secret")]),
                 &initialize("a"),
             )
             .await;
@@ -412,18 +413,18 @@ fn a_configured_token_is_required_for_mcp() {
 
 #[test]
 fn sessions_are_created_by_initialize_and_required_after() {
-    let endpoint = endpoint(StubHost::default(), None);
+    let endpoint = endpoint(StubHost::default());
     run(async {
         let list = json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}).to_string();
         let missing = endpoint
-            .dispatch(&Method::POST, "/mcp", &HeaderMap::new(), list.as_bytes())
+            .dispatch(&Method::POST, "/mcp", &bearer_headers(&[]), list.as_bytes())
             .await;
         assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
         let unknown = endpoint
             .dispatch(
                 &Method::POST,
                 "/mcp",
-                &headers(&[(SESSION_HEADER, "nope")]),
+                &bearer_headers(&[(SESSION_HEADER, "nope")]),
                 list.as_bytes(),
             )
             .await;
@@ -434,7 +435,7 @@ fn sessions_are_created_by_initialize_and_required_after() {
             .dispatch(
                 &Method::POST,
                 "/mcp",
-                &headers(&[(SESSION_HEADER, &session)]),
+                &bearer_headers(&[(SESSION_HEADER, &session)]),
                 list.as_bytes(),
             )
             .await;
@@ -455,7 +456,7 @@ fn sessions_are_created_by_initialize_and_required_after() {
             .dispatch(
                 &Method::POST,
                 "/mcp",
-                &headers(&[(SESSION_HEADER, &session)]),
+                &bearer_headers(&[(SESSION_HEADER, &session)]),
                 notification.as_bytes(),
             )
             .await;
@@ -465,7 +466,7 @@ fn sessions_are_created_by_initialize_and_required_after() {
             .dispatch(
                 &Method::DELETE,
                 "/mcp",
-                &headers(&[(SESSION_HEADER, &session)]),
+                &bearer_headers(&[(SESSION_HEADER, &session)]),
                 b"",
             )
             .await;
@@ -474,7 +475,7 @@ fn sessions_are_created_by_initialize_and_required_after() {
             .dispatch(
                 &Method::POST,
                 "/mcp",
-                &headers(&[(SESSION_HEADER, &session)]),
+                &bearer_headers(&[(SESSION_HEADER, &session)]),
                 list.as_bytes(),
             )
             .await;
@@ -488,7 +489,7 @@ fn each_session_is_its_own_attributed_agent_run() {
     let host = StubHost::default();
     let invoked = Arc::clone(&host.invoked);
     let callers = Arc::clone(&host.callers);
-    let endpoint = endpoint(host, None);
+    let endpoint = endpoint(host);
     run(async {
         let first = open(&endpoint, "Researcher").await;
         let second = open(&endpoint, "Writer").await;
@@ -562,7 +563,7 @@ fn each_stdio_connection_is_its_own_attributed_agent_run() {
 fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
     let host = StubHost::default();
     let invoked = Arc::clone(&host.invoked);
-    let endpoint = endpoint(host.clone(), None);
+    let endpoint = endpoint(host.clone());
     run(async {
         let first = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
         let answer = first
@@ -604,7 +605,7 @@ fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
             .dispatch(
                 &Method::POST,
                 "/mcp",
-                &HeaderMap::new(),
+                &bearer_headers(&[]),
                 request.to_string().as_bytes(),
             )
             .await;
@@ -664,7 +665,7 @@ fn an_agent_never_confirms_by_its_own_word_and_carries_the_persons_answer() {
             ..StubHost::default()
         };
         let invoked = Arc::clone(&host.invoked);
-        let endpoint = endpoint(host, None);
+        let endpoint = endpoint(host);
         let reply = run(async {
             let session = open(&endpoint, "a").await;
             invoke(&endpoint, &session).await
@@ -681,26 +682,10 @@ fn an_agent_never_confirms_by_its_own_word_and_carries_the_persons_answer() {
 }
 
 #[test]
-fn beyond_loopback_needs_a_token() {
-    let open = Config {
-        address: "0.0.0.0:7070".parse().unwrap(),
-        token: None,
-        room: None,
-    };
-    assert!(open.validate().is_err());
-    let loopback = Config {
-        address: "127.0.0.1:7070".parse().unwrap(),
-        token: None,
-        room: None,
-    };
-    assert!(loopback.validate().is_ok());
-}
-
-#[test]
 fn explicit_mcp_room_is_only_a_canonical_room_identifier() {
     let mut config = Config {
         address: "127.0.0.1:7070".parse().unwrap(),
-        token: None,
+        token: Some("secret".into()),
         room: None,
     };
     assert!(config.validate().is_ok());
@@ -731,7 +716,7 @@ fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
         host.clone(),
         room.into(),
         "profile-actor".into(),
-        None,
+        Some("secret".into()),
         None,
     );
     run(async {
@@ -743,7 +728,7 @@ fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
             .dispatch(
                 &Method::POST,
                 "/mcp",
-                &HeaderMap::new(),
+                &bearer_headers(&[]),
                 request.to_string().as_bytes(),
             )
             .await;
@@ -810,13 +795,13 @@ fn watched_endpoint(token: Option<&str>) -> (Arc<Endpoint<StubHost>>, Arc<WatchR
 #[test]
 fn watch_is_a_bearer_authenticated_lease_answered_with_its_length() {
     let (endpoint, sink) = watched_endpoint(Some("secret"));
-    let bearer = headers(&[("authorization", "Bearer secret")]);
+    let bearer = bearer_headers(&[("authorization", "Bearer secret")]);
     run(async {
         let refused = endpoint
             .dispatch(
                 &Method::POST,
                 "/watch",
-                &headers(&[("authorization", "Bearer nope")]),
+                &bearer_headers(&[("authorization", "Bearer nope")]),
                 br#"{"watching":true}"#,
             )
             .await;
@@ -844,7 +829,7 @@ fn watch_is_a_bearer_authenticated_lease_answered_with_its_length() {
 
 #[test]
 fn watch_accepts_exactly_one_boolean() {
-    let (endpoint, sink) = watched_endpoint(None);
+    let (endpoint, sink) = watched_endpoint(Some("secret"));
     run(async {
         for bad in [
             &b""[..],
@@ -855,7 +840,7 @@ fn watch_accepts_exactly_one_boolean() {
             br#"{"watching":true,"lease_seconds":600}"#,
         ] {
             let reply = endpoint
-                .dispatch(&Method::POST, "/watch", &HeaderMap::new(), bad)
+                .dispatch(&Method::POST, "/watch", &bearer_headers(&[]), bad)
                 .await;
             assert_eq!(
                 reply.status(),
@@ -870,11 +855,11 @@ fn watch_accepts_exactly_one_boolean() {
 
 #[test]
 fn watch_is_not_found_without_a_compositor() {
-    let endpoint = endpoint(StubHost::default(), None);
+    let endpoint = endpoint(StubHost::default());
     let reply = run(endpoint.dispatch(
         &Method::POST,
         "/watch",
-        &HeaderMap::new(),
+        &bearer_headers(&[]),
         br#"{"watching":true}"#,
     ));
     assert_eq!(reply.status(), StatusCode::NOT_FOUND);
@@ -905,7 +890,7 @@ fn watch_reaches_the_compositor_as_its_control_command() {
         StubHost::default(),
         "room".into(),
         "owner".into(),
-        None,
+        Some("secret".into()),
         Some(computer),
     );
     run(async {
@@ -915,7 +900,7 @@ fn watch_reaches_the_compositor_as_its_control_command() {
                 .dispatch(
                     &Method::POST,
                     "/watch",
-                    &HeaderMap::new(),
+                    &bearer_headers(&[]),
                     body_bytes.as_bytes(),
                 )
                 .await;
@@ -935,13 +920,13 @@ fn watch_reaches_the_compositor_as_its_control_command() {
 fn the_workspace_itself_is_addressable_for_installed_apps() {
     let host = StubHost::default();
     let invoked = Arc::clone(&host.invoked);
-    let endpoint = endpoint(host, None);
+    let endpoint = endpoint(host);
     let (open, both) = run(async {
         let session = open(&endpoint, "a").await;
         let call = |arguments: Value| {
             json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"tilo_invoke","arguments":arguments}}).to_string()
         };
-        let headers = headers(&[(SESSION_HEADER, &session)]);
+        let headers = bearer_headers(&[(SESSION_HEADER, &session)]);
         let open = endpoint
             .dispatch(
                 &Method::POST,
@@ -987,11 +972,11 @@ impl crate::viewer::HostOperator for IssuingHost {
 #[test]
 fn viewer_invitations_need_a_configured_viewer_and_the_bearer_token() {
     let issue = br#"{"mode":"watch","ttl_seconds":300}"#;
-    let bare = endpoint(StubHost::default(), Some("secret"));
+    let bare = endpoint(StubHost::default());
     let response = run(bare.dispatch(
         &Method::POST,
         "/viewer/invitations",
-        &headers(&[("authorization", "Bearer secret")]),
+        &bearer_headers(&[("authorization", "Bearer secret")]),
         issue,
     ));
     assert_eq!(
@@ -1021,7 +1006,7 @@ fn viewer_invitations_need_a_configured_viewer_and_the_bearer_token() {
         issue,
     ));
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let authorized = headers(&[("authorization", "Bearer secret")]);
+    let authorized = bearer_headers(&[("authorization", "Bearer secret")]);
     let response = run(served.dispatch(&Method::POST, "/viewer/invitations", &authorized, issue));
     assert_eq!(response.status(), StatusCode::OK);
     let reply = run(body(response));
@@ -1676,7 +1661,7 @@ fn continued_history_and_client_names_cannot_select_execution_identity() {
 
 #[test]
 fn session_delete_idle_expiry_and_endpoint_drop_retire_run_lifetimes() {
-    let endpoint = endpoint(StubHost::default(), None);
+    let endpoint = endpoint(StubHost::default());
     run(async {
         let first = open(&endpoint, "same label").await;
         let second = open(&endpoint, "same label").await;
@@ -1689,7 +1674,7 @@ fn session_delete_idle_expiry_and_endpoint_drop_retire_run_lifetimes() {
             .dispatch(
                 &Method::DELETE,
                 "/mcp",
-                &headers(&[(SESSION_HEADER, &first)]),
+                &bearer_headers(&[(SESSION_HEADER, &first)]),
                 b"",
             )
             .await;
@@ -1732,7 +1717,7 @@ fn stdio_server_drop_retires_retained_caller_clones() {
 
 #[test]
 fn logical_session_reconnect_stays_live_but_expired_id_cannot_renew_itself() {
-    let endpoint = endpoint(StubHost::default(), None);
+    let endpoint = endpoint(StubHost::default());
     run(async {
         let id = open(&endpoint, "same label").await;
         let connection = endpoint.find(&id).unwrap();
@@ -1761,3 +1746,6 @@ fn logical_session_reconnect_stays_live_but_expired_id_cannot_renew_itself() {
 
 #[path = "mcp_retired_execution_tests.rs"]
 mod retired_execution_tests;
+
+#[path = "mcp_http_auth_tests.rs"]
+mod auth_tests;
