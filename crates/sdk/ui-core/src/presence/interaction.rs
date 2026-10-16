@@ -437,18 +437,20 @@ impl PresenceCtx {
         let actor = self
             .names
             .get(&user)
-            .filter(|name| !name.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| {
-                crate::i18n::widget_format(
-                    if interaction.actor.kind.acts_for_someone() {
-                        "interaction-agent"
-                    } else {
-                        "interaction-collaborator"
-                    },
-                    &[],
-                )
-            });
+            .and_then(|name| crate::history_source::human_label(name, &user.0))
+            .map_or_else(
+                || {
+                    crate::i18n::widget_format(
+                        if interaction.actor.kind.acts_for_someone() {
+                            "interaction-agent"
+                        } else {
+                            "interaction-collaborator"
+                        },
+                        &[],
+                    )
+                },
+                str::to_owned,
+            );
         crate::i18n::widget_format(
             "interaction-action-status",
             &[
@@ -944,14 +946,16 @@ fn actor_label(presence: &PresenceCtx, user: &UserId, is_agent: bool) -> String 
     let roster_name = presence
         .names
         .get(user)
-        .map(String::as_str)
-        .filter(|name| !name.trim().is_empty());
+        .and_then(|name| crate::history_source::human_label(name, &user.0));
+    // A roster that knows a participant only by its key names it by that
+    // key; a raw hex id is no name, so the card says what kind of
+    // participant acts instead.
     match (is_agent, roster_name) {
         (true, Some(name)) if presence.is_agent(user) => presence.kind_label(user, name),
         (true, Some(name)) => crate::history_source::agent_display_label(name),
-        (true, None) => "Agent".to_string(),
+        (true, None) => crate::i18n::widget_format("interaction-agent", &[]),
         (false, Some(name)) => name.to_string(),
-        (false, None) => "Collaborator".to_string(),
+        (false, None) => crate::i18n::widget_format("interaction-collaborator", &[]),
     }
 }
 
@@ -1525,6 +1529,31 @@ mod tests {
             presence.names.insert(user.clone(), "Quill".into());
             assert_eq!(actor_label(&presence, &user, true), "Quill · Agent");
             assert_eq!(actor_label(&presence, &user, false), "Quill");
+        }
+        // A roster that knows a participant only by its key hands that key
+        // back as its name; the card names the kind of participant instead.
+        {
+            let key = "a4b05b334073f7dc3c31652f1b0143be8b7f5e0c2d9a1f6b3e4c5d6a7b8c9d0e";
+            let user = UserId(key.into());
+            let mut presence = PresenceCtx::empty();
+            presence.set_display_name(user.clone(), key);
+            assert_eq!(actor_label(&presence, &user, true), "Agent");
+            assert_eq!(actor_label(&presence, &user, false), "Collaborator");
+            let mut keyed = interaction(12, 1, InteractionPhase::Committed);
+            keyed.actor = InteractionActor::new(key, ActorKind::Person);
+            assert_eq!(
+                presence.interaction_status_label(&keyed),
+                "Rename (Committed) - Collaborator"
+            );
+            let agent = UserId("quill".into());
+            presence.set_display_name(agent.clone(), "Claude");
+            presence.set_participant_kind(&agent, ParticipantKind::Agent);
+            presence.set_acting_for(&agent, Some(user));
+            assert_eq!(
+                presence.display_name(&agent),
+                "Claude · Agent",
+                "an unnamed person it acts for is left out, not shown as a key"
+            );
         }
         // phase: accessibility_narrates_real_action_state_without_pointer_language
         {
