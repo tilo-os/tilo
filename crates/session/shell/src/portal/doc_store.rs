@@ -271,7 +271,7 @@ mod tests {
                  ({components:?})"
             );
             // The composed path must also stay under the root it's joined to — what the components check is a proxy for.
-            let root = Path::new("/run/tilo/documents");
+            let root = Path::new(SANDBOX_DOC_DIR);
             assert!(
                 root.join(&slug).starts_with(root),
                 "{hostile:?} escaped the store root: {slug}"

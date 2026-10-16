@@ -374,9 +374,6 @@ fn is_drm_path(p: &Path) -> bool {
 /// Host-governed human identity directory exposed to Files.  Unlike the
 /// app's writable data directory, this individual mount is read-only.
 pub const SANDBOX_TRUSTED_IDENTITIES_DIR: &str = "/run/tilo/identity-projection";
-/// Stable JSON path Files reloads inside that directory.
-pub const SANDBOX_TRUSTED_IDENTITIES_PATH: &str =
-    "/run/tilo/identity-projection/trusted-identities.json";
 
 /// Bind one already-staged identity projection into Files.
 ///

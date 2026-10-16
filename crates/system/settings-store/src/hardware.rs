@@ -1289,9 +1289,6 @@ impl TouchpadScrollMethod {
     pub const ALL: [Self; 2] = [Self::TwoFinger, Self::Edge];
 }
 
-/// `input` key for the scroll-distance multiplier applied to wheel and
-/// finger scrolling alike.
-pub const SCROLL_SPEED_KEY: &str = "scroll_speed";
 /// Slowest scroll multiplier the Settings slider can reach.
 pub const SCROLL_SPEED_MIN: f64 = 0.25;
 /// Fastest scroll multiplier the Settings slider can reach.

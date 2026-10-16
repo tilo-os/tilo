@@ -28,8 +28,6 @@ pub const RESOURCE: &str = "desktop:session";
 pub const ACTION: &str = "command";
 /// Resource prefix of the per-application open action (`desktop:app:<app>`).
 pub const OPEN_APP_RESOURCE_PREFIX: &str = "desktop:app:";
-/// Resource kind of the per-application open action.
-pub const OPEN_APP_RESOURCE_KIND: &str = "desktop.application";
 /// Action id of the per-application open action.
 pub const OPEN_APP_ACTION: &str = "open";
 

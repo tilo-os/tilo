@@ -19,7 +19,6 @@ use zeroize::Zeroizing;
 
 pub mod openai;
 
-pub const SERVICE_NAME: &str = "model-gateway";
 // Launcher and runtime-portal uppercase the service name without replacing '-'.
 pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL-GATEWAY_FD";
 pub const RPC_VERSION: u16 = 3;
