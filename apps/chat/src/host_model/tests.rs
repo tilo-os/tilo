@@ -3,7 +3,9 @@ use std::{cell::Cell, task::Poll};
 use ui::models::{ModelBackend, ModelResponse, StopReason, StreamSink, Usage};
 
 struct Backend {
-    text: &'static str,
+    text: String,
+    reasoning: RefCell<String>,
+    final_text: RefCell<Option<String>>,
     finish: Cell<bool>,
     error: Cell<Option<ui::models::ErrorKind>>,
     stop: Cell<StopReason>,
@@ -23,10 +25,10 @@ impl ModelBackend for Backend {
         Box::pin(std::future::poll_fn(move |_| {
             if !emitted {
                 sink(StreamEvent::TextDelta {
-                    text: self.text.into(),
+                    text: self.text.clone(),
                 });
                 sink(StreamEvent::ReasoningDelta {
-                    text: "Provider summary".into(),
+                    text: self.reasoning.borrow().clone(),
                 });
                 sink(StreamEvent::ToolCallDelta {
                     index: 0,
@@ -46,16 +48,21 @@ impl ModelBackend for Backend {
                 }));
             }
             Poll::Ready(Ok(ModelResponse {
-                message: ui::models::Message::text(Role::Assistant, self.text),
+                message: ui::models::Message::text(
+                    Role::Assistant,
+                    self.final_text.borrow().as_deref().unwrap_or(&self.text),
+                ),
                 stop_reason: self.stop.get(),
                 usage: Usage::default(),
             }))
         }))
     }
 }
-fn backend(text: &'static str) -> Rc<Backend> {
+fn backend(text: &str) -> Rc<Backend> {
     Rc::new(Backend {
-        text,
+        text: text.into(),
+        reasoning: RefCell::new("Provider summary".into()),
+        final_text: RefCell::new(None),
         finish: Cell::new(false),
         error: Cell::new(None),
         stop: Cell::new(StopReason::OutputLimit),
@@ -84,6 +91,160 @@ fn reply(doc: &automerge::AutoCommit, id: &serde_json::Value) -> crate::model::M
     crate::projection::read(doc)
         .message_row(id.as_str().unwrap())
         .unwrap()
+}
+
+fn mounted_reply(
+    backend: Rc<Backend>,
+) -> (ui::framework::testing::TestApp<crate::ChatShell>, String) {
+    use crate::{record::chat, resource::Chat};
+    let mut app = ui::framework::testing::TestApp::<crate::ChatShell>::for_person_with_lent(
+        crate::model::ME,
+        Models::new(backend),
+    )
+    .unwrap();
+    app.invoke(Chat::POST.with(chat::Post {
+        channel: ui::tilo_resource::Id::from_raw("c_general"),
+        text: "Question".into(),
+        parent: None,
+        body: None,
+        attachment: None,
+    }))
+    .unwrap();
+    let result = app
+        .call_on(
+            &crate::testing::item("channels", "c_general"),
+            "model-control",
+            serde_json::json!({"command": "ask"}),
+        )
+        .unwrap()
+        .unwrap();
+    (app, result["reply"].as_str().unwrap().into())
+}
+
+#[test]
+fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuation() {
+    for final_only in [false, true] {
+        let oversized = format!("a{}", "🦀".repeat(crate::record::MAX_MESSAGE_TEXT_BYTES));
+        let backend = backend(if final_only { "" } else { &oversized });
+        if final_only {
+            *backend.final_text.borrow_mut() = Some(oversized.clone());
+            backend.finish.set(true);
+            backend.stop.set(StopReason::EndTurn);
+        }
+        let (mut app, id) = mounted_reply(backend.clone());
+        let original = app
+            .state()
+            .message_rows("c_general")
+            .into_iter()
+            .find(|row| row.id == id)
+            .unwrap();
+        assert_eq!(
+            original.text,
+            utf8_prefix(&oversized, crate::record::MAX_MESSAGE_TEXT_BYTES)
+        );
+        let work = original.work.as_ref().unwrap();
+        let stream = work.stream.as_ref().unwrap();
+        assert_eq!(stream.finish, Some(AgentFinish::Truncated));
+        assert!(!stream.detail.is_empty());
+        assert!(work.trace.is_empty());
+        assert!(!original.text.contains("inert"));
+        app.with_surface::<ChatApp, _>(|surface| {
+            assert!(!surface.host_model.running());
+            assert!(!surface.host_model.needs_frame());
+            assert_eq!(
+                surface.model_controls("c_general"),
+                vec!["ask", "retry", "continue"]
+            );
+        })
+        .unwrap();
+        app.call_on(
+            &crate::testing::item("channels", "c_general"),
+            "model-control",
+            serde_json::json!({"command": "continue"}),
+        )
+        .unwrap();
+        let requests = backend.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1].messages[1],
+            ui::models::Message::text(Role::Assistant, &original.text)
+        );
+        assert!(requests[1].tools.is_empty());
+        assert_eq!(requests[1].tool_choice, ToolChoice::None);
+        let retained = app
+            .state()
+            .message_rows("c_general")
+            .into_iter()
+            .find(|row| row.id == id)
+            .unwrap();
+        assert_reply_unchanged(&retained, &original);
+    }
+}
+
+#[test]
+fn mounted_reasoning_overflow_splits_deltas_and_persists_terminal_without_continue() {
+    let backend = backend("");
+    let oversized = "🦀".repeat(MAX_REASONING_BYTES);
+    *backend.reasoning.borrow_mut() = oversized.clone();
+    let (mut app, id) = mounted_reply(backend);
+    let message = app
+        .state()
+        .message_rows("c_general")
+        .into_iter()
+        .find(|row| row.id == id)
+        .unwrap();
+    assert!(message.text.is_empty());
+    let work = message.work.unwrap();
+    let stream = work.stream.unwrap();
+    assert_eq!(
+        stream.reasoning,
+        utf8_prefix(&oversized, MAX_REASONING_BYTES)
+    );
+    assert_eq!(stream.finish, Some(AgentFinish::Truncated));
+    assert_eq!(
+        stream.sequence,
+        (MAX_REASONING_BYTES / crate::record::MAX_MESSAGE_TEXT_BYTES + 1) as u64
+    );
+    assert!(work.trace.is_empty());
+    app.with_surface::<ChatApp, _>(|surface| {
+        assert!(!surface.host_model.running());
+        assert_eq!(surface.model_controls("c_general"), vec!["ask", "retry"]);
+    })
+    .unwrap();
+}
+
+#[test]
+fn mounted_contradictory_final_fails_and_keeps_persisted_partial() {
+    for final_text in ["", "Partial", "Replacement answer"] {
+        let backend = backend("Partial answer");
+        let (mut app, id) = mounted_reply(backend.clone());
+        *backend.final_text.borrow_mut() = Some(final_text.into());
+        backend.finish.set(true);
+        backend.stop.set(StopReason::EndTurn);
+        app.settle();
+        let message = app
+            .state()
+            .message_rows("c_general")
+            .into_iter()
+            .find(|row| row.id == id)
+            .unwrap();
+        assert_eq!(message.text, "Partial answer");
+        let work = message.work.unwrap();
+        let stream = work.stream.unwrap();
+        assert_eq!(stream.finish, Some(AgentFinish::Failed));
+        assert!(stream.detail.contains("previously published"));
+        assert!(work.trace.is_empty());
+        app.with_surface::<ChatApp, _>(|surface| {
+            let attempt = surface.host_model.attempt.as_ref().unwrap();
+            assert_eq!(
+                attempt.state.error.as_ref().unwrap().kind,
+                ui::models::ErrorKind::InvalidResponse
+            );
+            assert!(!surface.host_model.needs_frame());
+            assert_eq!(surface.model_controls("c_general"), vec!["ask", "retry"]);
+        })
+        .unwrap();
+    }
 }
 
 fn assert_reply_unchanged(actual: &crate::model::Message, original: &crate::model::Message) {
