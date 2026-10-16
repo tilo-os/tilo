@@ -112,15 +112,21 @@ def memory(ctx) -> dict:
             "pss_mb_total": round(sum(p["pss_mb"] for p in procs), 1) if have_pss else None}
 
 
+MEMORY_APPS = ("so.tilo.terminal", "so.tilo.file-explorer", "so.tilo.settings", "so.tilo.notes")
+
+
 def _open_several(ctx):
     ctx.reset()
-    opened = []
-    for app in ("so.tilo.terminal", "so.tilo.file-explorer", "so.tilo.settings", "so.tilo.notes"):
+    opened, failures = [], []
+    for app in MEMORY_APPS:
         try:
             ctx.open_app(app)
             opened.append(app)
-        except core.CheckFailed:
-            pass
+        except core.CheckFailed as exc:
+            failures.append(f"{app}: {exc}")
+    ctx.facts["apps_open_for_memory"] = opened
+    if failures:
+        raise core.Unobservable("could not establish the app workload: " + "; ".join(failures))
     time.sleep(8)
     return opened
 
@@ -168,7 +174,7 @@ def idle_apps(ctx, res):
 
 @check("R03", AREA, "Memory: RSS and PSS per process with apps open stay within budget")
 def mem(ctx, res):
-    if not ctx.facts.get("apps_open_for_memory"):
+    if set(ctx.facts.get("apps_open_for_memory", ())) != set(MEMORY_APPS):
         _open_several(ctx)
     m = memory(ctx)
     res.metrics.update(top=m["procs"][:15], rss_mb_total=m["rss_mb_total"],
