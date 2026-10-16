@@ -140,18 +140,13 @@ impl ShellOverlayHost {
         self.selection_requests.asked(&room, &agent);
         let viewport = self.overlay_area();
         let window = self.focused_window_rect().unwrap_or(viewport);
-        // Over the focused window, a third of the way down, where the
-        // person was reading; the popover keeps itself inside the screen.
-        let at = Rect::from_center_size(
-            Point::new(window.center().x, window.y0 + window.height() / 3.0),
-            (1.0, 1.0),
-        );
+        let (at, protected) = selection_area(window, self.text_caret);
         self.agent_quick_composer.open_about(
             owner,
             &agent,
-            AgentQuickComposerOrigin {
+            &AgentQuickComposerOrigin {
                 marker: at,
-                protected: at,
+                protected,
                 context: String::new(),
             },
             viewport,
@@ -196,5 +191,44 @@ impl ShellOverlayHost {
         crate::shell::launcher::display_name_for_app_id(app_id)
             .or_else(|| self.chrome.as_ref()?.borrow().active_app_title())
             .unwrap_or_else(|| app_id.to_owned())
+    }
+}
+
+/// Where the composer about a selection in `window` points, and what it must
+/// not cover. A selection carries no screen position, but the focused text
+/// field reports its caret, which ends the selection: the composer then
+/// points at it and keeps clear of that line across the window. Without a
+/// caret in the window it points a third of the way down, where the person
+/// was reading. The popover keeps itself inside the screen either way.
+fn selection_area(window: Rect, caret: Option<Rect>) -> (Rect, Rect) {
+    if let Some(caret) = caret.filter(|caret| window.contains(caret.center())) {
+        return (caret, Rect::new(window.x0, caret.y0, window.x1, caret.y1));
+    }
+    let at = Rect::from_center_size(
+        Point::new(window.center().x, window.y0 + window.height() / 3.0),
+        (1.0, 1.0),
+    );
+    (at, at)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_composer_keeps_clear_of_the_line_with_the_caret() {
+        let window = Rect::new(100.0, 50.0, 900.0, 650.0);
+        let caret = Rect::new(400.0, 300.0, 402.0, 318.0);
+        assert_eq!(
+            selection_area(window, Some(caret)),
+            (caret, Rect::new(100.0, 300.0, 900.0, 318.0))
+        );
+        let (at, protected) = selection_area(window, Some(Rect::new(5.0, 5.0, 7.0, 20.0)));
+        assert_eq!(
+            at, protected,
+            "a caret outside the window is not the selection"
+        );
+        assert_eq!(at.center(), Point::new(500.0, 250.0));
+        assert_eq!(selection_area(window, None), (at, protected));
     }
 }

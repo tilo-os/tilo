@@ -821,8 +821,15 @@ fn respond_outcome(value: Option<&Value>) -> Option<Responded> {
 
 fn respond_operation(request: ComposerRequest) -> Operation {
     let mut arguments = Map::from_iter([("request".into(), request.text.clone().into())]);
-    if !request.context.trim().is_empty() {
-        arguments.insert("input".into(), request.context.clone().into());
+    // The composer shows the start of a selection; the agent answers from
+    // all of it.
+    let input = request
+        .about
+        .as_ref()
+        .and_then(|about| about.selection.as_ref()?.anchor.excerpt.clone())
+        .unwrap_or_else(|| request.context.clone());
+    if !input.trim().is_empty() {
+        arguments.insert("input".into(), input.into());
     }
     if !request.conversation.is_empty() {
         arguments.insert(
@@ -1467,6 +1474,18 @@ mod tests {
         assert_eq!(operation.app, Some(AGENT));
         assert_eq!(operation.arguments["request"], asked.text);
         assert_eq!(operation.arguments["input"], asked.context);
+        let mut long = asked;
+        let excerpt = ["word"; 80].join(" ");
+        long.about = Some(SelectionSeed::new(
+            "so.tilo.notes",
+            "Notes",
+            Some(ui::shared_selection::SharedSelection::of_text(&excerpt)),
+        ));
+        assert_eq!(
+            submission_operation(long).unwrap().arguments["input"],
+            excerpt.as_str(),
+            "the agent answers from the whole selection, not the shown start"
+        );
         assert_eq!(
             operation.arguments["conversation"],
             serde_json::json!([
