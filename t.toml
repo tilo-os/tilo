@@ -376,6 +376,8 @@ cost = "minutes"
 # for this source (os/dev/verify-kernel-provenance.sh), on both architectures.
 [[check]]
 name = "pins"
+# The pins name each architecture's kernel themselves, and Cosign comes for the node's own.
+requires = ["arch=any"]
 run = """
 export RUNNER_TEMP=$TMPDIR GITHUB_PATH=$TMPDIR/github-path TILO_GITHUB_ASSET_CACHE=$CARGO_TARGET_DIR/github-assets
 bash os/dev/install-cached-cosign.sh
@@ -1328,6 +1330,8 @@ default = false
 # a clean checkout of a pushed commit writes target/ci/current-source-metadata.json.
 [[check]]
 name = "source-metadata"
+# `cargo metadata --no-deps` lists every target's dependencies, whatever node runs it.
+requires = ["arch=any"]
 on = ["dispatch"]
 run = """
 mkdir -p "$CARGO_TARGET_DIR/ci"
@@ -3300,6 +3304,7 @@ rm -rf /target/windows/winget && cp -r "$root/winget" /target/windows/winget
 inputs = ["apps/imager/packaging/generate-winget.py", "apps/imager/packaging/validate-winget.py"]
 needs = ["package/windows-x86_64", "package/windows-aarch64"]
 outputs = ["/target/windows/winget/*"]
+requires = ["arch=any"]
 cpus = 1
 memory = "2G"
 default = false
