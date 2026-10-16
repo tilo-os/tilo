@@ -1392,7 +1392,7 @@ pub fn run_mount(mount_point: &Path, state_dir: &Path) -> io::Result<()> {
     // signal.
     credentials.pump(input, |message| dispatch(&volume, message, &reply), || {});
     volume.shutdown();
-    session.umount_and_join()?;
+    crate::fuse_session::unmount_and_join(session)?;
     for worker in workers {
         let _ = worker.join();
     }

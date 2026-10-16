@@ -25,6 +25,9 @@ pub enum Capability {
     Media,
     /// A mountable FUSE device (`/dev/fuse` and `fusermount3`).
     Fuse,
+    /// The FUSE control filesystem at `/sys/fs/fuse/connections`, through
+    /// which a test can abort its own connection.
+    FuseControl,
     /// Permission to create a fanotify group.
     Fanotify,
     /// A writable directory on a filesystem with fs-verity (btrfs, or ext4
@@ -46,6 +49,7 @@ impl Capability {
             Self::Audio => "TILO_REQUIRE_AUDIO",
             Self::Media => "TILO_REQUIRE_MEDIA",
             Self::Fuse => "TILO_REQUIRE_FUSE",
+            Self::FuseControl => "TILO_REQUIRE_FUSECTL",
             Self::Fanotify => "TILO_REQUIRE_FANOTIFY",
             Self::FsVerity => "TILO_REQUIRE_FSVERITY",
             Self::Chown => "TILO_REQUIRE_CHOWN",
@@ -67,6 +71,7 @@ impl fmt::Display for Capability {
             Self::Audio => "audio",
             Self::Media => "media codecs",
             Self::Fuse => "FUSE",
+            Self::FuseControl => "the FUSE control filesystem",
             Self::Fanotify => "fanotify",
             Self::FsVerity => "fs-verity",
             Self::Chown => "giving files to another user",
