@@ -41,7 +41,7 @@ case ${1:-} in
     out=${3:?}
     [[ $(uname -m) == x86_64 ]] || die 'the legacy guest is built on x86_64'
     dnf install -y --setopt=install_weak_deps=False btrfs-progs dosfstools e2fsprogs edk2-ovmf \
-      fuse-overlayfs jq python3 qemu-img qemu-system-x86-core skopeo systemd-repart util-linux >/dev/null
+      fuse-overlayfs jq podman python3 qemu-img qemu-system-x86-core skopeo systemd-repart util-linux >/dev/null
     # The VM's /dev is static; the kernel's own loop and FUSE nodes appear with devtmpfs.
     modprobe fuse 2>/dev/null || true
     modprobe loop 2>/dev/null || true

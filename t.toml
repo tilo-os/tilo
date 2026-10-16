@@ -1886,6 +1886,8 @@ requires = ["disk-100g"]
 privileged = true
 devices = ["/dev/loop-control"]
 run = """
+command -v mkfs.vfat >/dev/null && command -v mcopy >/dev/null && command -v mkfs.btrfs >/dev/null \
+  || dnf install -y -q --setopt=install_weak_deps=False dosfstools mtools btrfs-progs
 cargo build --locked -p imager --bin imager
 IMAGER=$CARGO_TARGET_DIR/debug/imager bash os/tests/staging_helper_loop.sh
 bash os/tests/staging_reclaim_loop.sh
@@ -2766,7 +2768,9 @@ run = "bash tools/ci/publish/legacy-guest.sh build /target/publish/legacy-guest/
 inputs = ["tools/ci/publish/**", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "os/dev/legacy-guest-smoke.sh", "os/dev/disk-image.sh", "os/dev/ci-native-podman-store.sh", "os/dev/probe-kvm.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv"]
 needs = ["legacy-guest-agent"]
 outputs = ["/target/publish/legacy-guest/image/image.oci.tar", "/target/publish/legacy-guest/image/digest"]
-requires = ["arch=x86_64", "disk-100g"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+cpus = 8
+memory = "16G"
 privileged = true
 writable_sources = true
 timeout_secs = 9000
@@ -2787,7 +2791,7 @@ name = "legacy-guest-e2e"
 run = "bash tools/ci/publish/legacy-guest.sh e2e /target/publish/legacy-guest/image /target/publish/legacy-guest/e2e-bin registry.tilo.so/tilo/tilo-builder@sha256:7706dd82cbb5598be302186d1d4748a44bbd2e67f6608e7bc150236046ef120e"
 inputs = ["tools/ci/publish/**", "os/dev/legacy-vm-e2e.sh", "scripts/legacy-vm-e2e.py"]
 needs = ["image-legacy-guest", "legacy-guest-e2e-binaries"]
-requires = ["arch=x86_64", "disk-100g"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 privileged = true
 timeout_secs = 5400
 default = false
