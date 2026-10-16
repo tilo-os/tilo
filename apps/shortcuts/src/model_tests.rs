@@ -157,6 +157,66 @@ fn inputs_are_declared_once_and_a_saved_shortcut_reopens_as_a_draft() {
 }
 
 #[test]
+fn editing_a_saved_shortcut_preserves_per_action_appearance() {
+    let (mut replica, id) = with_draft();
+    let mut step = invoke("create");
+    step["appearance"] = json!({"literal": {"name": "Example bridge"}});
+    replica
+        .apply(Workbench::ADD_STEP.with((id.clone(), String::new(), step.clone())))
+        .unwrap();
+    let saved = replica
+        .state()
+        .unwrap()
+        .drafts
+        .get(&id)
+        .unwrap()
+        .shortcut(Vec::new());
+    let expected: StepKind = serde_json::from_value(step).unwrap();
+    assert_eq!(saved.steps[0].kind, expected);
+
+    replica
+        .apply(Workbench::OPEN_SHORTCUT.with(serde_json::to_value(&saved).unwrap()))
+        .unwrap();
+    let reopened = replica
+        .state()
+        .unwrap()
+        .drafts
+        .iter()
+        .find(|(_, draft)| draft.replaces_saved)
+        .map(|(id, _)| id.clone())
+        .unwrap();
+    replica
+        .apply(Workbench::BIND_ARGUMENT.with((
+            reopened.clone(),
+            "0".into(),
+            "title".into(),
+            serde_json::to_string(&Binding::Literal(json!("Updated title"))).unwrap(),
+        )))
+        .unwrap();
+    let edited = replica
+        .state()
+        .unwrap()
+        .drafts
+        .get(&reopened)
+        .unwrap()
+        .shortcut(Vec::new());
+    let StepKind::Invoke {
+        appearance, args, ..
+    } = &edited.steps[0].kind
+    else {
+        panic!("expected the saved action");
+    };
+    assert_eq!(
+        appearance,
+        &Some(Binding::Literal(json!({"name": "Example bridge"})))
+    );
+    assert_eq!(
+        args.get("title"),
+        Some(&Binding::Literal(json!("Updated title")))
+    );
+}
+
+#[test]
 fn concurrent_edits_to_different_parts_of_one_draft_all_survive() {
     let (mut here, id) = with_draft();
     for action in ["list", "create"] {
