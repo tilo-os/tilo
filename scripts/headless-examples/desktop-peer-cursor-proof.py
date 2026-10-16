@@ -202,12 +202,12 @@ def saturated_near(png: str, near, radius: int = 70) -> int:
     underline on their name pill are drawn in a palette hue. Counting
     vivid pixels in that neighbourhood makes "it is on screen" a claim
     about the image rather than about the state meant to produce it.
-    Returns -1 when Pillow is unavailable.
+    Pillow is required: without pixel evidence this proof cannot pass.
     """
     try:
         from PIL import Image
-    except ImportError:
-        return -1
+    except ImportError as error:
+        raise RuntimeError("cursor pixel proof requires Pillow") from error
     im = Image.open(png).convert("RGB")
     w, h = im.size
     px = im.load()
@@ -237,7 +237,7 @@ def main() -> int:
     age_min = (time.time() - SHELL.stat().st_mtime) / 60.0
     print(f"compositor built {age_min:.1f} min ago — {SHELL}")
 
-    root = tempfile.mkdtemp(prefix="qs-cur-", dir="/tmp")
+    root = tempfile.mkdtemp(prefix="qs-cur-")
     sessions: list[Session] = []
     try:
         print("\n[1] two real sessions, isolated from this machine and each other")
@@ -311,11 +311,8 @@ def main() -> int:
         if check("a frame was captured from bob's session", bool(ok),
                  f"{os.path.getsize(shot)} bytes" if ok else "no PNG"):
             hits = saturated_near(shot, target)
-            if hits < 0:
-                print("  SKIP  pixel check (Pillow not installed)")
-            else:
-                check("ada's cursor is drawn where he pointed", hits > 40,
-                      f"{hits} vivid px within 70 of {target}")
+            check("ada's cursor is drawn where he pointed", hits > 40,
+                  f"{hits} vivid px within 70 of {target}")
             print(f"        {shot}")
 
         # The control. Without it, a check that passes on a merely
@@ -325,9 +322,11 @@ def main() -> int:
         ada.move_to(120.0, 180.0)
         time.sleep(0.8)
         bob.snapshot(alone)
-        wait_for(lambda: os.path.exists(alone) and os.path.getsize(alone) > 5000,
-                 timeout=20)
-        if os.path.exists(alone) and hits >= 0:
+        control_ok = wait_for(
+            lambda: os.path.exists(alone) and os.path.getsize(alone) > 5000,
+            timeout=20)
+        if check("the moved-away control frame was captured", bool(control_ok),
+                 alone) and hits >= 0:
             base = saturated_near(alone, target)
             check("the spot he left is bare", base < 40,
                   f"{base} vivid px there with the peer moved away")
