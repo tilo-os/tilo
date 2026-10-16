@@ -525,6 +525,12 @@ impl DeviceFleetStore {
                 "device certificate belongs to another identity",
             ));
         }
+        // Every login registers this device again. When the fleet already
+        // holds exactly this certificate there is nothing to write, and a
+        // login on a full disk must not fail on a rewrite that changes nothing.
+        if fleet.certificates.contains(&cert) {
+            return Ok(fleet);
+        }
         fleet
             .certificates
             .retain(|existing| existing.device_public_key != cert.device_public_key);

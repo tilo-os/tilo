@@ -980,6 +980,15 @@ fn claim_device_owner(path: &Path, root_public: &[u8; 32]) -> io::Result<bool> {
         )
     })?;
 
+    // An established device was claimed long ago. Reading the claim needs no
+    // free space; staging a new one would, so every login on a full disk
+    // would otherwise fail here.
+    match fs::symlink_metadata(path) {
+        Ok(_) => return Ok(read_claimed_owner(path)? == *root_public),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
     let temp = create_owner_claim_temp(parent, root_public)?;
     let claim = fs::hard_link(&temp, path);
     // The final path is the claim.  The temp link contains no secret and is
@@ -2284,6 +2293,32 @@ mod tests {
                 32,
                 "concurrent readers can only observe a complete winner file"
             );
+        }
+        // Phase `an_established_claim_is_answered_without_writing`: every
+        // login asks again, and a full disk must not fail it. With the claim
+        // directory read-only, staging a new claim would fail; reading the
+        // established one does not.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let parent = tmp.path().join("system/user-identity");
+            std::fs::create_dir_all(&parent).expect("claim parent");
+            let path = parent.join("pubkey.bin");
+            let owner = [0xC3; 32];
+            assert!(claim_device_owner(&path, &owner).expect("first claim"));
+            std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o500))
+                .expect("read-only claim directory");
+            let again = claim_device_owner(&path, &owner);
+            let other = claim_device_owner(&path, &[0xD4; 32]);
+            std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700))
+                .expect("writable again for cleanup");
+            assert!(again.expect("the owner is recognised without a write"));
+            assert!(!other.expect("another root is refused without a write"));
+            let entries: Vec<_> = std::fs::read_dir(&parent)
+                .expect("claim directory")
+                .map(|entry| entry.expect("entry").file_name())
+                .collect();
+            assert_eq!(entries, vec![std::ffi::OsString::from("pubkey.bin")]);
         }
     }
 }
