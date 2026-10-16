@@ -295,10 +295,12 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
         let mut d = OsString::from("file=");
         d.push(escape_option(file.as_os_str()));
         d.push(format!(",if=none,id={serial},format=raw,file.locking=off"));
-        // Writes go to the host's page cache and are flushed when QEMU exits; nobody needs
-        // them on a platter before that.
+        // Writes bypass the host's page cache (O_DIRECT): the guest caches them already, and
+        // dirty host pages of a multi-GB write (an image pull) were charged to the step's
+        // cgroup on top of guest RAM, which the kernel then killed QEMU for. Flushes are
+        // ignored: nobody needs the writes on a platter before QEMU exits.
         d.push(if writable {
-            ",cache=unsafe"
+            ",cache.direct=on,cache.no-flush=on"
         } else {
             ",readonly=on"
         });
