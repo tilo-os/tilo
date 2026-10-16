@@ -52,7 +52,7 @@ class GeneratorTests(unittest.TestCase):
         sign = c["sign-svc"]
         self.assertEqual(sign["on"], ["stable"])
         self.assertEqual(sign["needs"], ["image-svc"])
-        self.assertEqual(sign["requires"], ["arch=any"])
+        self.assertEqual(sign["requires"], products.CREDENTIAL_REQUIRES)
         self.assertNotIn("isolation", sign)
         publish = c["publish-svc"]
         self.assertEqual(publish["on"], ["main", "stable"])
@@ -143,7 +143,7 @@ class GeneratorTests(unittest.TestCase):
                 self.assertNotIn(c["name"], names)
                 names.add(c["name"])
                 if "id_token" in c:
-                    self.assertEqual(c["requires"], ["arch=any"], c["name"])
+                    self.assertEqual(c["requires"], products.CREDENTIAL_REQUIRES, c["name"])
 
 
 def publish_scripts(script: str, seen: set[str]) -> set[str]:
