@@ -32,7 +32,7 @@ use tilo_resource::ActionDecl;
 use crate::RichText;
 use crate::action::RichTextAction;
 use crate::block_edit::{BlockKind, BlockShape, NewBlock, Placement};
-use crate::block_markdown::{render, short_ids};
+use crate::block_markdown::{has_inline_markdown, render, short_ids};
 
 /// The ids of the declared actions that answer what they changed.
 pub const ANSWERING: [&str; 8] = [
@@ -62,6 +62,27 @@ fn block_param() -> ActionParam {
         "block",
         "A block id, as the read shows it after ^ (a unique prefix of it is enough)",
     )
+}
+
+/// Whether an edit's `text` is inline Markdown. Left out, the text decides
+/// ([`has_inline_markdown`]): the read answers Markdown, so text taken from
+/// it (escapes included) or written like it (a `[link](url)`) means what it
+/// says, and text without any is plain.
+fn markdown_param() -> ActionParam {
+    optional(
+        "markdown",
+        ParamType::Boolean,
+        "Whether `text` is inline Markdown, as the read shows text: **bold**, _italic_, `code`, ~~strike~~, [link](url), \\-escapes. Leave out to let the text decide: with any Markdown it is Markdown (a [link](url) becomes a real link), without it is plain and the marks around it stay. `false` only to write Markdown characters literally",
+    )
+}
+
+/// An edit's `text` and whether it is Markdown ([`markdown_param`]).
+fn text_of(args: &ActionArgs) -> Result<(String, bool), String> {
+    let text = args.text("text").ok_or("give the text")?.to_owned();
+    let markdown = args
+        .boolean("markdown")
+        .unwrap_or_else(|| has_inline_markdown(&text));
+    Ok((text, markdown))
 }
 
 fn placement_params() -> [ActionParam; 2] {
@@ -234,21 +255,18 @@ pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
             vec![
                 block_param(),
                 text_param("text", "The block's new text"),
-                optional(
-                    "markdown",
-                    ParamType::Boolean,
-                    "Read `text` as inline Markdown (**bold**, _italic_, `code`, [link](url)); default plain text, where the block's marks stay as they are",
-                ),
+                markdown_param(),
             ],
             |args, _| {
+                let (text, markdown) = text_of(args)?;
                 Ok(RichTextAction::SetBlockText {
                     block: block_of(args)?,
-                    text: args.text("text").ok_or("give the text")?.to_owned(),
-                    markdown: args.boolean("markdown").unwrap_or(false),
+                    text,
+                    markdown,
                 })
             },
         )
-        .describe("Replace one block's text, changing only the characters that differ. Answers the block's id.")
+        .describe("Replace one block's text, changing only the characters that differ. `text` is written the way the read shows it: a [link](url) in it becomes a real link. Answers the block's id.")
         .answering(),
         ActionDecl::new("set-block-kind", "Set block kind", set_kind, |args, _| {
             let named = args

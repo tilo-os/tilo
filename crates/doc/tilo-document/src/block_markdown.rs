@@ -802,6 +802,16 @@ pub(crate) fn parse_inline(source: &str) -> (String, Vec<MarkSpan>) {
     (text.into_iter().collect(), spans)
 }
 
+/// Whether `source` says anything in inline Markdown: a mark (**bold**,
+/// _italic_, `code`, ~~strike~~, [link](url)) or a backslash escape. Text with
+/// neither reads the same as plain text, so writing it plain keeps the marks
+/// it is written into; text with either means what the Markdown says, as
+/// the read that showed it to the writer does.
+pub(crate) fn has_inline_markdown(source: &str) -> bool {
+    let (text, marks) = parse_inline(source);
+    !marks.is_empty() || text != source
+}
+
 fn run_of(chars: &[char], from: usize, c: char) -> usize {
     chars
         .iter()
