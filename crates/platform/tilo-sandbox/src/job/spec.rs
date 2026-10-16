@@ -192,8 +192,10 @@ pub enum Tmp {
     Dir(PathBuf),
 }
 
-/// Who the job is, inside and outside its user namespace. One uid and one
-/// gid are mapped; every other owner reads as `nobody`.
+/// Who the job is, inside and outside its user namespace.
+///
+/// Without a [`IdBlock`], one uid and one gid are mapped: the job runs as
+/// `outside_uid` on the host, and every other owner reads as `nobody`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdMap {
     pub inside_uid: u32,
@@ -202,6 +204,8 @@ pub struct IdMap {
     /// the caller's own needs `CAP_SETUID` (a root worker).
     pub outside_uid: u32,
     pub outside_gid: u32,
+    /// Host ids of the job's own, apart from the files' owner.
+    pub block: Option<IdBlock>,
 }
 
 impl IdMap {
@@ -212,8 +216,41 @@ impl IdMap {
             inside_gid: 0,
             outside_uid: rustix::process::geteuid().as_raw(),
             outside_gid: rustix::process::getegid().as_raw(),
+            block: None,
         }
     }
+}
+
+/// A block of host ids a job runs as: ids `0..count` in its user namespace
+/// are host uids `uid..uid + count` and gids `gid..gid + count`, and the job
+/// runs as host uid `uid + inside_uid`.
+///
+/// The kernel keeps some limits per host user: pipe buffers
+/// (`fs.pipe-user-pages-soft`), processes (`RLIMIT_NPROC`), inotify
+/// instances and watches, keys, POSIX message queues. Jobs that all run as
+/// the caller's uid share them, so one job's thousand pipes shrink every
+/// other job's to two pages. A job with a block of its own has them to
+/// itself.
+///
+/// Its files stay the caller's: every host path bound into the job is an
+/// idmapped mount on which the files of `outside_uid`/`outside_gid` show as
+/// the job's own (`inside_uid`/`inside_gid`) and what the job creates is
+/// owned by `outside_uid`/`outside_gid` on the host, so the next job, with
+/// another block, finds them as its own too. Other owners read as `nobody`,
+/// as without a block. A writable path whose filesystem can't be idmapped
+/// fails the job; a read-only one (or a device) is bound as it is, its
+/// owners read as `nobody`.
+///
+/// Needs `CAP_SETUID`, `CAP_SETGID` and `CAP_SYS_ADMIN` in the initial user
+/// namespace (a root worker) and Linux 5.12 (`mount_setattr` with
+/// `MOUNT_ATTR_IDMAP`); overlays need 5.19, for idmapped layers. `count`
+/// must exceed `inside_uid` and `inside_gid`. Blocks of jobs that run at
+/// the same time must not overlap; the caller hands them out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdBlock {
+    pub uid: u32,
+    pub gid: u32,
+    pub count: u32,
 }
 
 /// The job's system-call filter.

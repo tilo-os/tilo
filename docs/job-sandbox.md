@@ -118,7 +118,7 @@ reports the median of 200 spawns of `/bin/true`. It fails above 100 ms.
 
 | Namespace | Why |
 |---|---|
-| user | the job is uid 0 *inside*, mapped to one uid outside (a single-uid map, `setgroups` denied); everything else on the host is `nobody` |
+| user | the job is uid 0 *inside*, mapped to one uid outside (a single-uid map, `setgroups` denied), or to a block of host ids of its own (below); everything else on the host is `nobody` |
 | mount | its own root; nothing it mounts or unmounts reaches the worker |
 | pid | sees only its own processes; `/proc/1` is the job's init, not the worker |
 | net | its own `lo`; servers it starts on `127.0.0.1` are invisible to other jobs and to the node; no route out unless egress is attached |
@@ -129,6 +129,26 @@ The outside uid is the worker's own by default. When the worker runs with
 `hostUsers: false` (the target), that uid is already unprivileged on the host. A
 privileged worker can choose an unprivileged `job_uid` instead. The job's
 writable directories must then be owned by it.
+
+**Host users of a job's own.** The kernel keeps some limits per host user, not
+per namespace: pipe buffers (`fs.pipe-user-pages-soft`: past 1024 full pipes a
+user's new pipes get two pages, and programs that write 64 KiB before reading
+deadlock), `RLIMIT_NPROC`, inotify instances and watches, keys, POSIX message
+queues. Jobs that all run as the worker's uid share them. A root worker gives
+each running job a block of host ids instead (`IdMap::block`, 65536 ids that no
+other running job has): the job's namespace maps `0..65536` onto it, so the job
+is a host user of its own. Its files stay the worker's: every host path bound in
+is an idmapped mount (`mount_setattr` with `MOUNT_ATTR_IDMAP`, Linux 5.12) on
+which the worker's files show as the job's and what the job creates belongs to
+the worker on the host, so the next job, with another block, finds a warm build
+directory as its own. The worker makes these mounts before the job starts
+(idmapping takes `CAP_SYS_ADMIN` over the filesystem) and the job's init
+attaches them (`move_mount`); overlays get idmapped layers (Linux 5.19). The
+init takes on its ids in the namespace and drops the worker's supplementary
+groups. A writable path whose filesystem can't be idmapped fails the job; a
+read-only one, or a device on devtmpfs, is bound as it is. t hands the blocks out
+from `0x70000000` up and falls back to the shared uid, loudly, where a trial job
+shows it can't.
 
 ### Filesystem
 
