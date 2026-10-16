@@ -1256,6 +1256,7 @@ dependencies = [
  "bounded-command",
  "serde_json",
  "tempfile",
+ "tilo-test-env",
  "workspace-hack",
  "zbus",
 ]
