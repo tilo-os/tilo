@@ -589,6 +589,16 @@ fn parse_slide(
                     }
                 }
             }
+            Ok(Event::CData(data)) if in_text => {
+                if let Some(c) = cur.as_mut()
+                    && let Ok(text) = data.xml10_content()
+                {
+                    c.text.push_str(&text);
+                    if let Some(block) = c.blocks.last_mut() {
+                        crate::model::push_run(block, &text, c.bold, c.italic);
+                    }
+                }
+            }
             // quick-xml reports `&amp;`/`&#x2019;` as events of their own between
             // the text around them.
             Ok(Event::GeneralRef(r)) if in_text => {
@@ -741,6 +751,11 @@ fn parse_notes(xml: &str) -> String {
                     notes.push_str(&text);
                 }
             }
+            Ok(Event::CData(data)) if in_text => {
+                if let Ok(text) = data.xml10_content() {
+                    notes.push_str(&text);
+                }
+            }
             Ok(Event::GeneralRef(r)) if in_text => {
                 notes.extend(tilo_doc_codecs::resolve_general_ref(&r));
             }
@@ -791,6 +806,7 @@ fn first_text(xml: &str, wanted: &[u8]) -> Option<String> {
                 text = Some(String::new());
             }
             (Ok(Event::Text(t)), Some(text)) => text.push_str(&t.xml10_content().ok()?),
+            (Ok(Event::CData(data)), Some(text)) => text.push_str(&data.xml10_content().ok()?),
             (Ok(Event::GeneralRef(g)), Some(text)) => {
                 text.extend(tilo_doc_codecs::resolve_general_ref(&g));
             }
