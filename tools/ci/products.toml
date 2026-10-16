@@ -75,6 +75,29 @@ cost = "heavy"
 cpus = 8
 memory = "12G"
 
+[[product]]
+family = "services"
+name = "release-rehearsal"
+about = """
+The release rehearsal (tools/ci/publish/rehearsal): a one-file image that runs the whole chain
+as a release does, so the chain is proven on t without publishing anything anyone deploys.
+Main publishes `dev-<commit>` when its inputs change; `t dispatch publish-release-rehearsal
+--ref stable` signs it with the release key in KMS (identity token, AWS role), publishes
+`sha-<commit>` with the signature and a receipt, and sets stable's `release-rehearsal` pointer."""
+repository = "registry.tilo.so/tilo/release-rehearsal"
+dev = ["dev-{commit}"]
+release = ["sha-{commit}"]
+release_on = ["dispatch"]
+
+[product.build]
+context = "tools/ci/publish/rehearsal"
+containerfile = "tools/ci/publish/rehearsal/Containerfile"
+inputs = ["tools/ci/publish/rehearsal/**"]
+memory = "2G"
+
+[product.publish]
+pointers = { release-rehearsal = "{dir}/receipt.json" }
+
 # ---------------------------------------------------------------------------
 # CI tooling, not products: published from main and pinned by digest where they are used.
 
