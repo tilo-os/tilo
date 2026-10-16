@@ -51,7 +51,7 @@ never quoted as hardware figures. `scripts/vm-acceptance/README.md` ("Performanc
 records") lists the KPIs.
 
 The `browser` group qualifies the browser runtime: the release desktop bundle
-(`build.sh --bundle desktop`, the bytes `web-entry.yml` publishes) in headless
+(`build.sh --bundle desktop`, the bytes t's `image-web-entry` publishes) in headless
 Chrome through `scripts/perf/browser_qualification.mjs`, which first proves the
 page ran exactly that commit's clean bundle on the WebGPU adapter the records
 name, then measures load, first opens, window activation, the demo workload's
