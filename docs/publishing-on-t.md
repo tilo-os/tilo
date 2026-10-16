@@ -154,6 +154,28 @@ T_REF=stable bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/web-
 cat target/publish/web-entry/receipt.json
 ```
 
+Chains that are not one container image (the apps, the desktop packages, the Windows imager,
+the env tools) differ between architectures only by the architecture, so they are written once
+as a `[[matrix]]`: each `[[matrix.check]]` is an ordinary check whose fields may name the
+placeholders of `each`, written once per variant. One with `only = ["x86_64"]` is written for
+those variants only, one whose name has no placeholder once after them, and `fields` go to every
+check that doesn't set them:
+
+```toml
+[[matrix]]
+family = "windows"
+each = [{ arch = "x86_64" }, { arch = "aarch64" }]
+fields = { image = "registry.tilo.so/tilo/tilo-builder@sha256:…" }
+
+[[matrix.check]]
+name = "build/windows-{arch}"
+run = "bash tools/ci/windows/build.sh imager {arch} /target/windows/sdk/sdk-{arch}.tar.zst /target/windows/{arch}/build"
+needs = ["build/windows-sdk-{arch}"]
+```
+
+A variant can carry more than the architecture where names differ (`deb = "arm64"`,
+`node = "arch=arm64"`).
+
 `tools/tests/test_publish_chain.py` covers the generator and the scripts' channel rules.
 
 ## Declared in t.toml
