@@ -320,6 +320,22 @@ jobs:
         run: |
           ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
           bash tools/ci/sccache.sh prepare
+      - name: Verify the native browser test runtime
+        run: |
+          set -euo pipefail
+          test "$CHROME" = /usr/lib64/chromium-browser/chromium-browser
+          "$CHROME" --version
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import {launch} from './tools/web/chrome.mjs';
+          const browser = await launch({args: process.getuid?.() === 0 ? ['--no-sandbox'] : []});
+          try {
+            const tab = await browser.tab();
+            assert.equal(await tab.evaluate('6 * 7'), 42);
+          } finally {
+            await browser.close();
+          }
+          JS
       - name: Populate a new remote cache namespace
         run: |
           test -n "${RUSTC_WRAPPER:-}"
