@@ -441,7 +441,7 @@ pub fn compare_display_update_at(
     update: DisplayUpdate,
 ) -> std::io::Result<ConditionalUpdate> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        tilo_files::native::create_dir_all(parent)?;
     }
     let _lock = advisory_lock::FileLock::open(
         &session::lock_path(path),
