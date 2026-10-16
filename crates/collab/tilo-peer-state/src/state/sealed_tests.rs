@@ -79,7 +79,7 @@ fn held(peer: &StatePeer) -> Vec<SignedOp> {
         record: RECORD.into(),
     }]
         .sealed
-        .clone()
+        .to_vec()
 }
 
 #[test]
@@ -219,7 +219,7 @@ fn a_full_sealed_history_refuses_rather_than_evicts() {
         record: RECORD.into(),
     };
     let first = held(&host)[0].clone();
-    host.core.documents.get_mut(&route).unwrap().sealed = vec![first; MAX_SEALED_OPS];
+    host.core.documents.get_mut(&route).unwrap().sealed = vec![first; MAX_SEALED_OPS].into();
     assert!(
         host.receive_from(origin(&b), sealed(&host, &b, 2, b"one more"), now)
             .unwrap_err()
@@ -267,7 +267,7 @@ fn a_tampered_stored_sealed_history_refuses_to_restore() {
     let mut op = held(&host)[0].clone();
     op.encryption = None;
     collab_types::sign_op(&mut op, &b).unwrap();
-    cleartext.core.documents.get_mut(&route).unwrap().sealed = vec![op];
+    cleartext.core.documents.get_mut(&route).unwrap().sealed = vec![op].into();
     assert!(
         restore(&cleartext, now).is_err(),
         "sealed history cannot carry plaintext"

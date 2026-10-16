@@ -106,7 +106,7 @@ fn held(peer: &StatePeer) -> Vec<SignedOp> {
         record: RECORD.into(),
     }]
         .sealed
-        .clone()
+        .to_vec()
 }
 
 /// The governor admits `message` and records, in governance `member`

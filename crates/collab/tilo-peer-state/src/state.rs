@@ -1739,6 +1739,15 @@ impl StatePeer {
             .map(|(route, _)| (route.app.clone(), route.record.clone()))
             .collect()
     }
+    /// Whether this state holds `record` of `app`, without saving it as
+    /// [`Self::document`] does.
+    #[must_use]
+    pub fn holds_document(&self, app: &str, record: &str) -> bool {
+        self.core.documents.contains_key(&Route {
+            app: app.into(),
+            record: record.into(),
+        })
+    }
     /// The `(app, record)` of every encrypted record this state holds: only
     /// its channel's key holders read it.
     #[must_use]
@@ -2446,7 +2455,7 @@ impl StatePeer {
                 encryption_required: false,
                 covered: BTreeMap::new(),
                 covered_snapshot: None,
-                sealed: Vec::new(),
+                sealed: backend::SealedLog::default(),
             });
         candidate
             .channel
@@ -2766,28 +2775,33 @@ impl StatePeer {
         ))
     }
     fn retain_sealed(candidate: &mut Document, envelope: SignedOp) -> Result<(), AdmissionError> {
-        let history = if envelope.kind == OpKind::Compaction {
-            sealed_compaction::supersede(
-                &candidate.sealed,
+        let full = || -> AdmissionError {
+            "sealed record history is full; a key holder must compact it (StatePeer::compact_sealed_history)"
+                .into()
+        };
+        if envelope.kind == OpKind::Compaction {
+            let history: backend::SealedLog = sealed_compaction::supersede(
+                &candidate.sealed.to_vec(),
                 &candidate.channel.last_seq_per_author,
                 &envelope,
             )?
+            .into();
+            if history.len() > MAX_SEALED_OPS || history.bytes() > MAX_SEALED_BYTES {
+                return Err(full());
+            }
+            candidate.sealed = history;
         } else {
-            let mut history = std::mem::take(&mut candidate.sealed);
-            history.push(envelope);
-            history
-        };
-        let held = history.iter().try_fold(0usize, |held, op| {
-            held.checked_add(op.payload.len())
-                .ok_or("sealed history byte count overflow")
-        })?;
-        if history.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
-            return Err(
-                "sealed record history is full; a key holder must compact it (StatePeer::compact_sealed_history)"
-                    .into(),
-            );
+            if candidate.sealed.len() >= MAX_SEALED_OPS
+                || candidate
+                    .sealed
+                    .bytes()
+                    .saturating_add(envelope.payload.len())
+                    > MAX_SEALED_BYTES
+            {
+                return Err(full());
+            }
+            candidate.sealed.push(envelope);
         }
-        candidate.sealed = history;
         Ok(())
     }
     /// Reinstall `route`'s stored sealed history, checking every write as it
@@ -3587,7 +3601,7 @@ impl StatePeer {
             .documents
             .iter()
             .filter(|(_, entry)| !entry.sealed.is_empty())
-            .map(|(route, entry)| (route.clone(), entry.sealed.clone()))
+            .map(|(route, entry)| (route.clone(), entry.sealed.to_vec()))
             .collect();
         if self.core.admission_v5 && !sealed.is_empty() {
             let exact = self.core.exact_admissions.encode().map_err(err)?;
@@ -3750,7 +3764,7 @@ impl StatePeer {
                     encryption_required: document.encryption_required,
                     covered: document.covered,
                     covered_snapshot: document.covered_snapshot.map(AcceptedCheckpoint::new),
-                    sealed: Vec::new(),
+                    sealed: backend::SealedLog::default(),
                 },
             );
         }
