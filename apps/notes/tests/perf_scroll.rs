@@ -39,6 +39,11 @@ fn png(width: u32, height: u32, seed: u32) -> Vec<u8> {
     bytes
 }
 
+/// Enough pictures that forty notches still move the note at every step:
+/// the text column is a reading measure, not the window, so each picture is
+/// no taller than that column makes it.
+const PICTURES_TO_SCROLL: u32 = 8;
+
 /// A note with `images` large pictures after a paragraph each, placed
 /// through the notebook's own action and laid out at the Yoga's logical size.
 fn picture_note(images: u32) -> (TestApp<NotesShell>, PageId) {
@@ -230,7 +235,7 @@ fn long_text_body(sections: usize) -> String {
 
 #[test]
 fn scroll_frame_with_large_pictures() {
-    let (mut app, _) = picture_note(5);
+    let (mut app, _) = picture_note(PICTURES_TO_SCROLL);
     // Once down and back, so every picture has been drawn before measuring.
     scroll_through(&mut app, 40);
     let view_only = wheel_keeps_projections(&mut app, "picture note");
@@ -309,7 +314,7 @@ fn scroll_frame_on_a_long_text_note() {
 /// first time, and the frames while they decode: neither may stall.
 #[test]
 fn first_scroll_through_pictures() {
-    let (mut app, _) = picture_note(5);
+    let (mut app, _) = picture_note(PICTURES_TO_SCROLL);
     app.harness().begin_profiling();
     let wall = scroll_through(&mut app, 40);
     print_passes(
