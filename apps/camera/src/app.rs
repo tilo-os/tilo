@@ -668,6 +668,11 @@ impl CameraApp {
             self.dirty = true;
             return Ok(());
         }
+        // Stopping must be immediate, including when the camera disconnected
+        // after recording began. The timer only delays the start of a capture.
+        if self.is_recording() {
+            return self.stop_recording(None);
+        }
         if !self.feed_active() {
             return Err(if self.mode == CaptureMode::Video {
                 "Connect a camera to record"
@@ -3550,6 +3555,32 @@ mod tests {
             frame.captures.len() == captures,
             "mode gestures leave the capture resource unchanged"
         );
+    }
+
+    #[test]
+    fn shutter_stops_recording_without_timer_or_live_feed() {
+        for disconnected in [false, true] {
+            let (mut app, mut doc, root) = sample_app();
+            app.apply(
+                Action::SetMode(CaptureMode::Video),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
+            assert!(app.is_recording());
+            app.apply(
+                Action::SetTimer(Timer::S3),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
+            if disconnected {
+                app.camera_issue = Some(CameraIssue::StartFailed);
+            }
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
+            assert!(!app.is_recording(), "stop is immediate even without a feed");
+            assert!(!app.is_counting_down());
+            assert!(app.video_finalizing, "the recorded clip is finalized");
+        }
     }
 
     #[test]
