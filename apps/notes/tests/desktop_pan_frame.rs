@@ -221,7 +221,7 @@ fn assert_pan_frames(harness: &mut FrameHarness, handle: &DesktopHandle) {
         "{records} record admissions over {frames} pan frames: the bracket sweep \
          opened records it found nothing in"
     );
-    assert_pan_frames_replay(&mut harness, replayed, frames);
+    assert_pan_frames_replay(harness, replayed, frames);
 
     // Any change still reaches its own frame: a click into a window syncs
     // the windows and publishes undo on the frame that shows it.
