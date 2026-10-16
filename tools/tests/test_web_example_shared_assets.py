@@ -23,7 +23,7 @@ class SharedWebAssets(unittest.TestCase):
         calls = root / 'calls.jsonl'
         common = 'import json,os,pathlib,sys\nroot=pathlib.Path(os.environ["FIXTURE_ROOT"])\n'
         programs = {
-            'cargo': common + 'assert sys.argv[1:]==["build","--locked","--quiet","-p","tilo-app-cli","--bin","tilo-app"]\n',
+            'cargo': common + 'assert sys.argv[1:]==["build","--locked","-p","tilo-app-cli","--bin","tilo-app"]\n',
             'wasm-bindgen': 'print("wasm-bindgen 0.fixture")\n',
             'npm': common + 'assert sys.argv[1:]==["ci","--no-audit","--no-fund","--silent"]\nif os.environ.get("FAIL_NPM")=="1":sys.exit(23)\nwith (root/"calls.jsonl").open("a") as f:f.write(json.dumps({"npm":1})+"\\n")\n',
 
@@ -42,6 +42,7 @@ fs.writeFileSync(path.join(root,'crates/browser/tilo-browser-runtime/web/media-m
  print(os.environ["FIXTURE_EXAMPLES"])
 else:
  assert sys.argv[1:5]==["build","--json","--platform","web"]
+ if sys.argv[5].endswith("/"+os.environ.get("FAIL_APP","-")):sys.exit(7)
  assert (root/"crates/browser/tilo-browser-runtime/web/media-moq-library.mjs").read_text()=="export const pinned = true;"
  assert (root/"crates/browser/tilo-browser-runtime/web/media-moq-library.LICENSE.txt").read_text()=="pinned notices"
  with (root/"calls.jsonl").open("a") as f:f.write(json.dumps({"app":sys.argv[5]})+"\\n")
@@ -75,6 +76,21 @@ else:
             self.assertIn('phase=web-example-qr-code', result.stdout)
             for app in ['counter', 'qr-code']:
                 self.assertEqual((root/'bundles'/app/'media-moq-library.LICENSE.txt').read_text(), 'pinned notices')
+
+    def test_later_examples_build_together_and_any_failure_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            names = ['counter', 'qr-code', 'localized', 'data-table']
+            env, calls = self.fixture(root, [{'name': name, 'web': True} for name in names])
+            env['FAIL_APP'] = 'localized'
+            result = subprocess.run(['bash', str(root/'tools/ci/build-web-examples.sh'), *(f'example-{name}' for name in names)], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('web build failed: localized', result.stderr)
+            built = [json.loads(x) for x in calls.read_text().splitlines()]
+            self.assertEqual(built[:2], [{'npm': 1}, {'app': 'examples/apps/counter'}])
+            self.assertEqual(sorted(call['app'] for call in built[2:]), ['examples/apps/data-table', 'examples/apps/qr-code'])
+            for app in ['counter', 'qr-code', 'data-table']:
+                self.assertIn(f'phase=web-example-{app}', result.stdout)
 
     def test_failed_pinned_setup_fails_before_any_example_is_built(self):
         with tempfile.TemporaryDirectory() as directory:

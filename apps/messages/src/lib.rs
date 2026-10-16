@@ -214,11 +214,37 @@ ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 pub struct MessagesShell;
 
+/// What the binary runs instead of opening a window.
+///
+/// `--probe-contact-directory-engine VALUE` (the value is ignored) runs the
+/// contact directory's self-check. It needs `runtime-engine`, the release
+/// build, where that code is in `libtilo_contact_directory_engine.so`; the
+/// check proves Messages loads that library and runs it.
+const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
+    option: "--probe-contact-directory-engine",
+    run: probe_contact_directory_engine,
+}];
+
+#[cfg(feature = "runtime-engine")]
+fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
+    let report = tilo_contact_directory_engine::self_check()?;
+    println!("messages --probe-contact-directory-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
+    Err("the contact directory's engine library needs the `runtime-engine` feature".to_string())
+}
+
 impl ResourceApp for MessagesShell {
     type Resource = Messages;
     const ID: &'static str = "so.tilo.messages";
     const TITLE: &'static str = "Messages";
     const ICON: Option<&'static str> = Some("chat");
+    fn commands() -> &'static [ui::framework::Command] {
+        COMMANDS
+    }
     fn catalog() -> Option<&'static EmbeddedCatalog> {
         Some(&CATALOG)
     }

@@ -403,6 +403,42 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// A new window of an app that [keeps one record per room](ResourceApp::ROOM_RECORD)
+    /// on a fresh profile whose room record is already `document`: how a
+    /// room an earlier version of the app wrote opens.
+    ///
+    /// # Errors
+    /// Returns storage or launch failures.
+    pub fn with_room_record(document: &mut tilo_resource::Doc) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        {
+            let native =
+                ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
+            ui_core::record::transfer::install_room_document(
+                native.store(),
+                A::ID,
+                TEST_ROOM,
+                document,
+            )
+            .map_err(operation)?;
+        }
+        Self::open(
+            Profile::Window(
+                profile,
+                TEST_ROOM.to_owned(),
+                TEST_DEVICE.to_owned(),
+                INSTANCE + 1,
+            ),
+            Role::Owner,
+            AUTHOR,
+            &[],
+            None,
+            None,
+            None,
+            |_| {},
+        )
+    }
+
     /// The app launched with `arguments` to continue `handoff`'s playback,
     /// as the session launches the target of a media handoff.
     ///

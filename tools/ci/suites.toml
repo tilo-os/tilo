@@ -1270,8 +1270,7 @@ workflow = "room-service-image.yml"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
-reason = "needs the built registry-server image"
-workflow = "release-registry-server.yml"
+reason = "needs the built registry-server image: t's image-registry-server check runs it"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"

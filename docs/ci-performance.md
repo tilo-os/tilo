@@ -255,10 +255,10 @@ them to the slot's target tree.
   to compress and upload from every revision, and overlaps the compiler
   objects already handled by sccache. Within one job, later Cargo steps reuse
   the live target tree directly.
-- `release-relay.yml` and `release-registry-server.yml` keep a persistent BuildKit
-  builder per slot and trust class (`setup-buildx` `persistent`), so the
-  compile step's `target/` cache mount and pulled layers survive the job.
-  Publications start from a fresh builder.
+- `release-relay.yml` keeps a persistent BuildKit builder per slot and trust
+  class (`setup-buildx` `persistent`), so the compile step's `target/` cache
+  mount and pulled layers survive the job. Publications start from a fresh
+  builder.
 - The OS image build uses a registry-backed BuildKit cache because its
   intermediate container layers are not compiler outputs.
 
