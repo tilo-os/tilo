@@ -223,10 +223,10 @@ family = "os-base"
 name = "kernel"
 about = """
 The kernel's build half (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config
-fragment, built natively FROM the pinned signed buildroot, then booted under KVM with its
-module signatures checked and the firmware's Secure Boot enforcement probed, on a privileged
-node (kernel-acceptance-<arch>). No compiler cache reaches checks yet, so every build compiles
-the whole kernel. build-kernel.yml still signs, publishes and pins it."""
+fragment, built natively FROM the pinned signed buildroot, then booted under emulation with
+its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
+micro-VM step (kernel-acceptance-<arch>). No compiler cache reaches checks yet, so every build
+compiles the whole kernel. build-kernel.yml still signs, publishes and pins it."""
 repository = "registry.tilo.so/tilo/tilo-kernel"
 arches = ["x86_64", "aarch64"]
 
@@ -597,18 +597,20 @@ timeout_secs = 9000
 [[matrix]]
 family = "os-base"
 about = """
-The kernel image-kernel-<arch> built (tools/ci/products.toml), booted under KVM with its
-module signatures checked and the firmware's Secure Boot enforcement probed, on a privileged
-node."""
+The kernel image-kernel-<arch> built (tools/ci/products.toml), booted under emulation with
+its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
+micro-VM step."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 
 [[matrix.check]]
 name = "kernel-acceptance-{arch}"
-run = "bash tools/ci/publish/kernel.sh accept {arch} /target/publish/kernel/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+run = "bash tools/ci/publish/kernel-acceptance.sh {arch} /target/publish/kernel/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
 needs = ["image-kernel-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 4
+memory = "8G"
 timeout_secs = 3600
 default = false
 
