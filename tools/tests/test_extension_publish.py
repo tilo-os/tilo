@@ -258,10 +258,11 @@ class SigningAuthority(unittest.TestCase):
         script = REPO / "tools/ci/publish/extension-manifests.sh"
         arch = os.uname().machine
         digest = "registry.tilo.so/tilo/tilo-ci@sha256:" + "ab" * 32
-        for images, expected in [("", "ef" * 32),
-                                 ("registry.tilo.so/tilo/tilo-ci:latest", "ef" * 32),
-                                 (f"{digest} {digest}", "ef" * 32), (digest, "malformed")]:
-            with self.subTest(images=images, expected=expected):
+        for images, expected, publish in [("", "ef" * 32, "true"),
+                                          ("registry.tilo.so/tilo/tilo-ci:latest", "ef" * 32, "true"),
+                                          (f"{digest} {digest}", "ef" * 32, "true"), (digest, "malformed", "true"),
+                                          (digest, "", "false")]:
+            with self.subTest(images=images, expected=expected, publish=publish):
                 with tempfile.TemporaryDirectory() as root:
                     sentinel = Path(root) / "skopeo-called"
                     for tool, body in (("skopeo", f"touch '{sentinel}'\nexit 1\n"), ("dnf", "exit 0\n")):
@@ -272,7 +273,8 @@ class SigningAuthority(unittest.TestCase):
                     result = subprocess.run(["bash", str(script), "resolve", arch, str(out)],
                         capture_output=True, text=True,
                         env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "TMPDIR": root,
-                             "T_INPUT_IMAGES": images, "T_INPUT_EXPECTED_CONTENT_SHA256": expected})
+                             "T_INPUT_IMAGES": images, "T_INPUT_EXPECTED_CONTENT_SHA256": expected,
+                             "T_INPUT_PUBLISH": publish})
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("qualification requires one immutable image", result.stderr)
                     self.assertFalse(sentinel.exists(), "invalid qualification must not pull an image")

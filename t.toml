@@ -3831,6 +3831,7 @@ cache = false
 [check.dispatch_inputs]
 images = ""
 expected_content_sha256 = ""
+publish = "true"
 
 [[check]]
 name = "extension-manifests-aarch64"
@@ -3849,6 +3850,7 @@ cache = false
 [check.dispatch_inputs]
 images = ""
 expected_content_sha256 = ""
+publish = "true"
 
 [[check]]
 name = "publish-extension-manifests"
@@ -3865,4 +3867,5 @@ secrets = ["TILO_PACKAGES_TOKEN"]
 [check.dispatch_inputs]
 images = ""
 expected_content_sha256 = ""
+publish = "true"
 # END generated
