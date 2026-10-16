@@ -983,6 +983,7 @@ package = "tilo-fs"
 inputs = [
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
+  "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*",
   "tools/test-assets.py", "tools/test-assets-build.rs",
 ]
 readers = [

@@ -912,6 +912,19 @@ a heartbeat at once, so a loop that froze meanwhile still fails. Every run
 prints its idle reading by thread, with what woke the loop and what it painted
 (`TILO_PAINT_STATS`) in the window.
 
+Every build, release included, also runs the main-loop watchdog
+(`crates/session/shell/src/compositor/watchdog.rs`). It needs no client: a
+thread of its own notices a compositor thread that has slept without running
+once, outside the loop's wait, for longer than any wait it makes is bounded
+at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to
+stderr (the session flight record and the journal) and exits with status 70,
+which hands DRM master and the VT back and ends the session at the greeter.
+A loop that is working, starved of CPU, idle, stopped, under a debugger or in
+the kernel's uninterruptible sleep is never ended, nor one sampled across a
+suspend. `main_loop_watchdog::` in the shell `it` target injects a
+deadlock (`{"op":"deadlock_main_loop"}`, development builds only) and asserts
+both the record and the exit.
+
 Seat state is a second line of defence in a debug build. Smithay holds the
 seat's pointer and keyboard lock while it delivers an event, and calls
 `SeatHandler::focus_changed` and `cursor_image` under it, so a handler that

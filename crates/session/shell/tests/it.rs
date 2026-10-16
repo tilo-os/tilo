@@ -149,6 +149,8 @@ mod leak_probe;
 mod legacy_window_between_devices;
 #[path = "lock_screen_visual.rs"]
 mod lock_screen_visual;
+#[path = "main_loop_watchdog.rs"]
+mod main_loop_watchdog;
 #[path = "maximize_persist_wireup_test.rs"]
 mod maximize_persist_wireup_test;
 #[path = "multi_output.rs"]

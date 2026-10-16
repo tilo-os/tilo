@@ -3,8 +3,8 @@
 # how to add a product are in docs/publishing-on-t.md, "Products".
 
 [defaults]
-buildah = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
-skopeo = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+buildah = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+skopeo = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 # The release key in KMS and the role that may sign with it, for stable and v* tags only.
 signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 
@@ -74,6 +74,30 @@ cargo_dev_dependencies = false
 cost = "heavy"
 cpus = 8
 memory = "12G"
+
+[[product]]
+family = "services"
+name = "release-rehearsal"
+about = """
+The release rehearsal (tools/ci/publish/rehearsal): a one-file image that runs the whole chain
+as a release does, so the chain is proven on t without publishing anything anyone deploys.
+Main publishes `dev-<commit>` when its inputs change. A tag `v0-rehearsal-<n>` (or `t dispatch
+publish-release-rehearsal --ref stable`) runs it as a release: it is signed with the release key in
+KMS (identity token, AWS role), published as `sha-<commit>` with the signature and a receipt, and
+the reference's `release-rehearsal` pointer is set. No other check runs on such a tag."""
+repository = "registry.tilo.so/tilo/release-rehearsal"
+dev = ["dev-{commit}"]
+release = ["sha-{commit}"]
+release_on = ["dispatch", "tag:v0-rehearsal-*"]
+
+[product.build]
+context = "tools/ci/publish/rehearsal"
+containerfile = "tools/ci/publish/rehearsal/Containerfile"
+inputs = ["tools/ci/publish/rehearsal/**"]
+memory = "2G"
+
+[product.publish]
+pointers = { release-rehearsal = "{dir}/receipt.json" }
 
 # ---------------------------------------------------------------------------
 # CI tooling, not products: published from main and pinned by digest where they are used.
@@ -227,7 +251,9 @@ mirrored base and the published frozen RPM snapshot, signed and released for ver
 only, as `<version>` (v1.2.3 -> 1.2.3) and `sha-<commit>`."""
 repository = "registry.tilo.so/tilo/tilo-relay"
 release = ["{version}", "sha-{commit}"]
-release_on = ["tag:v*"]
+# Version tags only (v1.2.3, v1.2.3-rc.1): a release rehearsal's tag (v0-rehearsal-<n>) is a v*
+# tag too, so the identity tokens reach it, but releases no relay.
+release_on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
 tlog = true
 
 [product.build]
@@ -243,8 +269,8 @@ family = "os-images"
 name = "legacy-guest"
 about = """
 The Linux legacy VM guest (os/Containerfile.legacy-guest, tools/ci/publish/legacy-guest.sh):
-the guest agent built here, the guest image built with it on a privileged x86_64 node,
-installed to a disk and booted once until the agent serves, then the whole path end to end
+the guest agent built here, the guest image built with it as root in an x86_64 micro-VM
+step, installed to a disk and booted once until the agent serves, then the whole path end to end
 (legacy-guest-e2e: the disk through `tilo-legacy` against a headless shell, a window, typed
 text, a shared directory, suspend and resume). Stable signs (with a transparency log entry,
 since `tilo-legacy` verifies requiring one) and publishes the disk and sets the
@@ -265,7 +291,7 @@ inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapsh
 requires = ["/dev/kvm", "disk-100g"]
 cpus = 8
 memory = "16G"
-privileged = true
+isolation = "vm"
 writable_sources = true
 timeout_secs = 9000
 
@@ -513,9 +539,9 @@ family = "development-signing"
 about = """
 The development signing tools proven natively on both architectures (os/tests/
 development_signing_native.sh): a fixture image with private keys and a local registry,
-whose tests nest Podman, so it runs on a privileged node. Run when asked for until privileged
-checks have nodes again; T_INPUT_PROOF=prediction|retention|prediction-retention selects one
-proof once it can also be dispatched."""
+whose tests nest Podman, so it runs as root in a micro-VM step. Run when asked for;
+T_INPUT_PROOF=prediction|retention|prediction-retention selects one proof once it can also
+be dispatched."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 fields = { default = false }
 
@@ -533,7 +559,9 @@ run = 'bash os/tests/development_signing_native.sh run /target/development-signi
 inputs = ["os/tests/development_signing_native.sh"]
 needs = ["development-signing-context-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 4
+memory = "16G"
 timeout_secs = 2700
 
 [[matrix]]
@@ -541,8 +569,9 @@ family = "env-tools"
 about = """
 The env tool catalog's build half (tools/ci/publish/env-tools.sh): every tool of
 os/env-tools-catalog.txt built natively against the published env-runtime, sealed with a
-throwaway key, in the CI builder run privileged on a privileged node. It proves the catalog
-builds; build-env-tools.yml still publishes it, sealed with the publisher identity."""
+throwaway key, as root in the CI builder in a micro-VM step (the build sandbox makes user
+namespaces and mounts overlays). It proves the catalog builds; build-env-tools.yml still
+publishes it, sealed with the publisher identity."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 fields = { default = false }
 
@@ -556,11 +585,13 @@ cost = "heavy"
 
 [[matrix.check]]
 name = "env-tools-{arch}"
-run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog registry.tilo.so/tilo/tilo-builder@sha256:7706dd82cbb5598be302186d1d4748a44bbd2e67f6608e7bc150236046ef120e"
+run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "os/dev/build-env-tools.sh", "os/dev/preview-env-runtime.sh", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["env-tools-binaries-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 8
+memory = "16G"
 timeout_secs = 9000
 
 [[matrix]]
@@ -580,3 +611,107 @@ requires = ["arch={arch}", "disk-100g"]
 privileged = true
 timeout_secs = 3600
 default = false
+
+# ---------------------------------------------------------------------------
+# Windows compatibility payloads (build-windows-compat.yml): development candidates for Windows
+# apps on ARM, which os/dev/build-image.sh takes by digest (FEX_PAYLOAD_REF, WINDOWS_GUEST_REF).
+# Building them takes hours, so main publishes them only when asked (`dispatch = true`).
+
+[[product]]
+family = "windows-compat"
+name = "fex-buildroot"
+about = """
+The FEX toolchain (os/Containerfile.fex-buildroot), with the pinned NASM, built natively on
+aarch64: the image the payload compiles in."""
+repository = "registry.tilo.so/tilo/tilo-fex-buildroot-candidate"
+arches = ["aarch64"]
+dev = ["{commit}"]
+dispatch = true
+
+[product.build]
+run = "bash tools/ci/publish/windows-compat.sh fex-buildroot {out}"
+inputs = ["os/Containerfile.fex-buildroot", "os/base-snapshot.env", "os/tests/fex-assembler.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", ".containerignore"]
+cost = "heavy"
+cpus = 8
+memory = "32G"
+timeout_secs = 5400
+
+[[product]]
+family = "windows-compat"
+name = "fex-x86-sdk"
+about = """
+The x86 headers and libraries FEX's thunks compile against (os/Containerfile.fex-x86-sdk),
+installed natively on x86_64 so RPM scriptlets run."""
+repository = "registry.tilo.so/tilo/tilo-fex-x86-sdk-candidate"
+dev = ["{commit}"]
+dispatch = true
+
+[product.build]
+run = "bash tools/ci/publish/windows-compat.sh fex-x86-sdk {out}"
+inputs = ["os/Containerfile.fex-x86-sdk", "os/base-snapshot.env", ".containerignore"]
+cost = "heavy"
+cpus = 4
+memory = "16G"
+timeout_secs = 5400
+
+[[product]]
+family = "windows-compat"
+name = "wine-tools"
+about = """
+The tooling Wine is rebuilt in (os/Containerfile.wine-tools): Mock, podman and the producer
+scripts, natively on x86_64. The Wine steps below run in it as their micro-VM's userspace."""
+repository = "registry.tilo.so/tilo/wine-tools"
+dev = ["candidate-{commit}"]
+dispatch = true
+
+[product.build]
+run = "bash tools/ci/publish/windows-compat.sh wine-tools {out}"
+inputs = ["os/Containerfile.wine-tools", "os/base-snapshot.env", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", ".containerignore"]
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+
+[[matrix]]
+family = "windows-compat"
+about = """
+The x86 Windows guest, as root in micro-VM steps running the wine-tools image just built
+(tools/ci/publish/wine.sh): the pinned Wine source fetched and verified once; per target, Mock
+resolves its build dependencies with the network, then wine-build-<target> rebuilds Wine from
+that bundle alone, offline, into the RPMs and their contract. Every image is an archive named
+by the digest it is published with, so the contracts the steps write name what is published."""
+each = [{ arch = "x86_64", target = "x86_64" }, { arch = "x86_64", target = "i686" }]
+fields = { image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }, isolation = "vm", requires = ["arch=x86_64"], default = false }
+
+[[matrix.check]]
+name = "wine-source"
+run = """
+bash tools/ci/publish/wine.sh source /target/windows-compat/wine-source
+for test in os/tests/test_fetch_wine_source.py os/tests/test_wine_rpm_contract.py os/tests/test_wine_rpm_merge.py os/tests/test_wine_mock_producer.py; do python3 "$test"; done
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", "os/tests/test_fetch_wine_source.py", "os/tests/test_wine_rpm_contract.py", "os/tests/test_wine_rpm_merge.py", "os/tests/test_wine_mock_producer.py"]
+outputs = ["/target/windows-compat/wine-source/**"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "wine-resolve-{target}"
+run = "bash tools/ci/publish/wine.sh resolve {target} /target/windows-compat/wine-resolve-{target}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-source"]
+outputs = ["/target/windows-compat/wine-resolve-{target}/bundle.tar"]
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+
+[[matrix.check]]
+name = "wine-build-{target}"
+run = "bash tools/ci/publish/wine.sh build {target} /target/windows-compat/wine-build-{target}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-resolve-{target}"]
+outputs = ["/target/windows-compat/wine-build-{target}/**"]
+requires = ["arch=x86_64", "disk-100g"]
+cost = "heavy"
+cpus = 16
+memory = "32G"
+timeout_secs = 14400

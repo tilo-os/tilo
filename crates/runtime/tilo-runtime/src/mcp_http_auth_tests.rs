@@ -79,6 +79,8 @@ fn missing_endpoint_credentials_deny_every_protected_route_before_side_effects()
             .unwrap();
         run(async {
             let revoke = format!("/viewer/invitations/{}", "ab".repeat(32));
+            let role = format!("{revoke}/role");
+            let renew = format!("{revoke}/renew");
             for (method, path) in [
                 (Method::POST, "/mcp"),
                 (Method::DELETE, "/mcp"),
@@ -86,6 +88,8 @@ fn missing_endpoint_credentials_deny_every_protected_route_before_side_effects()
                 (Method::POST, "/watch"),
                 (Method::POST, "/viewer/invitations"),
                 (Method::DELETE, &revoke),
+                (Method::POST, &role),
+                (Method::POST, &renew),
             ] {
                 for headers in [HeaderMap::new(), bearer_headers(&[])] {
                     let response = endpoint

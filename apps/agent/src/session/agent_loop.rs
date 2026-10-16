@@ -732,18 +732,8 @@ impl Session {
         // An application the request names (by the title it publishes, e.g.
         // "Writer") requires a successful operation in it — opening it is
         // not enough — whatever parts the model later lists.
-        for (app, title) in catalogue.offers.iter().filter_map(|offer| {
-            tools::opened_app(offer).map(|app| (app, offer.descriptor.resource_label.as_str()))
-        }) {
-            let named = !title.is_empty()
-                && if title.contains(' ') {
-                    request.contains(&title.to_lowercase())
-                } else {
-                    request
-                        .split(|c: char| !c.is_alphanumeric())
-                        .any(|word| word.eq_ignore_ascii_case(title))
-                };
-            if named && !state.parts.iter().any(|part| app_matches(&part.app, app)) {
+        for (app, title) in tools::named_applications(&catalogue, &request) {
+            if !state.parts.iter().any(|part| app_matches(&part.app, app)) {
                 state.parts.push(tools::Part {
                     text: format!("(implied) what the request asks for in {title}"),
                     app: app.to_owned(),
@@ -1295,13 +1285,16 @@ impl Session {
         input: &Value,
     ) -> Result<Prepared, Box<InvokeReport>> {
         let refused = |error: String| Box::new(refused_report(error));
-        let invocation = tools::read_invoke(input, &state.revealed).map_err(refused)?;
+        let mut invocation = tools::read_invoke(input, &state.revealed).map_err(refused)?;
         if state.step_index >= MAX_TASK_STEPS {
             return Err(refused(format!(
                 "this task has used all {MAX_TASK_STEPS} of its steps"
             )));
         }
         let catalogue = self.task_catalogue();
+        if let Some(offer) = surface::find(&catalogue.offers, &invocation.operation) {
+            tools::decode_structured_arguments(offer, &mut invocation.arguments);
+        }
         // An argument error says what the operation takes, so the next
         // attempt needs no describe turn.
         let with_hint = |why: String| match surface::find(&catalogue.offers, &invocation.operation)
