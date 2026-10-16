@@ -50,6 +50,9 @@ struct Classes {
     heads: HashMap<String, (u64, [u8; 32])>,
     /// Lineages already read for their channel's record.
     lineages: HashSet<OsString>,
+    /// When the retained directory last changed as of the last read of its
+    /// lineages: it is read again only once a lineage was added or removed.
+    scanned: Option<std::time::SystemTime>,
 }
 
 impl Classes {
@@ -146,12 +149,13 @@ impl WorkspaceStore {
     /// Whether a replay leaves the retained lineage `name` out: its record
     /// is on-demand, or a part behind its chain's head. Every lineage of the
     /// store is read for its record before the first answer, so a chain's
-    /// head is known whichever part a capture lists first.
+    /// head is known whichever part a capture lists first. A lineage whose
+    /// channel is still unknown then (it holds no frame yet) is replayed.
     pub(super) fn leaves_out_on_demand(&self, name: &OsStr) -> Result<bool, StoreError> {
         let Some(channel) = lineage_channel(name) else {
             return Ok(false);
         };
-        if !self.classes().lineages.contains(name) {
+        if !self.classes().channels.contains_key(&channel) {
             self.read_lineage_records()?;
         }
         Ok(matches!(
@@ -160,9 +164,14 @@ impl WorkspaceStore {
         ))
     }
 
-    /// Learn the record of every retained lineage not read yet.
+    /// Learn the record of every retained lineage not read yet, unless no
+    /// lineage was added or removed since the last time.
     fn read_lineage_records(&self) -> Result<(), StoreError> {
         let v2 = self.root.join(RETAINED_DIR).join("v2");
+        let changed = fs::metadata(&v2).and_then(|meta| meta.modified()).ok();
+        if changed.is_some() && self.classes().scanned == changed {
+            return Ok(());
+        }
         let entries = match fs::read_dir(&v2) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -191,6 +200,7 @@ impl WorkspaceStore {
             }
             classes.lineages.insert(name);
         }
+        self.classes().scanned = changed;
         Ok(())
     }
 
