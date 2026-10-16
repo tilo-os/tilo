@@ -390,6 +390,8 @@ rm -rf /target/windows/winget && cp -r "$root/winget" /target/windows/winget
 needs = ["package/windows-x86_64", "package/windows-aarch64"]
 inputs = ["apps/imager/packaging/generate-winget.py", "apps/imager/packaging/validate-winget.py"]
 outputs = ["/target/windows/winget/*"]
+# Python over the two installers: the manifests are the same from any node.
+requires = ["arch=any"]
 default = false
 cpus = 1
 memory = "2G"
