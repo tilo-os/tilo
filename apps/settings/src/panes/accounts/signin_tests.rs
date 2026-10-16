@@ -603,7 +603,8 @@ fn disconnecting_linked_mail_retains_files_and_its_grant() {
     vault.put(&files.id, &secret);
     vault.put(&mail.id, &accounts::Secret::password("mail-grant"));
     vault.try_save().unwrap();
-    AccountsPane::remove_account(&root, &root.custodian(), AccountKind::Mail, "mail").unwrap();
+    let mut pane = pane(&root, root.custodian(), FakeBrowser::new(false));
+    pane.remove("mail").unwrap();
     let store = root.store();
     assert_eq!(store.len(), 1);
     let retained = store.get(&files.id).unwrap();
