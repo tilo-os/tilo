@@ -149,6 +149,12 @@ pub enum PrintCentreEffect {
     /// Scan a document.
     #[effect(view)]
     ScanDocument,
+    /// New scanned document.
+    ///
+    /// Discards the current scanned pages after confirmation. Save the
+    /// document first to keep it; exporting one page does not save the rest.
+    #[effect(destructive)]
+    NewScannedDocument,
     /// Open printer.
     #[effect(view)]
     OpenPrinter {
