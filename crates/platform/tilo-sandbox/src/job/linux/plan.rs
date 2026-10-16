@@ -609,9 +609,13 @@ impl Builder {
 }
 
 /// overlayfs `-o` options, with the old root's prefix on each path.
+///
+/// `volatile`: what a job writes to an overlay is disposable, so overlayfs never syncs the upper
+/// layer's filesystem, which it otherwise does when the job's mount namespace goes and which waits
+/// for everything dirty on that volume (gigabytes from the jobs' builds beside it).
 fn overlay_options(lower: &Path, upper: &Path, work: &Path) -> Result<String, SpawnError> {
     use std::fmt::Write as _;
-    let mut opts = String::from("userxattr");
+    let mut opts = String::from("userxattr,volatile");
     for (key, p) in [("lowerdir", lower), ("upperdir", upper), ("workdir", work)] {
         let real = std::fs::canonicalize(p)
             .map_err(|e| SpawnError::Invalid(format!("{}: {e}", p.display())))?;

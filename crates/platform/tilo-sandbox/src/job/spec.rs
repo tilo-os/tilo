@@ -138,6 +138,9 @@ pub enum MountKind {
     Tmpfs { size: Option<u64> },
     /// `lower`, read-only, with what the job writes going to `upper`
     /// (`work` is overlayfs's scratch, on the same filesystem as `upper`).
+    /// Mounted `volatile`, never synced: `upper` and `work` serve one job,
+    /// and are thrown away after it (overlayfs refuses to mount a `work`
+    /// a volatile mount used again).
     Overlay {
         lower: PathBuf,
         upper: PathBuf,
