@@ -244,6 +244,65 @@ fn open_note(catalogue: &Catalogue, app: &str) -> String {
 /// The resource prefix of the launcher's published open.
 pub const LAUNCHER_OPEN_PREFIX: &str = "desktop:app:";
 
+/// Read the object and array arguments of `offer` that a model wrote as
+/// JSON text back into objects and arrays. The invoke tool takes its
+/// parameters as an open object, so a model cannot see that a parameter
+/// (a selection's place, say) is an object, and some (Gemini) then pass it
+/// as its JSON encoding. Text that is not the declared kind of JSON stays
+/// as it is, to be refused with what the parameter takes. A place
+/// parameter whose fields were written beside it instead of inside it
+/// (`"item"`, `"start"`, `"end"` next to the other arguments) is gathered
+/// back into the place.
+pub fn decode_structured_arguments(offer: &Offer, arguments: &mut serde_json::Map<String, Value>) {
+    gather_flat_place(offer, arguments);
+    for param in &offer.descriptor.params {
+        let Some(Value::String(text)) = arguments.get(param.name.as_ref()) else {
+            continue;
+        };
+        let ((tilo_actions::ParamType::Object, Ok(decoded @ Value::Object(_)))
+        | (tilo_actions::ParamType::Array, Ok(decoded @ Value::Array(_)))) =
+            (param.ty, serde_json::from_str::<Value>(text.trim()))
+        else {
+            continue;
+        };
+        arguments.insert(param.name.to_string(), decoded);
+    }
+}
+
+/// The place parameter of `offer` rebuilt from its fields written at the
+/// top level: `item` with `start` and `end`, or `item` with the place's own
+/// name holding an insertion offset. Only names the operation does not
+/// declare are taken, and only while the place itself is not an object.
+fn gather_flat_place(offer: &Offer, arguments: &mut serde_json::Map<String, Value>) {
+    let params = &offer.descriptor.params;
+    let declared = |name: &str| params.iter().any(|param| param.name.as_ref() == name);
+    let Some(place) = params.iter().find(|param| param.is_place()) else {
+        return;
+    };
+    let name = place.name.as_ref();
+    if arguments.get(name).is_some_and(Value::is_object)
+        || declared("item")
+        || !arguments.get("item").is_some_and(Value::is_string)
+    {
+        return;
+    }
+    let mut gathered = serde_json::Map::new();
+    for field in ["item", "start", "end"] {
+        if !declared(field)
+            && let Some(value) = arguments.remove(field)
+        {
+            gathered.insert(field.to_owned(), value);
+        }
+    }
+    let offset = arguments.remove(name).filter(Value::is_u64);
+    if !gathered.contains_key("start")
+        && let Some(offset) = offset
+    {
+        gathered.insert("at".to_owned(), offset);
+    }
+    arguments.insert(name.to_owned(), Value::Object(gathered));
+}
+
 /// One operation's parameters as a compact signature and how to pass them,
 /// for an invoke that was refused for its arguments.
 pub fn parameter_hint(offer: &Offer) -> String {
@@ -772,13 +831,43 @@ pub fn parameter_signature(offer: &Offer) -> String {
     format!("{{{params}}}")
 }
 
+/// The prefix of a host (non-Tilo) application's id in the catalogue.
+const HOST_APP_PREFIX: &str = "host:";
+
+/// The Tilo applications `request` (lowercased) names by the title their
+/// open publishes ("Writer"), with that title: each needs a successful
+/// operation in it before the task is done. A host application is never
+/// one of them: opening it is all an agent can do there, and its title is
+/// often an everyday word ("Web", "Files") the request uses for something
+/// else.
+pub fn named_applications<'a>(catalogue: &'a Catalogue, request: &str) -> Vec<(&'a str, &'a str)> {
+    catalogue
+        .offers
+        .iter()
+        .filter_map(|offer| {
+            opened_app(offer).map(|app| (app, offer.descriptor.resource_label.as_str()))
+        })
+        .filter(|(app, _)| !app.starts_with(HOST_APP_PREFIX))
+        .filter(|(_, title)| {
+            !title.is_empty()
+                && if title.contains(' ') {
+                    request.contains(&title.to_lowercase())
+                } else {
+                    request
+                        .split(|c: char| !c.is_alphanumeric())
+                        .any(|word| word.eq_ignore_ascii_case(title))
+                }
+        })
+        .collect()
+}
+
 /// The published operations, compactly, for the first turn (of the task loop
 /// and of a plan decision): enough to invoke or plan the common ones directly
 /// without a discovery round trip. Every id shown is revealed. Every
-/// application gets its share (document operations first,
-/// then view, then the rest), and every open — how a closed application is
-/// started — is always shown; a cut summary says how to reach what it left
-/// out.
+/// running application gets its share (document operations first, then
+/// view, then the rest) of the first half; the opens — how a closed
+/// application is started — follow, Tilo's applications first; a cut
+/// summary says how to reach what it left out.
 pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: usize) -> String {
     let rank = |offer: &&Offer| match offer.descriptor.kind {
         _ if opened_app(offer).is_some() => 0,
@@ -796,27 +885,9 @@ pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: u
     for offers in per_app.values_mut() {
         offers.sort_by_key(rank);
     }
-    let mut shown: Vec<&Offer> = catalogue
-        .offers
-        .iter()
-        .filter(|offer| opened_app(offer).is_some())
-        .collect();
-    let mut depth = 0;
-    while shown.len() < most {
-        let mut any = false;
-        for offers in per_app.values() {
-            if let Some(offer) = offers.get(depth) {
-                any = true;
-                if opened_app(offer).is_none() && shown.len() < most {
-                    shown.push(offer);
-                }
-            }
-        }
-        if !any {
-            break;
-        }
-        depth += 1;
-    }
+    // Round-robin over the applications' own operations (opens aside),
+    // `depth` deep so far, until `shown` holds `until`.
+    let shown = summarised(catalogue, &per_app, most);
     if shown.is_empty() {
         return "No application publishes an operation you may perform right now.\n".into();
     }
@@ -867,10 +938,59 @@ pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: u
         let _ = writeln!(
             s,
             "… and {rest} more; ask `{LIST_OPERATIONS}` (by application, kind, resource or \
-             search) to reach them."
+             search) to reach them, or `{LIST_APPLICATIONS}` for the applications there are."
         );
     }
     s
+}
+
+/// The offers [`catalogue_summary`] shows, at most `most`: the running
+/// applications' own operations take the first half, so the opens of
+/// everything installed (a desktop lists every host application too) cannot
+/// crowd them out; the opens follow, Tilo's applications before the host's,
+/// whose windows publish nothing once open; what is left goes to more of
+/// the running applications.
+fn summarised<'a>(
+    catalogue: &'a Catalogue,
+    per_app: &std::collections::BTreeMap<&str, Vec<&'a Offer>>,
+    most: usize,
+) -> Vec<&'a Offer> {
+    fn fill<'a>(
+        per_app: &std::collections::BTreeMap<&str, Vec<&'a Offer>>,
+        shown: &mut Vec<&'a Offer>,
+        depth: &mut usize,
+        until: usize,
+    ) {
+        while shown.len() < until {
+            let mut any = false;
+            for offers in per_app.values() {
+                if let Some(offer) = offers.get(*depth) {
+                    any = true;
+                    if opened_app(offer).is_none() && shown.len() < until {
+                        shown.push(offer);
+                    }
+                }
+            }
+            if !any {
+                break;
+            }
+            *depth += 1;
+        }
+    }
+    let mut shown: Vec<&'a Offer> = Vec::new();
+    let mut depth = 0;
+    fill(per_app, &mut shown, &mut depth, most.div_ceil(2));
+    let mut opens: Vec<&Offer> = catalogue
+        .offers
+        .iter()
+        .filter(|offer| opened_app(offer).is_some())
+        .collect();
+    opens
+        .sort_by_key(|offer| opened_app(offer).is_some_and(|app| app.starts_with(HOST_APP_PREFIX)));
+    let room = most.saturating_sub(shown.len());
+    shown.extend(opens.into_iter().take(room));
+    fill(per_app, &mut shown, &mut depth, most);
+    shown
 }
 
 /// What one [`INVOKE`] did, as the model reads it.
@@ -1567,6 +1687,159 @@ mod tests {
         assert!(
             none.contains("one of desktop, files, word-processor"),
             "{none}"
+        );
+    }
+
+    /// The opens of everything installed, host applications included, do
+    /// not crowd what a running application can do out of the summary:
+    /// a web search started beside the agent stays listed however many
+    /// applications could be opened, and Tilo's opens come before the
+    /// host's.
+    #[test]
+    fn opens_do_not_crowd_out_what_is_running() {
+        let mut catalogue = Catalogue {
+            offers: vec![offer(
+                "so.tilo.web-search",
+                "web.search:default",
+                "web.search",
+                "search",
+                "Search the web",
+                InputSpec::None,
+            )],
+            facts: Vec::new(),
+            held: Vec::new(),
+        };
+        let open = |app: &str| {
+            let mut open = offer(
+                "desktop",
+                &format!("desktop:app:{app}"),
+                "desktop.application",
+                "open",
+                "Open",
+                InputSpec::None,
+            );
+            open.descriptor.kind = tilo_actions::OperationKind::Effect;
+            open
+        };
+        for n in 0..40 {
+            catalogue.offers.push(open(&format!("host:app-{n}")));
+        }
+        catalogue.offers.push(open("so.tilo.notes"));
+        let summary = catalogue_summary(&catalogue, &mut Revealed::new(), 10);
+        assert!(summary.contains("web.search:default#search"), "{summary}");
+        assert!(
+            summary.contains("desktop:app:so.tilo.notes#open"),
+            "{summary}"
+        );
+        assert!(summary.contains("list_applications"), "{summary}");
+    }
+
+    /// A request naming a Tilo application by its title names it; a host
+    /// application's everyday title ("Web") does not.
+    #[test]
+    fn a_host_application_is_never_named_by_a_request() {
+        let open = |app: &str, title: &str| {
+            let mut open = offer(
+                "desktop",
+                &format!("desktop:app:{app}"),
+                "desktop.application",
+                "open",
+                "Open",
+                InputSpec::None,
+            );
+            open.descriptor.resource_label = title.to_owned();
+            open
+        };
+        let catalogue = Catalogue {
+            offers: vec![
+                open("host:org.gnome.Epiphany", "Web"),
+                open("so.tilo.word-processor", "Writer"),
+            ],
+            facts: Vec::new(),
+            held: Vec::new(),
+        };
+        let request = "find it by web search and put it in writer";
+        assert_eq!(
+            named_applications(&catalogue, request),
+            vec![("so.tilo.word-processor", "Writer")]
+        );
+    }
+
+    /// An object or array argument a model wrote as its JSON text is read
+    /// back as the object or array; text parameters, and text that is not
+    /// the declared kind of JSON, stay text.
+    #[test]
+    fn json_text_for_an_object_or_array_argument_is_decoded() {
+        let mut replace = offer(
+            "notes",
+            "notes.page:1/body",
+            "tilo.rich-text",
+            "replace-range",
+            "Replace text at a place",
+            InputSpec::None,
+        );
+        replace.descriptor.params = vec![
+            tilo_actions::ActionParam::required("at", tilo_actions::ParamType::Object, "where")
+                .as_place(),
+            tilo_actions::ActionParam::optional("marks", tilo_actions::ParamType::Array, "marks"),
+            tilo_actions::ActionParam::required("text", tilo_actions::ParamType::Text, "text"),
+        ];
+        let mut arguments = json!({
+            "at": "{\"item\":\"b1\",\"start\":0,\"end\":39}",
+            "marks": "[\"link\"]",
+            "text": "{\"looks\":\"like json\"}",
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        decode_structured_arguments(&replace, &mut arguments);
+        assert_eq!(
+            arguments["at"],
+            json!({"item": "b1", "start": 0, "end": 39})
+        );
+        assert_eq!(arguments["marks"], json!(["link"]));
+        assert_eq!(arguments["text"], json!("{\"looks\":\"like json\"}"));
+        let mut wrong = json!({"at": "[1, 2]"}).as_object().cloned().unwrap();
+        decode_structured_arguments(&replace, &mut wrong);
+        assert_eq!(wrong["at"], json!("[1, 2]"));
+    }
+
+    /// A place whose fields a model wrote beside the other arguments is
+    /// gathered back into the place parameter, a range or an insertion.
+    #[test]
+    fn a_place_written_flat_is_gathered_into_its_parameter() {
+        let mut replace = offer(
+            "notes",
+            "notes.page:1/body",
+            "tilo.rich-text",
+            "replace-range",
+            "Replace text at a place",
+            InputSpec::None,
+        );
+        replace.descriptor.params = vec![
+            tilo_actions::ActionParam::required("at", tilo_actions::ParamType::Object, "where")
+                .as_place(),
+            tilo_actions::ActionParam::required("text", tilo_actions::ParamType::Text, "text"),
+        ];
+        let flat = |value: Value| value.as_object().cloned().unwrap();
+        let mut range = flat(json!({"at": 1, "item": "b1", "start": 0, "end": 39, "text": "x"}));
+        decode_structured_arguments(&replace, &mut range);
+        assert_eq!(
+            Value::Object(range),
+            json!({"at": {"item": "b1", "start": 0, "end": 39}, "text": "x"})
+        );
+        let mut insert = flat(json!({"at": 4, "item": "b1", "text": "x"}));
+        decode_structured_arguments(&replace, &mut insert);
+        assert_eq!(
+            Value::Object(insert),
+            json!({"at": {"item": "b1", "at": 4}, "text": "x"})
+        );
+        let mut whole = flat(json!({"at": {"item": "b1", "at": 4}, "item": "b2", "text": "x"}));
+        decode_structured_arguments(&replace, &mut whole);
+        assert_eq!(
+            whole["at"],
+            json!({"item": "b1", "at": 4}),
+            "a given place stays"
         );
     }
 
