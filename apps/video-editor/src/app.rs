@@ -3525,7 +3525,7 @@ impl VideoEditorApp {
         let delta = self
             .project
             .clip(id)
-            .map_or(0.0, |c| self.playhead - c.start);
+            .map_or(0.0, |c| (self.playhead - c.start) * c.speed.rate());
         if delta.abs() < 1e-6 {
             return;
         }
@@ -3548,7 +3548,7 @@ impl VideoEditorApp {
         let delta = self
             .project
             .clip(id)
-            .map_or(0.0, |c| self.playhead - c.end());
+            .map_or(0.0, |c| (self.playhead - c.end()) * c.speed.rate());
         if delta.abs() < 1e-6 {
             return;
         }
@@ -7964,7 +7964,10 @@ impl VideoEditorApp {
             Drag::TrimIn { id } => {
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
-                let delta = self.project.clip(id).map_or(0.0, |c| target - c.start);
+                let delta = self
+                    .project
+                    .clip(id)
+                    .map_or(0.0, |c| (target - c.start) * c.speed.rate());
                 // The linked half takes the amount this clip could actually
                 // take, so a trim that clamps on one of them clamps on both.
                 let also = self.linked_followers(id);
@@ -7977,7 +7980,10 @@ impl VideoEditorApp {
             Drag::TrimOut { id } => {
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
-                let delta = self.project.clip(id).map_or(0.0, |c| target - c.end());
+                let delta = self
+                    .project
+                    .clip(id)
+                    .map_or(0.0, |c| (target - c.end()) * c.speed.rate());
                 let also = self.linked_followers(id);
                 self.remember_clip_before(id);
                 for linked in &also {

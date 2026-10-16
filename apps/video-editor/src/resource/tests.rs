@@ -420,6 +420,45 @@ fn deleting_clips_sources_and_tracks_takes_what_hangs_off_them() {
 }
 
 #[test]
+fn trim_actions_reach_the_requested_timeline_time_at_every_speed() {
+    for rate in [0.5, 1.0, 2.0] {
+        let (mut project, clip) = one_clip();
+        project.clip_mut(clip).unwrap().start = 10.0;
+        project.set_speed_linked(clip, rate, false);
+        let track = Uuid::new_v4();
+        project.tracks.push(Track {
+            id: track,
+            kind: TrackKind::Audio,
+            ..Default::default()
+        });
+        let audio = project.add_linked_audio(clip, track).unwrap();
+        let original_end = project.clip(clip).unwrap().end();
+        let mut replica = holding(&project);
+        replica
+            .apply(Project::TRIM_HEAD.with((id(clip), 12.0)))
+            .unwrap();
+        for member in [clip, audio] {
+            let state = replica.state().unwrap();
+            let trimmed = state.clip(member).unwrap();
+            assert_eq!(trimmed.start, 12.0, "head at {rate}x");
+            assert_eq!(trimmed.end(), original_end);
+            assert_eq!(trimmed.in_point, 2.0 * rate);
+        }
+        let target = original_end - 3.0;
+        replica
+            .apply(Project::TRIM_TAIL.with((id(clip), target)))
+            .unwrap();
+        for member in [clip, audio] {
+            let state = replica.state().unwrap();
+            let trimmed = state.clip(member).unwrap();
+            assert_eq!(trimmed.start, 12.0);
+            assert_eq!(trimmed.end(), target, "tail at {rate}x");
+            assert_eq!(trimmed.out_point, 30.0 - 3.0 * rate);
+        }
+    }
+}
+
+#[test]
 fn linked_actions_refuse_to_change_a_locked_partner() {
     let (mut project, clip) = one_clip();
     let track = Uuid::new_v4();

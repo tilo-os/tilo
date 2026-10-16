@@ -295,8 +295,9 @@ impl Project {
     ) -> Result<(), Refusal> {
         let id = self.editable_link_group(clip)?;
         let at = instant(at)?;
-        let start = self.covering(id, at)?.start;
-        self.trim_in_linked(id, at - start);
+        let clip = self.covering(id, at)?;
+        let delta = (at - clip.start) * clip.speed.rate();
+        self.trim_in_linked(id, delta);
         Ok(())
     }
 
@@ -309,8 +310,9 @@ impl Project {
     ) -> Result<(), Refusal> {
         let id = self.editable_link_group(clip)?;
         let at = instant(at)?;
-        let end = self.covering(id, at)?.end();
-        self.trim_out_linked(id, at - end);
+        let clip = self.covering(id, at)?;
+        let delta = (at - clip.end()) * clip.speed.rate();
+        self.trim_out_linked(id, delta);
         Ok(())
     }
 
