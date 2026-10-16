@@ -461,6 +461,40 @@ fn an_import_resolves_links_and_is_not_repeated() {
     );
 }
 
+#[test]
+fn importing_a_formatted_link_preserves_label_text_and_marks_on_export() {
+    let mut notebook = Replica::<Notebook>::new();
+    let id = Id::from(uuid::Uuid::new_v4().to_string());
+    let markdown = "See [Read **日本** now](https://example.com).";
+    apply(
+        &mut notebook,
+        Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
+            title: "Linked note".into(),
+            markdown: markdown.into(),
+            images: Vec::new(),
+            note: Some(id.clone()),
+        }),
+    )
+    .unwrap();
+    let blocks = page(&notebook, &id).blocks();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].text, "See Read 日本 now.");
+    assert_eq!(
+        blocks[0].marks,
+        [
+            MarkSpan::new(4..19, Mark::ExternalLink("https://example.com".into())),
+            MarkSpan::new(9..15, Mark::Bold),
+        ]
+    );
+    assert_eq!(
+        crate::markdown::serialize_inline(&crate::markdown::InlineText::new(
+            blocks[0].text.clone(),
+            blocks[0].marks.clone(),
+        )),
+        markdown
+    );
+}
+
 /// A picture a note shows is kept by its digest — a small one inside the
 /// notebook — and shown in the note; anything but a picture is refused.
 #[test]
