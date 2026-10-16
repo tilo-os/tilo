@@ -285,6 +285,7 @@ Deleted:
 | `web-entry.yml` | `image-web-entry-context`, `image-web-entry` (smoke test on the archive), `carry-web-entry` (stable: carries the version production serves), `sign-web-entry`, `publish-web-entry` | `publish-web-entry` on main ad95cf21a4; context, image and carry re77dfb7adf; the release chain on rehearsal tags |
 | `build-windows-compat.yml` | the windows-compat chain (`image-wine-tools`, `wine-*`, `image-wine-paired`, `image-windows-guest`, `image-fex-*`, `sign-fex-payload`, `publish-*`) | dispatches on main: r766c31687a (FEX payload, signed with the development key), r5b5e69f29c (windows guest); both pointers set |
 | `ci-development-signing.yml` | `development-signing-context-<arch>`, `development-signing-<arch>` (micro-VM steps, on main when what they read changes) | ref31a8cb9a, both architectures |
+| `extension-manifests.yml` | `extension-manifests-<arch>`, `publish-extension-manifests` (daily and dispatched on main) | r7b7f62f1ce: resolved on both architectures, signed through TiloTExtensionManifestSigner, published with `TILO_PACKAGES_TOKEN` |
 
 Still here, with what is missing:
 
@@ -334,7 +335,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 | `os-dev.yml`, `os-dev-x86.yml`, `os-dev-arm.yml` | PR with a label, dispatch | none (called workflows get no OIDC) | as above | development images | `t test` of the development build check; no wrapper workflows |
 | `dev-disk.yml` | dispatch, also from build-image | `GITHUB_TOKEN`, `REGISTRY_TOKEN` | `disk-100g` both arches, KVM | `tilo-vm` disks and `latest` (from main or `v*` only) | a dispatch check |
 | `os-dev-installer.yml`, `dev-disk-boot-diagnostic.yml` | dispatch | none | arm64/`disk-100g`, KVM, loop | artifacts only | dispatch checks with `outputs` (`t outputs`) |
-| `extension-manifests.yml` | daily, dispatch from Release / OS | `REGISTRY_TOKEN`; Cosign through a separate role and key for extension manifests (OIDC) | podman with the OS image, both arches | signed manifests in generic packages | `on = ["schedule:40 4 * * *", "dispatch"]`, `cache = false` (it observes the published extensions), signing on release nodes |
+| ~~`extension-manifests.yml`~~ | daily, dispatch from Release / OS | `REGISTRY_TOKEN`; Cosign through a separate role and key for extension manifests (OIDC) | podman with the OS image, both arches | signed manifests in generic packages | moved to t (above) |
 
 ### Apps, desktop and models
 
