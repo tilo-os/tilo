@@ -62,7 +62,7 @@ def services(ctx, res):
         # but every query must succeed before an empty result can mean healthy.
         res.metrics["journal_error"] = str(exc)
         nrestart_out = ctx.vm.exec(
-            "units=$(systemctl --user list-units --all --plain --no-legend 'tilo*') || exit $?; "
+            "units=$(systemctl --user list-units --type=service --all --plain --no-legend 'tilo*') || exit $?; "
             "for u in $(printf '%s\\n' \"$units\" | awk '{print $1}'); do "
             "n=$(systemctl --user show -p NRestarts --value \"$u\") || exit $?; "
             "echo R \"$u\" \"$n\"; done")

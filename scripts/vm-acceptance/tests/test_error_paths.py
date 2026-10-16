@@ -73,6 +73,31 @@ class ErrorPaths(unittest.TestCase):
         self.assertEqual(result.status, "pass", result.detail)
         self.assertEqual(json.loads(self.record_path.read_text())["booted_digest"], "sha256:abc")
 
+    def test_pretty_printed_bootc_status_with_cli_receipt(self):
+        self.provenance_result(self.booted())
+        self.ctx.vm.vm_cmd.return_value = (
+            "connecting to VM\n" + json.dumps(self.booted(), indent=2) + "\nreceipt: complete\n"
+        )
+        disk = self.out / "disk.qcow2"
+        self.ctx.facts["provenance"] = runner.provenance_of(self.ctx.vm, disk, "a" * 40)
+        result = self.run_check(provenance.commit)
+        self.assertEqual(result.status, "pass", result.detail)
+
+    def test_restart_fallback_only_queries_services(self):
+        self.service_tools()
+        execute = self.ctx.vm.exec.side_effect
+
+        def mixed_units(script, **kwargs):
+            if "list-units --all" in script:
+                return "R tilo-test.service 0\nR tilo-app-host.socket\nR tilo-graphical-session.target\n"
+            return execute(script, **kwargs)
+
+        self.ctx.vm.exec.side_effect = mixed_units
+        result = self.run_check(provenance.services)
+        self.assertEqual(result.status, "pass", result.detail)
+        query = self.ctx.vm.exec.call_args.args[0]
+        self.assertIn("list-units --type=service", query)
+
     def service_tools(self, failed=False, journal=False, listing=False, show=False, value="0"):
         # Execute the production POSIX scripts with fake commands, so masked pipeline
         # and command-substitution exit statuses are tested rather than mocked away.
