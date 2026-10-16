@@ -652,7 +652,9 @@ fn is_server_only(envelope: &ComputeEnvelope) -> bool {
     )
 }
 
-fn next_queue_sequence() -> u64 {
+/// The next compute queue sequence: wall-clock nanoseconds, strictly
+/// increasing within this process, so a later delivery sorts later.
+pub(crate) fn next_queue_sequence() -> u64 {
     let observed = unix_now_ns();
     COMPUTE_QUEUE_SEQUENCE
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {

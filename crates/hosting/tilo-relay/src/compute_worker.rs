@@ -34,7 +34,7 @@ use crate::compute::{
     ComputeContentStore, ComputeExecutionError, ComputeJobPhase, ComputeJobResult, ComputeJobSpec,
     ComputeOutputSource, ComputePackageCatalogue, ComputeSandbox, ComputeWorker, HeldContent,
     InstalledComputeCatalogue, LauncherComputeSandbox, MAX_COMPUTE_INPUT_BYTES,
-    OUTPUT_INDEX_SUFFIX,
+    MAX_COMPUTE_JOB_LIFETIME_MS, OUTPUT_INDEX_SUFFIX,
 };
 use crate::compute_content::{
     ContentFetchError, answer_content, content_proof, fetch_job_content, prove_job_input,
@@ -57,6 +57,11 @@ const DEFAULT_ASSIGNMENT_CAPACITY: u32 = 1;
 /// spans a day rather than the job's lifetime.
 pub const OUTPUT_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 const OUTPUT_PRUNE_INTERVAL: Duration = Duration::from_secs(10 * 60);
+/// How old a job's scratch must be before it is taken for a killed job's:
+/// past any job's lifetime, so no live job, of this worker or of another
+/// sharing the directory, can still be using it.
+pub const STALE_JOB_SCRATCH: Duration =
+    Duration::from_millis(MAX_COMPUTE_JOB_LIFETIME_MS.saturating_mul(2));
 
 /// Failure while establishing or owning the production worker.
 #[derive(Debug, Error)]
@@ -585,11 +590,19 @@ async fn attach_workspaces(
     Ok(())
 }
 
-/// Prune retained outputs under `state_root` off the async runtime.
+/// Prune retained outputs, and the scratch of jobs a killed worker left,
+/// under `state_root` off the async runtime. The first prune runs as the
+/// worker starts.
 fn spawn_output_prune(state_root: &Path) {
+    let root = state_root.to_path_buf();
     let execution = state_root.join("execution");
     let content = state_root.join("content");
     tokio::task::spawn_blocking(move || {
+        match prune_stale_job_scratch(&root, std::time::SystemTime::now(), STALE_JOB_SCRATCH) {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "removed the scratch of killed compute jobs"),
+            Err(error) => tracing::warn!(%error, "pruning killed compute jobs' scratch failed"),
+        }
         if let Err(error) = prune_retained_outputs(
             &execution,
             &content,
@@ -1048,6 +1061,57 @@ pub fn prune_retained_outputs(
     Ok(())
 }
 
+/// Remove the per-job scratch under a worker's `state_root` older than
+/// `stale_after`: the inputs hydrated for a job (`inputs/<job>`) and its
+/// verified package snapshot (`execution/jobs/<job>`). A job removes both
+/// as it ends; a worker killed mid-job, with the relay it runs in, never
+/// does. Returns how many were removed.
+///
+/// # Errors
+///
+/// Returns an error when a scratch directory cannot be read or an entry
+/// cannot be removed.
+pub fn prune_stale_job_scratch(
+    state_root: &Path,
+    now: std::time::SystemTime,
+    stale_after: Duration,
+) -> std::io::Result<usize> {
+    let mut removed = 0_usize;
+    for scratch in [
+        state_root.join("inputs"),
+        state_root.join("execution").join("jobs"),
+    ] {
+        let entries = match fs::read_dir(&scratch) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            // Not followed: a link is removed as itself.
+            let metadata = entry.metadata()?;
+            let stale = metadata.modified().is_ok_and(|modified| {
+                now.duration_since(modified)
+                    .is_ok_and(|age| age > stale_after)
+            });
+            if !stale {
+                continue;
+            }
+            let removal = if metadata.is_dir() {
+                fs::remove_dir_all(entry.path())
+            } else {
+                fs::remove_file(entry.path())
+            };
+            match removal {
+                Ok(()) => removed = removed.saturating_add(1),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(removed)
+}
+
 /// The executor a production worker runs jobs on.
 type ProductionExecutor =
     ComputeWorker<FileComputeContentStore, InstalledComputeCatalogue, LauncherComputeSandbox>;
@@ -1374,6 +1438,62 @@ impl Drop for ReadinessGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A worker killed mid-job leaves that job's staged inputs and package
+    /// snapshot behind; once older than any job can live they are removed,
+    /// and nothing else in the worker's state is.
+    #[test]
+    fn a_killed_jobs_scratch_is_removed_once_no_job_can_use_it() {
+        let root = tempfile::tempdir().unwrap();
+        let state_root = root.path().join("compute-worker");
+        assert_eq!(
+            prune_stale_job_scratch(&state_root, std::time::SystemTime::now(), STALE_JOB_SCRATCH)
+                .unwrap(),
+            0,
+            "a worker with no scratch yet has nothing to remove"
+        );
+        let inputs = state_root.join("inputs").join("0a".repeat(16));
+        let snapshot = state_root
+            .join("execution")
+            .join("jobs")
+            .join("0b".repeat(16));
+        fs::create_dir_all(&inputs).unwrap();
+        fs::write(inputs.join("0c".repeat(32)), b"input").unwrap();
+        fs::create_dir_all(snapshot.join("payload").join("bin")).unwrap();
+        fs::write(snapshot.join("manifest.toml"), b"manifest").unwrap();
+        let claim = state_root
+            .join("execution")
+            .join(format!("{}.claim", "0b".repeat(16)));
+        fs::write(&claim, b"claim").unwrap();
+        let retained = state_root.join("content").join("0d".repeat(32));
+        fs::create_dir_all(retained.parent().unwrap()).unwrap();
+        fs::write(&retained, b"output").unwrap();
+
+        // A job may still be using scratch younger than any job can live.
+        let now = std::time::SystemTime::now();
+        assert_eq!(
+            prune_stale_job_scratch(&state_root, now, STALE_JOB_SCRATCH).unwrap(),
+            0
+        );
+        assert!(inputs.exists() && snapshot.exists());
+
+        let later = now
+            .checked_add(STALE_JOB_SCRATCH.saturating_add(Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(
+            prune_stale_job_scratch(&state_root, later, STALE_JOB_SCRATCH).unwrap(),
+            2
+        );
+        assert!(!inputs.exists() && !snapshot.exists());
+        assert!(
+            claim.exists() && retained.exists(),
+            "replay claims and retained outputs are not scratch"
+        );
+        assert_eq!(
+            prune_stale_job_scratch(&state_root, later, STALE_JOB_SCRATCH).unwrap(),
+            0
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_replica_s_small_files_are_held_only_for_that_workspace_s_jobs() {

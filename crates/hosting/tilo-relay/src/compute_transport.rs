@@ -57,6 +57,10 @@ pub const WORKER_REVOKED: &str = "worker_revoked";
 /// ... because the worker is no longer admitted to the workspace for any
 /// other reason (its certificate expired, it left the membership).
 pub const WORKER_NOT_ADMITTED: &str = "worker_not_admitted";
+/// Why a job ended because the relay restarted while it was unfinished.
+/// A worker loses its jobs with its session to the relay, so nothing can
+/// still be running one once the relay is back.
+pub const RELAY_RESTARTED: &str = "relay_restarted";
 /// The placement reason when moving a job's inputs to every eligible
 /// worker would take longer than running the job where it was asked.
 pub const INPUTS_HEAVIER_THAN_GAIN: &str = "inputs_heavier_than_gain";
@@ -1105,26 +1109,100 @@ impl ComputeTransportState {
         code: &'static str,
         next_sequence: &mut dyn FnMut() -> u64,
     ) -> Result<usize, ComputeTransportError> {
-        let explanation: &[u8] = match code {
-            WORKER_REVOKED => b"the worker's device certificate was revoked while it held the job",
-            WORKER_NOT_ADMITTED => b"the worker is no longer admitted to this workspace",
-            _ => b"the worker's connection to the relay ended while it held the job",
-        };
         let mut ended = BTreeSet::new();
-        for mut record in store.load_compute_jobs()? {
+        for record in store.load_compute_jobs()? {
             if record.spec.worker != *worker || record.lifecycle.phase.is_terminal() {
                 continue;
             }
-            let phase = ComputeJobPhase::Failed { code: code.into() };
-            let sequence = record.lifecycle.sequence.saturating_add(1);
-            record
-                .lifecycle
-                .advance(sequence, phase.clone())
-                .map_err(|_| ComputeTransportError::InvalidLifecycle)?;
-            record.log_bytes = record
-                .log_bytes
-                .saturating_add(u64::try_from(explanation.len()).unwrap_or(u64::MAX));
-            store.save_compute_job(&record)?;
+            let job_id = record.spec.job_id;
+            self.end_job(store, record, code, None, next_sequence)?;
+            self.settle(&job_id, worker, false);
+            ended.insert(job_id);
+        }
+        if !ended.is_empty() {
+            withdraw_queued(store, worker, &ended)?;
+        }
+        Ok(ended.len())
+    }
+
+    /// End every job an earlier run of this relay left unfinished as
+    /// [`ComputeJobPhase::Failed`] with [`RELAY_RESTARTED`]. Called as the
+    /// workspace opens, before any session can attach: each requester is
+    /// told through its durable queue, replayed until it acknowledges, and
+    /// deliveries still queued to a worker for those jobs are withdrawn.
+    ///
+    /// Idempotent across restarts: an ended job is skipped, and a job whose
+    /// failure reached its requester's queue before the record was saved (a
+    /// crash in between) is ended with that queued failure, not told twice.
+    /// Returns how many jobs ended.
+    ///
+    /// Blocking: it scans the workspace's job records and the queues of
+    /// their requesters.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first store or routing failure.
+    pub fn fail_unfinished_jobs(
+        &mut self,
+        store: &WorkspaceStore,
+        next_sequence: &mut dyn FnMut() -> u64,
+    ) -> Result<usize, ComputeTransportError> {
+        let mut unfinished: Vec<_> = store
+            .load_compute_jobs()?
+            .into_iter()
+            .filter(|record| !record.lifecycle.phase.is_terminal())
+            .collect();
+        if unfinished.is_empty() {
+            return Ok(0);
+        }
+        // Told in the order the jobs were asked for.
+        unfinished.sort_by_key(|record| (record.spec.issued_at_ms, record.spec.job_id));
+        let mut told = HashMap::new();
+        let requesters: BTreeSet<DeviceKey> = unfinished
+            .iter()
+            .map(|record| record.spec.requester)
+            .collect();
+        for requester in &requesters {
+            told.extend(queued_results(store, requester)?);
+        }
+        let mut ended: HashMap<DeviceKey, BTreeSet<[u8; 16]>> = HashMap::new();
+        for record in unfinished {
+            let (worker, job_id) = (record.spec.worker, record.spec.job_id);
+            let queued = told.remove(&job_id);
+            self.end_job(store, record, RELAY_RESTARTED, queued, next_sequence)?;
+            ended.entry(worker).or_default().insert(job_id);
+        }
+        for (worker, jobs) in &ended {
+            withdraw_queued(store, worker, jobs)?;
+        }
+        Ok(ended.values().map(BTreeSet::len).sum())
+    }
+
+    /// End `record` as [`ComputeJobPhase::Failed`] with `code`: route the
+    /// result to its requester, then save the record, so a crash in
+    /// between leaves the requester told rather than the job silently
+    /// ended. `queued` is a terminal result for the job already in the
+    /// requester's queue, which the record then takes instead.
+    fn end_job(
+        &mut self,
+        store: &WorkspaceStore,
+        mut record: DurableComputeJob,
+        code: &'static str,
+        queued: Option<ComputeResultUpdate>,
+        next_sequence: &mut dyn FnMut() -> u64,
+    ) -> Result<(), ComputeTransportError> {
+        let adopted = queued.filter(|result| {
+            validate_binding(&result.binding, &record.spec).is_ok()
+                && result.phase.is_terminal()
+                && record
+                    .lifecycle
+                    .clone()
+                    .advance(result.sequence, result.phase.clone())
+                    .is_ok()
+        });
+        let result = if let Some(result) = adopted {
+            result
+        } else {
             let result = ComputeResultUpdate {
                 binding: ComputeJobBinding {
                     workspace_id: record.spec.workspace_id,
@@ -1132,23 +1210,29 @@ impl ComputeTransportState {
                     requester: record.spec.requester,
                     worker: record.spec.worker,
                 },
-                sequence,
-                phase,
-                log_tail: explanation.to_vec(),
+                sequence: record.lifecycle.sequence.saturating_add(1),
+                phase: ComputeJobPhase::Failed { code: code.into() },
+                log_tail: failure_explanation(code).to_vec(),
             };
             self.route(
                 record.spec.requester,
-                &ComputeEnvelope::Result { result },
+                &ComputeEnvelope::Result {
+                    result: result.clone(),
+                },
                 store,
                 next_sequence(),
             )?;
-            self.settle(&record.spec.job_id, worker, false);
-            ended.insert(record.spec.job_id);
-        }
-        if !ended.is_empty() {
-            withdraw_queued(store, worker, &ended)?;
-        }
-        Ok(ended.len())
+            result
+        };
+        record
+            .lifecycle
+            .advance(result.sequence, result.phase)
+            .map_err(|_| ComputeTransportError::InvalidLifecycle)?;
+        record.log_bytes = record
+            .log_bytes
+            .saturating_add(u64::try_from(result.log_tail.len()).unwrap_or(u64::MAX));
+        store.save_compute_job(&record)?;
+        Ok(())
     }
 
     /// Durably enqueue an envelope and attempt immediate delivery when the
@@ -1366,6 +1450,37 @@ impl ComputeJobPhase {
             Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled
         )
     }
+}
+
+/// What the requester is told when its job ends with `code`.
+fn failure_explanation(code: &str) -> &'static [u8] {
+    match code {
+        WORKER_REVOKED => b"the worker's device certificate was revoked while it held the job",
+        WORKER_NOT_ADMITTED => b"the worker is no longer admitted to this workspace",
+        RELAY_RESTARTED => b"the relay restarted while the job was unfinished; nothing runs it now",
+        _ => b"the worker's connection to the relay ended while it held the job",
+    }
+}
+
+/// The terminal results queued to `requester`, by job.
+fn queued_results(
+    store: &WorkspaceStore,
+    requester: &DeviceKey,
+) -> Result<HashMap<[u8; 16], ComputeResultUpdate>, ComputeTransportError> {
+    let mut results = HashMap::new();
+    for entry in store.load_compute_pending(requester)? {
+        let Ok(ComputeEnvelope::Delivery { message, .. }) =
+            postcard::from_bytes::<ComputeEnvelope>(&entry.bytes)
+        else {
+            continue;
+        };
+        if let ComputeEnvelope::Result { result } = *message
+            && result.phase.is_terminal()
+        {
+            results.insert(result.binding.job_id, result);
+        }
+    }
+    Ok(results)
 }
 
 /// Drop deliveries queued to `worker` that concern a job in `ended`.
@@ -2379,6 +2494,188 @@ mod tests {
                 .fail_worker_jobs(&store, &[2; 32], WORKER_REVOKED, &mut next)
                 .unwrap(),
             0
+        );
+    }
+
+    /// The failure results queued to `device`, by job, with their queue
+    /// sequences.
+    fn queued_failures(
+        store: &WorkspaceStore,
+        device: &DeviceKey,
+    ) -> Vec<([u8; 16], u64, ComputeResultUpdate)> {
+        let mut failures = Vec::new();
+        for entry in store.load_compute_pending(device).unwrap() {
+            let ComputeEnvelope::Delivery {
+                sequence, message, ..
+            } = postcard::from_bytes::<ComputeEnvelope>(&entry.bytes).unwrap()
+            else {
+                panic!("the queue holds deliveries");
+            };
+            if let ComputeEnvelope::Result { result } = *message {
+                failures.push((result.binding.job_id, sequence, result));
+            }
+        }
+        failures.sort_by_key(|(job_id, ..)| *job_id);
+        failures
+    }
+
+    /// A relay that comes back after a crash ends every job it left
+    /// unfinished, Pending or Running, as `relay_restarted`: each requester
+    /// is told once, durably, the worker is not handed those jobs, and an
+    /// ended job is left as it was. Coming back again tells no one twice.
+    #[test]
+    fn a_restarted_relay_ends_every_unfinished_job_once() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut state, store) = admitted(root.path());
+        state
+            .accept_status(
+                [2; 32],
+                &store,
+                &ComputeStatusUpdate {
+                    binding: binding(),
+                    sequence: 1,
+                    phase: ComputeJobPhase::Running,
+                    log_tail: Vec::new(),
+                },
+            )
+            .unwrap();
+        // A second job, still Pending, its request still queued to the
+        // worker.
+        let mut pending = spec();
+        pending.job_id = [10; 16];
+        state
+            .accept_request([1; 32], 7, 200, &store, &pending)
+            .unwrap();
+        state
+            .route(
+                [2; 32],
+                &ComputeEnvelope::Request { spec: pending },
+                &store,
+                2,
+            )
+            .unwrap();
+        // A third job that completed before the crash.
+        let mut done = spec();
+        done.job_id = [11; 16];
+        state
+            .accept_request([1; 32], 7, 200, &store, &done)
+            .unwrap();
+        let done_binding = ComputeJobBinding {
+            job_id: [11; 16],
+            ..binding()
+        };
+        state
+            .accept_status(
+                [2; 32],
+                &store,
+                &ComputeStatusUpdate {
+                    binding: done_binding.clone(),
+                    sequence: 1,
+                    phase: ComputeJobPhase::Running,
+                    log_tail: Vec::new(),
+                },
+            )
+            .unwrap();
+        state
+            .accept_result(
+                [2; 32],
+                &store,
+                &ComputeResultUpdate {
+                    binding: done_binding,
+                    sequence: 2,
+                    phase: ComputeJobPhase::Completed {
+                        outputs: vec![[5; 32]],
+                    },
+                    log_tail: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        // The relay comes back: a fresh state over the same store.
+        let mut restarted = ComputeTransportState::default();
+        let mut sequence = 100;
+        let mut next = || {
+            sequence += 1;
+            sequence
+        };
+        assert_eq!(
+            restarted.fail_unfinished_jobs(&store, &mut next).unwrap(),
+            2
+        );
+        let restart = ComputeJobPhase::Failed {
+            code: RELAY_RESTARTED.into(),
+        };
+        for (job_id, sequence) in [([9; 16], 2), ([10; 16], 1)] {
+            let record = store.load_compute_job(&job_id).unwrap().unwrap().lifecycle;
+            assert_eq!((record.phase, record.sequence), (restart.clone(), sequence));
+        }
+        assert!(matches!(
+            store
+                .load_compute_job(&[11; 16])
+                .unwrap()
+                .unwrap()
+                .lifecycle
+                .phase,
+            ComputeJobPhase::Completed { .. }
+        ));
+        let told = queued_failures(&store, &[1; 32]);
+        assert_eq!(
+            told.iter()
+                .map(|(job_id, _, result)| (*job_id, result.sequence, result.phase.clone()))
+                .collect::<Vec<_>>(),
+            vec![([9; 16], 2, restart.clone()), ([10; 16], 1, restart)]
+        );
+        assert!(told.iter().all(|(.., result)| !result.log_tail.is_empty()));
+        assert!(
+            store.load_compute_pending(&[2; 32]).unwrap().is_empty(),
+            "the returning worker is not handed a job that already ended"
+        );
+
+        // Again: nothing is unfinished, and no one is told twice.
+        let mut again = ComputeTransportState::default();
+        assert_eq!(again.fail_unfinished_jobs(&store, &mut next).unwrap(), 0);
+        assert_eq!(queued_failures(&store, &[1; 32]), told);
+    }
+
+    /// A crash after a requester was told but before the job's record was
+    /// saved leaves the job unfinished on disk; the next start ends it with
+    /// the failure already queued rather than telling the requester twice.
+    #[test]
+    fn a_crash_between_telling_and_saving_tells_the_requester_once() {
+        let root = tempfile::tempdir().unwrap();
+        let (_, store) = admitted(root.path());
+        let before = store.load_compute_job(&[9; 16]).unwrap().unwrap();
+        let mut sequence = 100;
+        let mut next = || {
+            sequence += 1;
+            sequence
+        };
+        assert_eq!(
+            ComputeTransportState::default()
+                .fail_unfinished_jobs(&store, &mut next)
+                .unwrap(),
+            1
+        );
+        let told = queued_failures(&store, &[1; 32]);
+        assert_eq!(told.len(), 1);
+        // The record as the crash left it: told, not saved.
+        store.save_compute_job(&before).unwrap();
+
+        assert_eq!(
+            ComputeTransportState::default()
+                .fail_unfinished_jobs(&store, &mut next)
+                .unwrap(),
+            1
+        );
+        assert_eq!(queued_failures(&store, &[1; 32]), told);
+        let record = store.load_compute_job(&[9; 16]).unwrap().unwrap();
+        assert_eq!(
+            (record.lifecycle.phase, record.lifecycle.sequence),
+            (told[0].2.phase.clone(), told[0].2.sequence)
+        );
+        assert_eq!(
+            record.log_bytes,
+            u64::try_from(told[0].2.log_tail.len()).unwrap()
         );
     }
 

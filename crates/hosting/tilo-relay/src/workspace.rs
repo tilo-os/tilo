@@ -420,7 +420,7 @@ impl WorkspaceRuntime {
             None
         };
         let commits = CommitLedger::load(store.load_commits()?);
-        Ok(Self {
+        let mut runtime = Self {
             store,
             doc,
             persistence: None,
@@ -454,7 +454,34 @@ impl WorkspaceRuntime {
             commits,
             commit_claims: Arc::default(),
             commit_ledger_lane: Arc::new(AsyncMutex::new(())),
-        })
+        };
+        runtime.end_unfinished_compute_jobs();
+        Ok(runtime)
+    }
+
+    /// End the compute jobs an earlier run of this relay left unfinished.
+    /// Nothing in this process runs one yet: the runtime is opening, so no
+    /// compute session is attached, and a worker's jobs end with its
+    /// session to the relay. A failure leaves the jobs as they were rather
+    /// than keep the room from opening.
+    fn end_unfinished_compute_jobs(&mut self) {
+        let workspace_id = self.store.workspace_id();
+        match self.compute.fail_unfinished_jobs(
+            &self.store,
+            &mut crate::compute_session::next_queue_sequence,
+        ) {
+            Ok(0) => {}
+            Ok(ended) => tracing::info!(
+                workspace_id,
+                ended,
+                "ended the compute jobs a relay restart left unfinished"
+            ),
+            Err(error) => tracing::warn!(
+                workspace_id,
+                %error,
+                "could not end the compute jobs a relay restart left unfinished"
+            ),
+        }
     }
 
     /// The admission of `author`'s commit `op`, if this host remembers it.
