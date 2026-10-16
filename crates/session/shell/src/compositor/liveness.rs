@@ -714,13 +714,13 @@ mod tests {
         let threads = dump_threads();
         stop.store(true, Ordering::Relaxed);
         worker.join().unwrap();
-        let spin = threads
+        let listed = threads
             .iter()
             .find(|thread| thread.name == "liveness-spin")
             .expect("the spinning thread is listed");
         assert!(
-            spin.backtrace.starts_with("not interrupted:"),
-            "a thread on a core must not be interrupted: {spin:#?}"
+            listed.backtrace.starts_with("not interrupted:"),
+            "a thread on a core must not be interrupted: {listed:#?}"
         );
     }
 
