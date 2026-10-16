@@ -2834,6 +2834,24 @@ on = ["stable"]
 secrets = ["TAPP_PUBLISHER_IDENTITY"]
 # END generated
 
+# The nested development desktop (dist/dev/nested-session.sh): its host programs, thin apps, the
+# shared runtime library they link and its libstd, from one build. `t cargo build` copies back
+# programs only, and a thin app is useless without the exact libruntime_dylib.so of its graph,
+# so the session takes this check's outputs instead: `t outputs nested-session`.
+[[check]]
+name = "nested-session"
+run = "bash dist/dev/nested-session-build.sh /target/nested-session"
+inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "dist/dev/nested-session-build.sh", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/nested-session/**"]
+requires = ["arch=x86_64"]
+# The shell's optimised link and the runtime library's link run side by side; under a
+# compile-sized cap they were killed for memory.
+cpus = 16
+memory = "32G"
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
 # The desktop session for other distributions (release-desktop.yml, dist/): its packaging inputs,
 # checked before anything is built: the install contract, the packaging scripts' syntax, the
 # version each format carries, the RPM signing client's contract, the development session and
