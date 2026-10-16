@@ -81,7 +81,6 @@ pub fn build_mime(
 ) -> Result<Vec<u8>, String> {
     let to = parse_addr_list(&draft.to);
     let cc = parse_addr_list(&draft.cc);
-    let bcc = parse_addr_list(&draft.bcc);
 
     let mut builder = MessageBuilder::new()
         .from((from.display(), from.email.clone()))
@@ -103,9 +102,8 @@ pub fn build_mime(
     if !cc.is_empty() {
         builder = builder.cc(addr_tuples(&cc));
     }
-    if !bcc.is_empty() {
-        builder = builder.bcc(addr_tuples(&bcc));
-    }
+    // Blind recipients belong only in the SMTP envelope. A Bcc header here
+    // would disclose them to every recipient of these shared wire bytes.
 
     for attachment in &draft.attachments {
         let bytes = crate::attachment_store::materialize(content, attachment)?;
@@ -306,6 +304,34 @@ pub fn mime_from_filename(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outgoing_mime_does_not_disclose_blind_recipients() {
+        let draft = Draft {
+            to: "visible@example.test".into(),
+            cc: "copy@example.test".into(),
+            bcc: "Hidden Person <hidden@example.test>".into(),
+            body: "Private recipient list".into(),
+            ..Default::default()
+        };
+        let bytes = build_mime(
+            &tilo_content::ContentStore::memory(),
+            &Addr::bare("sender@example.test"),
+            &draft,
+        )
+        .unwrap();
+        let parsed = MessageParser::default().parse(&bytes).unwrap();
+        assert!(parsed.bcc().is_none());
+        assert!(!String::from_utf8_lossy(&bytes).contains("hidden@example.test"));
+        assert_eq!(
+            parsed.to().unwrap().first().unwrap().address(),
+            Some("visible@example.test")
+        );
+        assert_eq!(
+            parsed.cc().unwrap().first().unwrap().address(),
+            Some("copy@example.test")
+        );
+    }
 
     #[test]
     fn mime_build_parses_addresses_and_embeds_verified_attachments() {
