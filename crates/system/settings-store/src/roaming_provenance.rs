@@ -346,8 +346,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn save_preserves_atomic_publication_state() {
-        use atomic_file::test_support::{Checkpoint, with_failure};
-        use atomic_file::{PublicationState, publication_state};
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::{PublicationState, publication_state};
         use std::error::Error as _;
 
         let dir = tempfile::tempdir().unwrap();
