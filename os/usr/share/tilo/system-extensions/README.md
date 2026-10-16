@@ -324,11 +324,12 @@ digest-qualified image and the reviewed hash:
 ```sh
 t dispatch publish-extension-manifests \
   --input images=registry.tilo.so/tilo/tilo@sha256:… \
-  --input expected_content_sha256=…
+  --input expected_content_sha256=… \
+  --input publish=false
 ```
 
 It re-resolves using the same production recipe and rejects any material
-change before signing; with `expected_content_sha256` set,
+change before signing; with `publish=false`,
 `tools/ci/publish/extension-manifests.sh` signs without publishing
 (`publish.sh --sign-only`). Only
 `created` and `revision` timestamps are excluded from this hash; the image,
@@ -345,11 +346,9 @@ synthetic encode/decode or encrypted-session test; a test key is not evidence
 of image admission. A passing HEVC or VP8 test does not qualify H.264 or AirPlay.
 
 Later promotion is a separate explicit dispatch of the same immutable image
-without `expected_content_sha256`
-(`t dispatch publish-extension-manifests --input images=…`), which publishes
-what it resolves; check that its content hash is still the reviewed one.
-Re-resolution or copy drift must fail rather than silently publishing an
-untested package set. Revision and
+and the same reviewed hash with `publish=true` (the default), so
+re-resolution or copy drift fails rather than silently publishing an untested
+package set. Revision and
 creation time may advance; archive the exact signed bytes used by each test.
 The publisher rechecks the copied manifest immediately before signing. Any
 latest-feed publication can affect existing opted-in devices on the matching

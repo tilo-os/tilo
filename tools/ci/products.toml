@@ -928,7 +928,7 @@ resolves every extension inside itself, as root in a micro-VM step and without c
 the OS release key) and publishes those that changed. Mirrors drop superseded builds and
 publishers ship updates, so nothing is served from the cache."""
 each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
-fields = { dispatch_inputs = { images = "", expected_content_sha256 = "" } }
+fields = { dispatch_inputs = { images = "", expected_content_sha256 = "", publish = "true" } }
 
 [[matrix.check]]
 name = "extension-manifests-{arch}"

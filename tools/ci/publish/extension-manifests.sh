@@ -16,13 +16,17 @@
 # The images: T_INPUT_IMAGES, space-separated (registry.tilo.so/tilo/{tilo,tilo-ci,tilo-vm} by
 # :tag or @sha256:), else tilo:latest, tilo-vm:latest and tilo-vm:main-ci, skipping those not
 # published. T_INPUT_EXPECTED_CONTENT_SHA256, a reviewed media-codecs content hash
-# (resolve.py content-sha256), qualifies one immutable image: only media-codecs is resolved,
-# and publish signs without promoting (--sign-only).
+# (resolve.py content-sha256), binds one immutable image: only media-codecs is resolved, and
+# its content must match. T_INPUT_PUBLISH=false qualifies that image without promoting the
+# manifest into the client feed (--sign-only, which requires the hash); true, the default,
+# promotes it, still checked against the hash when one is given.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
 package_base=https://code.tilo.so/api/packages/tilo/generic
 expected=${T_INPUT_EXPECTED_CONTENT_SHA256:-}
+promote=${T_INPUT_PUBLISH:-true}
+[[ $promote == true || $promote == false ]] || die "publish must be true or false, not $promote"
 
 case ${1:-} in
   resolve)
@@ -37,7 +41,7 @@ case ${1:-} in
       explicit=false
       images=(registry.tilo.so/tilo/tilo:latest registry.tilo.so/tilo/tilo-vm:latest registry.tilo.so/tilo/tilo-vm:main-ci)
     fi
-    if [[ -n $expected ]]; then
+    if [[ $promote == false || -n $expected ]]; then
       [[ ${#images[@]} == 1 && ${images[0]} == *@sha256:* && $expected =~ ^[0-9a-f]{64}$ ]] \
         || die 'qualification requires one immutable image and a reviewed content hash'
     fi
@@ -120,7 +124,10 @@ case ${1:-} in
     mapfile -t manifests < <(find "$@" -type f -name '*.json' -print 2>/dev/null | LC_ALL=C sort)
     ((${#manifests[@]})) || die 'no lane resolved a manifest'
     mode=()
-    [[ -z $expected ]] || mode=(--sign-only)
+    if [[ $promote == false ]]; then
+      [[ -n $expected ]] || die 'a sign-only run qualifies one image against a reviewed content hash'
+      mode=(--sign-only)
+    fi
     failed=0
     for manifest in "${manifests[@]}"; do
       bash tools/extensions/publish.sh "${mode[@]}" "$manifest" || failed=1
