@@ -1339,6 +1339,19 @@ impl WindowGroup {
         self.bar.tabs()
     }
 
+    /// Mark tab `id` as held by someone else ([`crate::widget::TabHolder`]),
+    /// or clear the mark: such a tab offers no close and resists a drag.
+    /// `true` when that changed what the window offers.
+    pub fn set_tab_holder(&mut self, id: u64, holder: Option<crate::widget::TabHolder>) -> bool {
+        self.bar.set_holder(id, holder)
+    }
+
+    /// Whether someone else holds any of the window's tabs, so it does not
+    /// move as a whole.
+    pub fn is_held(&self) -> bool {
+        self.bar.tabs().iter().any(|tab| self.bar.is_held(tab.id))
+    }
+
     /// Replace tab `id`'s artwork. `true` when that changed what it paints.
     pub fn set_tab_icon(&mut self, id: u64, icon: Option<icons::AppImage>) -> bool {
         self.bar.set_icon(id, icon)
@@ -1647,7 +1660,9 @@ impl WindowGroup {
             self.clear_maximized_controls();
         }
         for action in self.maximized_controls.take_activated() {
-            if action == CLOSE_TARGET {
+            if action == CLOSE_TARGET && self.bar.is_held(self.bar.active_id()) {
+                // Someone else's window is not this person's to close.
+            } else if action == CLOSE_TARGET {
                 let active = self.bar.active_id();
                 self.bar.start_closing(active);
                 let _ = self.bar.take_close();
@@ -2267,6 +2282,9 @@ impl WindowGroup {
     /// pill row, painted into `self.close_rect` (already computed by
     /// [`Self::draw_maximized_buttons`]).
     fn draw_maximized_close_button(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        if self.bar.is_held(self.bar.active_id()) {
+            return;
+        }
         crate::surface::shadow(
             scene,
             transform,
@@ -2890,6 +2908,10 @@ impl Widget for WindowGroup {
             }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
+        if !self.maximized && self.navigation_bar_visible() {
+            self.bar
+                .draw_holder_chip(scene, transform, tr, theme, self.rect);
+        }
         // Only under the pointer or while dragging: at rest the grip sits on
         // the window's own trailing edge, over its content, where it reads
         // as that app's scrollbar (and stays put when the app's panels go).

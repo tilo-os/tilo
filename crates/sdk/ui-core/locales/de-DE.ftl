@@ -1,5 +1,6 @@
 counter = Wert: { $count }
 tab-modified = Nicht gespeicherte Änderungen
+tab-held-by = Fenster von { $name }
 
 standalone-history-title = Verlauf
 standalone-history-restore = Diese Version wiederherstellen…

@@ -238,7 +238,35 @@ impl Rooms {
                 self.authorize(device, Some(&room), RoomOp::Govern(governance::INVITE), now)?;
                 RoomsReply::Notices(room.admissions.notices())
             }
+            RoomsRequest::Permits { room, node } => {
+                RoomsReply::Permits(self.page_permits(&room, device, &node).await?)
+            }
         })
+    }
+
+    /// Whether `device`'s person may make an undoable change at `node` of
+    /// `room`, decided as their writes there are.
+    async fn page_permits(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        node: &str,
+    ) -> Result<bool, CollaborationError> {
+        let node: tilo_action_policy::TreePath = node
+            .parse()
+            .map_err(|_| CollaborationError::new("not a node of the room's tree"))?;
+        let state = self.room(room).await?;
+        let governed = state.lock().await;
+        if node.room_id() != Some(governed.room()) {
+            return Err(CollaborationError::new("the node is not in this room"));
+        }
+        let now = system_time(tilo_clock::unix_now_ns());
+        let member = governed
+            .peer()
+            .permissions(device.device_public_key, now)
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
     }
 
     /// A page's change to who is in a room and with which role.

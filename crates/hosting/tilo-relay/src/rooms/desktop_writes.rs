@@ -1,0 +1,173 @@
+//! Members' writes to a governed room's shared desktop, decided before the
+//! relay keeps them.
+//!
+//! Whoever may edit the room may write its desktop. What a write does to a
+//! strip or window someone else made (closing, moving, renaming it) is
+//! moderation, decided on that item's `moderation` node with the writer's
+//! own grants ([`crate::desktop_guard`]). Every door a member's write enters
+//! by asks [`Rooms::decide_desktop_write`] first; a refused write is neither
+//! kept nor forwarded, like any change the room does not grant.
+
+use collab_types::DocumentMutation;
+use tilo_action_policy::ActionKind;
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, act_node};
+
+use super::{GovernedRoom, Rooms, SystemTime};
+use crate::desktop_guard::DesktopGuard;
+
+/// Whether `(app, record)` is a room's shared desktop.
+pub(crate) fn is_desktop(app: &str, record: &str) -> bool {
+    app == DESKTOP_APP && record == DESKTOP_RECORD
+}
+
+/// Whether `body`, a member's retained write, is one of the room's shared
+/// desktop: what a door asks before taking the room's lock for it.
+pub(crate) fn writes_desktop(body: &[u8]) -> bool {
+    matches!(
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
+        Ok(neighbour_wire::NeighbourMsg::AppDocument { app_id, record_id, .. })
+            if is_desktop(&app_id, &record_id)
+    )
+}
+
+impl GovernedRoom {
+    /// The shared desktop as the room's writes are decided against, started
+    /// from the governor's copy the first time a write needs it.
+    async fn desktop_guard(&mut self) -> Result<&mut DesktopGuard, String> {
+        if self.desktop.is_none() {
+            let held = self.held_desktop().await?;
+            let doc = match held {
+                Some(bytes) => automerge::AutoCommit::load(&bytes).map_err(|e| e.to_string())?,
+                None => automerge::AutoCommit::new(),
+            };
+            self.desktop = Some(DesktopGuard::new(doc));
+        }
+        self.desktop
+            .as_mut()
+            .ok_or_else(|| "the shared desktop is not followed".into())
+    }
+
+    /// The governor's copy of the shared desktop, sealed or not.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    async fn held_desktop(&self) -> Result<Option<Vec<u8>>, String> {
+        self.readable_document(DESKTOP_APP, DESKTOP_RECORD).await
+    }
+
+    /// The governor's copy of the shared desktop, written in the clear.
+    #[cfg(not(any(feature = "agents", feature = "web")))]
+    #[expect(
+        clippy::unused_async,
+        reason = "one signature with the build that opens sealed records"
+    )]
+    async fn held_desktop(&self) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.peer.document(DESKTOP_APP, DESKTOP_RECORD))
+    }
+
+    /// Take in a change the governor made to `(app, record)` itself, when it
+    /// is the shared desktop the room's writes are decided against.
+    #[cfg(feature = "agents")]
+    pub(super) fn absorb_desktop(
+        &mut self,
+        (app, record): (&str, &str),
+        doc: &mut automerge::AutoCommit,
+    ) {
+        if is_desktop(app, record)
+            && let Some(guard) = self.desktop.as_mut()
+        {
+            guard.absorb(doc, tilo_clock::unix_now_ms());
+        }
+    }
+
+    /// The mutation `envelope` carries: opened with the channel's keys when
+    /// it is sealed. `None` when this relay cannot read it (a sealed write
+    /// of a channel it does not steward, or one segment of a larger
+    /// mutation): the room's devices decide it then.
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        expect(
+            clippy::unused_async,
+            reason = "one signature with the build that opens sealed records"
+        )
+    )]
+    async fn readable_mutation(
+        &self,
+        envelope: &collab_types::SignedOp,
+    ) -> Result<Option<DocumentMutation>, String> {
+        let payload = if envelope.encryption.is_some() {
+            #[cfg(any(feature = "agents", feature = "web"))]
+            match self
+                .open_write(DESKTOP_APP, DESKTOP_RECORD, envelope)
+                .await?
+            {
+                Some(plaintext) => plaintext,
+                None => return Ok(None),
+            }
+            #[cfg(not(any(feature = "agents", feature = "web")))]
+            return Ok(None);
+        } else {
+            envelope.payload.clone()
+        };
+        match DocumentMutation::decode(&payload) {
+            Ok(mutation) => Ok(Some(mutation)),
+            Err(collab_types::DocumentMutationError::Segmented) => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
+impl Rooms {
+    /// Decide `author`'s write `body` (a retained document message) to
+    /// `room`'s shared desktop. Anything else, and the relay's own writes,
+    /// pass untouched.
+    ///
+    /// # Errors
+    /// Why the room refuses it: it closes, moves or renames something its
+    /// author did not make and may not moderate, or it is not a desktop.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked while its desktop decides the write and takes it in"
+    )]
+    pub(crate) async fn decide_desktop_write(
+        &self,
+        room: &str,
+        author: [u8; 32],
+        body: &[u8],
+    ) -> Result<(), String> {
+        if author == self.inner.host.cert.device_public_key {
+            return Ok(());
+        }
+        let Ok(neighbour_wire::NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
+        }) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+        else {
+            return Ok(());
+        };
+        if !is_desktop(&app_id, &record_id) || envelope.kind != collab_types::OpKind::Change {
+            return Ok(());
+        }
+        let state = self.room(room).await.map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        let now = SystemTime::now();
+        let member = governed.peer().permissions(author, now)?;
+        let Some(mutation) = governed.readable_mutation(&envelope).await? else {
+            tracing::debug!(%room, "a shared desktop write this relay cannot read is left to the room's devices");
+            return Ok(());
+        };
+        let room_id = governed.room().to_owned();
+        let allows = |act: &tilo_desktop_model::ownership::Touched| {
+            member.allows(&act_node(&room_id, act), ActionKind::Undoable, now)
+        };
+        let guard = governed.desktop_guard().await?;
+        guard
+            .decide(
+                &mutation,
+                &member.person,
+                tilo_clock::unix_now_ms(),
+                &allows,
+            )
+            .map_err(|refusal| refusal.to_string())
+    }
+}

@@ -29,6 +29,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
@@ -44,6 +45,10 @@ use ui::state::{DocumentFrontier, DocumentReplica};
 const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 pub(crate) const DESKTOP_RECORD: &str = "desktop";
 const DESKTOP_KEY: &str = "desktop";
+/// How often a page asks again whether the room lets its person moderate
+/// the shared desktop: a role the room grants while they are in it reaches
+/// their page within this.
+const MODERATION_ASK_EVERY_MS: u64 = 30_000;
 
 thread_local! {
     static ROOMS: RefCell<HashMap<u32, Rc<RefCell<Room>>>> = RefCell::new(HashMap::new());
@@ -95,6 +100,12 @@ pub(crate) struct Room {
     /// Changes this page made to the room: to its records, sent, and to its
     /// desktop's windows (opened, closed, moved), not the desktop it joined.
     authored: u64,
+    /// Whether the room lets this page's person close and move what others
+    /// made on the shared desktop: the attached desktop's flag, set from the
+    /// room's answer.
+    moderates: Arc<AtomicBool>,
+    /// When the page last asked the room that (Unix milliseconds).
+    asked_moderation_ms: Option<u64>,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -145,6 +156,8 @@ pub(crate) fn open(
         stored: BTreeSet::new(),
         unapplied: HashSet::new(),
         authored: 0,
+        moderates: Arc::default(),
+        asked_moderation_ms: None,
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
@@ -227,6 +240,10 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         {
             warn(&format!("shared desktop not applied: {error}"));
         }
+        if let Some((_, shared)) = &attachment.desktop {
+            room.moderates = Arc::clone(&shared.moderates);
+            room.asked_moderation_ms = None;
+        }
         room.mounts.insert(
             mount,
             Mounted {
@@ -255,6 +272,7 @@ pub(crate) fn pump(id: u32) {
     for notify in notify {
         notify();
     }
+    room.borrow_mut().ask_moderation_when_due();
     publish(id);
 }
 
@@ -272,6 +290,72 @@ fn warn(message: &str) {
 }
 
 impl Room {
+    /// Ask the room, at most every [`MODERATION_ASK_EVERY_MS`], whether it
+    /// lets this page's person close and move what others made on its
+    /// shared desktop; the answer sets the desktop's flag and wakes it.
+    fn ask_moderation_when_due(&mut self) {
+        if !self.ready
+            || !self
+                .mounts
+                .values()
+                .any(|mounted| mounted.attachment.desktop.is_some())
+        {
+            return;
+        }
+        let now = crate::shell::now_ms();
+        if self
+            .asked_moderation_ms
+            .is_some_and(|at| now.saturating_sub(at) < MODERATION_ASK_EVERY_MS)
+        {
+            return;
+        }
+        self.asked_moderation_ms = Some(now);
+        let moderates = Arc::clone(&self.moderates);
+        let wake: Vec<_> = self
+            .mounts
+            .values()
+            .map(|mounted| Arc::clone(&mounted.attachment.notify))
+            .collect();
+        let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
+            room: self.uuid.clone(),
+            node: tilo_desktop_model::ownership::moderation_node(&self.uuid).to_string(),
+        };
+        let _ = self.peer.rooms_then(
+            request,
+            Box::new(move |answer| {
+                let now = matches!(
+                    answer,
+                    Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(true))
+                );
+                if moderates.swap(now, Ordering::Relaxed) != now {
+                    for wake in &wake {
+                        wake();
+                    }
+                }
+            }),
+        );
+    }
+
+    /// Whether `value`, this page's desktop, closes, moves or renames
+    /// something on the room's desktop that its person did not make and may
+    /// not moderate: the room refuses such a write, so it is never sent.
+    fn rearranges_others(&self, value: &serde_json::Value, author: &str) -> bool {
+        if self.moderates.load(Ordering::Relaxed) {
+            return false;
+        }
+        let Some(room) = &self.desktop_value else {
+            return false;
+        };
+        let parse = |value: &serde_json::Value| {
+            serde_json::from_value::<tilo_desktop_model::ownership::SharedDesktop>(value.clone())
+                .ok()
+        };
+        let (Some(before), Some(after)) = (parse(room), parse(value)) else {
+            return false;
+        };
+        !tilo_desktop_model::ownership::foreign_acts(&before, &after, author).is_empty()
+    }
+
     /// Every record a mount has open in this room, as wire `(app, record)`.
     fn open_records(&self) -> impl Iterator<Item = (String, String)> + '_ {
         self.mounts.values().flat_map(|mounted| {
@@ -312,6 +396,7 @@ impl Room {
             match event {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
                     self.ready = true;
+                    self.asked_moderation_ms = None;
                 }
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
@@ -644,6 +729,22 @@ impl Room {
             return;
         };
         if self.desktop_value.as_ref() == Some(&value) {
+            return;
+        }
+        if self.rearranges_others(&value, &author) {
+            // Whatever moved someone else's window (a command, a race with
+            // their own move) is undone here: it springs back to where the
+            // room has it, and nothing is sent.
+            if let Some(room) = &self.desktop_value {
+                for mounted in self.mounts.values() {
+                    if let Some((handle, shared)) = &mounted.attachment.desktop {
+                        if let Err(error) = crate::desktop::return_to(handle, shared, room) {
+                            warn(&format!("shared desktop not restored: {error}"));
+                        }
+                        (mounted.attachment.notify)();
+                    }
+                }
+            }
             return;
         }
         // The desktop this page joined with is not something the person did.

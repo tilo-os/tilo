@@ -3,7 +3,7 @@
 
 use super::{
     AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
-    enqueue_state_inner, governor_notice, resume_record, unix_now_ns, unpublished,
+    desktop_refusal, enqueue_state_inner, governor_notice, resume_record, unix_now_ns, unpublished,
 };
 
 /// Spends `peer`'s budget for one change, unless the relay's own user sent
@@ -97,6 +97,9 @@ pub(super) async fn handle_commit(
         delta,
         signature: [0; 64],
     };
+    if let Some(reason) = desktop_refusal(&ws, author_device_public_key, &delta).await {
+        return refused(&reason);
+    }
     let authored = delta.clone();
     let admitted = Box::pin(enqueue_state_inner(
         &ws,

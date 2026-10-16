@@ -21,6 +21,7 @@ pub mod grants;
 pub mod history;
 pub mod ids;
 pub mod layout;
+pub mod ownership;
 pub mod partition;
 pub mod projection;
 pub mod records;

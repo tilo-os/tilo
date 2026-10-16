@@ -190,6 +190,28 @@ struct GroupDrag {
     moved: bool,
     /// The finger carrying the drag; `None` for the pointer.
     touch: Option<u64>,
+    /// Someone else holds a window of the group
+    /// ([`WindowGroup::is_held`]): it follows the drag a little and springs
+    /// back, and never moves.
+    held: bool,
+}
+
+/// How far a held group follows a drag before it stops, and how long it
+/// takes to spring back once let go.
+const GROUP_RESIST_REACH_PX: f32 = 18.0;
+const GROUP_RESIST_RETURN_MS: u64 = 260;
+
+/// `delta` as a held window follows it: a rubber band that gives a little
+/// and no more, less so up and down.
+fn resisted(delta: vello::kurbo::Vec2) -> vello::kurbo::Vec2 {
+    let pull = |d: f64| {
+        f64::from(crate::tokens::rubber_band(
+            crate::num::f32_of_f64(d.abs()),
+            GROUP_RESIST_REACH_PX,
+        ))
+        .copysign(d)
+    };
+    vello::kurbo::Vec2::new(pull(delta.x), pull(delta.y) / 2.0)
 }
 
 /// The one spatial answer to a tab drag within a strip — the desktop
@@ -310,6 +332,9 @@ pub struct GroupRow {
     /// In-flight whole-group reorder drag (distinct from a tab-detach
     /// drag inside a child `TabBar`, and from an inter-group resize drag).
     group_drag: Option<GroupDrag>,
+    /// A held group a drag let go of, springing back: its id, how far it
+    /// was pulled, and when it was let go.
+    group_resist_back: Option<(u64, vello::kurbo::Vec2, Instant)>,
     /// One-finger swipe on the tab bar that is panning the strip.
     touch_pan: Option<TouchPan>,
     /// Insertion gap index targeted by an in-progress reorder drag;
@@ -1000,6 +1025,7 @@ impl GroupRow {
             promotion_keeps_controls: false,
             hidden: false,
             group_drag: None,
+            group_resist_back: None,
             touch_pan: None,
             group_reorder_target: None,
             group_reorder_lane: None,
@@ -2833,7 +2859,7 @@ impl GroupRow {
             .groups
             .iter()
             .position(|g| g.bar_grab_hit(at) || (touch.is_some() && g.touch_grab_hit(at)))
-            && let Some(group_id) = self.groups.get(idx).map(|g| g.id)
+            && let Some((group_id, held)) = self.groups.get(idx).map(|g| (g.id, g.is_held()))
         {
             self.group_drag = Some(GroupDrag {
                 src_idx: idx,
@@ -2842,6 +2868,7 @@ impl GroupRow {
                 lifted_at: crate::time::now(),
                 moved: false,
                 touch,
+                held,
             });
         }
     }
@@ -2860,6 +2887,10 @@ impl GroupRow {
             }
         }
         self.group_drag = Some(drag);
+        if drag.moved && drag.held {
+            // Pulled, never placed: there is no gap to drop it in.
+            return true;
+        }
         if drag.moved {
             let (target, lane) = self.group_insertion_for(self.last_cursor);
             self.group_reorder_target = Some(target);
@@ -2876,6 +2907,15 @@ impl GroupRow {
             return false;
         };
         let claimed = drag.moved;
+        if drag.held {
+            if drag.moved {
+                let pull = resisted(self.last_cursor - drag.start);
+                self.group_resist_back = Some((drag.group_id, pull, crate::time::now()));
+            }
+            self.group_reorder_target = None;
+            self.group_reorder_lane = None;
+            return claimed;
+        }
         let lane = self.group_reorder_lane.take();
         if commit
             && drag.moved
@@ -2885,6 +2925,24 @@ impl GroupRow {
         }
         self.group_reorder_target = None;
         claimed
+    }
+
+    /// How far the group `id`, which someone else holds a window of, is
+    /// pulled by a drag on it, or springs back after one.
+    fn group_pull(&self, id: u64) -> Option<vello::kurbo::Vec2> {
+        if let Some(drag) = self
+            .group_drag
+            .filter(|drag| drag.held && drag.moved && drag.group_id == id)
+        {
+            return Some(resisted(self.last_cursor - drag.start));
+        }
+        let (group, pull, at) = self.group_resist_back?;
+        let back = Duration::from_millis(GROUP_RESIST_RETURN_MS);
+        let elapsed = at.elapsed();
+        if group != id || elapsed >= back {
+            return None;
+        }
+        Some(pull * (1.0 - crate::ease_out(elapsed.as_secs_f64() / back.as_secs_f64())))
     }
 
     /// A finger on the tab bar (pills or ground) may become a strip pan.
@@ -4228,6 +4286,9 @@ impl Widget for GroupRow {
         self.snap_in_flight()
             || self.shift_in_flight()
             || self.group_drag_active()
+            || self
+                .group_resist_back
+                .is_some_and(|(id, _, _)| self.group_pull(id).is_some())
             || self.sibling_fade.is_animating(crate::time::now())
             || self
                 .groups
@@ -4413,9 +4474,13 @@ impl GroupRow {
             } else {
                 transform
             };
+            let t = match self.group_pull(id) {
+                Some(pull) => pull_transform(t, pull),
+                None => t,
+            };
             let source_is_lifted = self
                 .group_drag
-                .is_some_and(|drag| drag.moved && drag.group_id == id);
+                .is_some_and(|drag| drag.moved && !drag.held && drag.group_id == id);
             let fading_sibling =
                 fade_hero.is_some_and(|hero| hero != id) && fade_alpha < 1.0 - f32::EPSILON;
             if fading_sibling && fade_alpha <= f32::EPSILON {
@@ -4602,7 +4667,7 @@ impl GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let Some(drag) = self.group_drag.filter(|drag| drag.moved) else {
+        let Some(drag) = self.group_drag.filter(|drag| drag.moved && !drag.held) else {
             return;
         };
         let Some(group) = self
@@ -5079,6 +5144,14 @@ impl GroupRow {
 )]
 fn shift_transform(base: Affine, dx: f64) -> Affine {
     base * Affine::translate((dx, 0.0))
+}
+
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
+)]
+fn pull_transform(base: Affine, pull: vello::kurbo::Vec2) -> Affine {
+    base * Affine::translate(pull)
 }
 
 /// Zero-area rects are skipped — a name means "on screen now".
@@ -6286,6 +6359,57 @@ mod tests {
         drag_group_to_end_reorders_group_vector_and_publishes_one_shot();
         drag_group_backwards_between_two_groups();
         plain_click_on_bar_background_does_not_reorder();
+    }
+
+    /// A window someone else holds follows a drag a little, springs back
+    /// and never moves.
+    #[test]
+    fn a_held_window_resists_a_drag_and_stays_in_place() {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        row.groups[0].set_tab_holder(
+            1,
+            Some(crate::widget::TabHolder {
+                name: "Ben".into(),
+                rgb: (200, 80, 40),
+            }),
+        );
+        assert!(row.groups[0].is_held());
+        let grab = group_grab_point(&row, 0);
+        press_at(&mut row, &taffy, root, grab);
+        let past = Point::new(row.groups[2].get_rect().center().x + 60.0, grab.y);
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(past.x, past.y),
+            },
+        );
+        assert_eq!(
+            row.group_reorder_target(),
+            None,
+            "there is no gap to drop it in"
+        );
+        let pull = row.group_pull(100).expect("it follows the drag");
+        assert!(
+            pull.x > 0.0 && pull.x < f64::from(GROUP_RESIST_REACH_PX),
+            "{pull:?}"
+        );
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(row.group_ids(), vec![100, 200, 300]);
+        assert_eq!(row.take_pending_group_reorder(), None);
+        assert!(row.group_pull(100).is_some(), "it springs back");
+        assert!(row.needs_animation_frame());
     }
 
     #[test]

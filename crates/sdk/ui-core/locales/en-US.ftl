@@ -1,5 +1,6 @@
 counter = Value: { $count }
 tab-modified = Unsaved changes
+tab-held-by = { $name }’s window
 standalone-search-title = Search
 standalone-history-title = History
 standalone-history-close = Close history

@@ -31,6 +31,8 @@ mod authority;
 mod collaboration;
 mod content;
 pub use content::RoomContent;
+mod desktop_writes;
+pub(crate) use desktop_writes::writes_desktop;
 mod member_records;
 pub use member_records::PreparedRecord;
 mod pages;
@@ -184,6 +186,9 @@ struct GovernedRoom {
     /// whole history.
     #[cfg(any(feature = "agents", feature = "web"))]
     compaction_wait: usize,
+    /// The room's shared desktop as members' writes of it are decided,
+    /// followed from the first such write ([`desktop_writes`]).
+    desktop: Option<crate::desktop_guard::DesktopGuard>,
 }
 
 impl RoomRecord {
@@ -243,6 +248,7 @@ impl GovernedRoom {
             publisher: Arc::default(),
             #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
+            desktop: None,
         };
         this.persist()?;
         Ok(this)
@@ -286,6 +292,7 @@ impl GovernedRoom {
             publisher: Arc::default(),
             #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
+            desktop: None,
         })
     }
 
