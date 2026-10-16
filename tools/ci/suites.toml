@@ -896,8 +896,8 @@ inputs = [
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
   # Canonical worker builder sources and the real packaging manifest fixture.
   "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
-  # Workspace certification tells a compute package from a window by its manifest.
-  "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml",
+  # Workspace certification tells a windowless service from a window by its manifest.
+  "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml", "apps/web-search/tilo-app.toml", "apps/osk/tilo-app.toml",
   # The production resource regression reads Music and its whole normal local
   # dependency closure. SDK/platform/vendor roots above already cover theirs;
   # keep the remaining source roots explicit when the Music graph changes.
