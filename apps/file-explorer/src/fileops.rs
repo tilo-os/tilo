@@ -17,7 +17,7 @@ const MAX_DESTINATION_SUFFIX: u32 = 10_000;
 /// Both action prompts and inline rename reach these operations. In
 /// particular, `.` and `..` must not be accepted as names: either would make
 /// a supposedly local operation address an ancestor directory instead.
-fn leaf_name(name: &str) -> Result<&str, String> {
+pub(crate) fn leaf_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err(crate::i18n::t("files-name-empty"));
