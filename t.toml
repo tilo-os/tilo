@@ -1984,7 +1984,7 @@ image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da3
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/room-service /target/publish/room-service"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-room-service"]
-outputs = ["/target/publish/room-service/payload.json", "/target/publish/room-service/signature"]
+outputs = ["/target/publish/room-service/payload.json", "/target/publish/room-service/signature", "/target/publish/room-service/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=x86_64"]
@@ -2031,7 +2031,7 @@ image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da3
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/web-entry /target/publish/web-entry"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-web-entry"]
-outputs = ["/target/publish/web-entry/payload.json", "/target/publish/web-entry/signature"]
+outputs = ["/target/publish/web-entry/payload.json", "/target/publish/web-entry/signature", "/target/publish/web-entry/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=x86_64"]
@@ -2105,7 +2105,7 @@ image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da3
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/release-rehearsal /target/publish/release-rehearsal"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-release-rehearsal"]
-outputs = ["/target/publish/release-rehearsal/payload.json", "/target/publish/release-rehearsal/signature"]
+outputs = ["/target/publish/release-rehearsal/payload.json", "/target/publish/release-rehearsal/signature", "/target/publish/release-rehearsal/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=x86_64"]
@@ -2623,7 +2623,7 @@ image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da3
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-relay /target/publish/relay"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-relay"]
-outputs = ["/target/publish/relay/payload.json", "/target/publish/relay/signature", "/target/publish/relay/bundle.json"]
+outputs = ["/target/publish/relay/payload.json", "/target/publish/relay/signature", "/target/publish/relay/dry-run.pub", "/target/publish/relay/bundle.json"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 requires = ["arch=x86_64"]
@@ -2668,7 +2668,7 @@ image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da3
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-legacy-guest", "legacy-guest-e2e"]
-outputs = ["/target/publish/legacy-guest/image/payload.json", "/target/publish/legacy-guest/image/signature", "/target/publish/legacy-guest/image/bundle.json"]
+outputs = ["/target/publish/legacy-guest/image/payload.json", "/target/publish/legacy-guest/image/signature", "/target/publish/legacy-guest/image/dry-run.pub", "/target/publish/legacy-guest/image/bundle.json"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 requires = ["arch=x86_64"]
@@ -2860,7 +2860,7 @@ bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel-buildroot /t
 """
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-kernel-buildroot-x86_64", "image-kernel-buildroot-aarch64"]
-outputs = ["/target/publish/kernel-buildroot/x86_64/payload.json", "/target/publish/kernel-buildroot/x86_64/signature", "/target/publish/kernel-buildroot/x86_64/bundle.json", "/target/publish/kernel-buildroot/aarch64/payload.json", "/target/publish/kernel-buildroot/aarch64/signature", "/target/publish/kernel-buildroot/aarch64/bundle.json"]
+outputs = ["/target/publish/kernel-buildroot/x86_64/payload.json", "/target/publish/kernel-buildroot/x86_64/signature", "/target/publish/kernel-buildroot/x86_64/dry-run.pub", "/target/publish/kernel-buildroot/x86_64/bundle.json", "/target/publish/kernel-buildroot/aarch64/payload.json", "/target/publish/kernel-buildroot/aarch64/signature", "/target/publish/kernel-buildroot/aarch64/dry-run.pub", "/target/publish/kernel-buildroot/aarch64/bundle.json"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 requires = ["arch=x86_64"]

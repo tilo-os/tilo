@@ -281,7 +281,9 @@ class Product:
             env["TILO_SIGN_TLOG"] = "1"
         outputs = []
         for d, _ in self.published:
-            outputs += [f"{d}/payload.json", f"{d}/signature"]
+            # dry-run.pub exists only in a dry run (TILO_PUBLISH_DRY_RUN): the throwaway key's
+            # public half, which the publishing check's dry run verifies the signature against.
+            outputs += [f"{d}/payload.json", f"{d}/signature", f"{d}/dry-run.pub"]
             if self.data.get("tlog"):
                 outputs.append(f"{d}/bundle.json")
         return {
