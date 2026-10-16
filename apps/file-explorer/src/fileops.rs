@@ -265,6 +265,16 @@ pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     transfer_into_with(src, dest_dir, true, &mut NoopTransferObserver)
 }
 
+/// Restore a moved item's original name, even when its current name was
+/// suffixed to avoid a collision in the destination folder.
+pub(crate) fn move_into_named(
+    src: &Path,
+    dest_dir: &Path,
+    name: &std::ffi::OsStr,
+) -> Result<PathBuf, String> {
+    transfer_into_named_with(src, dest_dir, name, true, &mut NoopTransferObserver)
+}
+
 /// Portable source capabilities passed to host admission hooks.
 pub use cap_std::fs::{Dir as SourceDirectory, OpenOptions as SourceOpenOptions};
 
