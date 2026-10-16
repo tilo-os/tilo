@@ -182,6 +182,7 @@ struct GovernedRoom {
     /// Member writes to follow before compacting a sealed record history
     /// again, after a compaction failed: each attempt opens and merges the
     /// whole history.
+    #[cfg(any(feature = "agents", feature = "web"))]
     compaction_wait: usize,
 }
 
@@ -240,6 +241,7 @@ impl GovernedRoom {
             record,
             peer,
             publisher: Arc::default(),
+            #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
         };
         this.persist()?;
@@ -282,6 +284,7 @@ impl GovernedRoom {
             path,
             stewardship,
             publisher: Arc::default(),
+            #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
         })
     }
