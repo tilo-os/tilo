@@ -1,4 +1,4 @@
-use shell::network::wayland::{ClientState, WaylandServer};
+use crate::support::headless_wayland::{ClientState, WaylandServer};
 use shell::security::container::Container;
 use smithay::{
     reexports::calloop::generic::Generic,

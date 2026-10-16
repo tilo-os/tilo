@@ -9,6 +9,7 @@
 )]
 
 pub mod desktop;
+pub mod headless_wayland;
 pub mod host;
 pub mod peer_stream;
 pub mod snapshot;

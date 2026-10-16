@@ -19312,7 +19312,10 @@ mod tests {
                     .active_workspace()
                     .expect("active workspace")
                     .room;
-                let noted = tree.note_peer_present(room, 0x51, "alice");
+                let noted = tree.admit_collaborator_in_room(
+                    room,
+                    crate::shell::state::Collaborator::new("alice", "alice").with_session(0x51),
+                );
                 drop(tree);
                 assert!(noted);
             }

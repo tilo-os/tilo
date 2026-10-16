@@ -1,7 +1,7 @@
 //! Live window previews end to end, through the production chain:
 //!
 //! ```text
-//!   tab_binding::adopt_toplevel → foreign::reconcile_foreign_tabs
+//!   tab_binding::adopt_toplevel
 //!     → ForeignFrameStore::publish_rgba       (what a client commit fills)
 //!     → the overview opens / Alt+Tab is held  (chrome now wants previews)
 //!     → WindowPreviewRenderer::refresh        (what CaptureExecutor runs each frame)
@@ -12,11 +12,11 @@
 
 use std::time::Instant;
 
-use shell::compositor::foreign::{self, store};
+use shell::compositor::foreign::store;
 use shell::compositor::frame::FrameBuilder;
 use shell::compositor::tab_binding;
 use shell::compositor::window_previews::{PreviewBackend, WindowPreviewRenderer};
-use shell::shell::state::{TileContent, WorkspaceTree};
+use shell::shell::state::TileContent;
 use shell::shell::window_previews::{
     MAX_PREVIEW_HEIGHT, MAX_PREVIEW_WIDTH, MAX_PREVIEWS, REFRESH_INTERVAL, RENDERS_PER_REFRESH,
 };
@@ -49,16 +49,14 @@ fn hosts_surface(tile: &TileContent, surface: u64) -> bool {
 /// A frame builder whose current room holds the demo windows plus one
 /// client per `(surface, app id)`, the first of them focused.
 fn desktop(clients: &[(u64, &str)]) -> FrameBuilder {
-    let mut protocol = WorkspaceTree::bootstrap_demo();
-    for (surface, app_id) in clients {
-        store().forget(*surface);
-        tab_binding::adopt_toplevel(&mut protocol, *surface, Some((*app_id).to_string()));
-    }
     let mut fb = FrameBuilder::new((W, H));
     {
         let chrome = fb.chrome();
         let mut rendered = chrome.tree_mut();
-        assert!(foreign::reconcile_foreign_tabs(&protocol, &mut rendered));
+        for (surface, app_id) in clients {
+            store().forget(*surface);
+            tab_binding::adopt_toplevel(&mut rendered, *surface, Some((*app_id).to_string()));
+        }
         if let Some((first, _)) = clients.first() {
             let focus = rendered
                 .desktop

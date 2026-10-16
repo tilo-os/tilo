@@ -133,10 +133,6 @@ so you can compare configurations without a stopwatch.
 - `encode_wallclock_ms_p50` / `p99` — smooths over a small ring
 - `bitrate_bytes_per_sec_ewma` — EWMA of encoded output over ~5 s
 - `keyframes` — running count of IDRs emitted
-- `clock_offset_ns` — sender→receiver monotonic-clock offset learned
-  from the `SurfaceStreamStart` handshake; `end_to_end_latency_ms`
-  returns `None` until it's populated (a wrong number is worse than
-  a missing one)
 - `frames_received` / `frames_dropped` — receiver-side counters
 
 These roll up into the OSD overlay when `TILO_UI_DEBUG=1` is set and
