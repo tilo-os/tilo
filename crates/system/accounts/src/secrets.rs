@@ -186,10 +186,12 @@ impl SecretStore {
     }
 
     pub fn put(&mut self, item: &mut SecretItem) -> Result<(), BrokerError> {
+        let previous_updated = item.updated_unix;
         item.updated_unix = unix_now();
         let payload =
             Zeroizing::new(serde_json::to_string(item).map_err(|_| BrokerError::CorruptItem)?);
         let key = AccountId::new(format!("{ITEM_PREFIX}{}", item.id.0));
+        let previous = self.vault.get(&key);
         self.vault.put(
             &key,
             &Secret {
@@ -197,18 +199,42 @@ impl SecretStore {
                 token: Some(payload.to_string()),
             },
         );
-        self.vault.try_save().map_err(BrokerError::Storage)
+        if let Err(error) = self.vault.try_save() {
+            if let Some(previous) = previous {
+                self.vault.put(&key, &previous);
+            } else {
+                self.vault.remove(&key);
+            }
+            item.updated_unix = previous_updated;
+            return Err(BrokerError::Storage(error));
+        }
+        Ok(())
     }
 
     pub fn remove(&mut self, id: &SecretId) -> Result<bool, BrokerError> {
-        let removed = self
-            .vault
-            .remove(&AccountId::new(format!("{ITEM_PREFIX}{}", id.0)));
-        if removed {
-            self.remove_grants_matching(|grant| grant.item_id == *id);
-            self.vault.try_save().map_err(BrokerError::Storage)?;
+        let key = AccountId::new(format!("{ITEM_PREFIX}{}", id.0));
+        let Some(previous) = self.vault.get(&key) else {
+            return Ok(false);
+        };
+        let grants = self
+            .grants()
+            .into_iter()
+            .filter(|grant| grant.item_id == *id)
+            .filter_map(|grant| {
+                let key = AccountId::new(grant.storage_key());
+                self.vault.get(&key).map(|secret| (key, secret))
+            })
+            .collect::<Vec<_>>();
+        self.vault.remove(&key);
+        self.remove_grants_matching(|grant| grant.item_id == *id);
+        if let Err(error) = self.vault.try_save() {
+            self.vault.put(&key, &previous);
+            for (key, secret) in grants {
+                self.vault.put(&key, &secret);
+            }
+            return Err(BrokerError::Storage(error));
         }
-        Ok(removed)
+        Ok(true)
     }
 
     /// Durable application access, sorted for a stable management UI.
@@ -785,6 +811,63 @@ mod tests {
             Err(BrokerError::Storage(_))
         ));
         assert_eq!(std::fs::read(sealed).unwrap(), before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_item_writes_preserve_credentials_and_permissions() {
+        let root = root();
+        let mut store = SecretStore::open_in(&root);
+        let mut item = SecretItem::login("Mail", "ada", "original secret");
+        store.put(&mut item).unwrap();
+        let original = item.clone();
+        let mut broker = CredentialBroker::new(store);
+        broker
+            .request(
+                &AccessRequest {
+                    app_id: "org.example.Mail".into(),
+                    item_id: item.id.clone(),
+                    purpose: "Sign in".into(),
+                    origin: None,
+                },
+                |_, _| AccessDecision::AllowAlways,
+            )
+            .unwrap();
+        let mut store = broker.store;
+        let grants = store.grants();
+        assert_eq!(grants.len(), 1);
+        let path = crate::vault_dir_in(&root).join("vault.enc");
+        let saved = path.with_extension("saved");
+        std::fs::rename(&path, &saved).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        item.password = "unsaved replacement".into();
+        item.updated_unix = 1;
+        assert!(matches!(store.put(&mut item), Err(BrokerError::Storage(_))));
+        assert_eq!(item.updated_unix, 1);
+        assert_eq!(store.get(&item.id), Some(original.clone()));
+        let mut added = SecretItem::login("Unsaved", "ada", "new secret");
+        assert!(matches!(
+            store.put(&mut added),
+            Err(BrokerError::Storage(_))
+        ));
+        assert!(store.get(&added.id).is_none());
+        assert!(matches!(
+            store.remove(&item.id),
+            Err(BrokerError::Storage(_))
+        ));
+        assert_eq!(store.get(&item.id), Some(original.clone()));
+        assert_eq!(store.grants(), grants);
+
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&saved, &path).unwrap();
+        let mut other = SecretItem::login("Other", "ada", "other secret");
+        store.put(&mut other).unwrap();
+        let reopened = SecretStore::open_in(&root);
+        assert_eq!(reopened.get(&item.id), Some(original));
+        assert!(reopened.get(&added.id).is_none());
+        assert_eq!(reopened.grants(), grants);
+        assert_eq!(reopened.get(&other.id), Some(other));
         std::fs::remove_dir_all(root).unwrap();
     }
 
