@@ -133,6 +133,8 @@ fn compare_cells(a: Option<&Cell>, b: Option<&Cell>) -> Ordering {
         (None | Some(Cell::Null), None | Some(Cell::Null)) => Ordering::Equal,
         (None | Some(Cell::Null), Some(_)) => Ordering::Less,
         (Some(_), None | Some(Cell::Null)) => Ordering::Greater,
+        // Database integers exceed f64's exact range (2^53), notably IDs.
+        (Some(Cell::Integer(a)), Some(Cell::Integer(b))) => a.cmp(b),
         (Some(a), Some(b)) => match (cell_number(a), cell_number(b)) {
             (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
             _ => a.display().to_lowercase().cmp(&b.display().to_lowercase()),
@@ -359,6 +361,32 @@ mod tests {
         // A new result starts unsorted.
         table.bind(Some(result()));
         assert_eq!(table.sorted(), None);
+    }
+
+    #[test]
+    fn sorting_integer_ids_preserves_all_64_bits() {
+        let values = [
+            i64::MAX,
+            9_007_199_254_740_993,
+            9_007_199_254_740_992,
+            i64::MIN + 1,
+            i64::MIN,
+            i64::MAX - 1,
+        ];
+        let mut table = ResultsTable::new("results");
+        table.bind(Some(Arc::new(QueryResult {
+            columns: vec!["id".into()],
+            rows: values
+                .iter()
+                .map(|value| vec![Cell::Integer(*value)])
+                .collect(),
+            is_select: true,
+            ..Default::default()
+        })));
+        table.sort_by(0);
+        assert_eq!(table.display_order(), [4, 3, 2, 1, 5, 0]);
+        table.sort_by(0);
+        assert_eq!(table.display_order(), [0, 5, 1, 2, 3, 4]);
     }
 
     /// Text sorts without regard to case and numbers sort by value, not by their digits.
