@@ -48,6 +48,10 @@ esac
 # own client (gi Secret-1) to drive the service with, as apps would.
 # xwayland-satellite and Xwayland are the X11 bridge the shell's X11 clipboard
 # and focus tests drive through the compositor.
+# pipewire, wireplumber and pipewire-gstreamer: a private PipeWire with a
+# session manager, which the screen-capture tests start to serve a headless
+# screen node to the production pipewiresrc capture path; pipewire-utils'
+# pw-dump finds the node they create.
 install_test_runtime_fedora() {
     if rpm -q pipewire-pulseaudio >/dev/null 2>&1; then
         dnf swap -y pipewire-pulseaudio pulseaudio
@@ -67,7 +71,8 @@ install_test_runtime_fedora() {
         bubblewrap gnome-text-editor \
         cryptsetup swtpm swtpm-tools tpm2-tools \
         libsecret gnome-keyring python3-gobject \
-        xwayland-satellite xorg-x11-server-Xwayland
+        xwayland-satellite xorg-x11-server-Xwayland \
+        pipewire wireplumber pipewire-gstreamer pipewire-utils
     # Package scriptlets that create system accounts (sysusers) or compile
     # GSettings schemas can be skipped or fail inside unprivileged image
     # builds without failing the transaction. Replay both idempotently so the
