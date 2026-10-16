@@ -161,24 +161,40 @@ impl Child<'_> {
         unsafe { libc::close(self.sync) };
     }
 
+    /// Every signal back to its default action, none blocked. Raw system
+    /// calls: glibc's `sigaction` takes a lock that another thread of the
+    /// worker may have held at the moment of `clone3` (`posix_spawn` holds
+    /// it), and this copy would wait for it forever.
     fn reset_signals() {
+        // The kernel's `struct sigaction`, zeroed: `SIG_DFL`, no flags, an
+        // empty mask (x86-64 has a restorer before the mask, arm64 not).
+        let default = [0_u64; 4];
         for sig in 1..=64 {
             if sig == libc::SIGKILL || sig == libc::SIGSTOP {
                 continue;
             }
-            // SAFETY: a zeroed sigaction is SIG_DFL with no flags; failures
-            // (glibc's reserved signals) are harmless.
+            // SAFETY: a live structure of the kernel's layout and sigset
+            // size; failures are harmless.
             unsafe {
-                let mut sa: libc::sigaction = std::mem::zeroed();
-                sa.sa_sigaction = libc::SIG_DFL;
-                libc::sigaction(sig, &raw const sa, std::ptr::null_mut());
+                libc::syscall(
+                    libc::SYS_rt_sigaction,
+                    sig,
+                    default.as_ptr(),
+                    std::ptr::null_mut::<u64>(),
+                    8_usize,
+                );
             }
         }
-        // SAFETY: an empty set, applied to this thread.
+        let empty = 0_u64;
+        // SAFETY: an empty set of the kernel's size, for this thread.
         unsafe {
-            let mut set: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&raw mut set);
-            libc::sigprocmask(libc::SIG_SETMASK, &raw const set, std::ptr::null_mut());
+            libc::syscall(
+                libc::SYS_rt_sigprocmask,
+                libc::SIG_SETMASK,
+                &raw const empty,
+                std::ptr::null_mut::<u64>(),
+                8_usize,
+            );
         }
     }
 
@@ -533,8 +549,9 @@ impl Child<'_> {
                 }
                 libc::close(down[0]);
                 // The worker's supplementary groups, unmapped here; where
-                // the job's namespace denies setgroups they stay.
-                libc::setgroups(0, std::ptr::null());
+                // the job's namespace denies setgroups they stay. A raw
+                // call: glibc's signals every thread it believes exists.
+                libc::syscall(libc::SYS_setgroups, 0, std::ptr::null::<libc::gid_t>());
             }
             self.exec();
         }
