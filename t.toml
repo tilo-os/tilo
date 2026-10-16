@@ -3491,8 +3491,10 @@ on = ["dispatch"]
 # (tools/ci/publish/wine.sh): the pinned Wine source fetched and verified once; per target, Mock
 # resolves its build dependencies with the network, then wine-build-<target> rebuilds Wine from
 # that bundle alone, offline, into the RPMs and their contract; image-wine-paired merges the two
-# targets' RPMs into the pair the guest installs. Every image is an archive named by the digest
-# it is published with, so the contracts the steps write name what is published.
+# targets' RPMs into the pair the guest installs; image-windows-guest signs the pair with a key
+# made for the run and assembles the guest (tools/ci/publish/windows-guest.sh). Every image is an
+# archive named by the digest it is published with, so the contracts the steps write name what
+# is published.
 [[check]]
 name = "wine-resolve-x86_64"
 image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
@@ -3580,6 +3582,49 @@ cost = "minutes"
 cpus = 2
 memory = "8G"
 timeout_secs = 3600
+default = false
+
+[[check]]
+name = "image-windows-guest"
+image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
+run = "bash tools/ci/publish/windows-guest.sh /target/windows-compat/windows-guest"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/windows-guest.sh", "os/Containerfile.windows-guest-tools", "os/Containerfile.windows-guest-rpms", "os/Containerfile.windows-guest", "os/dev/run-development-windows-guest.py", "os/dev/development-wine-repository.py", "os/dev/windows-guest-packages.txt", "os/dev/windows_guest_contract.py", "os/dev/resolve-windows-guest-rpms.sh", "os/dev/build-windows-guest.sh", "os/dev/validate-windows-guest.py", "os/dev/install-windows-guest-dxvk.py", "os/dev/fetch-windows-guest-assets.py", "os/dev/wine-source.json", "os/external-assets/github-assets.tsv", ".containerignore"]
+needs = ["image-wine-paired"]
+outputs = ["/target/windows-compat/windows-guest/**"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+cpus = 8
+memory = "16G"
+timeout_secs = 5400
+default = false
+
+# Pushes every image the guest names, in the order they name each other, and the guest last:
+# dispatched on main only (`t dispatch publish-windows-guest --ref main`).
+[[check]]
+name = "publish-windows-guest"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = '''
+set -e
+w=/target/windows-compat
+for target in x86_64 i686; do
+  bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-resolution $w/wine-build-$target/resolution "candidate-{commit}-$target"
+  bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-rpms $w/wine-build-$target/rpms "candidate-{commit}-$target"
+done
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-paired $w/wine-paired 'candidate-{commit}'
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-wine $w/windows-guest/development-wine 'candidate-{commit}'
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-windows-guest-rpms $w/windows-guest/rpms 'candidate-{commit}'
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-windows-guest $w/windows-guest/guest 'candidate-{commit}'
+sed -n 's/.*"image":"\([^"]*\)".*/\1/p' $w/windows-guest/guest/receipt.json > $w/windows-guest/guest/reference
+'''
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["publish-wine-tools", "wine-build-x86_64", "wine-build-i686", "image-wine-paired", "image-windows-guest"]
+outputs = ["/target/windows-compat/wine-build-*/*/receipt.json", "/target/windows-compat/wine-paired/receipt.json", "/target/windows-compat/windows-guest/*/receipt.json", "/target/windows-compat/windows-guest/guest/reference"]
+pointers = { windows-guest-candidate = "/target/windows-compat/windows-guest/guest/reference" }
+id_token = ["registry.tilo.so"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+on = ["dispatch"]
 default = false
 # END generated
 
