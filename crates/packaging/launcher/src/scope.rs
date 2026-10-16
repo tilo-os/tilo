@@ -9,6 +9,22 @@
 //! app and everything it forked instead of leaving it running with no
 //! display.
 //!
+//! The scope's `OOMPolicy` is `continue`. An app is often many processes
+//! the person runs side by side: a terminal and every shell, build and
+//! language server in its tabs, a browser and its renderers, an editor and
+//! its plugins. When memory runs out, the kernel picks one victim, the
+//! process with the worst OOM score, and killing it is what frees the
+//! memory. systemd's default policy (`stop`) would then tear down the whole
+//! unit, so one runaway language server would close the terminal and every
+//! session in it. With `continue` only the victim dies and the app, which
+//! sees its child exit like any other crash, keeps running. A sandboxed
+//! Tilo app gets the same: when the victim is its main process the sandbox
+//! ends with it and the scope empties on its own, and when it is a helper
+//! the app decides how to recover, as it would on any helper crash.
+//! `kill` (the whole unit as one OOM group) would be worse than `stop`.
+//! systemd-oomd never acts on app scopes: `app.slice` is not one of its
+//! targets (see `os/etc/systemd/user/app.slice.d`).
+//!
 //! The launcher moves *itself* into the scope before it forks the app, so
 //! the app and every process it starts are born inside it rather than
 //! chased into it afterwards. A manager that is unreachable (a headless
@@ -29,6 +45,10 @@ const SESSION_TARGET: &str = "tilo-graphical-session.target";
 /// The slice every app scope lives in, per the desktop-environment
 /// convention (<https://systemd.io/DESKTOP_ENVIRONMENTS>).
 const APP_SLICE: &str = "app.slice";
+
+/// What happens to an app's scope when the kernel OOM killer kills one of
+/// its processes: only that process dies (see the module docs).
+const OOM_POLICY: &str = "continue";
 
 /// The longest unit name systemd accepts.
 const UNIT_NAME_MAX: usize = 255;
@@ -131,6 +151,7 @@ pub fn request_args(unit: &str, pid: u32, description: &str) -> Vec<String> {
             "1".into(),
             SESSION_TARGET.into(),
         ],
+        vec!["OOMPolicy".into(), "s".into(), OOM_POLICY.into()],
     ];
     // The person just asked for this app: it starts in the foreground tier,
     // and the compositor demotes it when focus moves on (see `priority`).
@@ -197,8 +218,8 @@ mod tests {
             .collect();
         assert_eq!(request[at - tier_args.len()..at], tier_args[..]);
         request.drain(at - tier_args.len()..at);
-        assert_eq!(request[10], (5 + tier.len()).to_string());
-        request[10] = "5".into();
+        assert_eq!(request[10], (6 + tier.len()).to_string());
+        request[10] = "6".into();
         assert_eq!(
             request,
             [
@@ -212,7 +233,7 @@ mod tests {
                 "ssa(sv)a(sa(sv))",
                 "app-tilo-com.spotify.Client-42.scope",
                 "fail",
-                "5",
+                "6",
                 "PIDs",
                 "au",
                 "1",
@@ -227,6 +248,10 @@ mod tests {
                 "as",
                 "1",
                 "tilo-graphical-session.target",
+                // One process killed for memory must not take down the app.
+                "OOMPolicy",
+                "s",
+                "continue",
                 "Description",
                 "s",
                 "Spotify",
