@@ -251,39 +251,9 @@ fn find_in(blocks: &[BlockView], query: &str, options: FindOptions) -> Vec<FindM
     if options.mode == ui::widget::FindMode::Regex {
         return find_pattern(blocks, query, options);
     }
-    let mut found = Vec::new();
-    let needle: Vec<char> = if options.match_case {
-        query.chars().collect()
-    } else {
-        query.to_lowercase().chars().collect()
-    };
-    if needle.is_empty() {
-        return found;
-    }
-    for block in blocks {
-        let raw: Vec<char> = block.text.chars().collect();
-        let haystack: Vec<char> = if options.match_case {
-            raw.clone()
-        } else {
-            block.text.to_lowercase().chars().collect()
-        };
-        if needle.len() > haystack.len() {
-            continue;
-        }
-        let mut start = 0;
-        while start + needle.len() <= haystack.len() {
-            let end = start + needle.len();
-            if haystack.get(start..end) == Some(&needle[..])
-                && (!options.whole_word || is_word_match(&raw, start, end))
-            {
-                found.push((block.id.clone(), start, end));
-                start = end;
-            } else {
-                start += 1;
-            }
-        }
-    }
-    found
+    // Match against the original text: lowercasing can expand a character
+    // (for example İ), so offsets in a folded copy are not document offsets.
+    find_pattern(blocks, &regex::escape(query), options)
 }
 
 /// Every match of the regular expression `query` in the paragraphs, in
