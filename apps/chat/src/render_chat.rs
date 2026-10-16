@@ -2526,6 +2526,12 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let rect = self.composer_rect(tr, theme);
+        // With no channel open a draft would have nowhere to go, so there is
+        // no composer to type into.
+        if self.direct_agent.is_none() && self.channel(&self.active_channel).is_none() {
+            self.composer_main.set_focus(false);
+            return;
+        }
         if !self.can_participate() && self.direct_agent.is_none() {
             self.composer_main.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, rect);
