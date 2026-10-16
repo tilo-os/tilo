@@ -88,9 +88,6 @@ selected=()
 for app in $apps; do
     [[ $app == files ]] && app=file-explorer
     if [[ ! -f $repo_root/apps/$app/tilo-app.toml ]]; then
-        # The default list names apps some branches do not carry yet (web
-        # search, for one); an app asked for by name must exist.
-        [[ $apps == "$default_apps" ]] && continue
         die "no app named $app under apps/"
     fi
     selected+=("$app")
