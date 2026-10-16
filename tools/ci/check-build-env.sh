@@ -23,6 +23,7 @@ MODULES=(
 BINARIES=(
   autoreconf libtoolize bwrap rust-analyzer sccache fc-match gst-inspect-1.0 jq rg yt-dlp
   cryptsetup swtpm swtpm_setup tpm2_getcap xwayland-satellite Xwayland
+  pipewire wireplumber pw-dump
 )
 FONTS=(
   "Noto Sans Arabic"
@@ -37,7 +38,8 @@ FONTS=(
 ACLOCAL_MACROS=(libgcrypt.m4)
 # The real-time media tests round-trip through the royalty-free software
 # codecs, which must be present without a GPU or Cisco's openh264 binary.
-GSTREAMER_ELEMENTS=(h264parse vp9enc vp9dec av1enc dav1ddec)
+# The screen-capture tests read a private PipeWire's node through pipewiresrc.
+GSTREAMER_ELEMENTS=(h264parse vp9enc vp9dec av1enc dav1ddec pipewiresrc)
 
 missing=0
 command -v pkg-config >/dev/null 2>&1 || { echo "pkg-config not installed — nothing here can be checked" >&2; exit 2; }
