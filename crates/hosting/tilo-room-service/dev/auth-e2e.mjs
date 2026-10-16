@@ -31,17 +31,12 @@
 //   bound-invite   the same with an invitation the door issued for someone
 //                  else who has not used it yet: refused when redeemed,
 //                  nothing kept
-//   stale-link     the host is set up again (run.py --fresh: a new root, relay
-//                  and room) while the first person's browser keeps what it
-//                  had for the old one; the old room's link is refused without
-//                  a join and without offering to join again (that room is
-//                  gone), never opened as another room, the membership kept
-//   host-declined  the bare entry offers to join the new host again; "Not now"
-//                  is refused, saying the host was set up again, without a
-//                  join, and the kept membership and person stay
-//   host-reset     the same offer accepted ("Join again"): one join at the
-//                  door, the desktop presents, and the membership names the
-//                  new room as the same person
+//   host-reset     the host is set up again (run.py --fresh: a new root,
+//                  relay and room) while the first person's browser keeps
+//                  what it had for the old one; the bare entry joins the new
+//                  host without asking: one join at the door, the desktop
+//                  presents, and the membership names the new room as the
+//                  same person
 //   host-reload    that tab reloaded: presents again with no new join
 //   kept-apart     what the browser kept for the old host is untouched (every
 //                  row of its namespace as before the reset), and the new
@@ -555,43 +550,14 @@ async function main() {
     // A new root, relay and room behind the same origin.
     await stack.stop();
     stack = await startStack(options, ports, {fresh: true});
-    const changed = /set up again/;
-
-    // stale-link: the old room's link after the reset.
-    const stale = await page(browser, person);
-    const staleOpened = await open(stale, roomLink(firstRoom), settleOptions);
-    const staleOffered = await offering(stale);
-    keepLog('stale-link', stale);
-    check('stale-link', stack.room !== firstRoom && staleOpened.entry === 'refused' && !staleOffered
-      && joinsTo(stale.requests, api).length === 0
-      && staleOpened.membership?.userPublicKey === me && staleOpened.membership?.room === firstRoom,
-    {entry: staleOpened.entry, offered: staleOffered, joins: joinsTo(stale.requests, api).length, status: staleOpened.status,
-      membership: staleOpened.membership, room: stack.room});
-    if (staleOpened.entry !== 'refused') await shoot('stale-link', stale);
-    await stale.close();
-
-    // host-declined: the bare entry offers to join the new host; not now.
-    const declining = await page(browser, person);
-    await declining.navigate(`${web}/`);
-    const declineOffered = await press(declining, 'Not now', timeout).catch(() => false);
-    const declined = await settle(declining, settleOptions);
-    keepLog('host-declined', declining);
-    check('host-declined', declineOffered && declined.entry === 'refused' && changed.test(declined.status)
-      && joinsTo(declining.requests, api).length === 0 && declined.membership?.userPublicKey === me
-      && declined.membership?.room === firstRoom,
-    {offered: declineOffered, entry: declined.entry, joins: joinsTo(declining.requests, api).length,
-      membership: declined.membership, status: declined.status, loading: declined.loading});
-    if (declined.entry !== 'refused') await shoot('host-declined', declining);
-    await declining.close();
-
-    // host-reset: the same offer, accepted.
+    // host-reset: the bare entry joins the new host, asking nothing.
     const reset = await page(browser, person);
     await reset.navigate(`${web}/`);
-    const resetOffered = await press(reset, 'Join again', timeout).catch(() => false);
     const rejoined = await settle(reset, settleOptions);
+    const resetOffered = await offering(reset);
     keepLog('host-reset', reset);
     const resetJoins = joinsTo(reset.requests, api);
-    check('host-reset', resetOffered && rejoined.entry === 'open' && rejoined.arrival === 'done'
+    check('host-reset', !resetOffered && rejoined.entry === 'open' && rejoined.arrival === 'done'
       && resetJoins.length === 1 && resetJoins[0].status === 200
       && rejoined.membership?.userPublicKey === me && rejoined.membership?.room === stack.room
       && rejoined.hash.includes(`/w/${stack.room}`),

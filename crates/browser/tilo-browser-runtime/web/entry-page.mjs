@@ -20,7 +20,7 @@ import {failureMessage, refusedByHost, startArrival, STOPPED_DRAWING} from './ar
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
-import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, profileDevice, REJOIN_CHANGED_HOST, withCustody} from './peer.mjs';
+import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
@@ -528,11 +528,7 @@ export async function startEntryPage({mode}) {
         const kept = keptMembership(workspace);
         const identity = kept?.paired ? undefined : await browserPerson();
         displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? randomDisplayName();
-        // A host set up again since this browser joined it: the person may
-        // join it again from the bare entry. A link naming a room of the
-        // previous host stays refused, as that room is gone with it.
-        const confirmRejoin = room ? undefined : () => card(REJOIN_CHANGED_HOST, [['Join again', true], ['Not now', false]]);
-        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode, confirmRejoin});
+        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode});
         entered = 'joined';
         return peer;
       } catch (error) {

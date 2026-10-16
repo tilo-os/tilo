@@ -542,14 +542,22 @@ test('a peer with a store of its own never moves it: a host set up again is refu
   assert.deepEqual(JSON.parse(store.rows.get('certificate')).hostCert, hostCertOf(1, 2), 'nor its certificate replaced');
 });
 
-test('reauthenticating against a host set up again is refused and keeps the certificate', async () => {
+test('reauthenticating against a host set up again reloads the page to join it, keeping the certificate', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
   runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 2), webtransportPort: 443});
   await store.put('certificate', JSON.stringify({cert: {device: 9}, hostCert: hostCertOf(1, 2)}));
   const peer = await connect(options(runtime, store));
   runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3), webtransportPort: 443});
-  await assert.rejects(peer.recover({kind: 'reauthenticate'}), {code: 'host-changed'});
+  let reloads = 0;
+  const location = globalThis.location;
+  globalThis.location = {reload: () => { reloads += 1; }};
+  try {
+    await peer.recover({kind: 'reauthenticate'});
+  } finally {
+    globalThis.location = location;
+  }
+  assert.equal(reloads, 1, 'the page loads again, where the entry joins the new host');
   assert.equal(runtime.calls.started.length, 1, 'no session started for the new host');
   assert.equal(runtime.calls.started[0].disposed, false, 'the running session was left alone');
   assert.deepEqual(JSON.parse(store.rows.get('certificate')).hostCert, hostCertOf(1, 2));
