@@ -118,6 +118,8 @@ release = ["sha-{commit}"]               # tags a signed release pushes; {versio
 # tlog = true                            # enter the signature in the transparency log
 # gates = ["web-entry-e2e"]              # checks that must pass before signing and publishing
 # anonymous = true                       # prove the publication pulls without credentials
+# dev_signed = true                      # sign development candidates with the development key
+# dispatch = true                        # publish development tags only when dispatched
 
 [product.context]                        # optional: a step that prepares the build context
 run = "bash tools/ci/publish/web-entry-context.sh {dir}/context"
